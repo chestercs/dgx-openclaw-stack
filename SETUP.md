@@ -61,7 +61,7 @@ The script is **non-destructive**: it asks, it never overwrites, it can be re-ru
 
 1. Check prerequisites (`docker`, `docker compose`, `nvidia` runtime).
 2. Create `.env` from `.env.example` if one doesn't exist yet.
-3. Generate strong random secrets for `VLLM_API_KEY` and `OPENCLAW_GATEWAY_TOKEN` — only if they still hold the shipped placeholder values.
+3. Generate strong random secrets for `VLLM_API_KEY`, `OPENCLAW_GATEWAY_TOKEN`, and `SEARXNG_SECRET` — only if they still hold the shipped placeholder values.
 4. Prompt for your `HUGGING_FACE_HUB_TOKEN`.
 5. Prompt for three host paths (defaults: `/opt/dgx-openclaw/{hf-cache,openclaw-config,workspace}`) and create them if they don't exist.
 
@@ -98,6 +98,7 @@ docker compose logs -f
 Expected timeline on a cold start (no cached weights yet):
 
 - `openclaw-config-init` — runs in ~1–2 seconds and exits `0`.
+- `searxng` — ~5–10 seconds to boot on first image pull, then instant.
 - `vllm-embedding` — ~1–2 minutes after pulling image, first boot only (bge-m3 is tiny).
 - `vllm-llm` — 5–15 minutes the first time (safetensors download + NVFP4 kernel JIT). Subsequent boots: ~3–4 minutes.
 - `openclaw-gateway` — waits for both vllm services to be healthy, then boots in ~20–30 seconds.
@@ -150,6 +151,11 @@ You can also spot-check memory from the CLI:
 docker exec openclaw-cli openclaw memory status --deep
 # Should print Embeddings ready, Vector ready (dims 1024).
 ```
+
+**Web search works:**
+- Ask the agent something that only a live search can answer (e.g. "Who's the current prime minister of <country>? Use web_search.").
+- The agent should call the `web_search` tool, hit the local SearxNG instance, and reply with a URL-backed answer. If you see a generic "I'm not sure" without a tool call, pair the question with an explicit "call the web_search tool" instruction — small models sometimes skip tools on conversational prompts.
+- Spot-check from the host: `docker exec openclaw-cli curl -s 'http://searxng:8080/search?q=test&format=json' | head` should return a JSON blob with a `results` array.
 
 ## 8. (Optional) Reverse proxy + TLS
 

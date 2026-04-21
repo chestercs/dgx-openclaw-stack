@@ -121,9 +121,11 @@ log "Checking secrets…"
 
 VLLM_API_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 GATEWAY_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
+SEARXNG_SECRET_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 
 upsert_env VLLM_API_KEY            "$VLLM_API_KEY_NEW"    '^CHANGE_ME'
 upsert_env OPENCLAW_GATEWAY_TOKEN  "$GATEWAY_TOKEN_NEW"   '^CHANGE_ME'
+upsert_env SEARXNG_SECRET          "$SEARXNG_SECRET_NEW"  '^CHANGE_ME'
 
 # ----------------------------------------------------------------------------
 # 4. HuggingFace token

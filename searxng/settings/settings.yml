@@ -1,0 +1,91 @@
+# SearxNG override settings — merged on top of the upstream defaults
+# (use_default_settings: true).
+# Default settings reference:
+#   https://github.com/searxng/searxng/blob/master/searx/settings.yml
+# Admin docs:
+#   https://docs.searxng.org/admin/settings/index.html
+#
+# This file carries only the deltas from the defaults that are required to make
+# SearxNG usable as a backend for the OpenClaw gateway's native `webSearch`
+# provider (https://docs.openclaw.ai/tools/searxng-search):
+#
+#   1. JSON API enabled (search.formats) — OpenClaw calls /search?...&format=json.
+#   2. Strict privacy engine set (use_default_settings.engines.keep_only) — only
+#      privacy-respecting general engines and public-knowledge domains. Google,
+#      Bing, Yandex, Yahoo, Baidu are NOT in the keep_only list, so queries
+#      never reach them.
+#   3. Rate limiter disabled (internal-only service on the compose bridge).
+#   4. Safe search off (research / world-building scope — you're the only user).
+
+use_default_settings:
+  engines:
+    # KEEP_ONLY: only the listed engines stay in the registry; every other
+    # engine shipped by the upstream defaults is discarded (so Google / Bing /
+    # Yandex / Yahoo / Baidu never run and queries can't leak to them).
+    # Engine IDs come from the upstream default settings.yml
+    # (https://github.com/searxng/searxng/blob/master/searx/settings.yml).
+    keep_only:
+      # Privacy-respecting general engines
+      - duckduckgo
+      - brave
+      - mojeek
+      - qwant
+      - startpage
+      # Public-knowledge / domain engines
+      - wikipedia
+      - wikidata
+      - wikibooks
+      - wikiquote
+      - wikisource
+      - reddit
+      - github
+      - arxiv
+
+general:
+  debug: false
+  instance_name: "dgx-openclaw-search"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  # secret_key is substituted from the SEARXNG_SECRET env var by the entrypoint
+  # on recent SearxNG images. The compose file also exports SEARXNG_SECRET as a
+  # belt-and-braces fallback for older images where the settings.yml template
+  # interpolation isn't done at startup.
+  secret_key: "${SEARXNG_SECRET}"
+  limiter: false                # internal-only service; no public abuse surface
+  public_instance: false
+  image_proxy: false            # JSON API consumer doesn't need image proxying
+
+ui:
+  static_use_hash: true
+  default_locale: ""
+
+search:
+  safe_search: 0                # research scope, no filtering
+  autocomplete: ""
+  default_lang: ""              # the caller picks per-query (mix EN + your locale)
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+  formats:
+    - html
+    - json                       # REQUIRED — OpenClaw's webSearch plugin calls
+                                 # /search?...&format=json; JSON is OFF by default
+                                 # in upstream SearxNG.
+
+# Per-engine overrides: several engines are shipped with `disabled: true` in
+# the upstream defaults (stability / quality gating). `use_default_settings.
+# engines.keep_only` only filters the registry — it does NOT flip the
+# disabled flag. We explicitly re-enable the ones we actively want to query.
+engines:
+  - name: reddit
+    disabled: false
+  - name: wikibooks
+    disabled: false
+  - name: wikiquote
+    disabled: false
+  - name: wikisource
+    disabled: false

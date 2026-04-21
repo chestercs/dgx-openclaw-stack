@@ -106,6 +106,63 @@ if (!existing) {
 
 Deep-merge the same way the existing steps do — never overwrite, always check what's there first.
 
+## Tune SearxNG (web search)
+
+SearxNG has three knobs that matter for this stack. All live in `searxng/settings/settings.yml` or `patch-config.mjs` (for the plugin-side wiring).
+
+### Which engines run
+
+`searxng/settings/settings.yml` → `use_default_settings.engines.keep_only`. Whatever is in this list stays in the registry; every other engine in the upstream defaults is dropped. The shipped list is the strict privacy posture:
+
+```yaml
+keep_only:
+  - duckduckgo
+  - brave
+  - mojeek
+  - qwant
+  - startpage
+  - wikipedia
+  - wikidata
+  - wikibooks
+  - wikiquote
+  - wikisource
+  - reddit
+  - github
+  - arxiv
+```
+
+Add `google`, `bing`, `yandex` etc. here if you want broader coverage — know that those engines will then see your query text. Any engine shipped `disabled: true` in the upstream defaults needs an explicit override in the `engines:` block:
+
+```yaml
+engines:
+  - name: google
+    disabled: false
+```
+
+(Reddit, Wikibooks, Wikiquote, Wikisource are already enabled this way in the shipped file.)
+
+### Categories and language passed to SearxNG
+
+`patch-config.mjs` step 10 writes the defaults the OpenClaw plugin sends on every call:
+
+```js
+const desiredWebSearch = {
+  baseUrl: 'http://searxng:8080',
+  categories: 'general,news,science',
+  language: '',
+};
+```
+
+Per-query overrides (different categories, a `time_range`, an explicit language) are the agent's job via the tool-call parameters. The defaults above just set the floor.
+
+### Disabling web search entirely
+
+If you don't want the SearxNG service at all:
+
+1. Comment out the entire `searxng:` service block in `docker-compose.yml`.
+2. Remove `SEARXNG_SECRET` from `.env.example` (optional; leftover env var is harmless).
+3. In `patch-config.mjs` step 10, flip `config.plugins.entries.searxng.enabled = false` (or delete the step). Otherwise the gateway will retry failed `http://searxng:8080` calls on every `web_search` tool invocation and log errors.
+
 ## Heartbeat and dreaming schedules
 
 Both use the timezone from `OPENCLAW_HEARTBEAT_TZ` in `.env`. To change:

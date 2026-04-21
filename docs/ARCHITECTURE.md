@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how the five containers in `docker-compose.yml` fit together and **why** each design choice was made. Read this if you plan to modify the stack — the compose file and `patch-config.mjs` have decisions baked into them that only make sense with the rationale below.
+This document explains how the six containers in `docker-compose.yml` fit together and **why** each design choice was made. Read this if you plan to modify the stack — the compose file and `patch-config.mjs` have decisions baked into them that only make sense with the rationale below.
 
 ---
 
@@ -18,26 +18,26 @@ This document explains how the five containers in `docker-compose.yml` fit toget
  ┌────────────────────────────────────────┴─────────────────────────────────┐
  │                 compose default bridge network                           │
  │                                                                           │
- │  ┌───────────────────────┐        ┌───────────────────────┐              │
- │  │ vllm-llm              │        │ vllm-embedding        │              │
- │  │  8004/tcp (internal)  │        │  8005/tcp (internal)  │              │
- │  │  image: vllm/vllm-    │        │  image: vllm/vllm-    │              │
- │  │    openai:gemma4-cu130│        │    openai:gemma4-cu130│              │
- │  └────────────▲──────────┘        └──────────▲────────────┘              │
- │               │                              │                           │
- │               │    compose DNS:              │  compose DNS:             │
- │               │    vllm-llm:8004/v1          │  vllm-embedding:8005/v1   │
- │               │                              │                           │
- │  ┌────────────┴──────────────────────────────┴──────────┐                │
- │  │ openclaw-gateway    :18789 (published), :18790        │                │
- │  │   depends_on healthy vllm-llm, vllm-embedding          │                │
- │  │   depends_on success openclaw-config-init              │                │
- │  └────────────▲──────────────────────────────────────────┘                │
- │               │ network_mode: service:openclaw-gateway                    │
- │  ┌────────────┴───────────┐         ┌─────────────────────────────┐       │
- │  │ openclaw-cli           │         │ openclaw-config-init         │       │
- │  │  (shared net namespace)│         │  one-shot, exits 0           │       │
- │  └────────────────────────┘         └─────────────────────────────┘       │
+ │  ┌─────────────────────┐  ┌─────────────────────┐  ┌──────────────────┐  │
+ │  │ vllm-llm            │  │ vllm-embedding      │  │ searxng          │  │
+ │  │  8004/tcp (internal)│  │  8005/tcp (internal)│  │ 8080/tcp (internal)│ │
+ │  │  vllm-openai:       │  │  vllm-openai:       │  │ searxng/searxng:  │ │
+ │  │    gemma4-cu130     │  │    gemma4-cu130     │  │   latest (CPU)    │ │
+ │  └──────────▲──────────┘  └──────────▲──────────┘  └──────────▲────────┘ │
+ │             │                        │                        │          │
+ │             │  vllm-llm:8004/v1      │ vllm-embedding:8005/v1 │searxng:8080
+ │             │  (compose DNS)         │ (compose DNS)          │(compose DNS)
+ │             │                        │                        │          │
+ │  ┌──────────┴────────────────────────┴────────────────────────┴───────┐  │
+ │  │ openclaw-gateway           :18789 (published), :18790               │  │
+ │  │   depends_on healthy vllm-llm, vllm-embedding                       │  │
+ │  │   depends_on success openclaw-config-init                           │  │
+ │  └──────────▲──────────────────────────────────────────────────────────┘  │
+ │             │ network_mode: service:openclaw-gateway                      │
+ │  ┌──────────┴───────────┐         ┌─────────────────────────────┐         │
+ │  │ openclaw-cli         │         │ openclaw-config-init         │         │
+ │  │ (shared net namespace)│         │ one-shot, exits 0            │         │
+ │  └──────────────────────┘         └─────────────────────────────┘         │
  └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -131,6 +131,38 @@ On MIRACL / Mr.TyDi, bge-m3 lands within 1–2 points of Qwen3-Embedding-8B desp
 
 Replaces the deprecated `--task embed`. Tells vLLM this is an encoder-only pooling model, not an autoregressive LM. Pooling runner doesn't allocate decode-style KV slots, which is why `EMBED_GPU_MEM_UTIL=0.03` is enough.
 
+## searxng service design
+
+### Role
+
+Self-hosted meta-search backend for OpenClaw's native `webSearch` provider (`docs.openclaw.ai/tools/searxng-search`). The OpenClaw gateway ships a bundled `searxng` plugin that calls a SearxNG instance over HTTP JSON; pointing it at a local instance keeps search queries out of commercial search APIs (no Tavily / Brave Search API / Serper keys needed).
+
+### Privacy posture
+
+SearxNG only hides the *client* from upstream engines — the query text itself still reaches whichever engines you enable. The real privacy win comes from the strict engine whitelist in `searxng/settings/settings.yml`:
+
+- **Privacy-respecting general engines**: DuckDuckGo, Brave Search, Mojeek, Qwant, Startpage.
+- **Public knowledge / domain engines**: Wikipedia family, Reddit, GitHub, arXiv.
+- **NOT in the whitelist**: Google, Bing, Yandex, Yahoo, Baidu — these are filtered out of the SearxNG registry entirely via `use_default_settings.engines.keep_only`, so there's no way they can run even if a per-query override requests them.
+
+If you're OK with Google/Bing coverage in exchange for a weaker privacy story, add those engines to `keep_only` in `settings.yml` and restart SearxNG. See [`CUSTOMIZATION.md`](CUSTOMIZATION.md) for the details.
+
+### Gotcha: `keep_only` + `disabled: true`
+
+A subtle SearxNG quirk: `keep_only` only filters the engine *registry* — it doesn't override the per-engine `disabled: true` flags shipped in the upstream defaults. A few engines (Reddit, Wikibooks, Wikiquote, Wikisource) are shipped disabled-by-default upstream for stability / quality reasons, so the settings file also contains explicit `engines: - name: X, disabled: false` overrides for the ones we want live.
+
+### JSON API
+
+OpenClaw's plugin hits `/search?q=...&format=json`. JSON output is **off by default** in upstream SearxNG (`search.formats: [html]` only). The settings file adds `json` to `formats` — if you comment that line out, the gateway's `webSearch` tool will get HTML back and parsing will fail.
+
+### No published port
+
+Binding to `0.0.0.0:8080` inside the container is fine because no host port is published; only sibling containers on the compose bridge can reach `http://searxng:8080`. Uncomment the `"127.0.0.1:8888:8080"` binding in `docker-compose.yml` for host-side debug.
+
+### Footprint
+
+CPU-only (no GPU request), ~50-100 MB RAM idle, short bursts while a query fans out to its upstream engines. Negligible next to the LLM's footprint.
+
 ## openclaw-config-init (idempotent patcher)
 
 ### Why it exists
@@ -145,7 +177,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 8 steps
+### 10 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -155,6 +187,8 @@ Rather than tell users "also click here, there, and there after onboarding", the
 6. Ensure/cleanup dreaming (env-gated: `OPENCLAW_ENABLE_DREAMING`).
 7. Ensure `gateway.trustedProxies` (loopback + `172.16.0.0/12` + optional LAN CIDR).
 8. Ensure `agents.defaults.llm.idleTimeoutSeconds = 300`.
+9. Ensure `memorySearch.query.hybrid` (BM25 + vector + MMR re-rank on bge-m3).
+10. Ensure `tools.web.search.provider = searxng` + `plugins.entries.searxng.enabled = true` (the bundled SearxNG plugin ships default-disabled).
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 

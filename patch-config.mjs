@@ -18,7 +18,7 @@
 //     vision prefill + multi-step tool calling.
 //
 // This patcher makes the desired state deterministic: every `docker compose up`
-// re-applies the 8 steps below in a deep-merge style. Safe to re-run — it exits
+// re-applies the 10 steps below in a deep-merge style. Safe to re-run — it exits
 // early when the file is already in the desired state, and if openclaw.json
 // doesn't exist yet (pre-onboarding), it exits 0 so the gateway can still boot.
 //
@@ -39,6 +39,14 @@
 //      directly on the LAN, bypassing the CDN/reverse proxy, must include their
 //      LAN range here so X-Forwarded-For is trusted).
 //   8. Ensure agents.defaults.llm.idleTimeoutSeconds = 300 (LLM idle watchdog).
+//   9. Ensure memorySearch hybrid (BM25 + vector) retrieval with MMR re-rank.
+//      SQLite FTS5 BM25 supplements bge-m3 on exact-keyword / ID / proper-noun
+//      matches; MMR re-rank widens result diversity (candidates × multiplier →
+//      re-ranked to topK). Native OpenClaw feature, no extra services.
+//  10. Ensure webSearch provider = searxng + flip the bundled searxng plugin's
+//      `enabled` flag to true (the plugin ships bundled-but-default-disabled;
+//      without the explicit enable the gateway leaves it in "bundled (disabled
+//      by default)" state and the webSearch tool never lights up).
 
 import fs from 'node:fs';
 
@@ -314,6 +322,92 @@ if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds)
   config.agents.defaults.llm.idleTimeoutSeconds = desiredIdleTimeoutSeconds;
   changed = true;
   console.log(`[patch-config] agents.defaults.llm.idleTimeoutSeconds: ${prev ?? '(unset)'} -> ${desiredIdleTimeoutSeconds}`);
+}
+
+// (9) Ensure memorySearch hybrid (BM25 + vector) + MMR diversity rerank.
+//     - vectorWeight 0.7 / textWeight 0.3: vector dominates (semantic retrieval
+//       is the main use case on multilingual content with bge-m3); BM25
+//       supplements on exact-keyword / ID / proper-noun matches where cosine
+//       similarity tends to underperform.
+//     - candidateMultiplier 3: first-stage fetch brings 3× topK candidates
+//       (e.g. topK=5 → 15), which MMR re-ranks back down to topK for diversity.
+//     - mmr.lambda 0.7: relevance-weighted (1.0 = pure relevance, 0.0 = pure
+//       diversity). 0.7 nudges away from returning near-duplicate chunks.
+//     The default SQLite FTS5 tokenizer (`unicode61`) handles accents well but
+//     does not stem morphology; for heavily inflected languages where BM25
+//     lexical recall matters, consider a trigram tokenizer override.
+config.agents ??= {};
+config.agents.defaults ??= {};
+config.agents.defaults.memorySearch ??= {};
+config.agents.defaults.memorySearch.query ??= {};
+config.agents.defaults.memorySearch.query.hybrid ??= {};
+const hybrid = config.agents.defaults.memorySearch.query.hybrid;
+
+const desiredHybrid = {
+  enabled: true,
+  vectorWeight: 0.7,
+  textWeight: 0.3,
+  candidateMultiplier: 3,
+};
+for (const [k, v] of Object.entries(desiredHybrid)) {
+  if (hybrid[k] !== v) {
+    hybrid[k] = v;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.memorySearch.query.hybrid.${k} = ${v}`);
+  }
+}
+
+hybrid.mmr ??= {};
+const desiredMmr = { enabled: true, lambda: 0.7 };
+for (const [k, v] of Object.entries(desiredMmr)) {
+  if (hybrid.mmr[k] !== v) {
+    hybrid.mmr[k] = v;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.memorySearch.query.hybrid.mmr.${k} = ${v}`);
+  }
+}
+
+// (10) Ensure webSearch provider = searxng and the bundled searxng plugin is
+//      enabled. The plugin ships bundled-but-default-disabled; without the
+//      explicit enable the gateway keeps it in "bundled (disabled by default)"
+//      state and the webSearch tool never lights up in the agent runtime.
+//      The SearxNG service runs as a sibling container on the compose default
+//      bridge, reachable by DNS at http://searxng:8080. Privacy posture lives
+//      in searxng/settings/settings.yml — here we only wire URL / categories /
+//      language (per-query overrides come from the agent's tool call).
+config.tools ??= {};
+config.tools.web ??= {};
+config.tools.web.search ??= {};
+if (config.tools.web.search.provider !== 'searxng') {
+  const prev = config.tools.web.search.provider;
+  config.tools.web.search.provider = 'searxng';
+  changed = true;
+  console.log(`[patch-config] tools.web.search.provider: ${prev ?? '(unset)'} -> searxng`);
+}
+
+config.plugins ??= {};
+config.plugins.entries ??= {};
+config.plugins.entries.searxng ??= {};
+if (config.plugins.entries.searxng.enabled !== true) {
+  config.plugins.entries.searxng.enabled = true;
+  changed = true;
+  console.log('[patch-config] plugins.entries.searxng.enabled = true (bundled plugin enable)');
+}
+config.plugins.entries.searxng.config ??= {};
+config.plugins.entries.searxng.config.webSearch ??= {};
+const ws = config.plugins.entries.searxng.config.webSearch;
+
+const desiredWebSearch = {
+  baseUrl: 'http://searxng:8080',
+  categories: 'general,news,science',
+  language: '',
+};
+for (const [k, v] of Object.entries(desiredWebSearch)) {
+  if (ws[k] !== v) {
+    ws[k] = v;
+    changed = true;
+    console.log(`[patch-config] plugins.entries.searxng.config.webSearch.${k} = ${JSON.stringify(v)}`);
+  }
 }
 
 if (!changed) {

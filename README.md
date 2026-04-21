@@ -2,7 +2,8 @@
 Keywords for discovery: NVIDIA DGX Spark, ASUS Ascent GB10, Grace-Blackwell,
 GB10 Superchip, NVFP4, FP4 quantization, Gemma 4 31B, vLLM, local LLM,
 self-hosted agent, OpenClaw, bge-m3, multilingual embeddings, RAG, tool calling,
-128 GB unified memory, ARM64 AI workstation, edge AI, on-device AI, docker compose.
+128 GB unified memory, ARM64 AI workstation, edge AI, on-device AI, docker compose,
+SearxNG, privacy-respecting web search, self-hosted meta-search, hybrid retrieval.
 -->
 
 # DGX OpenClaw Stack
@@ -30,8 +31,9 @@ A fully local agent platform, running on a single GB10-class box, with:
 |---|---|
 | **Gemma 4 31B IT (NVFP4)** | 31B-parameter Google Gemma 4 dense model, quantized by NVIDIA to NVFP4 (FP4 with NVIDIA's block format). Native tool calling, 256K context, multimodal (text + image). |
 | **bge-m3 embeddings** | BAAI/bge-m3 multilingual dense embeddings via vLLM. 100+ languages, 1024-dim, 8K context, EN↔HU cosine ≈ 0.88. |
+| **SearxNG meta-search** | Self-hosted, privacy-respecting web search backend wired into OpenClaw's native `webSearch` provider. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Wikipedia family, Reddit, GitHub, arXiv) — queries never reach Google / Bing / Yandex / Yahoo / Baidu. |
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
-| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. |
+| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, and flips the bundled SearxNG plugin on. |
 
 Everything lives in one Docker Compose file. No separate vLLM service definitions, no reverse-proxied DNS trickery, no `host.docker.internal` workarounds — containers reach each other by their compose service name on the default bridge network.
 
@@ -78,18 +80,18 @@ Full walkthrough: [SETUP.md](SETUP.md).
     ┌────────────────────────────────────────────────────────────────┐
     │  DGX Spark / ASUS GB10                                         │
     │                                                                 │
-    │  ┌─────────────────┐    ┌─────────────────┐                    │
-    │  │ vllm-llm        │    │ vllm-embedding  │                    │
-    │  │ :8004 (internal)│    │ :8005 (internal)│                    │
-    │  │ Gemma 4 31B     │    │ bge-m3 (567M)   │                    │
-    │  │ NVFP4, 256K ctx │    │ 1024-dim, 8K ctx│                    │
-    │  └────────▲────────┘    └────────▲────────┘                    │
-    │           │ compose DNS          │ compose DNS                  │
-    │  ┌────────┴──────────────────────┴────────┐                    │
-    │  │ openclaw-gateway      :18789 (exposed) │◀── Chrome ext.     │
-    │  │   └ openclaw-config-init (one-shot)    │◀── CLI             │
-    │  │   └ openclaw-cli         (always-up)   │                    │
-    │  └────────────────────────────────────────┘                    │
+    │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
+    │  │ vllm-llm        │  │ vllm-embedding  │  │ searxng        │  │
+    │  │ :8004 (internal)│  │ :8005 (internal)│  │ :8080 (internal)│  │
+    │  │ Gemma 4 31B     │  │ bge-m3 (567M)   │  │ privacy meta-   │  │
+    │  │ NVFP4, 256K ctx │  │ 1024-dim, 8K ctx│  │ search (CPU)    │  │
+    │  └────────▲────────┘  └────────▲────────┘  └────────▲────────┘  │
+    │           │ compose DNS        │ compose DNS        │ compose DNS│
+    │  ┌────────┴────────────────────┴────────────────────┴────────┐  │
+    │  │ openclaw-gateway            :18789 (exposed)              │◀── Chrome ext.
+    │  │   └ openclaw-config-init    (one-shot)                    │◀── CLI
+    │  │   └ openclaw-cli            (always-up)                   │   │
+    │  └───────────────────────────────────────────────────────────┘  │
     └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -99,11 +101,13 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Features
 
-- **One compose file for everything.** LLM, embedding, and agent stack in one `docker compose up -d`.
+- **One compose file for everything.** LLM, embedding, web search, and agent stack in one `docker compose up -d`.
 - **NVFP4-native.** Ships with the official `vllm/vllm-openai:gemma4-cu130` image; no custom build required.
 - **True tool calling.** The shipped `tool_chat_template_gemma4.jinja` plus `--tool-call-parser gemma4 --enable-auto-tool-choice` produces OpenAI-format `tool_calls`. OpenClaw uses them directly.
 - **Multimodal.** Gemma 4's vision tower is included. Drop an image into the chat; the model reads it at ~280 tokens per image by default.
 - **Multilingual RAG built in.** bge-m3 gives you high-quality cross-lingual embeddings for `memorySearch` out of the box.
+- **Hybrid retrieval + MMR.** `memorySearch` runs BM25 (SQLite FTS5) alongside vector similarity and re-ranks the candidate set with MMR for diversity — exact-keyword / ID matches stop falling through the cracks of pure cosine search.
+- **Privacy-respecting web search.** Self-hosted SearxNG wired into OpenClaw's native `webSearch` tool. No commercial search API, no query leak to Google / Bing / Yandex. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage + Wikipedia / Reddit / GitHub / arXiv).
 - **Long context, honest numbers.** 256K model max; realistic stable bands (per user count) are documented in the compose file.
 - **Idempotent configuration.** The patcher re-applies a known-good state on every `up`. Safe to run repeatedly.
 - **Reverse-proxy ready.** `gateway.trustedProxies` is pre-populated; add your LAN CIDR via `OPENCLAW_LAN_CIDR` if needed.
@@ -113,12 +117,15 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```
 dgx-openclaw-stack/
-├─ docker-compose.yml           # the whole stack (vllm-llm + vllm-embedding + openclaw-*)
-├─ patch-config.mjs             # idempotent OpenClaw config patcher
+├─ docker-compose.yml           # the whole stack (vllm-llm + vllm-embedding + searxng + openclaw-*)
+├─ patch-config.mjs             # idempotent OpenClaw config patcher (10 steps)
 ├─ bootstrap.sh                 # non-destructive first-time setup
 ├─ .env.example                 # documented env template
 ├─ templates/
 │  └─ tool_chat_template_gemma4.jinja   # Gemma 4 tool-call chat template
+├─ searxng/
+│  └─ settings/
+│     └─ settings.yml           # SearxNG override: JSON API + strict engine whitelist
 ├─ docs/
 │  ├─ ARCHITECTURE.md
 │  ├─ TROUBLESHOOTING.md
