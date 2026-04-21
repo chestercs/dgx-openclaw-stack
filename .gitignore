@@ -1,0 +1,24 @@
+# Secrets — NEVER commit. Use .env.example as the tracked template.
+.env
+.env.*
+!.env.example
+
+# Host-path persistent data (if someone mounts it inside the repo by mistake).
+hf-cache/
+openclaw-config/
+workspace/
+
+# Editor / OS artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code / Claude agent state
+.claude/
+
+# Logs
+*.log
