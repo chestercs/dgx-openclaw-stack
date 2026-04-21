@@ -379,8 +379,14 @@ for (const [k, v] of Object.entries(desiredMmr)) {
 //      state and the webSearch tool never lights up in the agent runtime.
 //      The SearxNG service runs as a sibling container on the compose default
 //      bridge, reachable by DNS at http://searxng:8080. Privacy posture lives
-//      in searxng/settings/settings.yml — here we only wire URL / categories /
-//      language (per-query overrides come from the agent's tool call).
+//      in searxng/settings/settings.yml — here we only wire baseUrl + language.
+//      Categories are intentionally left to the gateway / per-query agent
+//      tool-call: an earlier version of this patcher wrote a static
+//      `categories: 'general,news,science'` here, but the gateway then sent it
+//      to SearxNG as a Python-list literal in the POST form, which SearxNG
+//      rejected with a validation warning (search still worked via fallback
+//      defaults — log noise only). The cleanup block below drops the legacy
+//      field on upgrade.
 config.tools ??= {};
 config.tools.web ??= {};
 config.tools.web.search ??= {};
@@ -405,7 +411,6 @@ const ws = config.plugins.entries.searxng.config.webSearch;
 
 const desiredWebSearch = {
   baseUrl: 'http://searxng:8080',
-  categories: 'general,news,science',
   language: '',
 };
 for (const [k, v] of Object.entries(desiredWebSearch)) {
@@ -414,6 +419,15 @@ for (const [k, v] of Object.entries(desiredWebSearch)) {
     changed = true;
     console.log(`[patch-config] plugins.entries.searxng.config.webSearch.${k} = ${JSON.stringify(v)}`);
   }
+}
+
+// Drop the legacy `categories` field if a previous patcher run wrote it.
+// See the block comment above for why — keeping this here makes the upgrade
+// idempotent for users coming from an earlier version of the stack.
+if ('categories' in ws) {
+  delete ws.categories;
+  changed = true;
+  console.log('[patch-config] plugins.entries.searxng.config.webSearch.categories removed (gateway/agent decides per query)');
 }
 
 if (!changed) {

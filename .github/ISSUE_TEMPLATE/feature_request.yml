@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a new capability or enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Please skim
+        [`CONTRIBUTING.md`](https://github.com/chestercs/dgx-openclaw-stack/blob/main/CONTRIBUTING.md)
+        first — this repo prioritises being a small, well-wired reference, so
+        not every feature belongs in-tree.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case, not just the feature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        How would the change look in `docker-compose.yml`, `patch-config.mjs`,
+        or the docs? A rough sketch is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where should this live?
+      options:
+        - In this repo (core stack change)
+        - In docs/CUSTOMIZATION.md as a documented override
+        - In a separate companion repo
+        - Not sure
+    validations:
+      required: true

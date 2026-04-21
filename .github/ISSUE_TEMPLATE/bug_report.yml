@@ -1,0 +1,66 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please check
+        [`docs/TROUBLESHOOTING.md`](https://github.com/chestercs/dgx-openclaw-stack/blob/main/docs/TROUBLESHOOTING.md)
+        first — many common failure modes are covered there.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, what you expected, and what you observed instead.
+      placeholder: |
+        I ran `docker compose up -d` and the gateway crash-loops with …
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware & host
+      description: GPU model (or "remote vLLM / cloud backend"), host OS, total RAM, and the vLLM image tag if you customised it.
+      placeholder: |
+        - GPU: NVIDIA GB10 Superchip (or RTX 4090 / A100 / cloud LLM)
+        - OS: Ubuntu 24.04 (or Windows 11 + Docker Desktop)
+        - RAM: 128 GB unified
+        - vLLM image: vllm/vllm-openai:gemma4-cu130 (or default)
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Relevant `.env` values
+      description: |
+        Paste the relevant `.env` lines with **secrets REDACTED**.
+        Helpful keys: `LLM_GPU_MEM_UTIL`, `LLM_MAX_MODEL_LEN`,
+        `LLM_MAX_NUM_SEQS`, the `*_BASE_URL` overrides, `COMPOSE_PROJECT_NAME`,
+        `OPENCLAW_LAN_CIDR`.
+      render: dotenv
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        `docker compose logs --no-color --tail 200 <service>` for the failing
+        service(s). For gateway issues include `openclaw-gateway`; for
+        config-patch issues include `openclaw-config-init`.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, related links, what you've already tried.
+    validations:
+      required: false
