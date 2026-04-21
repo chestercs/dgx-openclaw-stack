@@ -7,9 +7,11 @@ self-hosted agent, OpenClaw, bge-m3, multilingual embeddings, RAG, tool calling,
 
 # DGX OpenClaw Stack
 
-> A one-command, production-grade local AI agent stack for **NVIDIA DGX Spark** and **ASUS Ascent GB10**.
-> Gemma 4 31B (NVFP4) + bge-m3 embeddings + the OpenClaw agent gateway,
-> wired together in a single `docker compose` file.
+> **A one-command, production-grade local AI agent stack purpose-built for the NVIDIA GB10 "Grace-Blackwell" Superchip** — designed for **NVIDIA DGX Spark**, **ASUS Ascent GB10**, and any future workstation on the same architecture.
+>
+> Gemma 4 31B (NVFP4) + bge-m3 embeddings + the OpenClaw agent gateway, wired together in a single `docker compose` file.
+
+Every tuning decision in this stack — NVFP4 quantization, GPU memory split between LLM and embedding, FP8 KV cache, concurrency bands, context-window budgeting — is calibrated to the GB10 Superchip's specific hardware profile: **128 GB of unified LPDDR5X**, **273 GB/s bandwidth**, and **native FP4 tensor-core acceleration** (`sm_120`/`sm_121`). If you're on a DGX Spark, an ASUS Ascent GB10, or any other GB10-based machine, you should get the same results out of the box.
 
 [![Docker Compose](https://img.shields.io/badge/docker%20compose-24.0%2B-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-0.11%2B-7C3AED)](https://github.com/vllm-project/vllm)
@@ -40,7 +42,9 @@ Designed and tested on:
 - **NVIDIA DGX Spark** (GB10 Superchip, 128 GB unified LPDDR5X, 273 GB/s)
 - **ASUS Ascent GB10** (same GB10 Superchip, same memory architecture)
 
-It will **not** run on non-GB10 hardware out of the box because of NVFP4 kernel requirements (`sm_120`/`sm_121`). For RTX 50-series Blackwell desktops see `docs/CUSTOMIZATION.md` (smaller models, different kernels).
+Should work unchanged on **any future workstation built around the GB10 Superchip** — the stack doesn't depend on DGX- or ASUS-specific firmware, only on the Blackwell datacenter compute capabilities (`sm_120`/`sm_121`) and the GB10's 128 GB unified memory budget.
+
+It will **not** run on non-GB10 hardware out of the box because of NVFP4 kernel requirements. For RTX 50-series Blackwell desktops see [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md) — you can still run a smaller quantization, but the memory-split and concurrency constants in `.env.example` no longer apply.
 
 ### Performance (measured)
 
