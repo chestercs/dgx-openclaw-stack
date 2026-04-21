@@ -52,16 +52,22 @@ import fs from 'node:fs';
 
 const CONFIG_PATH = '/home/node/.openclaw/openclaw.json';
 
-// LLM provider — the Gemma 4 31B IT NVFP4 vLLM service, reachable via compose DNS.
+// LLM provider — the Gemma 4 31B IT NVFP4 vLLM service.
+// Default points at the in-compose `vllm-llm` service via the bridge DNS.
+// Override LLM_BASE_URL in .env to point at any OpenAI-compatible chat endpoint
+// (a remote vLLM on another box, a cloud Bedrock proxy, OpenRouter, vLLM-on-RunPod,
+// etc.) — useful if you want to keep the gateway / SearxNG / agent runtime local
+// but host the heavy LLM elsewhere. See docs/CUSTOMIZATION.md.
 const LLM_MODEL_ID = 'nvidia/Gemma-4-31B-IT-NVFP4';
-const LLM_BASE_URL = 'http://vllm-llm:8004/v1/';
+const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://vllm-llm:8004/v1/';
 const LLM_API = 'openai-completions';
 const VLLM_API_KEY = process.env.VLLM_API_KEY ?? '';
 
-// Embedding provider — the bge-m3 vLLM service, also reachable via compose DNS.
-// Same VLLM_API_KEY as the LLM (both vLLM stacks share one key for simplicity).
+// Embedding provider — the bge-m3 vLLM service.
+// Same VLLM_API_KEY as the LLM (both share one key by convention).
+// Override EMBED_BASE_URL in .env to host embeddings on a different machine.
 const EMBED_MODEL = 'BAAI/bge-m3';
-const EMBED_BASE_URL = 'http://vllm-embedding:8005/v1/';
+const EMBED_BASE_URL = process.env.EMBED_BASE_URL || 'http://vllm-embedding:8005/v1/';
 
 // input: ['text','image'] — Gemma 4 NVFP4 natively supports vision input (NVIDIA's
 // release ships the vision tower, not just the LM). The vllm-llm service also

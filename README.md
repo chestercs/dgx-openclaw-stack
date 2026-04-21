@@ -43,7 +43,7 @@ Everything lives in one Docker Compose file. No separate vLLM service definition
 
 - **GB10 owners (DGX Spark, ASUS Ascent GB10)** — the calibrated reference profile. Boot it, get ~6.9 tok/s decode on Gemma 4 31B NVFP4 with 256K context, multimodal, tool calling, hybrid memory, private web search.
 - **x86_64 + consumer NVIDIA GPU (RTX 4090 etc.)** — the LLM service is the only piece tied to GB10 hardware. Swap `vllm-llm` for any model your VRAM holds (smaller Gemma 4, Qwen 2.5, Llama 3.3…) using a stock vLLM image; the rest of the stack and the patcher's known-good wiring transfer unchanged. Pointers in [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md).
-- **Cloud LLM users (OpenAI, Anthropic, OpenRouter, AWS Bedrock…)** — comment out the `vllm-llm` service entirely and point OpenClaw's vllm provider at your hosted endpoint. You still get bge-m3 (cheap local multilingual embeddings, no per-token cost), SearxNG (private web search, no Tavily/Serper key), hybrid + MMR retrieval, idempotent config, dreaming, heartbeat — most of what makes this repo useful is independent of where the LLM runs.
+- **Cloud LLM users (OpenAI, Anthropic, OpenRouter, AWS Bedrock…)** — point OpenClaw's vllm provider at your hosted endpoint via three `.env` overrides (`OPENAI_BASE_URL` / `LLM_BASE_URL` / `EMBED_BASE_URL`) and park `vllm-llm` + `vllm-embedding` behind `profiles: ["never"]`. You still get bge-m3 (cheap local multilingual embeddings, no per-token cost — or aim that override at a remote embed service too), SearxNG (private web search, no Tavily/Serper key), hybrid + MMR retrieval, idempotent config, dreaming, heartbeat. **Verified end-to-end** on a GPU-less Windows host pointed at a remote vLLM over LAN: agent chat, web search, hybrid memory retrieval, multi-tool reasoning all work unchanged. Walkthrough in [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md) → "Run with a remote vLLM backend".
 
 ## Hardware targets
 
@@ -57,7 +57,7 @@ Works unchanged on **any future workstation built around the GB10 Superchip** �
 The reference profile **won't boot as-is on non-GB10 hardware** — `vllm/vllm-openai:gemma4-cu130` and the NVFP4 model both need Blackwell FP4 kernels. Two supported alternatives, sketched briefly in [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md):
 
 - **Other NVIDIA GPU**: switch to a stock vLLM image and a model that fits your VRAM (smaller Gemma 4 NVFP4 if you have a Blackwell desktop; Gemma 4 12B BF16 / Qwen 2.5 / Llama 3.3 elsewhere). The memory-split and concurrency constants in `.env.example` will need re-tuning for your card.
-- **Cloud LLM**: drop the `vllm-llm` service and let OpenClaw talk OpenAI/Anthropic/etc. directly via its vllm provider config. The bge-m3 embedding service still runs locally (or also goes cloud), everything else is unchanged.
+- **Cloud LLM**: park the local vLLM services behind `profiles: ["never"]` and set `OPENAI_BASE_URL` / `LLM_BASE_URL` / `EMBED_BASE_URL` in `.env` to your hosted endpoints (cloud OpenAI-compatible API, remote vLLM on another box, etc.). bge-m3 stays local by default but can also be remoted. Everything downstream — gateway, SearxNG, hybrid retrieval, dreaming, heartbeat — is unchanged.
 
 ### Performance (measured)
 

@@ -181,6 +181,89 @@ If you don't care about memory search:
 3. Raise `LLM_GPU_MEM_UTIL=0.85` in `.env` to reclaim the reserved memory.
 4. In `patch-config.mjs`, either disable memorySearch (`enabled: false`) or point it at a remote embedding service.
 
+## Run with a remote vLLM backend
+
+Use case: you want the gateway / agent runtime / SearxNG / memory store on machine A (cheap, no GPU — your laptop, a VPS, a small home server) but the heavy LLM and/or embedding model on machine B (a remote DGX, an x86 box with a 4090, vLLM on RunPod, a cloud OpenAI-compatible endpoint, OpenRouter, an AWS Bedrock proxy, …).
+
+The repo natively supports this via three env overrides — no docker-compose surgery beyond parking the local GPU services.
+
+### Step-by-step
+
+1. **Park the local vLLM services** so `docker compose up` doesn't try to start them on machine A. Edit `docker-compose.yml`:
+
+    ```yaml
+    vllm-llm:
+      profiles: ["never"]    # add this one line
+      image: vllm/vllm-openai:gemma4-cu130
+      # …rest unchanged…
+
+    vllm-embedding:
+      profiles: ["never"]    # add this one line
+      image: vllm/vllm-openai:gemma4-cu130
+      # …rest unchanged…
+    ```
+
+    Also remove the two `vllm-llm` / `vllm-embedding` `service_healthy` entries from `openclaw-gateway.depends_on` (otherwise the gateway waits forever for services that never start).
+
+2. **Point the three URL overrides at the remote endpoints** in `.env`:
+
+    ```dotenv
+    # Gateway → LLM (chat completions) — what OpenClaw sends user messages to
+    OPENAI_BASE_URL=https://your-remote-vllm.example.com/v1
+
+    # patch-config.mjs → openclaw.json provider field — must match OPENAI_BASE_URL,
+    # but trailing slash is required by the OpenClaw config schema
+    LLM_BASE_URL=https://your-remote-vllm.example.com/v1/
+
+    # patch-config.mjs → openclaw.json memorySearch.remote.baseUrl — bge-m3 endpoint
+    # (can be the same host or a different one; trailing slash required)
+    EMBED_BASE_URL=https://your-remote-embed.example.com/v1/
+    ```
+
+    `VLLM_API_KEY` stays as your remote vLLM's auth token (the patcher writes it into both the chat provider apiKey and the embedding `remote.apiKey`).
+
+3. **Run bootstrap.sh + first `docker compose up -d`**. The gateway will crash-loop with `Missing config. Run openclaw setup …` because there's no `openclaw.json` yet — that's expected on a fresh install.
+
+4. **Run onboarding** to create `openclaw.json`. You can use the interactive Chrome extension wizard, or the non-interactive CLI:
+
+    ```bash
+    docker exec <project>-openclaw-cli openclaw onboard \
+      --non-interactive --accept-risk \
+      --mode local --flow manual \
+      --auth-choice vllm \
+      --custom-base-url "$OPENAI_BASE_URL" \
+      --custom-api-key "$VLLM_API_KEY" \
+      --custom-model-id nvidia/Gemma-4-31B-IT-NVFP4 \
+      --custom-compatibility openai \
+      --gateway-bind lan --gateway-port 18789 \
+      --gateway-auth token \
+      --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
+      --skip-daemon --skip-search --skip-skills --skip-channels --skip-ui --skip-health
+    ```
+
+5. **Re-apply the patcher** so the 10 deterministic-state steps run on the freshly-created `openclaw.json` (the first `up` skipped them because the file didn't exist yet):
+
+    ```bash
+    docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+    ```
+
+6. **Verify**: `curl http://127.0.0.1:18789/healthz` returns `{"ok":true}`, `docker exec <project>-openclaw-cli openclaw memory status` shows `Embeddings: ready`, and `docker exec <project>-openclaw-cli openclaw agent --agent main --message "Use web_search to find …"` produces a real reply.
+
+### What still runs locally
+
+- `openclaw-gateway` (TypeScript app, ~200 MB RAM)
+- `openclaw-cli` (sleep container, shares gateway namespace)
+- `openclaw-config-init` (init-only, exits after patching)
+- `searxng` (~50–100 MB RAM, CPU-only)
+
+Total local footprint: well under 1 GB, no GPU. Suitable for a small VPS, a Raspberry-Pi-class box, or a personal laptop that's not always-on the same network as the LLM host.
+
+### Trade-offs
+
+- **Latency**: every chat token round-trips to the remote endpoint. LAN is fine; cross-region cloud calls add 50–200 ms TTFT.
+- **Auth**: `VLLM_API_KEY` rides on every request to the remote. Use TLS to the remote endpoint (or a private network — Tailscale / WireGuard / cloud VPC peering — over plaintext).
+- **Network reachability**: the remote URL must resolve and be reachable from inside the `openclaw-gateway` container. LAN IPs work because docker bridge networks NAT outbound. Public hostnames work if DNS in the container resolves them.
+
 ## Run without the OpenClaw UI
 
 If you just want the vLLM endpoints for your own code and don't need OpenClaw:

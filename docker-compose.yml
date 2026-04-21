@@ -333,6 +333,12 @@ services:
       OPENCLAW_HEARTBEAT_ACTIVE_END: ${OPENCLAW_HEARTBEAT_ACTIVE_END:-02:00}
       OPENCLAW_HEARTBEAT_TZ: ${OPENCLAW_HEARTBEAT_TZ:-UTC}
       OPENCLAW_LAN_CIDR: ${OPENCLAW_LAN_CIDR:-}
+      # Override the in-compose vllm-llm / vllm-embedding DNS targets when the
+      # vLLM stack runs on a different host (remote DGX over LAN, cloud OpenAI-
+      # compatible endpoint, etc.). Defaults preserve the standard in-compose
+      # layout. See docs/CUSTOMIZATION.md → "Run with a remote vLLM backend".
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm-llm:8004/v1/}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://vllm-embedding:8005/v1/}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ./patch-config.mjs:/opt/patch-config.mjs:ro
@@ -357,7 +363,10 @@ services:
       TERM: xterm-256color
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       OPENAI_API_KEY: ${VLLM_API_KEY:-}
-      OPENAI_BASE_URL: http://vllm-llm:8004/v1
+      # Default targets the in-compose vllm-llm. Override OPENAI_BASE_URL in
+      # .env to point at a remote vLLM (DGX over LAN, vLLM on a separate box)
+      # or a cloud OpenAI-compatible endpoint (Bedrock proxy, OpenRouter, ...).
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://vllm-llm:8004/v1}
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       OPENCLAW_NO_RESPAWN: "1"
