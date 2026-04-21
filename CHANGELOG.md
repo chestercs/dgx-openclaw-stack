@@ -33,12 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **`patch-config.mjs` no longer writes
-  `plugins.entries.searxng.config.webSearch.categories`.** The gateway posted
-  that field as a Python-list literal in the SearxNG POST form, which SearxNG
-  rejected with a validation warning (search still returned results via
-  fallback defaults — log noise only). The patcher now drops the field on
-  upgrade for a clean log; per-query categories come from the agent's tool
-  call instead.
+  `plugins.entries.searxng.config.webSearch.categories`.** The gateway
+  forwarded the static string as a Python-list literal in the SearxNG POST
+  form, which SearxNG rejected with a validation warning (search still worked
+  via fallback defaults — log noise only). Per-query categories come from the
+  agent's tool call instead.
 
 ## [0.1.0] - 2026-04-21
 
