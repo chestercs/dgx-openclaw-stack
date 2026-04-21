@@ -3,16 +3,18 @@ Keywords for discovery: NVIDIA DGX Spark, ASUS Ascent GB10, Grace-Blackwell,
 GB10 Superchip, NVFP4, FP4 quantization, Gemma 4 31B, vLLM, local LLM,
 self-hosted agent, OpenClaw, bge-m3, multilingual embeddings, RAG, tool calling,
 128 GB unified memory, ARM64 AI workstation, edge AI, on-device AI, docker compose,
-SearxNG, privacy-respecting web search, self-hosted meta-search, hybrid retrieval.
+SearxNG, privacy-respecting web search, self-hosted meta-search, hybrid retrieval,
+hybrid BM25 + vector search, MMR re-ranking, x86_64 GPU server, cloud LLM backend,
+OpenAI compatible, Anthropic, OpenRouter, AWS Bedrock, hosted LLM, RTX 4090.
 -->
 
 # DGX OpenClaw Stack
 
-> **A one-command, production-grade local AI agent stack purpose-built for the NVIDIA GB10 "Grace-Blackwell" Superchip** — designed for **NVIDIA DGX Spark**, **ASUS Ascent GB10**, and any future workstation on the same architecture.
+> **A one-command, production-grade local AI agent stack** — OpenClaw + vLLM + bge-m3 multilingual embeddings + SearxNG private web search + hybrid (BM25 + vector) memory retrieval, wired together in a single `docker compose` file.
 >
-> Gemma 4 31B (NVFP4) + bge-m3 embeddings + the OpenClaw agent gateway, wired together in a single `docker compose` file.
+> **Calibrated** for the NVIDIA GB10 "Grace-Blackwell" Superchip (NVIDIA DGX Spark, ASUS Ascent GB10) running Gemma 4 31B in NVFP4. **Portable** to other hardware — swap the LLM for whatever fits your GPU, or point OpenClaw at a cloud LLM API and keep everything else.
 
-Every tuning decision in this stack — NVFP4 quantization, GPU memory split between LLM and embedding, FP8 KV cache, concurrency bands, context-window budgeting — is calibrated to the GB10 Superchip's specific hardware profile: **128 GB of unified LPDDR5X**, **273 GB/s bandwidth**, and **native FP4 tensor-core acceleration** (`sm_120`/`sm_121`). If you're on a DGX Spark, an ASUS Ascent GB10, or any other GB10-based machine, you should get the same results out of the box.
+The default profile's tuning decisions — NVFP4 quantization, GPU memory split between LLM and embedding, FP8 KV cache, concurrency bands, context-window budgeting — are calibrated to the GB10 Superchip's specific hardware profile: **128 GB of unified LPDDR5X**, **273 GB/s bandwidth**, and **native FP4 tensor-core acceleration** (`sm_120`/`sm_121`). On a DGX Spark or ASUS Ascent GB10 you get those numbers out of the box. On other hardware everything except the LLM service is reusable as-is.
 
 [![Docker Compose](https://img.shields.io/badge/docker%20compose-24.0%2B-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-0.11%2B-7C3AED)](https://github.com/vllm-project/vllm)
@@ -25,7 +27,7 @@ Every tuning decision in this stack — NVFP4 quantization, GPU memory split bet
 
 ## What you get
 
-A fully local agent platform, running on a single GB10-class box, with:
+A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), with:
 
 | Component | What it does |
 |---|---|
@@ -37,16 +39,25 @@ A fully local agent platform, running on a single GB10-class box, with:
 
 Everything lives in one Docker Compose file. No separate vLLM service definitions, no reverse-proxied DNS trickery, no `host.docker.internal` workarounds — containers reach each other by their compose service name on the default bridge network.
 
+## Who is this for
+
+- **GB10 owners (DGX Spark, ASUS Ascent GB10)** — the calibrated reference profile. Boot it, get ~6.9 tok/s decode on Gemma 4 31B NVFP4 with 256K context, multimodal, tool calling, hybrid memory, private web search.
+- **x86_64 + consumer NVIDIA GPU (RTX 4090 etc.)** — the LLM service is the only piece tied to GB10 hardware. Swap `vllm-llm` for any model your VRAM holds (smaller Gemma 4, Qwen 2.5, Llama 3.3…) using a stock vLLM image; the rest of the stack and the patcher's known-good wiring transfer unchanged. Pointers in [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md).
+- **Cloud LLM users (OpenAI, Anthropic, OpenRouter, AWS Bedrock…)** — comment out the `vllm-llm` service entirely and point OpenClaw's vllm provider at your hosted endpoint. You still get bge-m3 (cheap local multilingual embeddings, no per-token cost), SearxNG (private web search, no Tavily/Serper key), hybrid + MMR retrieval, idempotent config, dreaming, heartbeat — most of what makes this repo useful is independent of where the LLM runs.
+
 ## Hardware targets
 
-Designed and tested on:
+The reference profile (`docker compose up -d` with no edits) is designed and tested on:
 
 - **NVIDIA DGX Spark** (GB10 Superchip, 128 GB unified LPDDR5X, 273 GB/s)
 - **ASUS Ascent GB10** (same GB10 Superchip, same memory architecture)
 
-Should work unchanged on **any future workstation built around the GB10 Superchip** — the stack doesn't depend on DGX- or ASUS-specific firmware, only on the Blackwell datacenter compute capabilities (`sm_120`/`sm_121`) and the GB10's 128 GB unified memory budget.
+Works unchanged on **any future workstation built around the GB10 Superchip** — the stack doesn't depend on DGX- or ASUS-specific firmware, only on the Blackwell datacenter compute capabilities (`sm_120`/`sm_121`) and the GB10's 128 GB unified memory budget.
 
-It will **not** run on non-GB10 hardware out of the box because of NVFP4 kernel requirements. For RTX 50-series Blackwell desktops see [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md) — you can still run a smaller quantization, but the memory-split and concurrency constants in `.env.example` no longer apply.
+The reference profile **won't boot as-is on non-GB10 hardware** — `vllm/vllm-openai:gemma4-cu130` and the NVFP4 model both need Blackwell FP4 kernels. Two supported alternatives, sketched briefly in [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md):
+
+- **Other NVIDIA GPU**: switch to a stock vLLM image and a model that fits your VRAM (smaller Gemma 4 NVFP4 if you have a Blackwell desktop; Gemma 4 12B BF16 / Qwen 2.5 / Llama 3.3 elsewhere). The memory-split and concurrency constants in `.env.example` will need re-tuning for your card.
+- **Cloud LLM**: drop the `vllm-llm` service and let OpenClaw talk OpenAI/Anthropic/etc. directly via its vllm provider config. The bge-m3 embedding service still runs locally (or also goes cloud), everything else is unchanged.
 
 ### Performance (measured)
 
@@ -137,14 +148,15 @@ dgx-openclaw-stack/
 
 ## Why this stack
 
-Running a useful local agent on a DGX Spark / ASUS GB10 is trickier than the hardware specs suggest:
+Running a useful local (or hybrid) agent on top of OpenClaw + vLLM is trickier than the surface picture suggests:
 
-- The onboarding wizards of most agent frameworks don't register NVFP4 models correctly against a self-hosted vLLM provider.
-- Gemma 4 tool calling requires a specific chat template that isn't in the official image.
-- Embedding providers, memory search, and reverse-proxy trust need to be wired up manually.
-- Unified-memory GPU budgeting with two concurrent vLLM processes needs care (`LLM_GPU_MEM_UTIL` vs `EMBED_GPU_MEM_UTIL`).
+- The OpenClaw onboarding wizard doesn't register NVFP4 models against a self-hosted vLLM provider, leaves `memorySearch` disabled, ships an empty `gateway.trustedProxies`, and writes a placeholder API key — all of which silently break things later.
+- Gemma 4 tool calling requires a specific chat template that isn't in the official vLLM image.
+- The bundled OpenClaw `searxng` plugin ships **default-disabled** — `webSearch` looks wired up but doesn't actually fire until you flip it on.
+- Hybrid (BM25 + vector) retrieval and MMR re-rank are native OpenClaw features but aren't on by default.
+- On GB10 specifically, unified-memory GPU budgeting between two concurrent vLLM processes needs care (`LLM_GPU_MEM_UTIL` vs `EMBED_GPU_MEM_UTIL`).
 
-This repo captures a known-good configuration for all of the above in one deterministic bring-up.
+This repo captures a known-good wiring for all of the above in a single deterministic `docker compose up`. The `patch-config.mjs` patcher re-applies it on every restart so the wiring survives onboarding-wizard reruns, image upgrades, and manual edits.
 
 ## License
 
