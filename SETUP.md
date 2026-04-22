@@ -88,7 +88,7 @@ Before the first `docker compose up`, open `.env` and check:
 - `OPENCLAW_LAN_CIDR`: if you plan to hit the gateway directly from your LAN (not through a reverse proxy), fill this in (e.g. `192.168.1.0/24`).
 - `OPENCLAW_ENABLE_DREAMING`: leave at `0` unless your OpenClaw image is `2026.4.15` or newer.
 
-## 5. Start the stack
+## 5. Start the stack (phase 1)
 
 ```bash
 docker compose up -d
@@ -97,41 +97,82 @@ docker compose logs -f
 
 Expected timeline on a cold start (no cached weights yet):
 
-- `openclaw-config-init` — runs in ~1–2 seconds and exits `0`.
+- `openclaw-config-init` — runs in ~1–2 seconds. On a fresh install it logs
+  *"openclaw.json not found — skipping (run onboarding first)"* and exits `0`.
+  This is expected.
 - `searxng` — ~5–10 seconds to boot on first image pull, then instant.
 - `vllm-embedding` — ~1–2 minutes after pulling image, first boot only (bge-m3 is tiny).
 - `vllm-llm` — 5–15 minutes the first time (safetensors download + NVFP4 kernel JIT). Subsequent boots: ~3–4 minutes.
-- `openclaw-gateway` — waits for both vllm services to be healthy, then boots in ~20–30 seconds.
+- `openclaw-gateway` — **will crash-loop with** `Missing config. Run openclaw setup …`
+  on a fresh install. This is expected — the gateway requires an `openclaw.json`,
+  which step 6 below creates via onboarding. After onboarding, restart
+  `openclaw-config-init` + `openclaw-gateway` + `openclaw-cli` together (phase 2).
 - `openclaw-cli` — always-up utility container, ready immediately.
 
-Once all are healthy:
+Service status:
 
 ```bash
 docker compose ps
-# Should show all services `Up (healthy)` (openclaw-cli just `Up`).
+# vllm-* should be `Up (healthy)`; openclaw-gateway is `Restarting`
+# until you complete onboarding.
 ```
 
-## 6. Pair the Chrome extension (UI)
+> **Why the crash-loop is intentional.** The OpenClaw security model requires
+> explicit onboarding (you choose the gateway token and pair the UI) before
+> the gateway will accept connections. The patcher honors this: it skips
+> cleanly when `openclaw.json` doesn't exist yet, then writes the wired-up
+> configuration once onboarding has created the file.
+
+## 6. Onboarding — pair the Chrome extension (UI) (phase 2a)
 
 Install the official OpenClaw Chrome extension. After install:
 
 1. Click the extension icon → **Add gateway**.
 2. Paste the gateway URL: `ws://<your-host-ip>:18789` (use `wss://your-domain` if you've already put a reverse proxy in front).
 3. Paste your `OPENCLAW_GATEWAY_TOKEN` (from `.env`) as the token.
-4. You should see the gateway go online and the first model (`nvidia/Gemma-4-31B-IT-NVFP4`) listed.
+4. The extension's onboarding wizard launches. Pick:
+   - **Provider**: vLLM (OpenAI-compatible).
+   - **Model**: `nvidia/Gemma-4-31B-IT-NVFP4` (the patcher will register this anyway in phase 2b; if the wizard offers a different default, pick whatever and the patcher will fix it).
+   - **Tool calling**: enabled.
+   - **Memory search**: enabled, `BAAI/bge-m3`.
 
-If you have onboarding questions in the extension:
+Onboarding writes `openclaw.json` to your `OPENCLAW_CONFIG_DIR` and the
+gateway stays alive. The wizard's wiring choices may not be production-ready
+on their own — the next step ensures they are.
 
-- **Provider**: vLLM (OpenAI-compatible).
-- **Model**: `nvidia/Gemma-4-31B-IT-NVFP4` (already registered by `patch-config.mjs`; pick it from the list).
-- **Tool calling**: enabled.
-- **Memory search**: enabled, `BAAI/bge-m3` (already wired up).
+Headless alternative (no Chrome extension): inside the gateway container,
+`openclaw onboard --non-interactive --token "$OPENCLAW_GATEWAY_TOKEN"` writes
+the same `openclaw.json` non-interactively.
 
-The patcher re-runs on every `docker compose up`, so if the wizard writes a placeholder API key or skips the model entry, it gets corrected automatically on the next restart.
+## 6b. Re-run the patcher (phase 2b)
+
+```bash
+docker compose up -d --force-recreate \
+  openclaw-config-init openclaw-gateway openclaw-cli
+```
+
+The `openclaw-config-init` container now finds `openclaw.json` and applies all
+11 patcher steps (vllm provider wiring, hybrid memory + MMR, SearxNG
+enablement, dreaming, trustedProxies, TTS provider — see `patch-config.mjs`).
+You'll see `[patch-config]` lines for each change. The gateway restarts and
+picks up the patched config.
+
+> **Why all three together.** `openclaw-cli` shares the gateway's network
+> namespace (`network_mode: "service:openclaw-gateway"`). If you recreate the
+> gateway alone, the still-running CLI ends up pointing at a dead namespace
+> and silently loses connectivity. Always recreate the trio together.
 
 ## 7. First conversation & sanity checks
 
-Three quick checks:
+The shell snippets below use `${PROJ}` to refer to the container name prefix —
+default `dgx-` (set via `CONTAINER_NAME_PREFIX` in `.env`). Source it once:
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
+PROJ=${PROJ:-dgx-}
+```
+
+Three quick checks via the Chrome extension:
 
 **Tool calling works:**
 - Ask the agent: "What's the current time in UTC?"
@@ -145,17 +186,21 @@ Three quick checks:
 - Tell the agent a fact (e.g. "Remember that my favorite color is ultramarine").
 - Close the chat, open a new one, ask the agent to recall your favorite color. It should retrieve from memory.
 
-You can also spot-check memory from the CLI:
+Spot-check memory from the CLI:
 
 ```bash
-docker exec openclaw-cli openclaw memory status --deep
+docker exec ${PROJ}openclaw-cli openclaw memory status --deep
 # Should print Embeddings ready, Vector ready (dims 1024).
 ```
 
 **Web search works:**
 - Ask the agent something that only a live search can answer (e.g. "Who's the current prime minister of <country>? Use web_search.").
 - The agent should call the `web_search` tool, hit the local SearxNG instance, and reply with a URL-backed answer. If you see a generic "I'm not sure" without a tool call, pair the question with an explicit "call the web_search tool" instruction — small models sometimes skip tools on conversational prompts.
-- Spot-check from the host: `docker exec openclaw-cli curl -s 'http://searxng:8080/search?q=test&format=json' | head` should return a JSON blob with a `results` array.
+- Spot-check from the host:
+  ```bash
+  docker exec ${PROJ}openclaw-cli curl -s 'http://searxng:8080/search?q=test&format=json' | head
+  ```
+  Should return a JSON blob with a `results` array.
 
 ## 8. (Optional) Reverse proxy + TLS
 
@@ -174,19 +219,27 @@ If you hit the gateway **directly from your LAN**, add your LAN CIDR via `OPENCL
 ## 9. (Optional) Daily operations
 
 - **Stop everything**: `docker compose down` (keeps volumes + config).
-- **Rebuild / restart a single service**: `docker compose up -d --force-recreate vllm-llm`.
+- **Restart a single non-gateway service**: `docker compose up -d --force-recreate vllm-llm`.
+- **Restart the gateway** — always recreate the trio so `openclaw-cli` doesn't end up in a dead namespace:
+  ```bash
+  docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+  ```
 - **Pull newer images**: `docker compose pull && docker compose up -d`.
 - **View gateway logs**: `docker compose logs -f openclaw-gateway`.
-- **Enter the CLI container**: `docker exec -it openclaw-cli openclaw`.
+- **Enter the CLI container**: `docker exec -it ${PROJ}openclaw-cli openclaw`.
 - **Back up memory** (do this regularly!): `tar czf openclaw-$(date +%F).tar.gz -C $OPENCLAW_CONFIG_DIR .`.
 
 ## 10. Uninstall
 
 ```bash
-docker compose down -v                           # containers + named volumes
+docker compose down -v                           # containers + non-bind volumes
 rm -rf /opt/dgx-openclaw/                        # host data (IRREVERSIBLE)
 docker image prune                               # optional: reclaim image space
 ```
+
+Note: the HF cache volume is a host bind-mount (default `/opt/dgx-openclaw/hf-cache`)
+and survives `down -v`. Removing the host directory above wipes the cached
+~16 GB of model weights — a fresh `up` will re-download them.
 
 Your `.env` is kept. Delete it only when you're sure you're done.
 

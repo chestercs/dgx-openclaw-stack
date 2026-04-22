@@ -224,10 +224,10 @@ The repo natively supports this via three env overrides — no docker-compose su
 
 3. **Run bootstrap.sh + first `docker compose up -d`**. The gateway will crash-loop with `Missing config. Run openclaw setup …` because there's no `openclaw.json` yet — that's expected on a fresh install.
 
-4. **Run onboarding** to create `openclaw.json`. You can use the interactive Chrome extension wizard, or the non-interactive CLI:
+4. **Run onboarding** to create `openclaw.json`. You can use the interactive Chrome extension wizard, or the non-interactive CLI (replace `${PROJ}` with the value of `CONTAINER_NAME_PREFIX` from `.env`, default `dgx-`):
 
     ```bash
-    docker exec <project>-openclaw-cli openclaw onboard \
+    docker exec ${PROJ}openclaw-cli openclaw onboard \
       --non-interactive --accept-risk \
       --mode local --flow manual \
       --auth-choice vllm \
@@ -241,13 +241,13 @@ The repo natively supports this via three env overrides — no docker-compose su
       --skip-daemon --skip-search --skip-skills --skip-channels --skip-ui --skip-health
     ```
 
-5. **Re-apply the patcher** so the 10 deterministic-state steps run on the freshly-created `openclaw.json` (the first `up` skipped them because the file didn't exist yet):
+5. **Re-apply the patcher** so the 11 deterministic-state steps run on the freshly-created `openclaw.json` (the first `up` skipped them because the file didn't exist yet):
 
     ```bash
     docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
     ```
 
-6. **Verify**: `curl http://127.0.0.1:18789/healthz` returns `{"ok":true}`, `docker exec <project>-openclaw-cli openclaw memory status` shows `Embeddings: ready`, and `docker exec <project>-openclaw-cli openclaw agent --agent main --message "Use web_search to find …"` produces a real reply.
+6. **Verify**: `curl http://127.0.0.1:18789/healthz` returns `{"ok":true}`, `docker exec ${PROJ}openclaw-cli openclaw memory status` shows `Embeddings: ready`, and `docker exec ${PROJ}openclaw-cli openclaw agent --agent main --message "Use web_search to find …"` produces a real reply.
 
 ### What still runs locally
 
@@ -272,6 +272,63 @@ If you just want the vLLM endpoints for your own code and don't need OpenClaw:
 2. `docker compose up -d vllm-llm vllm-embedding`.
 
 Your API is then at `http://127.0.0.1:8004/v1/` (chat) and `http://127.0.0.1:8005/v1/embeddings`, both requiring `Authorization: Bearer $VLLM_API_KEY`.
+
+## Container naming (CONTAINER_NAME_PREFIX)
+
+Every service uses `container_name: ${CONTAINER_NAME_PREFIX:-dgx-}<service>`. Default `dgx-` keeps the familiar `dgx-openclaw-gateway`, `dgx-vllm-llm`, … shape — useful for namespacing on a host that may grow other compose stacks.
+
+If this is the only stack on the host and you want clean names like `openclaw-gateway`, `vllm-llm`, set:
+
+```dotenv
+CONTAINER_NAME_PREFIX=
+```
+
+**Bridge DNS reachability is unaffected** — services resolve each other by the compose service name plus the explicit `hostname:` directive (`vllm-llm`, `searxng`, `openclaw-gateway`, …) regardless of how the container shows up in `docker ps`. Sibling compose stacks pointed at the same network can keep using `vllm-llm:8004` no matter what prefix you pick.
+
+## Sharing the HF cache with sibling LLM stacks
+
+If you run other vLLM compose stacks on the same host (an alternate quantization for A/B testing, a different embedding model, an experimental fine-tune), you can share the model cache between them. Two knobs:
+
+```dotenv
+# Same host path everywhere → bind-mount points into the same directory
+VLLM_HF_CACHE_DIR=/opt/dgx-openclaw/hf-cache
+
+# Same Docker volume label → one consistent entry in `docker volume ls`
+VLLM_HF_CACHE_VOLUME_NAME=dgx-openclaw-hf-cache
+```
+
+Set both in every sibling stack's `.env`. The bind-mount makes them physically share the cache (no duplicate `~16 GB` Gemma download); the matching volume name is cosmetic but keeps `docker volume ls` clean.
+
+## TTS port exposure
+
+The three TTS services publish to `${TTS_*_BIND:-127.0.0.1}:${TTS_*_PORT:-…}` — loopback by default so `curl 127.0.0.1:8092/healthz` works without `docker exec` while keeping LAN clients out. To expose on the LAN:
+
+```dotenv
+TTS_ROUTER_BIND=0.0.0.0    # exposes openclaw-tts-router on LAN
+TTS_EN_BIND=0.0.0.0        # exposes openclaw-tts-en (Kokoro EN backend)
+TTS_F5HUN_BIND=0.0.0.0     # exposes openclaw-tts-f5hun (HU backend, profile=hu only)
+```
+
+All three are Bearer-token-protected via the existing TTS tokens (`OPENCLAW_TTS_ROUTER_API_KEY`, `TTS_API_TOKEN`, `F5HUN_API_TOKEN`), but a leaked token is still a leaked token — keep loopback unless you have a reason to expose. Sibling containers continue to use bridge DNS regardless of the binding.
+
+## Disable TTS entirely
+
+Two-step opt-out:
+
+1. In `.env`, leave `OPENCLAW_TTS_ROUTER_API_KEY` empty. The patcher's step 11 detects this and skips cleanly — `messages.tts.providers.openai` stays untouched.
+2. Park the two default TTS services with `profiles: ["never"]` in `docker-compose.yml` so `docker compose up -d` doesn't start them:
+
+    ```yaml
+    openclaw-tts-en:
+      profiles: ["never"]    # add this one line
+      # …rest unchanged…
+
+    openclaw-tts-router:
+      profiles: ["never"]    # add this one line
+      # …rest unchanged…
+    ```
+
+The HU service is opt-in (`profiles: ["hu"]`) so it's already off by default — no extra step needed.
 
 ## Multi-host / scale-out
 

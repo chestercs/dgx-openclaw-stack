@@ -47,7 +47,7 @@ You're not on a GB10 / Blackwell (`sm_120` / `sm_121`). The NVFP4 kernels requir
 The Gemma 4 chat template isn't being picked up. Check:
 
 ```bash
-docker exec dgx-openclaw-vllm-llm ls /templates/
+docker exec dgx-vllm-llm ls /templates/
 # Should show: tool_chat_template_gemma4.jinja
 ```
 
@@ -68,6 +68,26 @@ The LLM has grabbed more memory than `LLM_GPU_MEM_UTIL` suggests (vLLM util is f
 
 ## openclaw-gateway
 
+### `Missing config. Run openclaw setup …` (gateway crash-loops on a fresh install)
+
+Expected on the very first `docker compose up -d` of a fresh install. The OpenClaw security model requires explicit onboarding (you choose the gateway token and pair the UI) before the gateway accepts connections, and the patcher honors this — it skips cleanly when `openclaw.json` doesn't exist yet.
+
+Two-phase fix:
+
+1. **Onboard.** Either pair the Chrome extension (which runs the wizard interactively), or use the headless CLI:
+   ```bash
+   docker exec ${PROJ}openclaw-cli openclaw onboard \
+     --non-interactive --token "$OPENCLAW_GATEWAY_TOKEN"
+   ```
+   This writes `openclaw.json` to your `OPENCLAW_CONFIG_DIR`.
+2. **Re-apply the patcher** so the 11 deterministic-state steps run on the new file:
+   ```bash
+   docker compose up -d --force-recreate \
+     openclaw-config-init openclaw-gateway openclaw-cli
+   ```
+
+The trio of services must be recreated together — see "openclaw-cli loses connectivity after a gateway recreate" below.
+
 ### `Profile vllm:default timed out` on first connection from the extension
 
 The gateway's provider config still has a placeholder API key. Either:
@@ -78,7 +98,7 @@ The gateway's provider config still has a placeholder API key. Either:
 Verify:
 
 ```bash
-docker exec dgx-openclaw-openclaw-gateway cat /home/node/.openclaw/openclaw.json \
+docker exec dgx-openclaw-gateway cat /home/node/.openclaw/openclaw.json \
   | grep -A1 '"vllm"' | head -20
 ```
 
@@ -96,7 +116,7 @@ You have `OPENCLAW_ENABLE_DREAMING=1` in `.env` but your OpenClaw image is older
 Impossible with the shipped `patch-config.mjs` — step 7 populates it. If you still see this, something is preventing the patcher from writing. Check:
 
 ```bash
-docker logs dgx-openclaw-openclaw-config-init
+docker logs dgx-openclaw-config-init
 ```
 
 Common cause: wrong ownership on `$OPENCLAW_CONFIG_DIR`. The init container runs as UID 1000 and needs write access to that directory.
@@ -115,7 +135,7 @@ Nothing has been embedded yet. Start a chat, write a memory, wait ~1s. `--deep` 
 
 ### `openclaw: command not found` in the cli container
 
-You're probably running `docker exec dgx-openclaw-openclaw-cli openclaw` but the container isn't up. Check `docker compose ps openclaw-cli`. It should be `Up` (no healthcheck, just running `sleep infinity`).
+You're probably running `docker exec dgx-openclaw-cli openclaw` but the container isn't up. Check `docker compose ps openclaw-cli`. It should be `Up` (no healthcheck, just running `sleep infinity`).
 
 ### `ENETUNREACH` when calling `openclaw memory status --deep`
 
@@ -124,6 +144,70 @@ Impossible with this stack — the CLI shares the gateway's network namespace an
 ### Every CLI command takes ~5 s before output
 
 That's Node.js module-loading cold start. It's not your infra — every invocation spins up a fresh Node process inside the container. Not fixable from this stack. For high-frequency scripted use, consider calling the gateway's HTTP API directly.
+
+## TTS (openclaw-tts-router / -en / -f5hun)
+
+### Discord/voice surfaces are silent even though the gateway accepted the message
+
+The most common cause on a stack upgraded from < 0.4.0: patcher step 11 wired
+`messages.tts.providers.openai` correctly, but the top-level
+`messages.tts.{enabled,auto,mode}` switches were never written, so the gateway
+silently treats TTS as off. Fix:
+
+```bash
+docker exec dgx-openclaw-cli cat /home/node/.openclaw/openclaw.json \
+  | jq '.messages.tts | {enabled, auto, mode, provider: .providers.openai.baseUrl}'
+```
+
+Expected output:
+
+```json
+{ "enabled": true, "auto": true, "mode": "openai", "provider": "http://openclaw-tts-router:8080/v1" }
+```
+
+If `enabled` / `auto` / `mode` are missing or false, re-run the patcher:
+
+```bash
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+```
+
+### `OPENCLAW_TTS_ROUTER_API_KEY not set — skipping TTS provider config`
+
+Patcher step 11 logs this and exits cleanly when the env var is missing. By
+design — TTS is opt-in. If you wanted TTS, set the var in `.env` and re-run
+the patcher trio (see above). If you didn't, ignore; the rest of the stack is
+unaffected.
+
+### `openclaw-tts-f5hun` doesn't start
+
+The Hungarian backend is profile-gated. Plain `docker compose up -d` won't
+start it. Either:
+
+- One-shot: `docker compose --profile hu up -d`.
+- Persistent: add `COMPOSE_PROFILES=hu` to `.env`, then plain
+  `docker compose up -d` brings it up.
+
+Once running, the router auto-detects it via `F5HUN_URL` + `F5HUN_API_TOKEN`
+in the router's environment — no separate router restart needed.
+
+### Router returns 502 on HU requests but EN works
+
+`F5HUN_URL` or `F5HUN_API_TOKEN` is set on the router but the f5hun service
+itself is unreachable (not started, wrong network, healthcheck failing).
+Check:
+
+```bash
+docker compose ps openclaw-tts-f5hun       # should be Up (healthy)
+docker exec dgx-openclaw-tts-router curl -sS http://openclaw-tts-f5hun:8080/healthz
+```
+
+### Hungarian text comes out with English phonetics
+
+The diacritic autodetect didn't fire — either the HU backend isn't wired
+(check `/healthz` on the router; `f5hun_enabled` should be `true`), or the
+input genuinely has no `áéíóöőúüűÁÉÍÓÖŐÚÜŰ` characters and the autodetect
+correctly fell through to the EN backend. To force HU explicitly, ask the
+agent to use voice id `default_hu` or `hu_diana`.
 
 ## Host-level issues
 

@@ -84,6 +84,14 @@ docker compose logs -f  # watch services come up (~3-4 min for vllm-llm)
 
 Then open the OpenClaw Chrome extension and pair it with `ws://<your-host>:18789` using the gateway token printed at the end of `bootstrap.sh`.
 
+> **First-boot heads-up.** On a fresh install, `openclaw-gateway` will
+> crash-loop with `Missing config. Run openclaw setup …` until you complete
+> OpenClaw onboarding (Chrome extension wizard, `openclaw setup`, or
+> `openclaw onboard --non-interactive`). After onboarding writes
+> `openclaw.json`, run
+> `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`
+> and the patcher will apply all 11 steps. Step-by-step: [SETUP.md](SETUP.md).
+
 Full walkthrough: [SETUP.md](SETUP.md).
 
 ## Architecture at a glance
@@ -133,7 +141,7 @@ dgx-openclaw-stack/
 ├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-*)
 ├─ patch-config.mjs             # idempotent OpenClaw config patcher (11 steps)
 ├─ bootstrap.sh                 # non-destructive first-time setup
-├─ .env.example                 # documented env template
+├─ .env.example                 # documented env template (every tunable lives here)
 ├─ templates/
 │  └─ tool_chat_template_gemma4.jinja   # Gemma 4 tool-call chat template
 ├─ searxng/
@@ -143,15 +151,19 @@ dgx-openclaw-stack/
 │  └─ server/                   #   Dockerfile + FastAPI wrapper
 ├─ openclaw-tts-router/         # OpenAI-compat TTS router (passthrough + ffmpeg transcode)
 │  └─ server/
-├─ openclaw-tts-f5hun/          # OPT-IN Hungarian TTS service (CC-BY-NC model weights)
-│  └─ server/                   #   activated only when COMPOSE_PROFILES=hu — see below
+├─ openclaw-tts-f5hun/          # OPT-IN Hungarian TTS (CC-BY-NC model weights)
+│  ├─ server/                   #   Dockerfile + F5-TTS wrapper
+│  └─ voices/                   #   Bundled reference voice (Diana Majlinger, public domain)
 ├─ docs/
-│  ├─ ARCHITECTURE.md
-│  ├─ TROUBLESHOOTING.md
-│  └─ CUSTOMIZATION.md
-├─ LICENSE                      # MIT
-├─ README.md                    # you are here
-└─ SETUP.md                     # detailed step-by-step guide
+│  ├─ ARCHITECTURE.md           # service-by-service design rationale
+│  ├─ CUSTOMIZATION.md          # model swaps, remote backends, hardware retuning
+│  └─ TROUBLESHOOTING.md        # common failure modes and fixes
+├─ README.md                    # you are here — pitch + quickstart
+├─ SETUP.md                     # end-user first-boot walkthrough
+├─ CHANGELOG.md                 # versioned release notes
+├─ CLAUDE.md                    # contributor / coding-agent guide
+├─ CONTRIBUTING.md              # how to file issues + send PRs
+└─ LICENSE                      # MIT (model weights retain upstream licenses)
 ```
 
 ## Hungarian TTS opt-in (CC-BY-NC)

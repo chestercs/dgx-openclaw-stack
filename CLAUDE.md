@@ -112,7 +112,11 @@ These are the non-obvious bits that bit somebody once and ended up shaping the d
 
 ### Container name prefix is configurable
 
-Every service uses `container_name: ${COMPOSE_PROJECT_NAME:-dgx-openclaw}-<service>`. Default `COMPOSE_PROJECT_NAME=dgx-openclaw` lives in `.env.example`. Multiple instances of the stack can coexist on the same host by setting different project names; never hard-code the prefix in scripts or examples — read it from the env or use the `<project>-` placeholder in docs.
+Every service uses `container_name: ${CONTAINER_NAME_PREFIX:-dgx-}<service>`. Default `CONTAINER_NAME_PREFIX=dgx-` lives in `.env.example` — gives the familiar `dgx-openclaw-gateway` / `dgx-vllm-llm` shape. Set the var to empty to drop the prefix entirely and get bare names like `openclaw-gateway`, `vllm-llm`. Multiple instances of the stack can coexist on the same host by setting different prefixes; never hard-code the prefix in scripts or examples — read it from the env or use the `${PROJ}-` placeholder in docs.
+
+**Bridge DNS reachability is independent of `container_name`.** Services resolve each other by the compose service name plus the explicit `hostname:` directive — both unaffected by the prefix. Sibling stacks pointed at the same network can keep using `vllm-llm:8004` regardless of how the container shows up in `docker ps`.
+
+`COMPOSE_PROJECT_NAME` (also in `.env.example`, default `dgx-openclaw`) is a separate concern — it scopes auto-generated docker resources (default bridge network, anonymous volumes) so multiple stacks don't collide on the docker daemon. It does NOT affect container names anymore.
 
 ### `openclaw-cli` shares the gateway's network namespace
 
@@ -189,7 +193,13 @@ The TTS surface is three services wired together:
 - `openclaw-tts-router` — ~150 LOC FastAPI passthrough. Mandatory if any TTS is wired. Bundles ffmpeg so it can transcode the backend's wav into mp3/opus/aac on the fly (OpenClaw's openai TTS provider asks for mp3 by default, content-type sniffing is finicky). Activates the HU voice ids and the diacritic-based autodetect when `F5HUN_URL` + `F5HUN_API_TOKEN` are both non-empty in the router env.
 - `openclaw-tts-f5hun` — F5-TTS Hungarian, **OPT-IN** via `profiles: ["hu"]`. Pulls `sarpba/F5-TTS_V1_hun_v2` (CC-BY-NC) at build time. Does not start without the profile.
 
-OpenClaw uses this via `messages.tts.providers.openai.baseUrl` (sanctioned per closed OpenClaw issues #13907 / #29224). Patcher step 11 writes that block when `OPENCLAW_TTS_ROUTER_API_KEY` is set; unset leaves the openai TTS provider untouched.
+OpenClaw uses this via `messages.tts.providers.openai.baseUrl` (sanctioned per closed OpenClaw issues #13907 / #29224). Patcher step 11 writes **three things** when `OPENCLAW_TTS_ROUTER_API_KEY` is set:
+
+1. **Top-level `messages.tts.{enabled,auto,mode}`** — without these the OpenClaw voice surfaces silently treat TTS as off even when the provider is correctly wired. The original step-11 implementation only wrote points 2-3 below; voice playback was 100% silent until those top-level switches were added in v0.4.0.
+2. **`messages.tts.providers.openai`** — `baseUrl`, `apiKey`, `model`, `voiceId` pointing at the bundled router.
+3. **`messages.tts.voiceAliases`** — friendly aliases like `english`, `narrator`, `male`, `female`, `magyar`, `hungarian` mapped to concrete Kokoro / F5-TTS voice ids.
+
+Unset → step 11 skips cleanly so users can opt out of TTS by leaving the var empty (and parking the two TTS services with `profiles: ["never"]`).
 
 The web chat UI is hard-wired to the browser's native `speechSynthesis` and does not call this router (known OpenClaw limitation). Voice surfaces that go through the gateway's TTS pipeline (Discord, agent `tts` skill) do.
 
@@ -211,6 +221,14 @@ The default compose layout intentionally does not publish 8004 / 8005 on the hos
 
 For the remote-backend use case, the vLLM endpoints **are** expected to be reachable on the network — that's a separate deployment, and the user controls its exposure (TLS, auth, private network, etc.).
 
+### TTS ports are published, but loopback-only by default
+
+Unlike the vLLM services, the three TTS services *do* publish their port on the host so `curl 127.0.0.1:809{0,1,2}/healthz` works without `docker exec` gymnastics. The defaults (`TTS_EN_BIND=127.0.0.1`, `TTS_F5HUN_BIND=127.0.0.1`, `TTS_ROUTER_BIND=127.0.0.1` in `.env.example`) bind to loopback so LAN clients can't reach them — same security posture as the unpublished vLLM ports, but ergonomic for local debugging. To expose any of them on the LAN, set `TTS_*_BIND=0.0.0.0`. All three services are Bearer-token-protected via the existing TTS tokens, but a leaked token is still a leaked token — keep the loopback default unless you have a reason.
+
+### HF cache volume label is configurable for sibling-stack sharing
+
+The shared HF cache volume name is `${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}` (default in `.env.example`). The actual cache lives at the bind-mounted host path `${VLLM_HF_CACHE_DIR}` — the volume name is just a Docker label. If you run sibling LLM stacks on the same host that bind-mount the same `VLLM_HF_CACHE_DIR`, set the same `VLLM_HF_CACHE_VOLUME_NAME` in each so they show up under one consistent label in `docker volume ls`. Bridge DNS reachability is unaffected — only the volume label.
+
 ### The patcher writes baseUrls with trailing slashes; OPENAI_BASE_URL drops it
 
 The OpenClaw config schema requires trailing slashes on `models.providers.vllm.baseUrl` and `agents.defaults.memorySearch.remote.baseUrl`. The vLLM OpenAI client (used by the gateway) wants `OPENAI_BASE_URL` *without* a trailing slash. The repo handles this asymmetry: the patcher always appends `/v1/` to `LLM_BASE_URL` / `EMBED_BASE_URL`, while compose passes `OPENAI_BASE_URL` straight through. If a user reports "404 Not Found from gateway → vLLM," check whether they accidentally added a trailing slash to `OPENAI_BASE_URL`.
@@ -226,19 +244,22 @@ docker compose --env-file .env config --services                # lists 8 defaul
 docker compose --env-file .env --profile hu config --services   # 9 with HU opt-in active
 
 # 2. End-to-end on a test host (after `docker compose up -d` and onboarding)
-PROJ=$(grep COMPOSE_PROJECT_NAME .env | cut -d= -f2)
+# CONTAINER_NAME_PREFIX (default `dgx-`) already includes the trailing dash —
+# don't add another one in the docker exec target.
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
+PROJ=${PROJ:-dgx-}
 
 curl -sS http://127.0.0.1:18789/healthz                # → {"ok":true,"status":"live"}
 
-docker exec ${PROJ}-openclaw-cli openclaw memory status --deep \
+docker exec ${PROJ}openclaw-cli openclaw memory status --deep \
   | grep -E "Provider|Vector dims|Embeddings"           # all "ready", dims = 1024 for bge-m3
 
-docker exec ${PROJ}-openclaw-cli sh -c \
+docker exec ${PROJ}openclaw-cli sh -c \
   'curl -sS "http://searxng:8080/search?q=docker&format=json"' \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print('results:', len(d['results']))"
                                                         # → results: ~30
 
-docker exec ${PROJ}-openclaw-cli openclaw agent --agent main \
+docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message "Use web_search to find the title of docker.com. Reply with TITLE: <title>" \
   --thinking off --json --timeout 180 \
   | jq '.toolSummary, .finalAssistantVisibleText'
@@ -246,11 +267,11 @@ docker exec ${PROJ}-openclaw-cli openclaw agent --agent main \
                                                         # → "TITLE: Docker: …"
 
 # 3. Hybrid memory smoke
-docker exec ${PROJ}-openclaw-cli sh -c \
+docker exec ${PROJ}openclaw-cli sh -c \
   'mkdir -p ~/.openclaw/workspace/memory && \
    echo "Gemma 4 31B NVFP4 runs at ~6.9 tok/s on GB10." > ~/.openclaw/workspace/memory/test.md'
-docker exec ${PROJ}-openclaw-cli openclaw memory index --force
-docker exec ${PROJ}-openclaw-cli openclaw memory search "How fast is Gemma on GB10?"
+docker exec ${PROJ}openclaw-cli openclaw memory index --force
+docker exec ${PROJ}openclaw-cli openclaw memory search "How fast is Gemma on GB10?"
                                                         # → score >0.4, returns test.md
 ```
 

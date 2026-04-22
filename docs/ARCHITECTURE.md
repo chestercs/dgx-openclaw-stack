@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how the six containers in `docker-compose.yml` fit together and **why** each design choice was made. Read this if you plan to modify the stack — the compose file and `patch-config.mjs` have decisions baked into them that only make sense with the rationale below.
+This document explains how the eight services in `docker-compose.yml` fit together (nine with the optional `hu` profile active) and **why** each design choice was made. Read this if you plan to modify the stack — the compose file and `patch-config.mjs` have decisions baked into them that only make sense with the rationale below.
 
 ---
 
@@ -177,7 +177,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 10 steps
+### 11 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -189,6 +189,10 @@ Rather than tell users "also click here, there, and there after onboarding", the
 8. Ensure `agents.defaults.llm.idleTimeoutSeconds = 300`.
 9. Ensure `memorySearch.query.hybrid` (BM25 + vector + MMR re-rank on bge-m3).
 10. Ensure `tools.web.search.provider = searxng` + `plugins.entries.searxng.enabled = true` (the bundled SearxNG plugin ships default-disabled).
+11. Ensure TTS wiring (env-gated: `OPENCLAW_TTS_ROUTER_API_KEY`). Three sub-writes:
+    a. Top-level `messages.tts.{enabled, auto, mode}` — without these the OpenClaw voice surfaces silently treat TTS as off even with the provider correctly wired.
+    b. `messages.tts.providers.openai` (baseUrl, apiKey, model, voiceId) pointing at the bundled router.
+    c. `messages.tts.voiceAliases` (`english`, `narrator`, `male`, `female`, `magyar`, `hungarian`).
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 
@@ -205,15 +209,56 @@ Standard OpenClaw gateway. The two things worth noting:
 
 The entrypoint is just `sleep infinity`. The container exists to keep a stable Node.js environment hot so `docker exec openclaw-cli openclaw <cmd>` starts in ~5s cold (Node module loading baseline), instead of spinning up a fresh container every time.
 
+## TTS subsystem (3 services)
+
+### Layout
+
+```
+                           ┌──────────────────────────────┐
+   gateway.openai TTS ────▶│ openclaw-tts-router          │
+   provider.baseUrl        │  127.0.0.1:8092 (loopback)   │
+   = http://openclaw-      │  ~150 LOC FastAPI + ffmpeg   │
+     tts-router:8080/v1    └──┬───────────────────────┬───┘
+                              │                       │
+            (always wired) ◀──┘                       └──▶ (only when HU profile + token)
+              │                                               │
+   ┌──────────▼──────────┐                       ┌────────────▼────────────┐
+   │ openclaw-tts-en     │                       │ openclaw-tts-f5hun       │
+   │  127.0.0.1:8091     │                       │  127.0.0.1:8090          │
+   │  Kokoro 82M (EN)    │                       │  F5-TTS HU (CC-BY-NC)   │
+   │  Apache 2.0         │                       │  profiles: ["hu"]        │
+   └─────────────────────┘                       └─────────────────────────┘
+```
+
+Three loosely-coupled FastAPI services. `openclaw-tts-router` is the OpenAI-compatible seam that the OpenClaw gateway hits via the `messages.tts.providers.openai.baseUrl` override (sanctioned per closed upstream issues #13907 / #29224). The router fronts the EN backend (mandatory) and optionally the HU backend (opt-in via `--profile hu` + `F5HUN_API_TOKEN` + `F5HUN_URL`).
+
+### Why a router instead of direct provider wiring
+
+The OpenClaw `openai` TTS provider accepts exactly **one** `baseUrl`. To support multiple language backends behind one logical provider, we need a fronting service. The router is ~150 lines of FastAPI + httpx, no GPU, and its second job is transcoding the backend's wav into mp3/opus/aac on the fly via bundled ffmpeg — necessary because the OpenClaw openai TTS provider asks for mp3 by default and content-type sniffing on the voice surfaces is finicky.
+
+### Hungarian autodetect
+
+When the HU backend is wired AND the gateway sends one of the OpenAI default voices (`alloy`, `coral`, `shimmer`, …) AND the input contains Hungarian diacritics (`áéíóöőúüű`), the router silently re-routes the request to the HU backend so the agent doesn't need to know HU voice ids to get correct pronunciation. No-op when the HU profile is not active.
+
+### Port publishing posture
+
+All three TTS services publish to `${TTS_*_BIND:-127.0.0.1}:${TTS_*_PORT:-…}` — loopback by default. This differs from the vLLM services (which don't publish at all) for one reason: TTS services are commonly debugged with `curl <port>/healthz` from the host, and a loopback bind covers that without exposing them on the LAN. To bind on the LAN, set `TTS_*_BIND=0.0.0.0` in `.env` (Bearer-token-protected via the existing `TTS_API_TOKEN` / `F5HUN_API_TOKEN` / `OPENCLAW_TTS_ROUTER_API_KEY`).
+
+### Web chat UI limitation
+
+The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis` API — it does NOT call the configured `messages.tts.providers.openai`. Voice surfaces that go through the gateway's TTS pipeline (Discord channel, agent `tts` skill) DO use this router. This is an upstream OpenClaw limitation.
+
 ## Volumes
 
-- `hf-cache` (named volume, bound to `$VLLM_HF_CACHE_DIR`) is shared by both vLLM services so the bge-m3 weights live next to the Gemma 4 weights in the same HF cache structure. Both services get `volumes: - hf-cache:/root/.cache/huggingface`.
+- `hf-cache` (named volume, bound to `$VLLM_HF_CACHE_DIR`) is shared by both vLLM services so the bge-m3 weights live next to the Gemma 4 weights in the same HF cache structure. Both services get `volumes: - hf-cache:/root/.cache/huggingface`. The Docker volume label is `${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}` — change this if a sibling LLM stack on the same host bind-mounts the same `VLLM_HF_CACHE_DIR` and you want one consistent label in `docker volume ls`.
 - `$OPENCLAW_CONFIG_DIR` is bind-mounted into the config-init, gateway, and cli services — they all read/write the same `openclaw.json`, memory/, heartbeat journal.
 - `$OPENCLAW_WORKSPACE_DIR` is bind-mounted into the gateway and cli services — the agent's writable working directory.
+- `tts-en-hf-cache`, `tts-f5hun-hf-cache`, `tts-f5hun-voices` — Docker named volumes (no host bind). Hold runtime HF downloads + user-supplied reference voices for the F5-TTS HU service.
 
 ## Networking, trust, and exposure
 
-- **Only** `18789` (and `18790` control) is published to the host. The vLLM API ports stay compose-internal.
-- For debug host access to vLLM, uncomment the commented-out `"127.0.0.1:8004:8004"` / `"127.0.0.1:8005:8005"` bindings in `docker-compose.yml`. Binding to `127.0.0.1` keeps them off your LAN.
+- **Gateway**: `18789` (and `18790` control) are published to the host. Put a TLS-terminating reverse proxy in front for public access over `wss://`.
+- **vLLM ports stay compose-internal.** For host-side debug, uncomment the `"127.0.0.1:8004:8004"` / `"127.0.0.1:8005:8005"` bindings in `docker-compose.yml`. Binding to `127.0.0.1` keeps them off your LAN.
+- **TTS ports publish to loopback by default** (`127.0.0.1:8090–8092`) — see the TTS subsystem section above. Set `TTS_*_BIND=0.0.0.0` in `.env` to expose on the LAN.
 - `gateway.trustedProxies` includes `172.16.0.0/12` so any reverse proxy on the same docker bridge (or on host-network with bridge-adjacent IPs) is trusted. If you access the gateway **directly** from your LAN (bypassing the proxy), add your LAN CIDR via `OPENCLAW_LAN_CIDR`.
 - The Chrome extension expects `wss://` (secure) for public use. Put a TLS-terminating reverse proxy in front and set `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1` so the gateway accepts the plain `ws://` hop from the proxy on your private network.
