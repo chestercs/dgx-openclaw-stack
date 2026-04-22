@@ -127,7 +127,7 @@ services:
   ######################
   vllm-llm:
     image: vllm/vllm-openai:gemma4-cu130
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}vllm-llm
+    container_name: ${CONTAINER_NAME_PREFIX:-}vllm-llm
     hostname: vllm-llm
     restart: unless-stopped
     ipc: host
@@ -217,7 +217,7 @@ services:
   ######################
   vllm-embedding:
     image: vllm/vllm-openai:gemma4-cu130
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}vllm-embedding
+    container_name: ${CONTAINER_NAME_PREFIX:-}vllm-embedding
     hostname: vllm-embedding
     restart: unless-stopped
     ipc: host
@@ -295,7 +295,7 @@ services:
   ######################
   searxng:
     image: searxng/searxng:latest
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}searxng
+    container_name: ${CONTAINER_NAME_PREFIX:-}searxng
     hostname: searxng
     restart: unless-stopped
     # Uncomment for host-side debug access:
@@ -360,7 +360,7 @@ services:
   openclaw-tts-en:
     build: ./openclaw-tts-en/server
     image: openclaw-tts-en:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}openclaw-tts-en
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-en
     hostname: openclaw-tts-en
     restart: unless-stopped
     # Host-side bind for debug access. Default 127.0.0.1 = loopback only (LAN
@@ -427,7 +427,7 @@ services:
     profiles: ["hu"]
     build: ./openclaw-tts-f5hun/server
     image: openclaw-tts-f5hun:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}openclaw-tts-f5hun
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-f5hun
     hostname: openclaw-tts-f5hun
     restart: unless-stopped
     # Host-side bind for debug access. Default 127.0.0.1 = loopback only.
@@ -489,7 +489,7 @@ services:
   openclaw-tts-router:
     build: ./openclaw-tts-router/server
     image: openclaw-tts-router:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}openclaw-tts-router
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-router
     hostname: openclaw-tts-router
     restart: unless-stopped
     # Host-side bind for debug access. Default 127.0.0.1 = loopback only.
@@ -563,7 +563,7 @@ services:
   ######################
   openclaw-config-init:
     image: ghcr.io/openclaw/openclaw:latest
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}openclaw-config-init
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-config-init
     user: "1000:1000"
     restart: "no"
     environment:
@@ -602,7 +602,7 @@ services:
   ######################
   openclaw-gateway:
     image: ghcr.io/openclaw/openclaw:latest
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}openclaw-gateway
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-gateway
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_GATEWAY_CONTROL_PORT:-18790}:18790"
@@ -648,7 +648,7 @@ services:
   ######################
   openclaw-cli:
     image: ghcr.io/openclaw/openclaw:latest
-    container_name: ${CONTAINER_NAME_PREFIX:-dgx-}openclaw-cli
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-cli
     network_mode: "service:openclaw-gateway"
     cap_drop:
       - NET_RAW
