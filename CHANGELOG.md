@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-22
+
 ### Added
 - **Bilingual TTS surface** wired into OpenClaw via the sanctioned
   `messages.tts.providers.openai.baseUrl` override (closed upstream issues
@@ -97,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chestercs/dgx-openclaw-stack/releases/tag/v0.1.0
