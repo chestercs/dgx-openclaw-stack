@@ -658,7 +658,15 @@ services:
     environment:
       HOME: /home/node
       TERM: xterm-256color
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      # NOTE: OPENCLAW_GATEWAY_TOKEN is intentionally NOT set on the CLI.
+      # The CLI prefers the env token over `gateway.remote.token` when both
+      # are present, so passing a stale .env value (rotated by bootstrap.sh
+      # before the onboarding wizard ran) caused the CLI's WS connect to
+      # fail with `unauthorized: gateway token mismatch` — the wizard had
+      # written a different token into config.gateway.auth.token (also used
+      # by the Chrome extension and any remote client). Leaving this var
+      # unset makes the CLI fall through to the config token, which step 12
+      # of patch-config.mjs keeps in lockstep with auth.token.
       # When the CLI's WS connect to the gateway fails (e.g. gateway.remote.token
       # drift), `openclaw agent` silently falls back to an embedded runner that
       # dials vLLM directly. The embedded path reads OPENAI_API_KEY from the
