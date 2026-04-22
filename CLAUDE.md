@@ -27,6 +27,8 @@ docs/
   ARCHITECTURE.md       # Service-by-service design rationale
   CUSTOMIZATION.md      # Swap models, retune for your hardware, remote backends
   TROUBLESHOOTING.md    # Common failure modes and fixes
+  reference/            # Deeper reference: credential layout, patcher internals,
+                        # LLM/TTS research, reusable Docker patterns
 SETUP.md                # End-user first-boot walkthrough
 README.md               # Audience-facing pitch + quickstart
 ```
@@ -286,6 +288,7 @@ docker exec ${PROJ}openclaw-cli openclaw memory search "How fast is Gemma on GB1
 
 - For runtime/config questions, read `docs/ARCHITECTURE.md` first.
 - For "how do I change X" questions, read `docs/CUSTOMIZATION.md`.
+- For deeper reference material (OpenClaw 3-store credential layout, patcher step-by-step, LLM / TTS research, reusable Docker patterns), read `docs/reference/` — see `docs/reference/README.md` for the index.
 - For OpenClaw-specific behavior (CLI flags, plugin schema, gateway protocol), check the upstream docs at https://docs.openclaw.ai/.
 - For vLLM-specific questions (chat template, tool parser, NVFP4 kernels), check the upstream vLLM repo and the gemma4 image notes.
 - For hardware tuning, the GB10 numbers in `README.md` and `.env.example` are measured, not theoretical — they're a useful baseline when adapting to other GPUs.
