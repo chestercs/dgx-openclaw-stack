@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Bilingual TTS surface** wired into OpenClaw via the sanctioned
+  `messages.tts.providers.openai.baseUrl` override (closed upstream issues
+  #13907 / #29224). Three new services:
+  - `openclaw-tts-en` — Kokoro 82M (Apache 2.0, TTS Arena #1 open-weights),
+    OpenAI-compatible `/v1/audio/speech` on the bridge network. ~500 MB – 1 GB
+    VRAM, coexists with the Gemma 4 NVFP4 LLM on the same GB10 GPU. Ten A/A-/B-
+    grade Kokoro voices baked into the image at build time (`af_heart` default,
+    plus `af_bella`, `af_nicole`, `af_aoede`, `af_kore`, `af_sarah`,
+    `am_michael`, `am_fenrir`, `am_puck`, `bf_emma`).
+  - `openclaw-tts-router` — ~150 LOC FastAPI router that fronts the EN backend
+    (mandatory) and the optional Hungarian backend. ffmpeg bundled for
+    wav→mp3/opus/aac transcoding. Maps the OpenAI default voice catalog
+    (`alloy`, `coral`, `shimmer`, …) to closest Kokoro voices so the gateway
+    never gets a 404.
+  - `openclaw-tts-f5hun` — **OPT-IN** Hungarian TTS backed by
+    `sarpba/F5-TTS_V1_hun_v2`. Wrapper code is MIT; model weights are
+    CC-BY-NC-4.0 (non-commercial only). Gated three ways: `profiles: ["hu"]`
+    on the service block (does not start without `--profile hu` or
+    `COMPOSE_PROFILES=hu`), router needs `F5HUN_API_TOKEN` + `F5HUN_URL` set,
+    and `bootstrap.sh` prompts once on first run. Default reference voice
+    (Diana Majlinger / "Egri csillagok", LibriVox public domain) baked in;
+    drop custom `<name>.wav` + `<name>.txt` into the `tts-f5hun-voices`
+    Docker volume to add cloned voices.
+- **Hungarian autodetect.** When the HU backend is active and the gateway
+  sends one of the OpenAI default voices on input that contains Hungarian
+  diacritics (`áéíóöőúüű`), the router silently re-routes to the HU backend
+  so phonetics aren't mangled by the EN G2P. No-op when the HU profile isn't
+  active.
+- **Patcher step 11** — env-gated TTS provider wiring. When
+  `OPENCLAW_TTS_ROUTER_API_KEY` is set, writes `messages.tts.providers.openai`
+  (baseUrl, apiKey, model, voiceId) and `voiceAliases` (`english`, `narrator`,
+  `male`, `female`, `magyar`, `hungarian`). Unset → step skips cleanly so users
+  can opt out of TTS by simply leaving the var empty (and parking the two TTS
+  services with `profiles: ["never"]`).
+- **`bootstrap.sh`** — generates `OPENCLAW_TTS_ROUTER_API_KEY` and
+  `TTS_API_TOKEN` alongside the existing secrets, regex-gated so re-runs never
+  overwrite real values. Also asks once whether to opt into Hungarian TTS;
+  on yes, generates `F5HUN_API_TOKEN`, sets `F5HUN_URL` to the in-compose
+  service hostname, and adds `COMPOSE_PROFILES=hu` to `.env` so the next
+  `docker compose up -d` brings up the HU service automatically.
+
 ## [0.2.0] - 2026-04-22
 
 ### Added

@@ -122,10 +122,53 @@ log "Checking secrets…"
 VLLM_API_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 GATEWAY_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 SEARXNG_SECRET_NEW="$(openssl rand -base64 64 | tr -d '\n')"
+TTS_ROUTER_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
+TTS_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 
-upsert_env VLLM_API_KEY            "$VLLM_API_KEY_NEW"    '^CHANGE_ME'
-upsert_env OPENCLAW_GATEWAY_TOKEN  "$GATEWAY_TOKEN_NEW"   '^CHANGE_ME'
-upsert_env SEARXNG_SECRET          "$SEARXNG_SECRET_NEW"  '^CHANGE_ME'
+upsert_env VLLM_API_KEY                "$VLLM_API_KEY_NEW"    '^CHANGE_ME'
+upsert_env OPENCLAW_GATEWAY_TOKEN      "$GATEWAY_TOKEN_NEW"   '^CHANGE_ME'
+upsert_env SEARXNG_SECRET              "$SEARXNG_SECRET_NEW"  '^CHANGE_ME'
+upsert_env OPENCLAW_TTS_ROUTER_API_KEY "$TTS_ROUTER_KEY_NEW"  '^CHANGE_ME'
+upsert_env TTS_API_TOKEN               "$TTS_API_TOKEN_NEW"   '^CHANGE_ME'
+
+# ----------------------------------------------------------------------------
+# 3b. Optional: Hungarian TTS opt-in (CC-BY-NC model weights)
+#
+# Asked once. If the user has already set F5HUN_API_TOKEN (any non-empty
+# value), we treat that as "already opted in" and skip the prompt — re-runs
+# never re-ask.
+# ----------------------------------------------------------------------------
+hu_token_existing=$(grep -E '^F5HUN_API_TOKEN=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
+if [[ -z "$hu_token_existing" ]]; then
+  printf '\n%bOptional:%b Hungarian TTS (F5-TTS) — opt-in.\n' "$BOLD" "$RESET"
+  log "  Wrapper code is MIT, but the model weights pulled at build time"
+  log "  (sarpba/F5-TTS_V1_hun_v2) are CC-BY-NC-4.0 — non-commercial use only."
+  log "  See openclaw-tts-f5hun/README.md for license details and how to swap"
+  log "  the checkpoint if you need commercial use."
+  printf '%bActivate Hungarian TTS now? [y/N]:%b ' "$BOLD" "$RESET"
+  read -r hu_answer
+  if [[ "$hu_answer" =~ ^[Yy]$ ]]; then
+    F5HUN_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
+    upsert_env F5HUN_API_TOKEN "$F5HUN_TOKEN_NEW" '.*'
+    upsert_env F5HUN_URL       "http://openclaw-tts-f5hun:8080/v1/audio/speech" '.*'
+    # COMPOSE_PROFILES may already exist with other profiles; only set when
+    # missing or empty. Users who already use this var should add `hu` by hand.
+    cp_existing=$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
+    if [[ -z "$cp_existing" ]]; then
+      upsert_env COMPOSE_PROFILES "hu" '.*'
+    elif [[ ! "$cp_existing" =~ (^|,)hu(,|$) ]]; then
+      warn "COMPOSE_PROFILES is already set to '$cp_existing' — add 'hu' to it manually."
+    else
+      ok "COMPOSE_PROFILES already contains 'hu'."
+    fi
+    ok "Hungarian TTS opt-in: secrets set. The HU model (~5 GB) downloads on first build."
+    ok "  → docker compose --profile hu up -d --build openclaw-tts-f5hun"
+  else
+    log "Skipped — re-run bootstrap.sh later to enable, or edit .env by hand."
+  fi
+else
+  ok "F5HUN_API_TOKEN already present — Hungarian TTS opt-in preserved."
+fi
 
 # ----------------------------------------------------------------------------
 # 4. HuggingFace token
@@ -186,6 +229,9 @@ printf 'LAN CIDR, etc.) before first boot:\n\n'
 printf '    %b$EDITOR %s/.env%b\n\n' "$BOLD" "$SCRIPT_DIR" "$RESET"
 printf 'Then start the stack:\n\n'
 printf '    %bdocker compose up -d%b\n\n' "$BOLD" "$RESET"
+printf '(Hungarian TTS opt-in: re-run with --profile hu, or set\n'
+printf 'COMPOSE_PROFILES=hu in .env. Model weights are CC-BY-NC-4.0 —\n'
+printf 'see openclaw-tts-f5hun/README.md before commercial use.)\n\n'
 printf 'Expected first-boot timeline on DGX Spark / ASUS GB10:\n'
 printf '    - model download (first time only): ~5-15 min depending on network\n'
 printf '    - vllm-llm ready:      ~3-4 min after containers start\n'

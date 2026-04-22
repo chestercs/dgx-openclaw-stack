@@ -4,7 +4,7 @@ Guidance for Claude Code (and other coding agents) working on this repository.
 
 ## What this repo is
 
-A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 31B NVFP4 on vLLM), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, and a privacy-first SearxNG meta-search backend. Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
+A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 31B NVFP4 on vLLM), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first SearxNG meta-search backend, and a bilingual TTS surface (Kokoro 82M English by default + opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router). Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
 
 The repo's value proposition is the **wiring**, not any individual component:
 - Model + embedding + gateway + memory + web search are pre-integrated.
@@ -14,12 +14,15 @@ The repo's value proposition is the **wiring**, not any individual component:
 ## Repo layout
 
 ```
-docker-compose.yml      # 6 services, defaults match the GB10 reference profile
-patch-config.mjs        # 10-step idempotent openclaw.json patcher (init container)
+docker-compose.yml      # 8 services default (+1 with --profile hu); GB10 reference profile
+patch-config.mjs        # 11-step idempotent openclaw.json patcher (init container)
 bootstrap.sh            # First-time setup: secrets, .env, host dirs (non-destructive)
 .env.example            # Tunables, well-commented
 templates/              # vLLM tool-calling chat template (gemma4)
 searxng/settings/       # SearxNG override settings (privacy posture)
+openclaw-tts-en/        # English TTS service (Kokoro 82M, Apache 2.0) — default
+openclaw-tts-router/    # OpenAI-compat /v1/audio/speech router (passthrough + ffmpeg)
+openclaw-tts-f5hun/     # OPT-IN Hungarian TTS (F5-TTS, CC-BY-NC weights) — profile=hu
 docs/
   ARCHITECTURE.md       # Service-by-service design rationale
   CUSTOMIZATION.md      # Swap models, retune for your hardware, remote backends
@@ -45,7 +48,7 @@ There's a known sequence on a brand-new install:
 
 1. `docker compose up -d` → patcher skips because `openclaw.json` doesn't exist yet → gateway crash-loops with `Missing config. Run openclaw setup …`. **This is expected**, not a bug.
 2. User runs onboarding (Chrome extension wizard, `openclaw onboard --non-interactive …`, or `openclaw setup`) which creates `openclaw.json`.
-3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli` → patcher now finds the file and applies all 10 steps; gateway picks up the patched config and goes healthy.
+3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli` → patcher now finds the file and applies all 11 steps; gateway picks up the patched config and goes healthy.
 
 If you find yourself wanting to "fix" the crash-loop in step 1, don't. The OpenClaw security model requires explicit onboarding; the alternative would weaken auth defaults.
 
@@ -178,6 +181,30 @@ vLLM accepts `HUGGING_FACE_HUB_TOKEN`; some downstream tools want `HF_TOKEN`. Th
 
 `NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache` lets the OpenClaw Node.js process cache compiled bytecode across restarts. Because it's inside the OPENCLAW_CONFIG_DIR mount, it survives `docker compose down` and accelerates subsequent boots by ~3–5 seconds. Don't relocate it without thinking about persistence.
 
+### TTS surface: three services, one OpenAI-compat seam
+
+The TTS surface is three services wired together:
+
+- `openclaw-tts-en` — Kokoro 82M (Apache 2.0), English. Ships in the default profile, ~500 MB-1 GB VRAM, coexists with the LLM on the same GB10 GPU. Voices baked into the image at build time (only the A/A-/B-grade entries from Kokoro VOICES; full pack is 54, we ship the production-ready subset).
+- `openclaw-tts-router` — ~150 LOC FastAPI passthrough. Mandatory if any TTS is wired. Bundles ffmpeg so it can transcode the backend's wav into mp3/opus/aac on the fly (OpenClaw's openai TTS provider asks for mp3 by default, content-type sniffing is finicky). Activates the HU voice ids and the diacritic-based autodetect when `F5HUN_URL` + `F5HUN_API_TOKEN` are both non-empty in the router env.
+- `openclaw-tts-f5hun` — F5-TTS Hungarian, **OPT-IN** via `profiles: ["hu"]`. Pulls `sarpba/F5-TTS_V1_hun_v2` (CC-BY-NC) at build time. Does not start without the profile.
+
+OpenClaw uses this via `messages.tts.providers.openai.baseUrl` (sanctioned per closed OpenClaw issues #13907 / #29224). Patcher step 11 writes that block when `OPENCLAW_TTS_ROUTER_API_KEY` is set; unset leaves the openai TTS provider untouched.
+
+The web chat UI is hard-wired to the browser's native `speechSynthesis` and does not call this router (known OpenClaw limitation). Voice surfaces that go through the gateway's TTS pipeline (Discord, agent `tts` skill) do.
+
+### Hungarian TTS opt-in mechanism (CC-BY-NC license isolation)
+
+Three independent levers gate the HU service so users can't accidentally pull CC-BY-NC weights:
+
+1. **Compose profile** — `profiles: ["hu"]` on `openclaw-tts-f5hun`. Without `--profile hu` (or `COMPOSE_PROFILES=hu`), the service block is parked. `docker compose up -d` plain does not start it; `docker compose build` does not build it.
+2. **Token gate** — router activation requires non-empty `F5HUN_API_TOKEN` *and* `F5HUN_URL`. Without both, `F5HUN_ENABLED = False` in the router app, HU voice ids return 404, autodetect is a no-op.
+3. **Bootstrap prompt** — `bootstrap.sh` asks once on first run; declining leaves all three opt-in vars empty. Re-runs preserve the user's choice (token-presence guard).
+
+The wrapper code is MIT (matches the rest of the repo); only the model weights are CC-BY-NC. Building the image is what triggers the HF download — and that's what constitutes acceptance of the upstream license. The repo ships no model weights of any kind. This is the same pattern as Gemma 4 NVFP4 (gated, license-acceptance via HF).
+
+When adding a similar opt-in service in the future, follow this triad: profile guard + env-token guard + bootstrap-prompt opt-in. Don't ship CC-BY-NC content in the default code path even by accident.
+
 ### vLLM ports are NOT published by default
 
 The default compose layout intentionally does not publish 8004 / 8005 on the host — sibling containers reach them via bridge DNS. If a user wants debug access from the host, they uncomment the `127.0.0.1:8004:8004` line on the service. Don't change the default to publish — many users run this on machines reachable from the LAN, and an unauthenticated 0.0.0.0 vLLM port is an accidental open door.
@@ -195,7 +222,8 @@ These cover the cases that have actually broken in practice. When making non-tri
 ```bash
 # 1. Compose + patcher syntax
 node --check patch-config.mjs
-docker compose --env-file .env config --services    # lists all 6 services
+docker compose --env-file .env config --services                # lists 8 default services
+docker compose --env-file .env --profile hu config --services   # 9 with HU opt-in active
 
 # 2. End-to-end on a test host (after `docker compose up -d` and onboarding)
 PROJ=$(grep COMPOSE_PROJECT_NAME .env | cut -d= -f2)

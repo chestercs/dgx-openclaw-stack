@@ -35,7 +35,8 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 | **bge-m3 embeddings** | BAAI/bge-m3 multilingual dense embeddings via vLLM. 100+ languages, 1024-dim, 8K context, EN↔HU cosine ≈ 0.88. |
 | **SearxNG meta-search** | Self-hosted, privacy-respecting web search backend wired into OpenClaw's native `webSearch` provider. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Wikipedia family, Reddit, GitHub, arXiv) — queries never reach Google / Bing / Yandex / Yahoo / Baidu. |
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
-| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, and flips the bundled SearxNG plugin on. |
+| **Bilingual TTS surface** | OpenAI-compatible `/v1/audio/speech` router fronting Kokoro 82M (English, Apache 2.0, ~500 MB-1 GB VRAM, ships by default) and an opt-in F5-TTS Hungarian backend (CC-BY-NC model weights — see below). Wired into OpenClaw via the sanctioned `messages.tts.providers.openai` baseUrl override. Diacritic-based autodetect re-routes Hungarian-text requests to the HU backend transparently when both are active. |
+| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, flips the bundled SearxNG plugin on, and points the openai TTS provider at the bundled router. |
 
 Everything lives in one Docker Compose file. No separate vLLM service definitions, no reverse-proxied DNS trickery, no `host.docker.internal` workarounds — containers reach each other by their compose service name on the default bridge network.
 
@@ -119,6 +120,7 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Multilingual RAG built in.** bge-m3 gives you high-quality cross-lingual embeddings for `memorySearch` out of the box.
 - **Hybrid retrieval + MMR.** `memorySearch` runs BM25 (SQLite FTS5) alongside vector similarity and re-ranks the candidate set with MMR for diversity — exact-keyword / ID matches stop falling through the cracks of pure cosine search.
 - **Privacy-respecting web search.** Self-hosted SearxNG wired into OpenClaw's native `webSearch` tool. No commercial search API, no query leak to Google / Bing / Yandex. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage + Wikipedia / Reddit / GitHub / arXiv).
+- **Bilingual self-hosted TTS.** Kokoro 82M (English, Apache 2.0) ships by default and runs alongside the LLM on the same GB10 GPU. Optional Hungarian (F5-TTS, opt-in via `--profile hu`) for fully local cross-language voice; details in [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc).
 - **Long context, honest numbers.** 256K model max; realistic stable bands (per user count) are documented in the compose file.
 - **Idempotent configuration.** The patcher re-applies a known-good state on every `up`. Safe to run repeatedly.
 - **Reverse-proxy ready.** `gateway.trustedProxies` is pre-populated; add your LAN CIDR via `OPENCLAW_LAN_CIDR` if needed.
@@ -128,8 +130,8 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```
 dgx-openclaw-stack/
-├─ docker-compose.yml           # the whole stack (vllm-llm + vllm-embedding + searxng + openclaw-*)
-├─ patch-config.mjs             # idempotent OpenClaw config patcher (10 steps)
+├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-*)
+├─ patch-config.mjs             # idempotent OpenClaw config patcher (11 steps)
 ├─ bootstrap.sh                 # non-destructive first-time setup
 ├─ .env.example                 # documented env template
 ├─ templates/
@@ -137,6 +139,12 @@ dgx-openclaw-stack/
 ├─ searxng/
 │  └─ settings/
 │     └─ settings.yml           # SearxNG override: JSON API + strict engine whitelist
+├─ openclaw-tts-en/             # English TTS service (Kokoro 82M, Apache 2.0)
+│  └─ server/                   #   Dockerfile + FastAPI wrapper
+├─ openclaw-tts-router/         # OpenAI-compat TTS router (passthrough + ffmpeg transcode)
+│  └─ server/
+├─ openclaw-tts-f5hun/          # OPT-IN Hungarian TTS service (CC-BY-NC model weights)
+│  └─ server/                   #   activated only when COMPOSE_PROFILES=hu — see below
 ├─ docs/
 │  ├─ ARCHITECTURE.md
 │  ├─ TROUBLESHOOTING.md
@@ -145,6 +153,43 @@ dgx-openclaw-stack/
 ├─ README.md                    # you are here
 └─ SETUP.md                     # detailed step-by-step guide
 ```
+
+## Hungarian TTS opt-in (CC-BY-NC)
+
+The English TTS surface (Kokoro 82M, Apache 2.0) ships in the default profile
+and is safe for any usage. Hungarian TTS is **opt-in** because the only
+production-grade open-weights Hungarian TTS at the time of writing — the
+`sarpba/F5-TTS_V1_hun_v2` fine-tune of F5-TTS — is distributed under
+**CC-BY-NC-4.0** (Creative Commons, **non-commercial only**).
+
+The wrapper code in `openclaw-tts-f5hun/` is MIT (matches the rest of this
+repo). The model weights are pulled from HuggingFace at build time — by
+building the image you accept the upstream model license. This repo ships
+no model weights of any kind.
+
+**To activate Hungarian TTS, the easiest path is to re-run `bootstrap.sh`** —
+it now prompts to opt in, generates `F5HUN_API_TOKEN`, sets `F5HUN_URL` to the
+in-compose service, and adds `COMPOSE_PROFILES=hu` to `.env`. Then:
+
+```bash
+docker compose --profile hu up -d --build openclaw-tts-f5hun
+```
+
+Or by hand: uncomment the three lines in the "Optional: Hungarian TTS" block
+in `.env.example`, fill in `F5HUN_API_TOKEN` (`openssl rand -base64 64`), and
+either set `COMPOSE_PROFILES=hu` in `.env` or pass `--profile hu` on the
+docker compose command line.
+
+Once active, the router exposes `default_hu` / `hu_diana` voice ids, and the
+diacritic-based autodetect silently re-routes Hungarian-text requests
+(detected by `áéíóöőúüű`) to the HU backend even when OpenClaw asks for an
+English default voice like `coral`. The autodetect is a no-op when the HU
+profile is not active.
+
+For commercial Hungarian deployments, override `F5_CHECKPOINT` / `F5_VOCAB`
+on the `openclaw-tts-f5hun` service to point at a checkpoint with a fitting
+license. Details + voice catalog in
+[`openclaw-tts-f5hun/README.md`](openclaw-tts-f5hun/README.md).
 
 ## Why this stack
 
@@ -160,7 +205,17 @@ This repo captures a known-good wiring for all of the above in a single determin
 
 ## License
 
-[MIT](LICENSE). Model weights retain their upstream licenses (Gemma 4: Apache 2.0, bge-m3: MIT).
+[MIT](LICENSE). Model weights retain their upstream licenses:
+
+- Gemma 4: **Apache 2.0**
+- bge-m3: **MIT**
+- Kokoro 82M (English TTS, default): **Apache 2.0**
+- F5-TTS Hungarian (`sarpba/F5-TTS_V1_hun_v2`, opt-in): **CC-BY-NC-4.0** —
+  non-commercial use only. The HU service block is parked behind a Docker
+  Compose profile and does not start by default; building it triggers the
+  weight download and constitutes acceptance of the upstream model license.
+  See [`openclaw-tts-f5hun/README.md`](openclaw-tts-f5hun/README.md) for
+  details on swapping the checkpoint for one with a commercial license.
 
 ## Contributing
 

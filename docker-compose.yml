@@ -31,6 +31,21 @@ volumes:
       type: none
       device: ${VLLM_HF_CACHE_DIR}
       o: bind
+  # Kokoro voice + weight cache for openclaw-tts-en. The voices are baked into
+  # the image at build time; this volume is a safety net for any runtime HF
+  # downloads (e.g. the misaki G2P backend pulling assets on first synth).
+  tts-en-hf-cache:
+    name: dgx-openclaw-tts-en-hf-cache
+  # F5-TTS Hungarian HF cache (only used when the `hu` Compose profile is
+  # active). Holds any runtime HF downloads (the checkpoint itself is baked
+  # into the image at build time).
+  tts-f5hun-hf-cache:
+    name: dgx-openclaw-tts-f5hun-hf-cache
+  # User-overridable reference voice directory for openclaw-tts-f5hun (only
+  # used when the `hu` Compose profile is active). Drop <name>.wav + <name>.txt
+  # files in here to add custom HU reference voices the service can clone.
+  tts-f5hun-voices:
+    name: dgx-openclaw-tts-f5hun-voices
 
 services:
   ######################
@@ -289,10 +304,201 @@ services:
         max-size: "50m"
 
   ######################
+  ## Kokoro 82M English TTS — OpenAI-compatible /v1/audio/speech (mandatory half
+  ## of the bilingual TTS surface).
+  #
+  #  Model: hexgrad/Kokoro-82M (Apache 2.0). TTS Arena #1 open-weights at the
+  #  time of writing. ~500 MB - 1 GB VRAM, coexists with the Gemma 4 NVFP4 LLM
+  #  on the same GB10 GPU.
+  #
+  #  Why a custom thin wrapper instead of the popular `remsky/Kokoro-FastAPI`:
+  #  that image is broken on DGX Spark / ARM64 + Blackwell — see upstream
+  #  remsky/Kokoro-FastAPI issue #401 ("no kernel image available" / "exec
+  #  format error") and the unmerged ARM64 nightly-torch wrapper PR #403.
+  #  The cu130 wheel pattern used by vllm-llm / vllm-embedding is the proven
+  #  path on GB10. ~80 lines of FastAPI on top of Kokoro's KPipeline is simpler
+  #  than waiting on upstream.
+  #
+  #  Networking: internal-only by default — the router (and the gateway via the
+  #  router) reach this service by compose DNS as `http://openclaw-tts-en:8080`.
+  #  For host-side debug access, uncomment the `127.0.0.1:8091:8080` binding.
+  #
+  #  Voices baked into the image at build time: only the A/A-/B- grade entries
+  #  from Kokoro's VOICES catalog (af_heart, af_bella, af_nicole, af_aoede,
+  #  af_kore, af_sarah, am_michael, am_fenrir, am_puck, bf_emma). The full pack
+  #  is 54 voices; we ship the production-ready subset to keep the image lean.
+  #  Add more by extending allow_patterns in openclaw-tts-en/server/Dockerfile
+  #  and rebuilding.
+  #
+  #  Disable: set `profiles: ["never"]` on this service AND on the router below
+  #  to drop the bilingual TTS surface entirely. The patcher's TTS step is also
+  #  env-gated (skipped when OPENCLAW_TTS_ROUTER_API_KEY is unset), so removing
+  #  the env var from .env keeps the openai TTS provider untouched.
+  ######################
+  openclaw-tts-en:
+    build: ./openclaw-tts-en/server
+    image: openclaw-tts-en:0.1.0
+    container_name: ${COMPOSE_PROJECT_NAME:-dgx-openclaw}-openclaw-tts-en
+    hostname: openclaw-tts-en
+    restart: unless-stopped
+    # Uncomment for host-side debug access (token-protected — Bearer auth via
+    # TTS_API_TOKEN). Sibling containers always reach the service via DNS.
+    # ports:
+    #   - "127.0.0.1:8091:8080"
+    environment:
+      TTS_API_TOKEN: ${TTS_API_TOKEN:-}
+      DEFAULT_VOICE: ${TTS_EN_DEFAULT_VOICE:-af_heart}
+      KOKORO_DEVICE: ${KOKORO_DEVICE:-cuda}
+    volumes:
+      - tts-en-hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+
+  ######################
+  ## F5-TTS Hungarian — OPT-IN, CC-BY-NC model weights.
+  #
+  #  Activation requires BOTH:
+  #    1. F5HUN_API_TOKEN set in .env (bootstrap.sh generates this).
+  #    2. The `hu` Compose profile active. Either of:
+  #         - COMPOSE_PROFILES=hu in .env (preferred), OR
+  #         - --profile hu on the docker compose command line.
+  #
+  #  Without the profile this service does NOT start. The router auto-detects
+  #  the missing backend at boot and serves EN-only — HU voice ids return 404,
+  #  the diacritic autodetect is a no-op. With both the profile and the token
+  #  the router activates HU voice ids (default_hu, hu_diana) and the
+  #  diacritic-based autodetect re-routes Hungarian-text requests transparently.
+  #
+  #  License caveat: the model weights pulled at build time
+  #  (sarpba/F5-TTS_V1_hun_v2) are CC-BY-NC-4.0 — non-commercial use only.
+  #  The wrapper code in ./openclaw-tts-f5hun/server/ is MIT. By building this
+  #  service you accept the upstream model license. For commercial deployments,
+  #  override F5_CHECKPOINT / F5_VOCAB to point at a checkpoint you have a
+  #  commercial license to. See ./openclaw-tts-f5hun/README.md for details.
+  #
+  #  Networking: internal-only by default. The router reaches this service on
+  #  bridge DNS at `http://openclaw-tts-f5hun:8080`. For host-side debug,
+  #  uncomment the `127.0.0.1:8090:8080` binding (token-protected).
+  #
+  #  Voice catalog: ships with `default_hu` (Diana Majlinger / "Egri csillagok",
+  #  LibriVox public domain). Add your own by dropping <name>.wav + <name>.txt
+  #  into the tts-f5hun-voices volume.
+  ######################
+  openclaw-tts-f5hun:
+    profiles: ["hu"]
+    build: ./openclaw-tts-f5hun/server
+    image: openclaw-tts-f5hun:0.1.0
+    container_name: ${COMPOSE_PROJECT_NAME:-dgx-openclaw}-openclaw-tts-f5hun
+    hostname: openclaw-tts-f5hun
+    restart: unless-stopped
+    # Uncomment for host-side debug access (Bearer auth via F5HUN_API_TOKEN).
+    # ports:
+    #   - "127.0.0.1:8090:8080"
+    environment:
+      TTS_API_TOKEN: ${F5HUN_API_TOKEN:-}
+      DEFAULT_VOICE: ${F5HUN_DEFAULT_VOICE:-default_hu}
+      F5_DEVICE: ${F5HUN_DEVICE:-cuda}
+    volumes:
+      - tts-f5hun-voices:/app/voices
+      - tts-f5hun-hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+
+  ######################
+  ## TTS Router — OpenAI-compatible /v1/audio/speech passthrough.
+  #
+  #  Single endpoint that fronts the EN backend (Kokoro 82M, mandatory) and the
+  #  optional Hungarian backend (F5-TTS, opt-in via the `hu` Compose profile +
+  #  F5HUN_API_TOKEN in .env). Matches the OpenAI Audio API shape so OpenClaw
+  #  can use it via `messages.tts.providers.openai.baseUrl` (the sanctioned
+  #  override per closed OpenClaw issues #13907 / #29224).
+  #
+  #  Why a router and not direct provider wiring: OpenClaw's openai TTS
+  #  provider accepts exactly one baseUrl. Multiple language backends require
+  #  a fronting service. ~150 LOC of FastAPI + httpx, no GPU. Bundles ffmpeg
+  #  because OpenClaw's openai provider asks for mp3 by default and the voice
+  #  surfaces sniff content-type — we transcode the backend's wav on the fly
+  #  to mp3 / opus / aac so playback works regardless of requested format.
+  #
+  #  Hungarian autodetect: when the HU backend is wired AND the gateway sends
+  #  one of the OpenAI default voices (alloy / coral / shimmer / …) AND the
+  #  input contains Hungarian diacritics (áéíóöőúüű), the router silently
+  #  re-routes to the HU backend so the agent doesn't need to know voice ids
+  #  to get correct pronunciation. No-op when HU isn't wired.
+  #
+  #  Networking: internal-only by default. The gateway reaches the router on
+  #  bridge DNS at `http://openclaw-tts-router:8080`. For host-side debug,
+  #  uncomment the `127.0.0.1:8092:8080` binding.
+  ######################
+  openclaw-tts-router:
+    build: ./openclaw-tts-router/server
+    image: openclaw-tts-router:0.1.0
+    container_name: ${COMPOSE_PROJECT_NAME:-dgx-openclaw}-openclaw-tts-router
+    hostname: openclaw-tts-router
+    restart: unless-stopped
+    # Uncomment for host-side debug access (Bearer auth via OPENCLAW_TTS_ROUTER_API_KEY).
+    # ports:
+    #   - "127.0.0.1:8092:8080"
+    environment:
+      ROUTER_API_KEY: ${OPENCLAW_TTS_ROUTER_API_KEY:-}
+      EN_API_TOKEN: ${TTS_API_TOKEN:-}
+      EN_URL: ${TTS_EN_URL:-http://openclaw-tts-en:8080/v1/audio/speech}
+      # Optional Hungarian backend. The router activates HU voices and the
+      # diacritic-based autodetect only when BOTH F5HUN_URL and F5HUN_API_TOKEN
+      # are non-empty. Leave unset to ship EN-only.
+      F5HUN_URL: ${F5HUN_URL:-}
+      F5HUN_API_TOKEN: ${F5HUN_API_TOKEN:-}
+      ROUTER_DEFAULT_VOICE: ${TTS_ROUTER_DEFAULT_VOICE:-af_heart}
+      HU_AUTOROUTE_VOICE: ${TTS_HU_AUTOROUTE_VOICE:-default_hu}
+    depends_on:
+      openclaw-tts-en:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+
+  ######################
   ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
   #
   #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 10 steps:
+  #  the onboarding wizard's choices or previous manual edits. 11 steps:
   #
   #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
   #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
@@ -317,6 +523,11 @@ services:
   #       `enabled` flag to true. The plugin ships bundled-but-default-disabled;
   #       without this step the webSearch tool never lights up at runtime. Also
   #       wires baseUrl + categories + language for the sibling searxng service.
+  #   11. Ensure messages.tts.providers.openai is wired at the openclaw-tts-router
+  #       (OpenAI-compat baseUrl override, sanctioned per closed OpenClaw issues
+  #       #13907 / #29224) + voiceAliases for human-readable voice names.
+  #       Env-gated: skipped when OPENCLAW_TTS_ROUTER_API_KEY is unset, so the
+  #       openai TTS provider stays untouched if the user opts out of TTS.
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.
@@ -339,6 +550,14 @@ services:
       # layout. See docs/CUSTOMIZATION.md → "Run with a remote vLLM backend".
       LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm-llm:8004/v1/}
       EMBED_BASE_URL: ${EMBED_BASE_URL:-http://vllm-embedding:8005/v1/}
+      # TTS provider wiring. When set, patcher step 11 writes
+      # messages.tts.providers.openai.{baseUrl,apiKey,model,voiceId,voiceAliases}
+      # pointing at the openclaw-tts-router. Leave empty to opt out — the
+      # patcher then leaves the openai TTS provider untouched (and the router
+      # service block above can be parked with `profiles: ["never"]`).
+      OPENCLAW_TTS_ROUTER_API_KEY: ${OPENCLAW_TTS_ROUTER_API_KEY:-}
+      OPENCLAW_TTS_ROUTER_URL: ${OPENCLAW_TTS_ROUTER_URL:-http://openclaw-tts-router:8080/v1}
+      OPENCLAW_TTS_DEFAULT_VOICE: ${OPENCLAW_TTS_DEFAULT_VOICE:-af_heart}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ./patch-config.mjs:/opt/patch-config.mjs:ro

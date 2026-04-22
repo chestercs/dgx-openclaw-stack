@@ -18,7 +18,7 @@
 //     vision prefill + multi-step tool calling.
 //
 // This patcher makes the desired state deterministic: every `docker compose up`
-// re-applies the 10 steps below in a deep-merge style. Safe to re-run — it exits
+// re-applies the 11 steps below in a deep-merge style. Safe to re-run — it exits
 // early when the file is already in the desired state, and if openclaw.json
 // doesn't exist yet (pre-onboarding), it exits 0 so the gateway can still boot.
 //
@@ -47,6 +47,11 @@
 //      `enabled` flag to true (the plugin ships bundled-but-default-disabled;
 //      without the explicit enable the gateway leaves it in "bundled (disabled
 //      by default)" state and the webSearch tool never lights up).
+//  11. Ensure messages.tts.providers.openai is wired at the openclaw-tts-router
+//      (OpenAI-compat baseUrl override, sanctioned per closed OpenClaw issues
+//      #13907 / #29224) + voiceAliases for human-readable voice ids. Env-gated
+//      via OPENCLAW_TTS_ROUTER_API_KEY — when unset, the openai TTS provider
+//      is left untouched so the user can opt out cleanly.
 
 import fs from 'node:fs';
 
@@ -417,6 +422,69 @@ for (const [k, v] of Object.entries(desiredWebSearch)) {
     changed = true;
     console.log(`[patch-config] plugins.entries.searxng.config.webSearch.${k} = ${JSON.stringify(v)}`);
   }
+}
+
+// (11) Ensure messages.tts.providers.openai points at the openclaw-tts-router.
+//      Env-gated: when OPENCLAW_TTS_ROUTER_API_KEY is unset, leave the openai
+//      TTS provider untouched. This lets users opt out of TTS by simply not
+//      setting the var (and parking the openclaw-tts-en / openclaw-tts-router
+//      services with `profiles: ["never"]` in the compose file).
+//
+//      The router exposes the OpenAI Audio API shape on
+//      `${OPENCLAW_TTS_ROUTER_URL}/audio/speech` and accepts the same model /
+//      voice fields. The gateway sends `model` opaquely (the router ignores
+//      it), and the `voiceId` we set is what the TTS surface picks when an
+//      agent doesn't override. voiceAliases give the agent (and human users)
+//      friendly names like `english`, `narrator`, `male` instead of Kokoro's
+//      `af_heart` / `bf_emma` / `am_michael`.
+//
+//      Hungarian aliases (`magyar`, `hungarian`) are written unconditionally
+//      so the alias surface stays stable; the router itself decides whether
+//      `default_hu` is a live voice (it is only when F5HUN_URL +
+//      F5HUN_API_TOKEN are set on the router service). Without HU wired, the
+//      router's HU autodetect is a no-op and `default_hu` returns 404 — that
+//      is the user's signal that they need to bring an F5-TTS HU backend.
+const ttsRouterKey = process.env.OPENCLAW_TTS_ROUTER_API_KEY?.trim();
+if (ttsRouterKey) {
+  config.messages ??= {};
+  config.messages.tts ??= {};
+  config.messages.tts.providers ??= {};
+  config.messages.tts.providers.openai ??= {};
+  const tts = config.messages.tts.providers.openai;
+
+  const desiredTts = {
+    baseUrl: process.env.OPENCLAW_TTS_ROUTER_URL || 'http://openclaw-tts-router:8080/v1',
+    apiKey: ttsRouterKey,
+    model: 'openclaw-tts',
+    voiceId: process.env.OPENCLAW_TTS_DEFAULT_VOICE || 'af_heart',
+  };
+  for (const [k, v] of Object.entries(desiredTts)) {
+    if (tts[k] !== v) {
+      const shown = k === 'apiKey' ? `${String(v).slice(0, 4)}...(len=${String(v).length})` : JSON.stringify(v);
+      tts[k] = v;
+      changed = true;
+      console.log(`[patch-config] messages.tts.providers.openai.${k} = ${shown}`);
+    }
+  }
+
+  tts.voiceAliases ??= {};
+  const desiredAliases = {
+    english:   'af_heart',
+    narrator:  'bf_emma',
+    male:      'am_michael',
+    female:    'af_bella',
+    magyar:    'default_hu',
+    hungarian: 'default_hu',
+  };
+  for (const [k, v] of Object.entries(desiredAliases)) {
+    if (tts.voiceAliases[k] !== v) {
+      tts.voiceAliases[k] = v;
+      changed = true;
+      console.log(`[patch-config] messages.tts.providers.openai.voiceAliases.${k} = ${JSON.stringify(v)}`);
+    }
+  }
+} else {
+  console.log('[patch-config] OPENCLAW_TTS_ROUTER_API_KEY not set — skipping messages.tts.providers.openai (TTS opt-out).');
 }
 
 if (!changed) {
