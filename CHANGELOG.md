@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`docs/reference/` knowledge base** — six public reference documents moved
+  into the public tree alongside the end-user docs: `llm-stack.md`,
+  `tts-stack.md`, `tts-research-magyar.md`, `openclaw-internals.md` (the
+  deep-dive counterpart to `docs/ARCHITECTURE.md`: schema, 3-store credential
+  layout, patcher step detail, CLI overhead), `patterns.md`, and an index
+  `README.md`. The root `CLAUDE.md` "When in doubt" section points here as
+  the next stop for deeper questions.
+
 ## [0.4.1] - 2026-04-22
 
 Polish release rolling up the post-v0.4.0 fix batch. Two new idempotent patcher
