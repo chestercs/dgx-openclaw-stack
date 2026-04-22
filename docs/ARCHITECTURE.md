@@ -181,7 +181,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 11 steps
+### 13 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -197,6 +197,8 @@ Rather than tell users "also click here, there, and there after onboarding", the
     a. Top-level `messages.tts.{enabled, auto, mode}` — without these the OpenClaw voice surfaces silently treat TTS as off even with the provider correctly wired.
     b. `messages.tts.providers.openai` (baseUrl, apiKey, model, voiceId) pointing at the bundled router.
     c. `messages.tts.voiceAliases` (`english`, `narrator`, `male`, `female`, `magyar`, `hungarian`).
+12. Mirror `gateway.auth.token` into `gateway.remote.token` so the loopback CLI WS-connect doesn't hit a token mismatch and silently fall back to the embedded runner (a side-car path, not the production agent route).
+13. Sync the per-agent `auth-profiles.json` `vllm:default.key` with `VLLM_API_KEY`. The agent runner reads the credential from this per-agent store, not from `models.providers.vllm.apiKey` — drift after a `.env` rotation produces HTTP 401 from vLLM even when the config-file apiKey is correct.
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 

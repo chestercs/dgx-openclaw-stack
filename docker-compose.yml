@@ -527,7 +527,7 @@ services:
   ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
   #
   #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 11 steps:
+  #  the onboarding wizard's choices or previous manual edits. 13 steps:
   #
   #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
   #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
@@ -557,6 +557,14 @@ services:
   #       #13907 / #29224) + voiceAliases for human-readable voice names.
   #       Env-gated: skipped when OPENCLAW_TTS_ROUTER_API_KEY is unset, so the
   #       openai TTS provider stays untouched if the user opts out of TTS.
+  #   12. Mirror gateway.auth.token into gateway.remote.token so the loopback
+  #       CLI can WS-connect without hitting "gateway token mismatch" and
+  #       silently falling back to an embedded runner — a side-car path, not
+  #       the production agent route.
+  #   13. Sync per-agent auth-profiles.json `vllm:default.key` with VLLM_API_KEY.
+  #       The agent runner reads the credential from this per-agent store, NOT
+  #       from models.providers.vllm.apiKey — drift after a .env rotation
+  #       produces HTTP 401 from vLLM even when the config-file apiKey is correct.
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.

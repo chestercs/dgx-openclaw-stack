@@ -93,7 +93,7 @@ docker compose up -d                        # services start; gateway will crash
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-That's it — the patcher applies all 11 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+That's it — the patcher applies all 13 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Architecture at a glance
 
@@ -140,7 +140,7 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 ```
 dgx-openclaw-stack/
 ├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-*)
-├─ patch-config.mjs             # idempotent OpenClaw config patcher (11 steps)
+├─ patch-config.mjs             # idempotent OpenClaw config patcher (13 steps)
 ├─ bootstrap.sh                 # non-destructive first-time setup
 ├─ .env.example                 # documented env template (every tunable lives here)
 ├─ templates/

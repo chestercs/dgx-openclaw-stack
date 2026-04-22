@@ -15,7 +15,7 @@ The repo's value proposition is the **wiring**, not any individual component:
 
 ```
 docker-compose.yml      # 8 services default (+1 with --profile hu); GB10 reference profile
-patch-config.mjs        # 11-step idempotent openclaw.json patcher (init container)
+patch-config.mjs        # 13-step idempotent openclaw.json patcher (init container)
 bootstrap.sh            # First-time setup: secrets, .env, host dirs (non-destructive)
 .env.example            # Tunables, well-commented
 templates/              # vLLM tool-calling chat template (gemma4)
