@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-22
+
+### Added
+- **`CONTAINER_NAME_PREFIX` env var** — every service's `container_name:` is now
+  `${CONTAINER_NAME_PREFIX:-dgx-}<service>`. Default keeps the existing
+  `dgx-openclaw-gateway`, `dgx-vllm-llm`, … shape; set empty to drop the prefix
+  for clean `openclaw-gateway`-style names. Bridge DNS reachability (the actual
+  network plane) is unaffected — services resolve each other by compose service
+  name + `hostname:` directive regardless of the container_name label.
+- **`VLLM_HF_CACHE_VOLUME_NAME` env var** — Docker volume label for the shared
+  HF cache is now env-driven (default `dgx-openclaw-hf-cache`). Lets sibling
+  LLM stacks bind-mounting the same `VLLM_HF_CACHE_DIR` host path show up
+  under one consistent label in `docker volume ls`.
+- **TTS host bind/port env vars** (`TTS_EN_BIND`, `TTS_EN_PORT`,
+  `TTS_F5HUN_BIND`, `TTS_F5HUN_PORT`, `TTS_ROUTER_BIND`, `TTS_ROUTER_PORT`).
+  All three TTS services now publish their port on the host with a default of
+  `127.0.0.1` — loopback only, ideal for `curl <port>/healthz` debugging
+  without exposing the service on the LAN. Set `*_BIND=0.0.0.0` to expose any
+  service to LAN clients (Bearer-token-protected via the existing TTS tokens).
+  Sibling containers continue to use bridge DNS regardless of the binding.
+
+### Changed
+- **Patcher step 11 now writes the top-level `messages.tts.{enabled,auto,mode}`
+  switches** (in addition to the existing `providers.openai` block and
+  `voiceAliases`). Without these, the OpenClaw voice surfaces (Discord, agent
+  `tts` skill) silently treat TTS as off even with the provider correctly
+  wired. Web chat UI is unaffected (it's hard-wired to the browser's native
+  `speechSynthesis` — known OpenClaw limitation, see CLAUDE.md).
+
 ## [0.3.0] - 2026-04-22
 
 ### Added
@@ -99,7 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chestercs/dgx-openclaw-stack/releases/tag/v0.1.0

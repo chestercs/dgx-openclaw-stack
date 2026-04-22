@@ -47,11 +47,15 @@
 //      `enabled` flag to true (the plugin ships bundled-but-default-disabled;
 //      without the explicit enable the gateway leaves it in "bundled (disabled
 //      by default)" state and the webSearch tool never lights up).
-//  11. Ensure messages.tts.providers.openai is wired at the openclaw-tts-router
-//      (OpenAI-compat baseUrl override, sanctioned per closed OpenClaw issues
-//      #13907 / #29224) + voiceAliases for human-readable voice ids. Env-gated
-//      via OPENCLAW_TTS_ROUTER_API_KEY — when unset, the openai TTS provider
-//      is left untouched so the user can opt out cleanly.
+//  11. Ensure messages.tts is wired at the openclaw-tts-router:
+//      - top-level switches (enabled / auto / mode) so the gateway actually
+//        invokes the provider on Discord / voice-skill paths;
+//      - providers.openai block (baseUrl / apiKey / model / voiceId) using the
+//        OpenAI-compat override sanctioned per closed OpenClaw issues
+//        #13907 / #29224;
+//      - voiceAliases for human-readable voice ids (english / narrator / …).
+//      Env-gated via OPENCLAW_TTS_ROUTER_API_KEY — when unset, the entire
+//      messages.tts block is left untouched so the user can opt out cleanly.
 
 import fs from 'node:fs';
 
@@ -448,6 +452,25 @@ const ttsRouterKey = process.env.OPENCLAW_TTS_ROUTER_API_KEY?.trim();
 if (ttsRouterKey) {
   config.messages ??= {};
   config.messages.tts ??= {};
+
+  // Top-level switches. OpenClaw gateway builds observed in 2026-04 require
+  // these to actually invoke the configured TTS provider. Without them, the
+  // providers.openai block below is silently ignored on Discord / voice-skill
+  // paths (the web chat UI is hard-wired to the browser's speechSynthesis
+  // and bypasses this pipeline, so it isn't affected either way).
+  const desiredTopLevel = {
+    enabled: true,
+    auto: true,
+    mode: 'auto',
+  };
+  for (const [k, v] of Object.entries(desiredTopLevel)) {
+    if (config.messages.tts[k] !== v) {
+      config.messages.tts[k] = v;
+      changed = true;
+      console.log(`[patch-config] messages.tts.${k} = ${JSON.stringify(v)}`);
+    }
+  }
+
   config.messages.tts.providers ??= {};
   config.messages.tts.providers.openai ??= {};
   const tts = config.messages.tts.providers.openai;
@@ -484,7 +507,7 @@ if (ttsRouterKey) {
     }
   }
 } else {
-  console.log('[patch-config] OPENCLAW_TTS_ROUTER_API_KEY not set — skipping messages.tts.providers.openai (TTS opt-out).');
+  console.log('[patch-config] OPENCLAW_TTS_ROUTER_API_KEY not set — skipping messages.tts.* (TTS opt-out).');
 }
 
 if (!changed) {
