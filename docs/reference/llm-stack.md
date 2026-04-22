@@ -1,54 +1,56 @@
 # LLM stack — Gemma 4 + bge-m3 embedding
 
-> **Public knowledge** — research / architecture, megosztható.
+> Reference material: model choices, variants, and the rationale behind them.
 
-## Aktív LLM (unified OpenClaw stack, 2026-04-22-től)
+## Active LLM (unified OpenClaw stack, 2026-04-22 onward)
 
-Primary: `llm/dgx-openclaw-stack/docker-compose.yml` in-stack `vllm-llm` service:
+Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — in-stack `vllm-llm` service:
+
 - Image: `vllm/vllm-openai:gemma4-cu130`
-- Modell: `nvidia/Gemma-4-31B-IT-NVFP4`
+- Model: `nvidia/Gemma-4-31B-IT-NVFP4`
 - Port: 8004
-- Decode: ~6.9 tok/s GB10-en
+- Decode: ~6.9 tok/s on GB10
 
-## Standalone variánsok (port 8004 mutex, csak egy futhat)
+## Standalone variants (port 8004 mutex — only one at a time)
 
-A `llm/` alatt szándékos minta: több Gemma 4 31B variáns ugyanazt a 8004 portot használja — egyszerre csak egyik futhat, swap = `docker compose down` + másik mappa `up -d`.
+Under `llm/` there's an intentional pattern: several Gemma 4 31B variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.
 
-- `gemma_4_31b_bf16/` — BF16 standalone (`google/gemma-4-31B-it`), 8K × 8 user
-- `litellm/` — BF16 + LiteLLM proxy (port 4000) + Postgres, 64K × 2 user
-- `gemma_4_31b_nvfp4/` — NVFP4 standalone twin a unified vllm-llm-nek (legacy/fallback)
+- `gemma_4_31b_bf16/` — BF16 standalone (`google/gemma-4-31B-it`), 8K × 8 users
+- `litellm/` — BF16 + LiteLLM proxy (port 4000) + Postgres, 64K × 2 users
+- `gemma_4_31b_nvfp4/` — NVFP4 standalone twin of the unified `vllm-llm` (legacy / fallback)
 - `qwen3-5_27b_opus/` — alternative model
 
-Swap előtt: `docker compose stop vllm-llm` (és sibling embedding stack swap-jénél `vllm-embedding`).
+Before swapping: `docker compose stop vllm-llm` (and `vllm-embedding` if the sibling embedding stack also swaps).
 
 ## Embedding stack (port 8005)
 
-**Aktuális (2026-04-22-től)**: in-stack `vllm-embedding` service
-- Modell: `BAAI/bge-m3` BF16 (natív, modell ~1.1 GB)
+**Current (2026-04-22 onward):** in-stack `vllm-embedding` service
+
+- Model: `BAAI/bge-m3` BF16 (native, model ~1.1 GB)
 - Encoder: XLMRoberta
 - Flags: `--runner pooling --gpu-memory-utilization 0.03 --max-model-len 8192 --max-num-seqs 2 --enforce-eager`
-- 1024 dim dense kimenet
+- 1024-dim dense output
 - VRAM: ~3.6 GB
-- Cross-lingual EN↔HU cosine similarity 0.88 (validált)
+- Cross-lingual EN↔HU cosine similarity 0.88 (validated)
 
-**Előző (leállítva)**: `qwen3_embedding_8b_nvfp4/` — `alexliap/Qwen3-Embedding-8B-NVFP4`, 4096 dim, ~5 GB. Overkill volt RAG-hez. Standalone dir megmaradt swap-célnak.
+**Previous (retired):** `qwen3_embedding_8b_nvfp4/` — `alexliap/Qwen3-Embedding-8B-NVFP4`, 4096-dim, ~5 GB. Overkill for RAG. The standalone directory remains as a swap target.
 
-## Sibling compose env-trükk
+## Sibling compose env trick
 
-A `qwen3_embedding_8b_nvfp4/` standalone `env_file: ../dgx-openclaw-stack/.env` beülteti a `VLLM_API_KEY`-t. A vLLM automatikusan olvassa env-változóként ha `--api-key` flag nincs megadva. `--api-key ${VLLM_API_KEY:-}` nélkül üres argumentumra dobódna `expected at least one argument` hiba.
+The `qwen3_embedding_8b_nvfp4/` standalone uses `env_file: ../dgx-openclaw-stack/.env` to inherit `VLLM_API_KEY`. vLLM reads it automatically as an env variable when no `--api-key` flag is passed. Without `--api-key ${VLLM_API_KEY:-}`, an empty argument would trigger an `expected at least one argument` error.
 
-## Embedding swap → reindex kötelező
+## Embedding swap → reindex mandatory
 
-4096-dim Qwen3 vs 1024-dim BGE-M3 vektorok inkompatibilisek, sqlite-vec index invalid lesz. `docker exec openclaw-cli openclaw memory index --force`.
+4096-dim Qwen3 vectors and 1024-dim BGE-M3 vectors are incompatible; the sqlite-vec index becomes invalid. Run `docker exec openclaw-cli openclaw memory index --force`.
 
-## Közös HF cache volume
+## Shared HF cache volume
 
-`${VLLM_HF_CACHE_VOLUME_NAME:-openclaw-hf-cache}` (operator `.env`-ben `openclaw-hf-cache`, public default `dgx-openclaw-hf-cache`). A unified stack és minden sibling alt-LLM compose ugyanazt mountolja → modell letöltés bármelyikben → mind újrafelhasználja.
+`${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}`. The unified stack and every sibling alt-LLM compose mounts the same volume — download a model in any of them and all the others reuse the cached weights.
 
 ## Why NVFP4
 
-~4× kisebb weights → több KV budget a 128 GB unified memoryban. Embedding-nél nem LLM KV budget számít, hanem hogy a Gemma mellé befér.
+~4× smaller weights → more KV budget in the 128 GB unified memory. For embedding, LLM KV budget doesn't matter; what matters is that bge-m3 fits alongside Gemma on the same GPU.
 
-## Nem létező opció: NVFP4 embedding NVIDIA hivatalos
+## Non-existent option: official NVIDIA NVFP4 embedding
 
-Nincs `nvidia/*` NVFP4 embedding kiadás (2026-04 állapot). Csak community: alexliap (4.93k dl), Forturne (6.08k dl), MidnightPhreaker, mdavidson83. Az alexliap release dokumentált vLLM deploy útmutatóval (compressed-tensors, `task=embed`).
+There is no `nvidia/*` NVFP4 embedding release (as of 2026-04). Only community ports: alexliap (4.93k downloads), Forturne (6.08k), MidnightPhreaker, mdavidson83. The alexliap release is the best-documented, with a vLLM deploy guide (compressed-tensors, `task=embed`).

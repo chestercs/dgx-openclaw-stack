@@ -1,102 +1,103 @@
-# OpenClaw TTS — kétnyelvű stack architektúra
+# OpenClaw TTS — bilingual stack architecture
 
-> **Public knowledge** — TTS deployment + schema, megosztható.
+> Reference material: TTS deployment details + schema.
 
-## Áttekintés
+## Overview
 
-Három service a unified `llm/dgx-openclaw-stack/` compose-ban (deployed és verified GB10-en, 2026-04-22):
+Three services in the unified `llm/dgx-openclaw-stack/` compose (deployed and verified on GB10, 2026-04-22):
 
-| Service | Modell | Port | VRAM | License | Profile |
+| Service | Model | Port | VRAM | License | Profile |
 |---|---|---|---|---|---|
-| `openclaw-tts-en` | Kokoro 82M (af_heart default) | 8091 | ~500MB-1GB | Apache 2.0 | default |
-| `openclaw-tts-f5hun` | sarpba/F5-TTS_V1_hun_v2 | 8090 | ~1GB | CC-BY-NC-4.0 | `hu` (opt-in) |
+| `openclaw-tts-en` | Kokoro 82M (`af_heart` default) | 8091 | ~500 MB–1 GB | Apache 2.0 | default |
+| `openclaw-tts-f5hun` | `sarpba/F5-TTS_V1_hun_v2` | 8090 | ~1 GB | CC-BY-NC-4.0 | `hu` (opt-in) |
 | `openclaw-tts-router` | OpenAI-compat passthrough | 8092 | no GPU | MIT | default |
 
 ## Voice routing
 
-A router voice-id alapján routeol:
-- `default_hu` / `hu_*` → f5hun
-- `a*` / `b*` (Kokoro voice prefix) → en
+The router routes by voice ID:
+
+- `default_hu` / `hu_*` → `f5hun`
+- `a*` / `b*` (Kokoro voice prefix) → `en`
 
 ## OpenClaw wiring
 
-`patch-config.mjs` step 11 + `docker-compose.yml` `openclaw-config-init.environment.OPENCLAW_TTS_ROUTER_API_KEY`. A `messages.tts.providers.openai.{baseUrl, apiKey, voiceId, voiceAliases}` blokkot köti a routerre.
+`patch-config.mjs` step 11 + `docker-compose.yml` `openclaw-config-init.environment.OPENCLAW_TTS_ROUTER_API_KEY`. Writes the `messages.tts.providers.openai.{baseUrl, apiKey, voiceId, voiceAliases}` block pointing at the router.
 
-**Voice aliases**: `magyar`/`hungarian` → `default_hu`, `english`/`us_female` → `af_heart`, `uk_female`/`narrator` → `bf_emma`, `male` → `am_michael`. Agent prompton `[voice:magyar]` vagy `[voice:af_heart]` egyaránt használható.
+**Voice aliases:** `magyar` / `hungarian` → `default_hu`, `english` / `us_female` → `af_heart`, `uk_female` / `narrator` → `bf_emma`, `male` → `am_michael`. In agent prompts, `[voice:magyar]` and `[voice:af_heart]` both work.
 
-**No-op ha env üres** — biztonságos részleges deploy.
+**No-op when env is empty** — safe for partial deployments.
 
 ## Format passthrough
 
-Backend csak wav/flac/ogg/pcm; mp3/opus client-request silently downgrade-elődik wav-re (ha a router-ben nincs ffmpeg). A public repo router-e bundleli az ffmpeg-et és transzkódol.
+The backend only produces wav/flac/ogg/pcm; mp3/opus client requests silently downgrade to wav if the router has no ffmpeg. The public repo's router bundles ffmpeg and transcodes on the fly.
 
-## Why router és nem direkt wiring
+## Why a router instead of direct wiring
 
-OpenClaw `messages.tts.providers.openai` blokkban EGY baseUrl van. Két backend = vagy két separate provider (upstream még flux), vagy egy fronting service. Router ~150 LOC FastAPI + ffmpeg, no GPU. ElevenLabs-spoofot elvetettük: voiceId regex `/^[a-zA-Z0-9]{10,40}$/`, xi-api-key, mp3 mandatory — sok plumbing semmi gain. OpenAI provider baseUrl override = sanctioned escape hatch (OpenClaw issue #13907 / #29224 closed-with-this).
+OpenClaw's `messages.tts.providers.openai` block accepts exactly one `baseUrl`. Two backends = either two separate providers (upstream still in flux), or one fronting service. The router is ~150 LOC of FastAPI + ffmpeg, no GPU. We rejected the ElevenLabs-spoof path: voice-ID regex `/^[a-zA-Z0-9]{10,40}$/`, xi-api-key, mandatory mp3 — a lot of plumbing for no gain. The OpenAI-provider `baseUrl` override is the sanctioned escape hatch (OpenClaw issues #13907 / #29224, closed with this pattern).
 
-## v0.4.x messages.tts schema enums (KRITIKUS)
+## v0.4.x `messages.tts` schema enums (CRITICAL)
 
-OpenClaw v0.4.x `openclaw.json` config validátor `messages.tts` mező elvárt típusai:
+The OpenClaw v0.4.x `openclaw.json` config validator expects these types under `messages.tts`:
 
 - `messages.tts.enabled`: `boolean`
-- `messages.tts.auto`: enum — `"off" | "always" | "inbound" | "tagged"` (NEM boolean)
-- `messages.tts.mode`: enum — `"final" | "all"` (NEM `"auto"`)
+- `messages.tts.auto`: enum — `"off" | "always" | "inbound" | "tagged"` (NOT boolean)
+- `messages.tts.mode`: enum — `"final" | "all"` (NOT `"auto"`)
 
-Hibás értékkel a gateway indulásnál `Config invalid / Invalid option: expected one of …` üzenettel crash-loopol.
+With a wrong value, the gateway crash-loops at startup with `Config invalid / Invalid option: expected one of …`.
 
-"Minden végső agent üzenetet mondjon" posture = `auto: 'always'`, `mode: 'final'`.
+The "speak every final agent message" posture = `auto: 'always'`, `mode: 'final'`.
 
-Patcher lokáció: `patch-config.mjs` step 11, `desiredTopLevel` objektum literál.
+Patcher location: `patch-config.mjs` step 11, `desiredTopLevel` object literal.
 
-Javító commit: public `chestercs/dgx-openclaw-stack` `81f1fa4` (2026-04-22).
+Fix commit: public `chestercs/dgx-openclaw-stack` `81f1fa4` (2026-04-22).
 
-## Patcher step 11 három dolgot ír
+## Patcher step 11 writes three things
 
-Amikor `OPENCLAW_TTS_ROUTER_API_KEY` set:
+When `OPENCLAW_TTS_ROUTER_API_KEY` is set:
 
-1. **Top-level `messages.tts.{enabled,auto,mode}`** — nélkülük az OpenClaw voice surfaces silently treat TTS as off, akkor is ha a provider ki van wireolva. Az eredeti step 11 csak a 2-3 pontot írta; voice playback 100% silent volt amíg a top-level switches v0.4.0-ban be nem kerültek
-2. **`messages.tts.providers.openai`** — `baseUrl`, `apiKey`, `model`, `voiceId` a routerre mutatva
-3. **`messages.tts.voiceAliases`** — friendly aliasok (english, narrator, male, female, magyar, hungarian) konkrét Kokoro / F5-TTS voice id-kre
+1. **Top-level `messages.tts.{enabled,auto,mode}`** — without these, OpenClaw voice surfaces silently treat TTS as off even with the provider wired. The original step 11 only wrote points 2–3; voice playback was 100% silent until the top-level switches landed in v0.4.0.
+2. **`messages.tts.providers.openai`** — `baseUrl`, `apiKey`, `model`, `voiceId` pointing at the router.
+3. **`messages.tts.voiceAliases`** — friendly aliases (`english`, `narrator`, `male`, `female`, `magyar`, `hungarian`) mapped to concrete Kokoro / F5-TTS voice IDs.
 
-Unset → step 11 skip (felhasználó kihagyhatja a TTS-t üres env-vel + `profiles: ["never"]` parking).
+Unset → step 11 skips cleanly (the user can opt out of TTS by leaving the env empty and parking the two TTS services with `profiles: ["never"]`).
 
-## Web chat UI limitáció (KRITIKUS)
+## Web chat UI limitation (CRITICAL)
 
-A web chat (`/chat?session=...`) bundle (`index-Dba6JFRP.js`, ~700KB) **hard-wired** a browser `speechSynthesis` API-ra a "Read aloud" gombon és minden auto-play helyzetben. Bundle grep 0 találatot ad `audio/speech`, `messages.tts`, `providers.openai` mintákra — csak `speechSynthesis` (4×) és `SpeechSynthesisUtterance` (1×).
+The web chat (`/chat?session=...`) bundle (`index-Dba6JFRP.js`, ~700 KB) is **hard-wired** to the browser's `speechSynthesis` API for the "Read aloud" button and every auto-play path. Grepping the bundle yields zero hits for `audio/speech`, `messages.tts`, or `providers.openai` — only `speechSynthesis` (4×) and `SpeechSynthesisUtterance` (1×).
 
-**Következmény**: `messages.tts.providers.openai.{baseUrl, apiKey, voiceId}` és `messages.tts.{enabled, auto, mode}` config kizárólag voice-surface (Discord / Slack voice channel) playback-re megy — a web chat UI nem subscriber.
+**Implication:** `messages.tts.providers.openai.{baseUrl, apiKey, voiceId}` and `messages.tts.{enabled, auto, mode}` config is used only for voice surfaces (Discord / Slack voice channels) — the web chat UI is not a subscriber.
 
-### Három TTS path OpenClaw-ban (könnyű összekeverni)
+### Three TTS paths in OpenClaw (easy to confuse)
 
-1. `tts` agent skill — tool-call, audiot server-side generál, returnel text "Generated audio reply." — web UI csak ezt a szöveget jeleníti meg
-2. `messages.tts.auto` — gateway-level autoplay, voice surface-ekre broadcast (Discord voice), NEM web
-3. `.chat-tts-btn` "Read aloud" gomb — lokális browser `speechSynthesis.speak(new SpeechSynthesisUtterance(text))`, OS default hanggal
+1. `tts` agent skill — tool call, audio generated server-side, returns text `"Generated audio reply."` — the web UI only renders the text.
+2. `messages.tts.auto` — gateway-level autoplay, broadcast to voice surfaces (Discord voice), NOT web.
+3. `.chat-tts-btn` "Read aloud" button — local browser `speechSynthesis.speak(new SpeechSynthesisUtterance(text))`, OS default voice.
 
 ### How to apply
 
-- Ha user magyar TTS-t akar **web chat-ben**: vagy Discord voice channel-en át a router, vagy userscript ami `speechSynthesis.speak()`-et monkey-patch-el `fetch('/v1/audio/speech')` + `new Audio(blob)`-ra
-- Soha ne ígérd a usernek hogy `messages.tts.auto=always` magától beszélni fog a web chat UI-ban — nem fog
-- Ha bundle fájlnév változik (hash rename), a 0-találat ellenőrzést újra kell futtatni
+- If the user wants Hungarian TTS **in the web chat**: either go through a Discord voice channel (via the router), or a userscript that monkey-patches `speechSynthesis.speak()` into `fetch('/v1/audio/speech')` + `new Audio(blob)`.
+- Never promise the user that `messages.tts.auto=always` will make the web chat UI speak on its own — it won't.
+- If the bundle filename changes (hash rename), re-run the zero-hit check.
 
 ### Debugging fingerprint
 
-- Router log: egyetlen `POST /v1/audio/speech 200 OK` assistant-reply-onként, utána csend
-- Browser DevTools: 0 `<audio>` elem a DOM-ban, `new Audio()`/`decodeAudioData` hook 0 eventet kap
-- `speechSynthesis.speak` hook viszont triggerel a "Read aloud" kattintáskor
+- Router log: exactly one `POST /v1/audio/speech 200 OK` per assistant reply, then silence.
+- Browser DevTools: zero `<audio>` elements in the DOM; `new Audio()` / `decodeAudioData` hooks receive zero events.
+- `speechSynthesis.speak` hook fires on a "Read aloud" click.
 
-## Verifikáció GB10-en (2026-04-22)
+## GB10 verification (2026-04-22)
 
 ```bash
 cd llm/dgx-openclaw-stack && docker compose --profile hu up -d --build
-# End-to-end smoke: HU+EN audio generálás OpenClaw agent-en át — passed
+# End-to-end smoke: HU + EN audio generation through an OpenClaw agent — passed.
 ```
 
-Sorrend GB10 deploy-nál: `openclaw-tts-en` build első (long, ~Kokoro weights download + cu130 torch), aztán `openclaw-tts-router`, aztán `openclaw-config-init openclaw-gateway openclaw-cli` force-recreate.
+Order for a GB10 deploy: build `openclaw-tts-en` first (long — Kokoro weights download + cu130 torch), then `openclaw-tts-router`, then force-recreate `openclaw-config-init openclaw-gateway openclaw-cli`.
 
-## Memory leak mitigation Kokoro-n
+## Memory-leak mitigation on Kokoro
 
-`0 4 * * * docker restart openclaw-tts-en` cron ha sustained generation után RSS > 4GB (upstream hexgrad/kokoro#152).
+`0 4 * * * docker restart openclaw-tts-en` cron, if sustained generation pushes RSS past 4 GB (upstream hexgrad/kokoro#152).
 
-## Csapda amit c69a9f2 fixelt
+## Trap fixed by `c69a9f2`
 
-Router `.env.example` comment sora emlegette `OPENCLAW_TTS_ROUTER_API_KEY` kulcsnevet, ezért anchor nélküli `grep KEY .env | cut -d= -f2` multi-line értéket adott vissza, és a gateway configba a comment eleje került apiKey-ként. Mindig anchored grep-et használj env-mirror parancsoknál: `grep '^KEY=' .env`. Lásd: `patterns.md`.
+The router's `.env.example` comment mentioned the `OPENCLAW_TTS_ROUTER_API_KEY` key name, so an un-anchored `grep KEY .env | cut -d= -f2` returned a multi-line value, and the start of the comment ended up as `apiKey` in the gateway config. Always use anchored grep for env-mirror commands: `grep '^KEY=' .env`. See `patterns.md`.

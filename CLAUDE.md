@@ -81,11 +81,9 @@ The repo's quality bar is "real verification on a real host," not "syntax-checks
 
 ### Documentation language: English for anything public
 
-Every file that lands in this public repo — `README.md`, `SETUP.md`, `CLAUDE.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, everything under `docs/` (including `docs/reference/`), `.github/*`, compose / patcher inline comments, commit messages, PR and issue templates, GitHub Release notes — is written in English. This is a hard rule, not a preference: the repo targets a global audience, and mixing languages splits the readership.
+Every file that lands in this public repo — `README.md`, `SETUP.md`, `CLAUDE.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, everything under `docs/` (including `docs/reference/`), `.github/*`, compose / patcher inline comments, commit messages, PR and issue templates, GitHub Release notes — is written in English. This is a hard rule, not a preference: the repo targets a global audience, and mixing languages splits the readership. No exceptions — if you spot any non-English prose slipping through (in existing files or a proposed change), translate it rather than committing it as-is.
 
 If you're importing or adapting material from a non-English source (a private knowledge base, a Hungarian research note, a vendor doc), translate it before committing. Don't push a "we'll translate it later" commit; "later" becomes "never," and mixed-language docs are worse than a smaller English-only set.
-
-(Pre-v0.4.1 material under `docs/reference/` is a grandfathered exception — the user explicitly accepted it in Hungarian. New additions there, and edits to the existing files, go into English.)
 
 ## Things to avoid
 

@@ -19,8 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subsection declaring that every public repo file (README, SETUP, CLAUDE,
   CHANGELOG, `docs/**`, compose/patcher inline comments, commit messages,
   PR/issue templates, release notes) is written in English. Imported
-  non-English material is translated before commit. Existing pre-v0.4.1
-  Hungarian material under `docs/reference/` is a grandfathered exception.
+  non-English material is translated before commit. No grandfathered
+  exceptions — if non-English prose slips through, translate it rather
+  than commit as-is.
+
+### Changed
+- **`docs/reference/` translated to English.** All six files
+  (`README.md`, `llm-stack.md`, `tts-stack.md`, `openclaw-internals.md`,
+  `patterns.md`, and `tts-research-hungarian.md` — renamed from
+  `tts-research-magyar.md`) now carry native English prose. This closes
+  the only gap in the documentation-language policy above; the public
+  repo is now linguistically consistent end to end.
 
 ## [0.4.1] - 2026-04-22
 
