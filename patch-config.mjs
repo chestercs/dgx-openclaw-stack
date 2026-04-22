@@ -429,10 +429,16 @@ if (ttsRouterKey) {
   // providers.openai block below is silently ignored on Discord / voice-skill
   // paths (the web chat UI is hard-wired to the browser's speechSynthesis
   // and bypasses this pipeline, so it isn't affected either way).
+  // Enum values required by the OpenClaw v0.4.x config schema:
+  //   auto: "off" | "always" | "inbound" | "tagged"   (NOT a boolean)
+  //   mode: "final" | "all"                            (NOT "auto")
+  // An earlier draft wrote `auto: true` / `mode: 'auto'`, which the gateway
+  // rejects with `Invalid option` and crash-loops on startup. `always` +
+  // `final` reproduces the intended "speak every final agent message" posture.
   const desiredTopLevel = {
     enabled: true,
-    auto: true,
-    mode: 'auto',
+    auto: 'always',
+    mode: 'final',
   };
   for (const [k, v] of Object.entries(desiredTopLevel)) {
     if (config.messages.tts[k] !== v) {
