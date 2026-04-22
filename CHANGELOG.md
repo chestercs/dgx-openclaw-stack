@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-22
+
+Polish release rolling up the post-v0.4.0 fix batch. Two new idempotent patcher
+steps harden the `openclaw agent` CLI path against token / credential drift, a
+handful of defaults are flipped for less friction on a fresh clone, and the docs
+catch up with the two patcher steps added post-tag.
+
+### Added
+- **Patcher step 12** — mirror `gateway.auth.token` into `gateway.remote.token`.
+  The onboarding wizard writes `auth.token` but leaves `remote.token` unset, so
+  the loopback CLI's WS connect failed with `unauthorized: gateway token
+  mismatch` and silently fell back to an embedded-runner path (a side-car, not
+  the production agent route). Step 12 keeps the two fields in lockstep on
+  every `up`.
+- **Patcher step 13** — sync the per-agent `auth-profiles.json`
+  `vllm:default.key` with `VLLM_API_KEY`. The agent runner reads the vLLM
+  credential from this per-agent store, *not* from
+  `models.providers.vllm.apiKey`; drift after a `.env` rotation produced HTTP
+  401 from vLLM even when the config-file apiKey was correct.
+- **`operator/` gitignored** — per-operator private artifacts (local `.env`,
+  `.claude/settings.local.json`, handoff notes, userscripts, TTS samples) live
+  outside the public tree and are never part of a clone.
+
+### Changed
+- **`.env.example` defaults converged for public ergonomics:**
+  - `CONTAINER_NAME_PREFIX=` (empty) — bare container names
+    (`openclaw-gateway`, `vllm-llm`, …) in `docker ps`. Set to a prefix only
+    if running multiple stacks on one host.
+  - `OPENCLAW_ENABLE_DREAMING=1` — nightly memory consolidation on by default
+    (the current stable OpenClaw image supports it; flip to 0 only if you've
+    pinned a pre-2026.4.15 tag that rejects the memory-core plugin schema).
+  - `HUGGING_FACE_HUB_TOKEN=` (empty) — replaces the `hf_CHANGE_ME` placeholder
+    (HF tokens aren't openssl-generable like the rest). `bootstrap.sh` prompts
+    for it on first run.
+- **`openclaw-cli` service env simplified.** Dropped the redundant
+  `OPENCLAW_GATEWAY_TOKEN` (the CLI prefers the env token over
+  `gateway.remote.token` when both are present; drift between bootstrap-rotated
+  `.env` and wizard-generated `auth.token` produced token-mismatch failures).
+  Added `OPENAI_API_KEY` / `OPENAI_BASE_URL` mirror from `VLLM_API_KEY` so the
+  embedded-runner fallback has a valid credential if the primary WS path ever
+  hiccups.
+
+### Fixed
+- **vLLM healthcheck uses `python3`.** The `vllm/vllm-openai:gemma4-cu130`
+  image ships no `python` alias; the healthcheck was red on every fresh pull
+  even though the server was live.
+- **Patcher step 11 `messages.tts.auto` / `messages.tts.mode` enum values.**
+  Now writes the OpenClaw-accepted strings (`always` / `final`); previous
+  values were silently rejected by the schema, so TTS stayed off even when
+  the full provider block was wired.
+
+### Docs
+- Audience-first polish pass across `README.md`, `SETUP.md`, `CLAUDE.md`,
+  `docs/*`, `docker-compose.yml`, and `patch-config.mjs`.
+- Post-v0.4.0 polish: the fresh-install gateway crash-loop is documented as
+  the intended two-phase onboarding flow (OpenClaw security model), the
+  `--force-recreate openclaw-config-init openclaw-gateway openclaw-cli` trio
+  is surfaced as the canonical recreate command, and all env-driven knobs
+  are first-class in the docs.
+- Patcher step count synced 11 → 13 across `README.md`, `CLAUDE.md`,
+  `docker-compose.yml`, and `docs/ARCHITECTURE.md`.
+
 ## [0.4.0] - 2026-04-22
 
 ### Added
@@ -128,7 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.1.0...v0.2.0
