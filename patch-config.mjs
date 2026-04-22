@@ -28,6 +28,10 @@
 //  12. Mirror gateway.auth.token into gateway.remote.token so the loopback CLI
 //      can WS-connect without hitting "gateway token mismatch" and silently
 //      falling back to an embedded runner.
+//  13. Sync the per-agent auth-profiles.json `vllm:default.key` with the
+//      current VLLM_API_KEY from .env. The agent runner prefers this
+//      credential store over the config-file apiKey; drift here produces
+//      HTTP 401 from vLLM even when providers.vllm.apiKey is correct.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -511,6 +515,59 @@ if (typeof authToken === 'string' && authToken) {
   }
 } else {
   console.log('[patch-config] gateway.auth.token missing — skipped gateway.remote.token mirror (pre-onboarding).');
+}
+
+// (13) Sync per-agent auth-profiles.json with the current VLLM_API_KEY.
+//      OpenClaw stores provider credentials per-agent in
+//      `~/.openclaw/agents/<agent>/agent/auth-profiles.json`. The agent
+//      runner reads the key from there, NOT from models.providers.vllm.apiKey
+//      (which we keep patched in step 2). The wizard seeds this file during
+//      onboarding; after a secret rotation in .env, the per-agent profile
+//      goes stale and every LLM call gets HTTP 401 from vLLM.
+//
+//      We rewrite the file atomically: preserve unrelated profiles,
+//      update/create the `vllm:default` entry, keep version=1. Skipped
+//      entirely when VLLM_API_KEY is empty (opt-out) or the agent dir
+//      doesn't exist yet (pre-onboarding — the wizard will create it).
+if (VLLM_API_KEY) {
+  const agentsDir = '/home/node/.openclaw/agents';
+  if (fs.existsSync(agentsDir)) {
+    for (const agentId of fs.readdirSync(agentsDir)) {
+      const profilePath = `${agentsDir}/${agentId}/agent/auth-profiles.json`;
+      if (!fs.existsSync(profilePath)) continue;
+      let profile;
+      try {
+        profile = JSON.parse(fs.readFileSync(profilePath, 'utf8'));
+      } catch (e) {
+        console.warn(`[patch-config] failed to parse ${profilePath}: ${e.message} — skipping.`);
+        continue;
+      }
+      profile.version ??= 1;
+      profile.profiles ??= {};
+      profile.profiles['vllm:default'] ??= { type: 'api_key', provider: 'vllm' };
+      const cur = profile.profiles['vllm:default'];
+      const desired = { type: 'api_key', provider: 'vllm', key: VLLM_API_KEY };
+      let agentChanged = false;
+      for (const [k, v] of Object.entries(desired)) {
+        if (cur[k] !== v) {
+          const prev = cur[k];
+          cur[k] = v;
+          agentChanged = true;
+          const shown = k === 'key' ? `(len=${String(v).length})` : JSON.stringify(v);
+          const prevShown = k === 'key' && typeof prev === 'string' ? `(len=${prev.length})` : prev === undefined ? '(unset)' : JSON.stringify(prev);
+          console.log(`[patch-config] agents/${agentId}/auth-profiles.json vllm:default.${k}: ${prevShown} -> ${shown}`);
+        }
+      }
+      if (agentChanged) {
+        fs.writeFileSync(profilePath, JSON.stringify(profile, null, 2) + '\n');
+        changed = true;
+      }
+    }
+  } else {
+    console.log('[patch-config] agents dir missing — skipped auth-profiles sync (pre-onboarding).');
+  }
+} else {
+  console.log('[patch-config] VLLM_API_KEY not set — skipped auth-profiles sync.');
 }
 
 if (!changed) {
