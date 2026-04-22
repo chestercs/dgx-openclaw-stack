@@ -25,6 +25,9 @@
 //   9. Ensure memorySearch hybrid (BM25 + vector) retrieval with MMR re-rank.
 //  10. Ensure webSearch provider = searxng + enable the bundled searxng plugin.
 //  11. Ensure messages.tts wiring — env-gated by OPENCLAW_TTS_ROUTER_API_KEY.
+//  12. Mirror gateway.auth.token into gateway.remote.token so the loopback CLI
+//      can WS-connect without hitting "gateway token mismatch" and silently
+//      falling back to an embedded runner.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -485,6 +488,29 @@ if (ttsRouterKey) {
   }
 } else {
   console.log('[patch-config] OPENCLAW_TTS_ROUTER_API_KEY not set — skipping messages.tts.* (TTS opt-out).');
+}
+
+// (12) Mirror gateway.auth.token into gateway.remote.token.
+//      The OpenClaw onboarding wizard writes gateway.auth.token (what the
+//      gateway accepts) but leaves gateway.remote.token (what the local CLI
+//      presents on WS connect) unset or stale. On a mismatch the CLI gets
+//      `unauthorized: gateway token mismatch` and falls back to an embedded
+//      runner, which dials vLLM from the CLI's own env — a separate and
+//      error-prone path. Keeping them in sync makes `openclaw agent` take the
+//      gateway route, which is the one actually exercised by production
+//      clients (Chrome extension, remote CLI, reverse proxy).
+const authToken = config?.gateway?.auth?.token;
+if (typeof authToken === 'string' && authToken) {
+  config.gateway.remote ??= {};
+  if (config.gateway.remote.token !== authToken) {
+    const prev = config.gateway.remote.token;
+    config.gateway.remote.token = authToken;
+    changed = true;
+    const prevShown = typeof prev === 'string' ? `(len=${prev.length})` : prev === undefined ? '(unset)' : prev;
+    console.log(`[patch-config] gateway.remote.token: ${prevShown} -> (len=${authToken.length}) [mirrored from gateway.auth.token]`);
+  }
+} else {
+  console.log('[patch-config] gateway.auth.token missing — skipped gateway.remote.token mirror (pre-onboarding).');
 }
 
 if (!changed) {

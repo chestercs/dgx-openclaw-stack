@@ -659,6 +659,13 @@ services:
       HOME: /home/node
       TERM: xterm-256color
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      # When the CLI's WS connect to the gateway fails (e.g. gateway.remote.token
+      # drift), `openclaw agent` silently falls back to an embedded runner that
+      # dials vLLM directly. The embedded path reads OPENAI_API_KEY from the
+      # container env — without this line it was unset, producing HTTP 401
+      # against an `--api-key`-protected vLLM. Mirror the gateway's wiring.
+      OPENAI_API_KEY: ${VLLM_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://vllm-llm:8004/v1}
       BROWSER: echo
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       OPENCLAW_NO_RESPAWN: "1"
