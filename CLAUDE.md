@@ -44,13 +44,13 @@ The patcher's contract:
 
 ### Two-phase fresh-install onboarding
 
-There's a known sequence on a brand-new install:
+A brand-new install always proceeds in two phases:
 
-1. `docker compose up -d` → patcher skips because `openclaw.json` doesn't exist yet → gateway crash-loops with `Missing config. Run openclaw setup …`. **This is expected**, not a bug.
-2. User runs onboarding (Chrome extension wizard, `openclaw onboard --non-interactive …`, or `openclaw setup`) which creates `openclaw.json`.
-3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli` → patcher now finds the file and applies all 11 steps; gateway picks up the patched config and goes healthy.
+1. `docker compose up -d` starts every service. The patcher skips because `openclaw.json` doesn't exist yet, so the gateway crash-loops with `Missing config. Run openclaw setup …`. **This is the intended state**, not a bug.
+2. The user completes onboarding (Chrome extension wizard, `openclaw onboard --non-interactive …`, or `openclaw setup`), which writes `openclaw.json` to the config volume.
+3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli` re-runs the patcher against the now-existing config; the gateway picks up the patched file and goes healthy.
 
-If you find yourself wanting to "fix" the crash-loop in step 1, don't. The OpenClaw security model requires explicit onboarding; the alternative would weaken auth defaults.
+Don't try to "fix" the crash-loop in step 1 by patching defaults into a freshly created `openclaw.json` — the OpenClaw security model requires explicit onboarding so the operator chooses the gateway token and pairs the UI before the gateway accepts connections. Skipping that step would weaken the auth defaults.
 
 ### Defaults assume GB10, but env overrides keep the repo portable
 
@@ -87,22 +87,29 @@ The repo's quality bar is "real verification on a real host," not "syntax-checks
 
 ## Useful one-liners
 
+These snippets assume `${PROJ}` holds the container-name prefix (default `dgx-`, set via `CONTAINER_NAME_PREFIX` in `.env`). Source it once per shell:
+
 ```bash
-# Check what the patcher would do (run inside the gateway container's volume context)
-docker exec <project>-openclaw-config-init node /opt/patch-config.mjs
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
+PROJ=${PROJ:-dgx-}
+```
+
+```bash
+# Re-run the patcher against the live openclaw.json
+docker exec ${PROJ}openclaw-config-init node /opt/patch-config.mjs
 
 # Inspect the live openclaw.json
 cat $OPENCLAW_CONFIG_DIR/openclaw.json | jq '.models.providers.vllm, .agents.defaults.memorySearch, .plugins.entries.searxng.config.webSearch'
 
 # Test SearxNG JSON API from inside the gateway namespace
-docker exec <project>-openclaw-cli curl -sS "http://searxng:8080/search?q=test&format=json" | jq '.results | length'
+docker exec ${PROJ}openclaw-cli curl -sS "http://searxng:8080/search?q=test&format=json" | jq '.results | length'
 
 # Memory hybrid search smoke test
-docker exec <project>-openclaw-cli openclaw memory status --deep
-docker exec <project>-openclaw-cli openclaw memory search "your query"
+docker exec ${PROJ}openclaw-cli openclaw memory status --deep
+docker exec ${PROJ}openclaw-cli openclaw memory search "your query"
 
 # Multi-tool agent run via the gateway
-docker exec <project>-openclaw-cli openclaw agent --agent main \
+docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message "Use web_search to find …" --thinking medium --json --timeout 240
 ```
 

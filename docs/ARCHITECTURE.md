@@ -1,6 +1,10 @@
 # Architecture
 
-This document explains how the eight services in `docker-compose.yml` fit together (nine with the optional `hu` profile active) and **why** each design choice was made. Read this if you plan to modify the stack — the compose file and `patch-config.mjs` have decisions baked into them that only make sense with the rationale below.
+This document explains how the eight services in `docker-compose.yml` fit together (nine with the optional `hu` profile active) and **why** each design choice was made.
+
+**Audience.** Operators who want to understand what the stack does before running it; contributors planning to modify the compose file or `patch-config.mjs`; anyone comparing this layout against their own self-hosted LLM setup. The compose file and patcher have decisions baked into them that only make sense with the rationale below — read this before tuning them.
+
+If you only want to bring the stack up, [`SETUP.md`](../SETUP.md) is the shorter path. If you want to swap models or point at a remote backend, [`CUSTOMIZATION.md`](CUSTOMIZATION.md) is the next stop.
 
 ---
 

@@ -1,8 +1,10 @@
 # Setup — DGX OpenClaw Stack
 
-This guide walks you from a fresh DGX Spark / ASUS GB10 box to a running agent, step by step. Expect 20–30 minutes end-to-end (most of it is the first model download).
+This guide walks you from a fresh DGX Spark / ASUS GB10 box to a running agent, step by step.
 
-If anything goes wrong, see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+**Time budget**: ~20–30 minutes end-to-end on a first install (most of it the initial model download). Subsequent `docker compose up -d` cycles complete in under two minutes once weights are cached.
+
+**Audience**: end-users and sysadmins setting up the stack for the first time. For "how do I customize X" go to [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md); for design rationale go to [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). If something is wrong, jump straight to [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ---
 
@@ -164,43 +166,42 @@ picks up the patched config.
 
 ## 7. First conversation & sanity checks
 
-The shell snippets below use `${PROJ}` to refer to the container name prefix —
-default `dgx-` (set via `CONTAINER_NAME_PREFIX` in `.env`). Source it once:
+The shell snippets below use `${PROJ}` for the container-name prefix — default `dgx-` (set via `CONTAINER_NAME_PREFIX` in `.env`; set it empty for bare names like `openclaw-gateway`). Source it once:
 
 ```bash
 PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
 PROJ=${PROJ:-dgx-}
 ```
 
-Three quick checks via the Chrome extension:
-
-**Tool calling works:**
-- Ask the agent: "What's the current time in UTC?"
-- It should call the built-in `get_time` tool and reply with a timestamp, not say "I don't have access".
-
-**Image input works:**
-- Drag an image into the chat. The agent should describe it.
-- Vision prefill adds ~1–2s and ~280 tokens per image by default.
-
-**Memory search works (after you save something):**
-- Tell the agent a fact (e.g. "Remember that my favorite color is ultramarine").
-- Close the chat, open a new one, ask the agent to recall your favorite color. It should retrieve from memory.
-
-Spot-check memory from the CLI:
+### Required: confirm the trio is healthy
 
 ```bash
+curl -sS http://127.0.0.1:18789/healthz                 # → {"ok":true,"status":"live"}
 docker exec ${PROJ}openclaw-cli openclaw memory status --deep
-# Should print Embeddings ready, Vector ready (dims 1024).
+# Embeddings ready, Vector ready (dims 1024 for bge-m3).
 ```
 
-**Web search works:**
-- Ask the agent something that only a live search can answer (e.g. "Who's the current prime minister of <country>? Use web_search.").
-- The agent should call the `web_search` tool, hit the local SearxNG instance, and reply with a URL-backed answer. If you see a generic "I'm not sure" without a tool call, pair the question with an explicit "call the web_search tool" instruction — small models sometimes skip tools on conversational prompts.
-- Spot-check from the host:
-  ```bash
-  docker exec ${PROJ}openclaw-cli curl -s 'http://searxng:8080/search?q=test&format=json' | head
-  ```
-  Should return a JSON blob with a `results` array.
+If either command fails or returns the wrong shape, stop here and check [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+
+### Recommended: smoke-test each capability end-to-end
+
+Open the Chrome extension and try these in a single chat session:
+
+| Capability | What to ask | What you should see |
+|---|---|---|
+| **Tool calling** | "What's the current time in UTC?" | The agent calls `get_time` and answers with a real timestamp (not "I don't have access"). |
+| **Image input** | Drag an image into the chat and ask "What's in this picture?" | A description. Vision prefill adds ~1–2 s and ~280 tokens per image. |
+| **Memory recall** | First turn: "Remember my favorite color is ultramarine." Open a *new* chat, ask: "What's my favorite color?" | The new session calls `memory_search` and recovers `ultramarine`. |
+| **Web search** | "Use the `web_search` tool to find the current prime minister of Hungary, then cite the source URL." | The agent calls `web_search`, hits the bundled SearxNG, and answers with a URL. |
+
+Smaller models occasionally skip tool calls on conversational prompts — naming the tool in the question makes the call deterministic during smoke-testing.
+
+Spot-check SearxNG directly:
+
+```bash
+docker exec ${PROJ}openclaw-cli curl -s 'http://searxng:8080/search?q=test&format=json' | head
+# Should return a JSON blob with a non-empty `results` array.
+```
 
 ## 8. (Optional) Reverse proxy + TLS
 

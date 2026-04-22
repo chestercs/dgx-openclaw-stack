@@ -1,9 +1,18 @@
 # Troubleshooting
 
-Common failure modes and their fixes, ordered roughly by how often they bite first-time users. If something here doesn't match your symptom, the most productive next step is:
+Common failure modes and their fixes, grouped by the service you're most likely inspecting when you hit them. The two most frequent first-boot issues — the gateway crash-loop before onboarding and the vllm-llm weights download — live at the top of their respective sections.
+
+If something here doesn't match your symptom, the most productive next step is:
 
 ```bash
 docker compose logs --tail=200 <service>
+```
+
+Shell snippets use `${PROJ}` for the container-name prefix (default `dgx-`, set via `CONTAINER_NAME_PREFIX` in `.env`). Source it once:
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
+PROJ=${PROJ:-dgx-}
 ```
 
 ---
@@ -47,7 +56,7 @@ You're not on a GB10 / Blackwell (`sm_120` / `sm_121`). The NVFP4 kernels requir
 The Gemma 4 chat template isn't being picked up. Check:
 
 ```bash
-docker exec dgx-vllm-llm ls /templates/
+docker exec ${PROJ}vllm-llm ls /templates/
 # Should show: tool_chat_template_gemma4.jinja
 ```
 
@@ -98,11 +107,11 @@ The gateway's provider config still has a placeholder API key. Either:
 Verify:
 
 ```bash
-docker exec dgx-openclaw-gateway cat /home/node/.openclaw/openclaw.json \
+docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/openclaw.json \
   | grep -A1 '"vllm"' | head -20
 ```
 
-The `apiKey` field should match your `VLLM_API_KEY` in `.env` (same length, 88 chars for a base64-64 secret).
+The `apiKey` field should be the exact same string as `VLLM_API_KEY` in your `.env`. If it looks like `CHANGE_ME_…` instead, the placeholder was never replaced — check that `bootstrap.sh` actually ran, or set the value by hand and re-run the patcher.
 
 ### `Config invalid: must NOT have additional properties` on boot
 
@@ -116,7 +125,7 @@ You have `OPENCLAW_ENABLE_DREAMING=1` in `.env` but your OpenClaw image is older
 Impossible with the shipped `patch-config.mjs` — step 7 populates it. If you still see this, something is preventing the patcher from writing. Check:
 
 ```bash
-docker logs dgx-openclaw-config-init
+docker logs ${PROJ}openclaw-config-init
 ```
 
 Common cause: wrong ownership on `$OPENCLAW_CONFIG_DIR`. The init container runs as UID 1000 and needs write access to that directory.
@@ -135,7 +144,7 @@ Nothing has been embedded yet. Start a chat, write a memory, wait ~1s. `--deep` 
 
 ### `openclaw: command not found` in the cli container
 
-You're probably running `docker exec dgx-openclaw-cli openclaw` but the container isn't up. Check `docker compose ps openclaw-cli`. It should be `Up` (no healthcheck, just running `sleep infinity`).
+You're probably running `docker exec ${PROJ}openclaw-cli openclaw` but the container isn't up. Check `docker compose ps openclaw-cli`. It should be `Up` (no healthcheck, just running `sleep infinity`).
 
 ### `ENETUNREACH` when calling `openclaw memory status --deep`
 
@@ -155,7 +164,7 @@ The most common cause on a stack upgraded from < 0.4.0: patcher step 11 wired
 silently treats TTS as off. Fix:
 
 ```bash
-docker exec dgx-openclaw-cli cat /home/node/.openclaw/openclaw.json \
+docker exec ${PROJ}openclaw-cli cat /home/node/.openclaw/openclaw.json \
   | jq '.messages.tts | {enabled, auto, mode, provider: .providers.openai.baseUrl}'
 ```
 
@@ -198,7 +207,7 @@ Check:
 
 ```bash
 docker compose ps openclaw-tts-f5hun       # should be Up (healthy)
-docker exec dgx-openclaw-tts-router curl -sS http://openclaw-tts-f5hun:8080/healthz
+docker exec ${PROJ}openclaw-tts-router curl -sS http://openclaw-tts-f5hun:8080/healthz
 ```
 
 ### Hungarian text comes out with English phonetics
@@ -230,7 +239,7 @@ docker system df           # shows volumes / images / build cache usage
 docker image prune -a      # reclaim old images (CAREFUL: removes untagged)
 ```
 
-The HF cache at `$VLLM_HF_CACHE_DIR` grows by ~16 GB per model version. If you bump image tags, you may want to `docker volume rm dgx-openclaw-hf-cache` (or just `rm -rf` that host path when the stack is down) to re-download from scratch.
+The HF cache at `$VLLM_HF_CACHE_DIR` grows by ~16 GB per model version. If you bump image tags, you may want to remove the named cache volume (default `dgx-openclaw-hf-cache`; see `VLLM_HF_CACHE_VOLUME_NAME` in `.env`) via `docker volume rm`, or just `rm -rf` the host path when the stack is down — either forces a fresh download.
 
 ### Gateway service shows `(unhealthy)` forever but logs look fine
 

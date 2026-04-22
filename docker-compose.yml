@@ -1,23 +1,36 @@
-# DGX OpenClaw Stack — production-ready local LLM + RAG stack for NVIDIA DGX
-# Spark and ASUS GB10 (Grace-Blackwell, 128 GB unified memory, NVFP4 native).
+# DGX OpenClaw Stack — local LLM + RAG + agent stack for NVIDIA DGX Spark and
+# ASUS GB10 (Grace-Blackwell, 128 GB unified memory, NVFP4 native).
 #
-# Services:
-#   - vllm-llm:       Gemma 4 31B IT in NVFP4 quantization (port 8004, internal)
-#   - vllm-embedding: BAAI/bge-m3 multilingual embeddings  (port 8005, internal)
-#   - openclaw-*:     OpenClaw gateway + CLI + config patcher (port 18789, exposed)
+# Quick reference:
+#   - First-time setup: `./bootstrap.sh` creates .env, host dirs, rotates secrets
+#   - Day-to-day:       `docker compose up -d` / `docker compose logs -f`
+#   - Step-by-step:     SETUP.md (audience: end-users + sysadmins)
+#   - Design rationale: docs/ARCHITECTURE.md (audience: contributors + curious)
 #
-# Single-file bring-up:
-#   ./bootstrap.sh            # first time only (creates .env, host dirs, rotates secrets)
-#   docker compose up -d
+# Services and host ports:
+#   vllm-llm             — Gemma 4 31B IT NVFP4         port 8004 (internal)
+#   vllm-embedding       — BAAI/bge-m3 1024-dim         port 8005 (internal)
+#   searxng              — privacy meta-search          port 8080 (internal)
+#   openclaw-tts-en      — Kokoro 82M (English)         port 8091 (loopback)
+#   openclaw-tts-router  — OpenAI-compat /v1/audio      port 8092 (loopback)
+#   openclaw-tts-f5hun   — F5-TTS Hungarian (opt-in)    port 8090 (loopback, profile=hu)
+#   openclaw-gateway     — agent gateway + WebSocket    port 18789 (exposed)
+#   openclaw-config-init — idempotent config patcher    one-shot
+#   openclaw-cli         — always-up exec target        shares gateway namespace
 #
-# Inter-service networking happens on the default compose network by DNS
-# (vllm-llm:8004, vllm-embedding:8005). We do NOT publish the vLLM ports on
-# 0.0.0.0 — they are reachable only from sibling containers. If you need host-
-# side debug access, uncomment the `127.0.0.1:` bindings on each vllm service.
-#
-# Only the OpenClaw gateway (18789) is exposed on the host, intended to sit
-# behind a reverse proxy (Nginx Proxy Manager + Cloudflare tunnel etc.) for
-# public access over wss://.
+# Networking model:
+#   - Sibling containers reach each other by compose service name (vllm-llm:8004,
+#     vllm-embedding:8005, searxng:8080, openclaw-tts-router:8080) on the default
+#     compose bridge network. No host port publishing is required for inter-
+#     service traffic.
+#   - vLLM ports are intentionally NOT published on the host — uncomment the
+#     `127.0.0.1:` bindings only if you need direct debug access, and keep the
+#     bind on loopback (an unauthenticated 0.0.0.0 vLLM endpoint is an open door).
+#   - TTS ports default to loopback (127.0.0.1) for the same reason; expose on
+#     the LAN by setting TTS_*_BIND=0.0.0.0 in .env (Bearer-token-protected).
+#   - Only the gateway (18789) is exposed on 0.0.0.0 by default. Put a reverse
+#     proxy (Nginx Proxy Manager, Caddy, Cloudflare tunnel) in front for public
+#     access over wss://.
 
 volumes:
   # Shared HuggingFace cache volume — both vLLM services pull model weights

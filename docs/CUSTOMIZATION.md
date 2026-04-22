@@ -12,7 +12,7 @@ The three coupled pieces are:
 2. The `LLM_MODEL_ID` constant in `patch-config.mjs`.
 3. The `LLM_MODEL_ENTRY` metadata in `patch-config.mjs` (context window, input modalities, reasoning flag).
 
-Any model change requires editing all three.
+Any model change requires editing all three. **Why three places?** vLLM needs to know which weights to load (#1); the patcher needs to know which model id to register in the OpenClaw provider catalog so tool-calling routes to the right entry (#2); and OpenClaw uses the metadata in the catalog entry to cap prompt sizes, gate vision input, and drive the thinking-mode UI (#3). They aren't auto-derived from each other — consistency is your job. We hard-code these rather than templating them because a mistake here (a wrong context window, a missing `image` input type) is silent: the stack boots, chats work, and tool calls or images break in subtle ways hours later.
 
 ### Smaller Gemma 4 (12B NVFP4)
 

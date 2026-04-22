@@ -1,80 +1,51 @@
 // Idempotent patch applied to the OpenClaw gateway's config (openclaw.json),
-// executed by the openclaw-config-init service before every `docker compose up`.
+// run by the openclaw-config-init service before every `docker compose up`.
 //
-// Why a patcher and not just onboarding?
-// ---------------------------------------
-// The interactive onboarding wizard covers the basics (picking a provider, setting
-// the gateway token, creating the default agent) but does NOT populate several
-// production-critical fields correctly for a self-hosted vLLM backend:
+// Why a patcher, not just onboarding? The interactive wizard picks a provider,
+// sets the gateway token, and creates the default agent — but it leaves several
+// production-critical fields wrong for a self-hosted vLLM backend: placeholder
+// `apiKey`, no NVFP4 model id in the catalog, memorySearch disabled, empty
+// `gateway.trustedProxies`, and a 120s LLM idle watchdog that's too tight for
+// 31B + reasoning + vision prefill + multi-step tool calling.
 //
-//   - It writes a 12-char placeholder `apiKey` into the vllm provider config
-//     (leading to a "Profile vllm:default timed out" error against a real backend).
-//   - It doesn't register the NVFP4 model id in the provider's models[] catalog
-//     (so tool-calling can't be routed to it).
-//   - It leaves memorySearch disabled (no embedding provider bundled out of the box).
-//   - It ships an empty `gateway.trustedProxies`, triggering a security warning
-//     behind any reverse proxy (Nginx Proxy Manager, Caddy, Traefik, Cloudflared).
-//   - Its LLM idle watchdog is 120s, too tight for a 31B model + reasoning +
-//     vision prefill + multi-step tool calling.
+// This script makes the desired state deterministic — every `docker compose up`
+// re-applies the 11 steps below in a deep-merge style. Safe to re-run; exits
+// early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
+// (pre-onboarding fresh install) so the gateway container can still boot.
 //
-// This patcher makes the desired state deterministic: every `docker compose up`
-// re-applies the 11 steps below in a deep-merge style. Safe to re-run — it exits
-// early when the file is already in the desired state, and if openclaw.json
-// doesn't exist yet (pre-onboarding), it exits 0 so the gateway can still boot.
-//
-// Steps:
-//   1. Cleanup — strip the legacy `models.providers.vllm.capabilities` key
-//      (an older OpenClaw version put this in the wrong place; the current
-//      schema validator rejects it).
-//   2. Ensure vllm provider core (baseUrl / api / apiKey) using VLLM_API_KEY.
+// Step index:
+//   1. Strip the legacy `models.providers.vllm.capabilities` key.
+//   2. Ensure vllm provider core (baseUrl / api / apiKey).
 //   3. Ensure the NVFP4 model entry in the provider catalog.
-//   4. Ensure memorySearch: provider=openai, model=BAAI/bge-m3, remote baseUrl
-//      and apiKey pointing at the sibling vllm-embedding container.
-//   5. Ensure heartbeat: 30m periodic, reasoning enabled, isolated session,
-//      activeHours configurable via .env (default 09:00 → 02:00).
-//   6. Ensure/cleanup dreaming (memory-core plugin), gated by OPENCLAW_ENABLE_DREAMING.
-//      Requires OpenClaw image >= 2026.4.15 — older gateways reject the schema.
-//   7. Ensure gateway.trustedProxies: loopback + docker bridge CIDR + the
-//      optional LAN CIDR from OPENCLAW_LAN_CIDR (users who access the gateway
-//      directly on the LAN, bypassing the CDN/reverse proxy, must include their
-//      LAN range here so X-Forwarded-For is trusted).
-//   8. Ensure agents.defaults.llm.idleTimeoutSeconds = 300 (LLM idle watchdog).
+//   4. Ensure memorySearch points at the bge-m3 embedding service.
+//   5. Ensure heartbeat (30m periodic, reasoning, isolated, activeHours).
+//   6. Ensure/cleanup dreaming — env-gated by OPENCLAW_ENABLE_DREAMING.
+//   7. Ensure gateway.trustedProxies — loopback + bridge + optional LAN CIDR.
+//   8. Ensure agents.defaults.llm.idleTimeoutSeconds = 300.
 //   9. Ensure memorySearch hybrid (BM25 + vector) retrieval with MMR re-rank.
-//      SQLite FTS5 BM25 supplements bge-m3 on exact-keyword / ID / proper-noun
-//      matches; MMR re-rank widens result diversity (candidates × multiplier →
-//      re-ranked to topK). Native OpenClaw feature, no extra services.
-//  10. Ensure webSearch provider = searxng + flip the bundled searxng plugin's
-//      `enabled` flag to true (the plugin ships bundled-but-default-disabled;
-//      without the explicit enable the gateway leaves it in "bundled (disabled
-//      by default)" state and the webSearch tool never lights up).
-//  11. Ensure messages.tts is wired at the openclaw-tts-router:
-//      - top-level switches (enabled / auto / mode) so the gateway actually
-//        invokes the provider on Discord / voice-skill paths;
-//      - providers.openai block (baseUrl / apiKey / model / voiceId) using the
-//        OpenAI-compat override sanctioned per closed OpenClaw issues
-//        #13907 / #29224;
-//      - voiceAliases for human-readable voice ids (english / narrator / …).
-//      Env-gated via OPENCLAW_TTS_ROUTER_API_KEY — when unset, the entire
-//      messages.tts block is left untouched so the user can opt out cleanly.
+//  10. Ensure webSearch provider = searxng + enable the bundled searxng plugin.
+//  11. Ensure messages.tts wiring — env-gated by OPENCLAW_TTS_ROUTER_API_KEY.
+//
+// Each step's inline comment below explains *why* (constraint, benchmark, or
+// schema gotcha). When adding a step, follow the same deep-merge pattern and
+// log a `[patch-config]` line for every field you change.
 
 import fs from 'node:fs';
 
 const CONFIG_PATH = '/home/node/.openclaw/openclaw.json';
 
-// LLM provider — the Gemma 4 31B IT NVFP4 vLLM service.
-// Default points at the in-compose `vllm-llm` service via the bridge DNS.
+// LLM provider — Gemma 4 31B IT NVFP4 on the in-compose `vllm-llm` service.
 // Override LLM_BASE_URL in .env to point at any OpenAI-compatible chat endpoint
-// (a remote vLLM on another box, a cloud Bedrock proxy, OpenRouter, vLLM-on-RunPod,
-// etc.) — useful if you want to keep the gateway / SearxNG / agent runtime local
-// but host the heavy LLM elsewhere. See docs/CUSTOMIZATION.md.
+// (remote vLLM, Bedrock proxy, OpenRouter, …). See .env.example and
+// docs/CUSTOMIZATION.md → "Run with a remote vLLM backend".
 const LLM_MODEL_ID = 'nvidia/Gemma-4-31B-IT-NVFP4';
 const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://vllm-llm:8004/v1/';
 const LLM_API = 'openai-completions';
 const VLLM_API_KEY = process.env.VLLM_API_KEY ?? '';
 
-// Embedding provider — the bge-m3 vLLM service.
-// Same VLLM_API_KEY as the LLM (both share one key by convention).
-// Override EMBED_BASE_URL in .env to host embeddings on a different machine.
+// Embedding provider — bge-m3 on the in-compose `vllm-embedding` service.
+// Shares VLLM_API_KEY with the LLM by convention; override EMBED_BASE_URL to
+// host embeddings on a different machine.
 const EMBED_MODEL = 'BAAI/bge-m3';
 const EMBED_BASE_URL = process.env.EMBED_BASE_URL || 'http://vllm-embedding:8005/v1/';
 

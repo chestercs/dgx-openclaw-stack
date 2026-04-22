@@ -25,6 +25,17 @@ The default profile's tuning decisions — NVFP4 quantization, GPU memory split 
 
 ---
 
+## Who this is for
+
+| You are… | What you get | Time to working stack |
+|---|---|---|
+| **A GB10 owner** (DGX Spark, ASUS Ascent GB10) | The calibrated reference profile. Boot the stack and run Gemma 4 31B NVFP4 with multilingual embeddings, hybrid memory, private web search, bilingual TTS — on your hardware, no cloud. | ~30 min, mostly model download |
+| **An x86_64 + NVIDIA GPU operator** (RTX 4090, A6000, etc.) | Same wiring; swap `vllm-llm` for a model your VRAM holds (Gemma 4 12B BF16, Qwen 2.5, Llama 3.3). All non-LLM services transfer unchanged. | ~30 min + tuning |
+| **A cloud-LLM user** (OpenAI, Anthropic, OpenRouter, Bedrock, remote vLLM) | Park the local LLM service, point three env vars at your hosted endpoint. You still get the local agent stack: bge-m3 embeddings, SearxNG private search, hybrid memory, dreaming, heartbeat, TTS. | ~10 min (no GPU) |
+| **A contributor or curious reader** | A worked example of a deterministic, opinionated AI agent stack. Every wiring decision has a *why* in the comments; the patcher is small enough to read in one sitting. | n/a — start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+
+If none of those rows describe you, this repo probably isn't your fit — it's optimized for self-hosting on real hardware (or a real cloud LLM), not for trying out a chatbot on a laptop.
+
 ## What you get
 
 A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), with:
@@ -40,12 +51,6 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 
 Everything lives in one Docker Compose file. No separate vLLM service definitions, no reverse-proxied DNS trickery, no `host.docker.internal` workarounds — containers reach each other by their compose service name on the default bridge network.
 
-## Who is this for
-
-- **GB10 owners (DGX Spark, ASUS Ascent GB10)** — the calibrated reference profile. Boot it, get ~6.9 tok/s decode on Gemma 4 31B NVFP4 with 256K context, multimodal, tool calling, hybrid memory, private web search.
-- **x86_64 + consumer NVIDIA GPU (RTX 4090 etc.)** — the LLM service is the only piece tied to GB10 hardware. Swap `vllm-llm` for any model your VRAM holds (smaller Gemma 4, Qwen 2.5, Llama 3.3…) using a stock vLLM image; the rest of the stack and the patcher's known-good wiring transfer unchanged. Pointers in [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md).
-- **Cloud LLM users (OpenAI, Anthropic, OpenRouter, AWS Bedrock…)** — point OpenClaw's vllm provider at your hosted endpoint via three `.env` overrides (`OPENAI_BASE_URL` / `LLM_BASE_URL` / `EMBED_BASE_URL`) and park `vllm-llm` + `vllm-embedding` behind `profiles: ["never"]`. You still get bge-m3 (cheap local multilingual embeddings, no per-token cost — or aim that override at a remote embed service too), SearxNG (private web search, no Tavily/Serper key), hybrid + MMR retrieval, idempotent config, dreaming, heartbeat. **Verified end-to-end** on a GPU-less Windows host pointed at a remote vLLM over LAN: agent chat, web search, hybrid memory retrieval, multi-tool reasoning all work unchanged. Walkthrough in [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md) → "Run with a remote vLLM backend".
-
 ## Hardware targets
 
 The reference profile (`docker compose up -d` with no edits) is designed and tested on:
@@ -60,39 +65,35 @@ The reference profile **won't boot as-is on non-GB10 hardware** — `vllm/vllm-o
 - **Other NVIDIA GPU**: switch to a stock vLLM image and a model that fits your VRAM (smaller Gemma 4 NVFP4 if you have a Blackwell desktop; Gemma 4 12B BF16 / Qwen 2.5 / Llama 3.3 elsewhere). The memory-split and concurrency constants in `.env.example` will need re-tuning for your card.
 - **Cloud LLM**: park the local vLLM services behind `profiles: ["never"]` and set `OPENAI_BASE_URL` / `LLM_BASE_URL` / `EMBED_BASE_URL` in `.env` to your hosted endpoints (cloud OpenAI-compatible API, remote vLLM on another box, etc.). bge-m3 stays local by default but can also be remoted. Everything downstream — gateway, SearxNG, hybrid retrieval, dreaming, heartbeat — is unchanged.
 
-### Performance (measured)
+### Performance (measured on GB10, single-shot generation)
 
 | Scenario | Value |
 |---|---|
-| Decode throughput, 1 user | ~6.9 tok/s (NVFP4) vs ~3.7 tok/s (BF16) — ~2× speedup |
-| Stable context, 1 user | ~220K tokens (before preemption) |
-| Stable context, 2 users | ~110K tokens each, continuous batching |
-| Vision prefill per image | ~280 vision tokens (≈ 512×512 region), sub-second encode |
-| First-boot cold start | ~3–4 min once weights are cached |
-| KV cache type | FP8 (halves cache footprint) |
+| Decode throughput, 1 concurrent user | ~6.9 tok/s sustained (NVFP4) vs ~3.7 tok/s (BF16) — ~2× speedup |
+| Stable context window, 1 concurrent user | ~220K tokens before vLLM preemption |
+| Stable context window, 2 concurrent users | ~110K tokens each, served via continuous batching |
+| Vision prefill per image | ~280 vision tokens for a ≈ 512×512 region, sub-second encode |
+| First-boot cold start (after model download) | ~3–4 min from `up` to gateway-ready |
+| KV cache | FP8 (halves cache footprint vs default BF16 KV cache) |
+
+Numbers come from a DGX Spark with 128 GB unified LPDDR5X. Single-prompt streaming with a warm KV cache; throughput drops with longer contexts and more concurrent users. Re-tune the `LLM_GPU_MEM_UTIL` / `LLM_MAX_NUM_SEQS` constants in `.env` for other hardware.
 
 ## Quickstart
+
+Five commands. First-boot is two-phase by design (the gateway waits for explicit OpenClaw onboarding before applying the wiring); skip the heads-up below at your peril.
 
 ```bash
 git clone https://github.com/chestercs/dgx-openclaw-stack.git
 cd dgx-openclaw-stack
 
-./bootstrap.sh          # interactive, non-destructive, idempotent
-docker compose up -d
-docker compose logs -f  # watch services come up (~3-4 min for vllm-llm)
+./bootstrap.sh                              # interactive, non-destructive, idempotent
+docker compose up -d                        # services start; gateway will crash-loop until step 5
+# 4. Open the OpenClaw Chrome extension or run `openclaw setup` on the host,
+#    pair it with `ws://<your-host>:18789` using the token printed by bootstrap.
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-Then open the OpenClaw Chrome extension and pair it with `ws://<your-host>:18789` using the gateway token printed at the end of `bootstrap.sh`.
-
-> **First-boot heads-up.** On a fresh install, `openclaw-gateway` will
-> crash-loop with `Missing config. Run openclaw setup …` until you complete
-> OpenClaw onboarding (Chrome extension wizard, `openclaw setup`, or
-> `openclaw onboard --non-interactive`). After onboarding writes
-> `openclaw.json`, run
-> `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`
-> and the patcher will apply all 11 steps. Step-by-step: [SETUP.md](SETUP.md).
-
-Full walkthrough: [SETUP.md](SETUP.md).
+That's it — the patcher applies all 11 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Architecture at a glance
 

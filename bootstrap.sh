@@ -57,7 +57,7 @@ ok "docker compose: $(docker compose version --short)"
 if ! docker info 2>/dev/null | grep -q 'Runtimes:.*nvidia'; then
   warn "NVIDIA container runtime not detected. The stack will fail to start GPU services."
   warn "Install nvidia-container-toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-  warn "Continuing anyway — you can fix this before `docker compose up`."
+  warn 'Continuing anyway — you can fix this before `docker compose up`.'
 else
   ok "nvidia container runtime present"
 fi
@@ -88,13 +88,20 @@ else
 fi
 
 # Helper: in-place substitute a key=value only if the current value matches a
-# given "still-placeholder" predicate. Never overwrites a real value.
+# given "still-placeholder" predicate. Never overwrites a real user value.
 #
 #   upsert_env KEY NEWVAL PLACEHOLDER_REGEX
 # Behavior:
 #   - If .env has KEY= matching PLACEHOLDER_REGEX  → replace with NEWVAL.
 #   - If .env has KEY= with any other value         → leave alone, report.
 #   - If .env has no KEY at all                     → append KEY=NEWVAL.
+#
+# Two calling conventions are used below:
+#   - Secrets (VLLM_API_KEY, …): regex `^CHANGE_ME` so only the placeholder
+#     shipped in .env.example gets replaced — real user secrets are safe.
+#   - Tokens the caller already verified are empty (HU token, HF token, host
+#     paths): regex `.*` because the call site gates on "current value empty"
+#     before invoking upsert_env, so unconditional overwrite is intended.
 upsert_env() {
   local key="$1" newval="$2" placeholder_regex="$3"
   local current
@@ -229,16 +236,10 @@ printf 'LAN CIDR, etc.) before first boot:\n\n'
 printf '    %b$EDITOR %s/.env%b\n\n' "$BOLD" "$SCRIPT_DIR" "$RESET"
 printf 'Then start the stack:\n\n'
 printf '    %bdocker compose up -d%b\n\n' "$BOLD" "$RESET"
-printf '(Hungarian TTS opt-in: re-run with --profile hu, or set\n'
-printf 'COMPOSE_PROFILES=hu in .env. Model weights are CC-BY-NC-4.0 —\n'
-printf 'see openclaw-tts-f5hun/README.md before commercial use.)\n\n'
-printf 'Expected first-boot timeline on DGX Spark / ASUS GB10:\n'
-printf '    - model download (first time only): ~5-15 min depending on network\n'
-printf '    - vllm-llm ready:      ~3-4 min after containers start\n'
-printf '    - vllm-embedding ready: <1 min\n'
-printf '    - openclaw-gateway:    <30 s after both vllm services are healthy\n\n'
-printf 'Then open the OpenClaw onboarding:\n\n'
-printf '    Chrome extension: https://chromewebstore.google.com/detail/openclaw\n'
-printf '    pair with:        ws://<your-host>:18789  (token: see OPENCLAW_GATEWAY_TOKEN in .env)\n\n'
-printf 'Full guide: %s/SETUP.md\n' "$SCRIPT_DIR"
-printf 'Troubleshooting: %s/docs/TROUBLESHOOTING.md\n\n' "$SCRIPT_DIR"
+printf 'First boot is two-phase by design: the gateway crash-loops until you\n'
+printf 'complete onboarding (Chrome extension or `openclaw onboard …`), then\n'
+printf 'you re-run the patcher to pick up the new openclaw.json. Full walkthrough:\n\n'
+printf '    %bSETUP.md%b — step-by-step first-boot guide\n' "$BOLD" "$RESET"
+printf '    %bdocs/TROUBLESHOOTING.md%b — common failure modes\n\n' "$BOLD" "$RESET"
+printf 'Hungarian TTS (F5-TTS, CC-BY-NC): opt-in via --profile hu or\n'
+printf 'COMPOSE_PROFILES=hu in .env — see openclaw-tts-f5hun/README.md.\n'

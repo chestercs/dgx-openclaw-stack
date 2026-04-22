@@ -36,8 +36,10 @@ both sides.
 Good fits: portability paths (new hardware profile, new cloud LLM backend),
 patcher robustness, documentation gaps, small QoL fixes.
 
-Less good fits: sprawling new services that warrant a companion repo, opinion
-shifts away from the privacy-first / local-first defaults.
+Out of scope for this repo (better as a companion project): large new service
+stacks that significantly expand the footprint, or direction changes that move
+away from the privacy-first / local-first defaults. Both are legitimate — they
+just belong in their own repo, not this one.
 
 ## Pull requests
 
