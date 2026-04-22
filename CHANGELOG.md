@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, patcher step detail, CLI overhead), `patterns.md`, and an index
   `README.md`. The root `CLAUDE.md` "When in doubt" section points here as
   the next stop for deeper questions.
+- **Documentation-language policy in `CLAUDE.md`** — new `Working principles`
+  subsection declaring that every public repo file (README, SETUP, CLAUDE,
+  CHANGELOG, `docs/**`, compose/patcher inline comments, commit messages,
+  PR/issue templates, release notes) is written in English. Imported
+  non-English material is translated before commit. Existing pre-v0.4.1
+  Hungarian material under `docs/reference/` is a grandfathered exception.
 
 ## [0.4.1] - 2026-04-22
 

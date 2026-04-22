@@ -79,6 +79,14 @@ A change that touches the patcher or compose file isn't complete until:
 
 The repo's quality bar is "real verification on a real host," not "syntax-checks only." Edge cases caught in the wild — fresh-install state, port-publishing assumptions, bridge DNS reachability from `network_mode: service:` containers — are not theoretical.
 
+### Documentation language: English for anything public
+
+Every file that lands in this public repo — `README.md`, `SETUP.md`, `CLAUDE.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, everything under `docs/` (including `docs/reference/`), `.github/*`, compose / patcher inline comments, commit messages, PR and issue templates, GitHub Release notes — is written in English. This is a hard rule, not a preference: the repo targets a global audience, and mixing languages splits the readership.
+
+If you're importing or adapting material from a non-English source (a private knowledge base, a Hungarian research note, a vendor doc), translate it before committing. Don't push a "we'll translate it later" commit; "later" becomes "never," and mixed-language docs are worse than a smaller English-only set.
+
+(Pre-v0.4.1 material under `docs/reference/` is a grandfathered exception — the user explicitly accepted it in Hungarian. New additions there, and edits to the existing files, go into English.)
+
 ## Things to avoid
 
 - **Don't bypass the patcher** by writing to `openclaw.json` directly from a script or from a service entrypoint. The patcher's deep-merge style is intentional — it survives OpenClaw schema migrations.
