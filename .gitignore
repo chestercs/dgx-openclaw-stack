@@ -23,7 +23,8 @@ desktop.ini
 # Logs
 *.log
 
-# Operator-private artifacts kept inside the repo for convenience but never
-# pushed upstream (per-operator Claude settings, custom multi-agent setup
-# instructions, sample audio, host-only userscripts, etc).
-operator/
+# Private artifacts kept inside the repo for convenience but never pushed
+# upstream (per-machine Claude settings, custom multi-agent setup
+# instructions, sample audio, host-only userscripts, private knowledge
+# base, etc).
+private/

@@ -7,14 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-22
+
+Documentation release. Publishes the deep-dive knowledge base under
+`docs/reference/`, declares an English-only documentation policy for public
+repo content, translates the six reference files to English, and renames the
+gitignored private-artifacts folder from `operator/` to `private/`.
+
 ### Added
-- **`docs/reference/` knowledge base** — six public reference documents moved
-  into the public tree alongside the end-user docs: `llm-stack.md`,
-  `tts-stack.md`, `tts-research-magyar.md`, `openclaw-internals.md` (the
-  deep-dive counterpart to `docs/ARCHITECTURE.md`: schema, 3-store credential
-  layout, patcher step detail, CLI overhead), `patterns.md`, and an index
-  `README.md`. The root `CLAUDE.md` "When in doubt" section points here as
-  the next stop for deeper questions.
+- **`docs/reference/` knowledge base** — six public reference documents
+  alongside the end-user docs: `llm-stack.md`, `tts-stack.md`,
+  `tts-research-hungarian.md`, `openclaw-internals.md` (the deep-dive
+  counterpart to `docs/ARCHITECTURE.md`: schema, 3-store credential
+  layout, patcher step detail, CLI overhead), `patterns.md`, and an
+  index `README.md`. The root `CLAUDE.md` "When in doubt" section
+  points here as the next stop for deeper questions.
 - **Documentation-language policy in `CLAUDE.md`** — new `Working principles`
   subsection declaring that every public repo file (README, SETUP, CLAUDE,
   CHANGELOG, `docs/**`, compose/patcher inline comments, commit messages,
@@ -24,12 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than commit as-is.
 
 ### Changed
-- **`docs/reference/` translated to English.** All six files
-  (`README.md`, `llm-stack.md`, `tts-stack.md`, `openclaw-internals.md`,
-  `patterns.md`, and `tts-research-hungarian.md` — renamed from
-  `tts-research-magyar.md`) now carry native English prose. This closes
-  the only gap in the documentation-language policy above; the public
-  repo is now linguistically consistent end to end.
+- **`docs/reference/` written in English.** All six files carry native
+  English prose, and the former `tts-research-magyar.md` is renamed to
+  `tts-research-hungarian.md` for filename consistency. The public repo
+  is now linguistically uniform end to end.
+- **`.gitignore` — `operator/` → `private/` rename.** The gitignored
+  per-machine / private-artifacts folder is now `private/`, so the
+  privacy state (not the role of the owning person) is the first-class
+  label. Only the `.gitignore` line changes in the public tree; public
+  repo consumers never interacted with this folder either way.
 
 ## [0.4.1] - 2026-04-22
 
@@ -214,7 +224,8 @@ catch up with the two patcher steps added post-tag.
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.2.0...v0.3.0

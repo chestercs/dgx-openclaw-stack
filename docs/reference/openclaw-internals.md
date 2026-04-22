@@ -11,7 +11,7 @@
 - **Repo:** https://github.com/chestercs/dgx-openclaw-stack
 - **License:** MIT
 - **Default branch:** `main`
-- **Latest:** v0.4.1 (2026-04-22)
+- **Latest:** v0.4.2 (2026-04-22)
 
 ### Releases & tags
 
@@ -20,8 +20,9 @@
 - `v0.3.0` (2026-04-22, `0c4d799`) — Bilingual TTS surface.
 - `v0.4.0` (2026-04-22, `1b5b208`) — env-driven knobs (`CONTAINER_NAME_PREFIX`, `VLLM_HF_CACHE_VOLUME_NAME`, `TTS_*_BIND/PORT` loopback default), patcher step 11 top-level `messages.tts.{enabled,auto,mode}` switches.
 - `v0.4.1` (2026-04-22, `f87d3b0`) — Post-v0.4.0 polish batch: patcher **step 12** (`gateway.auth.token` → `gateway.remote.token` mirror, `bcea0a5`), patcher **step 13** (per-agent `auth-profiles.json` sync with `VLLM_API_KEY`, `dd935b0`), TTS enum normalization (`81f1fa4`), vLLM healthcheck `python3` fix (`fe6726d`), `.env` defaults convergence (`e132071`), drop `OPENCLAW_GATEWAY_TOKEN` from the CLI env (`644fe68`), `operator/` gitignore (`80a2412`), docs 11 → 13 step sync.
+- `v0.4.2` (2026-04-22) — Documentation release: publishes `docs/reference/` (six deep-dive files: LLM stack, TTS stack, Hungarian TTS research, OpenClaw internals, reusable patterns), declares an English-only documentation policy in `CLAUDE.md`, translates the new reference files to English, and renames the gitignored private-artifacts folder `operator/` → `private/`.
 
-### Current content (v0.4.1)
+### Current content (v0.4.2)
 
 - **Stack:** `docker-compose.yml` (8 default services + 1 opt-in HU service via `profiles: ["hu"]`), `patch-config.mjs` (13-step idempotent patcher), `bootstrap.sh` (regex-gated secret rotation + HU TTS opt-in prompt), `templates/tool_chat_template_gemma4.jinja`, `searxng/settings/settings.yml`.
 - **TTS surface:** `openclaw-tts-en/` (Kokoro 82M, default), `openclaw-tts-router/` (FastAPI passthrough + ffmpeg), `openclaw-tts-f5hun/` (F5-TTS HU, opt-in via `profiles: ["hu"]`).
