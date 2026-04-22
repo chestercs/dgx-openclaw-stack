@@ -185,7 +185,7 @@ services:
     healthcheck:
       # vLLM /health returns 200 when the model is loaded and ready.
       # Cold-start can take 60-120s (safetensors load + NVFP4 kernel JIT).
-      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8004/health\", timeout=2); sys.exit(0)' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8004/health\", timeout=2); sys.exit(0)' || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -259,7 +259,7 @@ services:
       memlock: -1
       stack: 67108864
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8005/health\", timeout=2); sys.exit(0)' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8005/health\", timeout=2); sys.exit(0)' || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
