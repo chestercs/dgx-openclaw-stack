@@ -83,8 +83,7 @@ RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
     && ldconfig \
     && cd /tmp/ct2/python \
     && pip install -r install_requirements.txt \
-    && python setup.py bdist_wheel \
-    && pip install dist/*.whl \
+    && pip install --no-build-isolation . \
     && rm -rf /tmp/ct2 \
     && python -c "import ctranslate2; print('ctranslate2', ctranslate2.__version__, 'cuda_supported=yes' if hasattr(ctranslate2,'get_cuda_device_count') else 'cuda_supported=no')"
 
