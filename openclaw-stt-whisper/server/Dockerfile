@@ -52,15 +52,30 @@ print('torch', torch.__version__, 'cuda_built', torch.version.cuda, \
 'arch', torch.cuda.get_arch_list() if hasattr(torch,'cuda') else 'no-runtime-gpu')"
 
 # 2) CTranslate2 from source, with CUDA + cuDNN on. The PyPI aarch64 wheel
-#    is CPU-only; building from source picks up the cudnn-devel base's
-#    libraries. CMake defaults in the CT2 setup.py drive nvcc to emit PTX
-#    for compute capabilities covering Blackwell (sm_120).
-#    Time budget: ~10-15 min on first build, instant on cache hits.
-#    Pin the version so the build is reproducible.
-RUN pip install --no-binary=:all: --no-build-isolation ctranslate2==4.7.1 \
-    && python -c "import ctranslate2; \
-print('ctranslate2', ctranslate2.__version__, 'cuda_available', \
-getattr(ctranslate2, 'get_cuda_device_count', lambda: '?')())"
+#    is CPU-only AND upstream publishes no source tarball (sdist) — `pip
+#    install --no-binary` therefore can't find any distribution to build.
+#    We clone the release tag from github, cmake+nvcc the native lib, then
+#    build and install the Python binding. CMake picks up nvcc and cudnn
+#    from the cudnn-devel base and emits PTX covering Blackwell (sm_120).
+#    Time budget: ~10-20 min first build, instant on cache hits.
+ARG CT2_VERSION=v4.7.1
+RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
+        https://github.com/OpenNMT/CTranslate2.git /tmp/ct2 \
+    && cmake -S /tmp/ct2 -B /tmp/ct2/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DWITH_CUDA=ON \
+        -DWITH_CUDNN=ON \
+        -DWITH_MKL=OFF \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -G Ninja \
+    && cmake --build /tmp/ct2/build --target install -j "$(nproc)" \
+    && ldconfig \
+    && cd /tmp/ct2/python \
+    && pip install -r install_requirements.txt \
+    && python setup.py bdist_wheel \
+    && pip install dist/*.whl \
+    && rm -rf /tmp/ct2 \
+    && python -c "import ctranslate2; print('ctranslate2', ctranslate2.__version__, 'cuda_supported=yes' if hasattr(ctranslate2,'get_cuda_device_count') else 'cuda_supported=no')"
 
 # 3) faster-whisper + FastAPI wrapper deps. CT2 is already installed, so
 #    the faster-whisper package find it pre-built and doesn't re-pull.

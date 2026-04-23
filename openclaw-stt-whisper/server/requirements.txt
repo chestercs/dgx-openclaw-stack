@@ -1,6 +1,7 @@
-# ctranslate2 pinned so the `pip install -r requirements.txt` step after the
-# source build doesn't try to downgrade / replace the CUDA-enabled build.
-ctranslate2==4.7.1
+# ctranslate2 is installed from source in the Dockerfile (PyPI aarch64 wheel
+# is CPU-only). faster-whisper declares `ctranslate2>=4.0,<5` as a dependency,
+# so pip will find the existing 4.7.1 and leave it alone — no need to pin it
+# here, which would tempt pip to resolve against PyPI wheels.
 faster-whisper>=1.2.0
 fastapi>=0.115
 uvicorn[standard]>=0.30
