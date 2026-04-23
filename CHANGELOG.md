@@ -38,6 +38,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `build:` back to `image:` in `docker-compose.yml` when the speaches
   upstream publishes a Blackwell-tensor-core variant — the wrapper retires
   in a ~15-line diff.
+
+  **Build steps the Dockerfile handles**: CTranslate2 aarch64 wheels on
+  PyPI are CPU-only and upstream publishes no sdist, so the Dockerfile
+  clones `v4.7.1` from github, `sed`s out CT2's call to the deprecated
+  `cuda_select_nvcc_arch_flags` (CMake FindCUDA doesn't know sm_120),
+  replaces it with explicit `-gencode arch=compute_80,code=sm_80
+  -gencode arch=compute_120,code=sm_120`, then cmake+nvcc the native lib
+  via Ninja. CMake >=3.30 is pulled from pip (Ubuntu 24.04's 3.28 is too
+  old for the CMake-side CUDA arch mappings). torch is installed AFTER the
+  CT2 Python binding so torch's fake-op hook registration doesn't crash
+  setuptools during bdist build. First `docker compose build` takes ~20
+  min; subsequent builds hit the Docker layer cache.
+
+  **HU validation (2026-04-24 GB10)**: one-pass transcription of
+  `janosvitez_1_petofi_64kb.mp3` (LibriVox, 10m39s, Petőfi "János vitéz"
+  Majlinger Diána reading) returned `language: hu`, 122 segments, correct
+  recognition of proper nouns ("Petőfi Sándor", "Majlinger Diána"), accents
+  and rhyme structure intact, a small number of Whisper-typical mis-hearings
+  on archaic vocabulary ("Pillancsi", "tüzejék") consistent with the FLEURS
+  14.1% HU WER baseline. Wall clock 77.5 s → ~0.12× real-time factor at
+  float16 on Blackwell.
 - **Patcher step 14 — `tools.media.audio` wiring.** New env-gated step
   in `patch-config.mjs` that upserts an entry into
   `tools.media.audio.models[]` with `provider: "openai"`, the configured
