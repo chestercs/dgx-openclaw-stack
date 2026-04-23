@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`rotate-secrets.sh` — live secret rotation.** Sibling to `bootstrap.sh`
+  for rotating the auto-generated secrets in an existing `.env` after
+  install. Atomic write (temp file + `mv`), timestamped `.env.backup-*`
+  before any change, post-write `docker compose config` validation with
+  automatic restore on failure. Prints the deduped
+  `docker compose up -d --force-recreate …` command for the services
+  that consume each rotated key; the script does not restart anything
+  itself so the operator picks the moment. Default set (`--all`):
+  `VLLM_API_KEY`, `SEARXNG_SECRET`, `OPENCLAW_TTS_ROUTER_API_KEY`,
+  `TTS_API_TOKEN`, plus `F5HUN_API_TOKEN` when already set (empty = HU
+  TTS opted out of the CC-BY-NC model). `OPENCLAW_GATEWAY_TOKEN` is
+  opt-in via `--include-gateway-token` because post-onboarding the real
+  gateway auth lives in `openclaw.json`'s `gateway.auth.token`. The
+  `^CHANGE_ME` gate `bootstrap.sh` uses is deliberately absent, so a
+  fresh install can `cp .env.example .env && ./rotate-secrets.sh --all`
+  to fill every placeholder, and live rotations don't need a special
+  flag either.
+- **`docs/CUSTOMIZATION.md` → "Rotating secrets" section** — operator
+  runbook for the three rotation scenarios (routine hygiene, post-leak,
+  pre-onboarding fill).
+
 ## [0.4.2] - 2026-04-22
 
 Documentation release. Publishes the deep-dive knowledge base under

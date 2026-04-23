@@ -330,6 +330,27 @@ Two-step opt-out:
 
 The HU service is opt-in (`profiles: ["hu"]`) so it's already off by default — no extra step needed.
 
+## Rotating secrets
+
+Use `./rotate-secrets.sh` to overwrite the auto-generated secrets in `.env` with fresh random values. Sibling of `bootstrap.sh`, same helper style. Handles the three common rotation scenarios:
+
+- **Routine hygiene / post-suspected-leak**: rotate one or more keys, recreate the affected services, verify.
+- **Fresh install without the bootstrap prompt dance**: `cp .env.example .env && ./rotate-secrets.sh --all` fills every placeholder in one shot.
+- **Selective, e.g. just the TTS surface**: `./rotate-secrets.sh TTS_API_TOKEN OPENCLAW_TTS_ROUTER_API_KEY`.
+
+```bash
+./rotate-secrets.sh --help          # full flag list + default set
+./rotate-secrets.sh -n --all        # dry-run: fingerprints + recreate command, no write
+./rotate-secrets.sh -y --all        # non-interactive (CI); rotate the default set
+./rotate-secrets.sh VLLM_API_KEY    # rotate just this key
+```
+
+The default set (`--all`): `VLLM_API_KEY`, `SEARXNG_SECRET`, `OPENCLAW_TTS_ROUTER_API_KEY`, `TTS_API_TOKEN`, plus `F5HUN_API_TOKEN` only if it is already non-empty (empty = HU TTS opted out of the CC-BY-NC model; `--all` respects that). `OPENCLAW_GATEWAY_TOKEN` is opt-in via `--include-gateway-token` — post-onboarding the real gateway auth lives in `openclaw.json`'s `gateway.auth.token` (picked by the onboarding wizard), so rotating the env var alone is a near no-op. `HUGGING_FACE_HUB_TOKEN` is out of scope (user-owned; can't be generated).
+
+Before every change the script writes a timestamped `.env.backup-YYYYMMDD-HHMMSS` (mode 600), does an atomic write (temp file + `mv`), and runs `docker compose config --quiet` post-write. If the config validation fails, the backup is restored automatically. The script does NOT restart services — it prints the exact `docker compose up -d --force-recreate <services>` command for the services that read each rotated key, and you pick the moment (in-flight agent requests). HU rotations auto-append `--profile hu`.
+
+The 3-store credential layout `openclaw.json` ↔ per-agent `auth-profiles.json` ↔ `.env` is kept in sync on the next `up` by `patch-config.mjs` steps 2 / 4 / 11 / 13, so the recreate command is all you need after rotation. See `docs/reference/openclaw-internals.md` → "v0.4.x credential layout" for the full invariant.
+
 ## Multi-host / scale-out
 
 This stack is a single-host design. If you need a second GB10 as a hot standby or for throughput sharding:
