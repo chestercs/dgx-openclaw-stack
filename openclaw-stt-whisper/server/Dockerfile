@@ -49,22 +49,20 @@ RUN pip install "cmake>=3.30" \
 
 WORKDIR /app
 
-# 1) ARM64 + Blackwell torch + torchaudio from the cu130 wheel index FIRST so
-#    the rest of the install resolves against the cu130-pinned torch.
-#    faster-whisper uses torchaudio at inference for decode/resample.
-RUN pip install --index-url https://download.pytorch.org/whl/cu130 \
-        torch torchaudio \
-    && python -c "import torch; \
-print('torch', torch.__version__, 'cuda_built', torch.version.cuda, \
-'arch', torch.cuda.get_arch_list() if hasattr(torch,'cuda') else 'no-runtime-gpu')"
-
-# 2) CTranslate2 from source, with CUDA + cuDNN on. The PyPI aarch64 wheel
+# 1) CTranslate2 from source, with CUDA + cuDNN on. The PyPI aarch64 wheel
 #    is CPU-only AND upstream publishes no source tarball (sdist) — `pip
 #    install --no-binary` therefore can't find any distribution to build.
 #    We clone the release tag from github, cmake+nvcc the native lib, then
 #    build and install the Python binding. CMake picks up nvcc and cudnn
 #    from the cudnn-devel base and emits PTX covering Blackwell (sm_120).
 #    Time budget: ~10-20 min first build, instant on cache hits.
+#
+#    Order matters: install CT2 *before* torch. torch 2.11 + Python 3.12
+#    auto-registers fake CUDA op hooks on import, and those hooks walk
+#    inspect frames during setuptools' bdist_wheel step — they crash on
+#    "FileNotFoundError" when the frame has no real __file__ (happens during
+#    CT2 python binding build). With torch absent, the binding builds
+#    cleanly, then torch installs afterwards on top.
 ARG CT2_VERSION=v4.7.1
 RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
         https://github.com/OpenNMT/CTranslate2.git /tmp/ct2 \
@@ -87,8 +85,18 @@ RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
     && rm -rf /tmp/ct2 \
     && python -c "import ctranslate2; print('ctranslate2', ctranslate2.__version__, 'cuda_supported=yes' if hasattr(ctranslate2,'get_cuda_device_count') else 'cuda_supported=no')"
 
-# 3) faster-whisper + FastAPI wrapper deps. CT2 is already installed, so
-#    the faster-whisper package find it pre-built and doesn't re-pull.
+# 2) ARM64 + Blackwell torch + torchaudio from the cu130 wheel index. Installed
+#    after CT2 so the binding's setup.py runs without torch's hook machinery
+#    interfering (see step 1 comment). faster-whisper will use torchaudio at
+#    inference for decode/resample.
+RUN pip install --index-url https://download.pytorch.org/whl/cu130 \
+        torch torchaudio \
+    && python -c "import torch; \
+print('torch', torch.__version__, 'cuda_built', torch.version.cuda, \
+'arch', torch.cuda.get_arch_list() if hasattr(torch,'cuda') else 'no-runtime-gpu')"
+
+# 3) faster-whisper + FastAPI wrapper deps. Torch and CT2 are both installed
+#    by now, so this step resolves cleanly against them.
 COPY requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt \
     && python -c "import faster_whisper; print('faster_whisper', faster_whisper.__version__)"
