@@ -66,6 +66,8 @@ RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
         -DWITH_CUDA=ON \
         -DWITH_CUDNN=ON \
         -DWITH_MKL=OFF \
+        -DOPENMP_RUNTIME=COMP \
+        -DBUILD_CLI=OFF \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -G Ninja \
     && cmake --build /tmp/ct2/build --target install -j "$(nproc)" \
