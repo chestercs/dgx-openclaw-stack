@@ -75,8 +75,8 @@ RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
         -DWITH_MKL=OFF \
         -DOPENMP_RUNTIME=COMP \
         -DBUILD_CLI=OFF \
-        -DCUDA_ARCH_LIST="Ampere;Hopper" \
-        -DCMAKE_CUDA_ARCHITECTURES="80;90" \
+        -DCUDA_ARCH_LIST="Ampere" \
+        -DCMAKE_CUDA_ARCHITECTURES="80" \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -G Ninja \
     && cmake --build /tmp/ct2/build --target install -j "$(nproc)" \
