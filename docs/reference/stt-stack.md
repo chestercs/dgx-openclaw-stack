@@ -10,7 +10,7 @@ One service in the unified `llm/dgx-openclaw-stack/` compose:
 |---|---|---|---|---|---|
 | `openclaw-stt-whisper` | `Systran/faster-whisper-large-v3` | 8093 | ~3 GB (float16) | MIT | default |
 
-Upstream image: `ghcr.io/speaches-ai/speaches-cuda`. No custom Dockerfile, no wrapper code — the stack consumes the upstream OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, and `/health` endpoints directly.
+Upstream image: `ghcr.io/speaches-ai/speaches (CUDA tag)`. No custom Dockerfile, no wrapper code — the stack consumes the upstream OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, and `/health` endpoints directly.
 
 ## Why Whisper large-v3 + speaches
 

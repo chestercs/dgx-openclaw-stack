@@ -536,7 +536,7 @@ services:
   #
   #  Endpoints: POST /v1/audio/transcriptions, POST /v1/audio/translations,
   #             GET /v1/models, GET /health. Served by the upstream
-  #             ghcr.io/speaches-ai/speaches-cuda image (MIT) — no custom
+  #             ghcr.io/speaches-ai/speaches CUDA tag (MIT) — no custom
   #             Dockerfile, no wrapper code. Backend is CTranslate2 via
   #             faster-whisper.
   #
@@ -574,7 +574,7 @@ services:
   #  unset), so dropping the token also cleanly opts out of the gateway wiring.
   ######################
   openclaw-stt-whisper:
-    image: ghcr.io/speaches-ai/speaches-cuda:${STT_SPEACHES_TAG:-latest}
+    image: ghcr.io/speaches-ai/speaches:${STT_SPEACHES_TAG:-latest-cuda-12.6.3}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-stt-whisper
     hostname: openclaw-stt-whisper
     restart: unless-stopped
@@ -599,7 +599,7 @@ services:
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     volumes:
-      # speaches-cuda runs as uid 1000 (`ubuntu`) with $HOME=/home/ubuntu.
+      # speaches (CUDA) runs as uid 1000 (`ubuntu`) with $HOME=/home/ubuntu.
       - stt-whisper-hf-cache:/home/ubuntu/.cache/huggingface
     deploy:
       resources:

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **STT stack — Whisper large-v3 on the upstream speaches-ai image.**
-  New `openclaw-stt-whisper` service (`ghcr.io/speaches-ai/speaches-cuda`,
+  New `openclaw-stt-whisper` service (`ghcr.io/speaches-ai/speaches (CUDA tag)`,
   running `Systran/faster-whisper-large-v3`, MIT) serving the
   OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`,
   `/v1/models`, `/health` endpoints. ~3 GB VRAM at float16,

@@ -273,13 +273,13 @@ The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis`
          ┌─────────────────────────────────────┐
          │ openclaw-stt-whisper                 │
          │  127.0.0.1:8093 (loopback publish)  │
-         │  ghcr.io/speaches-ai/speaches-cuda  │
+         │  ghcr.io/speaches-ai/speaches (CUDA tag)  │
          │  Whisper large-v3 (MIT) @ float16   │
          │  ~3 GB VRAM, autodetect EN + HU     │
          └─────────────────────────────────────┘
 ```
 
-Single upstream service. No custom Dockerfile, no wrapper code — we consume `speaches-cuda`'s OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, `/health` endpoints directly. Whisper autodetects the input language per request, so no bilingual router is needed (contrast with TTS, which needs one backend per language).
+Single upstream service. No custom Dockerfile, no wrapper code — we consume `speaches (CUDA tag)`'s OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, `/health` endpoints directly. Whisper autodetects the input language per request, so no bilingual router is needed (contrast with TTS, which needs one backend per language).
 
 ### Three voice surfaces, one backend
 
