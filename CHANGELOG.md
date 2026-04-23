@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`docs/TROUBLESHOOTING.md` → "Embedder crashed mid-index"** entry in
+  the `vllm-embedding` section. Documents the observed failure mode
+  where a transient `cudaErrorNotPermitted` crash leaves the vector
+  store partially populated (e.g. `Indexed: 2/10 files · 14 chunks`)
+  while OpenClaw still reports `Dirty: no` — and the
+  `memory index --force` workaround. Upstream OpenClaw gap: the
+  indexer does not re-dirty files whose embed step failed; until
+  upstream fixes that, any embedder restart is a cue to run a
+  forced reindex.
+
 ## [0.4.3] - 2026-04-23
 
 Live secret rotation release. Adds `rotate-secrets.sh` as a safe,

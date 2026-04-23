@@ -75,6 +75,32 @@ The LLM has grabbed more memory than `LLM_GPU_MEM_UTIL` suggests (vLLM util is f
 
 `VLLM_API_KEY` isn't set, or you forgot the `-H "Authorization: Bearer $VLLM_API_KEY"` header. The embedding service requires the same key as the LLM.
 
+### Embedder crashed mid-index — memory partially vectorized, `Dirty` flag still reports clean
+
+Under unified-memory contention on GB10, the embedder can transiently die with `torch.AcceleratorError: CUDA error: operation not permitted` (`cudaErrorNotPermitted`). Docker's `restart: unless-stopped` brings it back in ~10 s and the service resumes serving — but any `/v1/embeddings` calls in flight at the crash instant return 500, and the chunks OpenClaw was indexing at that moment get silently skipped.
+
+OpenClaw's indexer does not re-dirty files whose embed step failed. `openclaw memory status` then reports `Dirty: no` even though the vector store is incomplete. Real-world example: `Indexed: 2/10 files · 14 chunks` with `Dirty: no` against a workspace that should have 10 files fully indexed.
+
+**Detect:**
+
+```bash
+docker exec ${PROJ}openclaw-cli openclaw memory status \
+  | grep -E "^(Indexed|Dirty|By source)"
+docker inspect ${PROJ}vllm-embedding --format "RestartCount: {{.RestartCount}}"
+```
+
+If the indexed file count is below the actual file count in `~/.openclaw/workspace/memory/` and `RestartCount` is non-zero, you're in this state.
+
+**Fix — force full reindex:**
+
+```bash
+docker exec ${PROJ}openclaw-cli openclaw memory index --force
+```
+
+Ignores the `Dirty` flag, re-embeds every chunk. Expect the post-fix status to show full coverage (e.g. `Indexed: 10/10 files · 34 chunks`).
+
+**Preventive habit:** after any `vllm-embedding` restart, run `memory index --force` once. This is a workaround for an OpenClaw-side gap — the repo's restart policy catches the GPU-level incident, but OpenClaw's indexer state tracking won't auto-repair.
+
 ## openclaw-gateway
 
 ### `Missing config. Run openclaw setup …` (gateway crash-loops on a fresh install)
