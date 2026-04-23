@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where a transient `cudaErrorNotPermitted` crash leaves the vector
   store partially populated (e.g. `Indexed: 2/10 files · 14 chunks`)
   while OpenClaw still reports `Dirty: no` — and the
-  `memory index --force` workaround. Upstream OpenClaw gap: the
-  indexer does not re-dirty files whose embed step failed; until
-  upstream fixes that, any embedder restart is a cue to run a
+  `memory index --force` workaround. Upstream OpenClaw gap tracked as
+  [openclaw/openclaw#70567](https://github.com/openclaw/openclaw/issues/70567);
+  until upstream fixes that, any embedder restart is a cue to run a
   forced reindex.
 
 ## [0.4.3] - 2026-04-23

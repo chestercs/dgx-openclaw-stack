@@ -101,6 +101,8 @@ Ignores the `Dirty` flag, re-embeds every chunk. Expect the post-fix status to s
 
 **Preventive habit:** after any `vllm-embedding` restart, run `memory index --force` once. This is a workaround for an OpenClaw-side gap — the repo's restart policy catches the GPU-level incident, but OpenClaw's indexer state tracking won't auto-repair.
 
+Tracked upstream: [openclaw/openclaw#70567](https://github.com/openclaw/openclaw/issues/70567). When upstream fixes the indexer to re-dirty files whose embed step returned 5xx, this workaround can be retired.
+
 ## openclaw-gateway
 
 ### `Missing config. Run openclaw setup …` (gateway crash-loops on a fresh install)
