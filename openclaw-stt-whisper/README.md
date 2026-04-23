@@ -16,8 +16,23 @@ CUDA cores at real-time factor ~1× while also destabilizing numerically
 base with the cu130 PyTorch wheels and current `faster-whisper` (≥ 1.2) is the
 proven path on GB10 — the surrounding vLLM and Kokoro services already use it.
 
+### Why source-built CTranslate2
+
+The PyPI `ctranslate2` wheels for **aarch64 are CPU-only** — the upstream
+CI only publishes GPU-enabled wheels for `x86_64`. A plain
+`pip install ctranslate2` on Grace-Blackwell installs the CPU wheel and the
+first transcribe blows up with _"This CTranslate2 package was not compiled
+with CUDA support"_. The Dockerfile therefore uses `nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04`
+(the `-devel` variant, which ships nvcc + cudnn headers + cuBLAS dev libs)
+and runs `pip install --no-binary=:all: --no-build-isolation ctranslate2==4.7.1`
+so cmake+nvcc compile a CUDA-enabled CT2 against the Blackwell toolchain.
+First build is ~10-15 min; subsequent layer-cache hits are instant.
+
+### When to switch back to upstream speaches
+
 If the speaches upstream later publishes a Blackwell-tensor-core image
-(e.g. `latest-cuda-13.x`), swapping `build:` back to `image:` in
+(e.g. `latest-cuda-13.x`) or the upstream CTranslate2 project starts
+shipping aarch64-CUDA wheels to PyPI, swapping `build:` back to `image:` in
 `docker-compose.yml` is a 15-line diff; this wrapper is ~150 LOC and easy to
 retire.
 

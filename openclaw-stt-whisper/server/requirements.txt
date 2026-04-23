@@ -1,3 +1,6 @@
+# ctranslate2 pinned so the `pip install -r requirements.txt` step after the
+# source build doesn't try to downgrade / replace the CUDA-enabled build.
+ctranslate2==4.7.1
 faster-whisper>=1.2.0
 fastapi>=0.115
 uvicorn[standard]>=0.30
