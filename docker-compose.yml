@@ -609,11 +609,19 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      # /health is unauthenticated and returns 200 once the server is up.
-      # Cold-start on first boot can be several minutes while the ~3 GB
-      # large-v3 CT2 weights download from HuggingFace — 180s start_period
-      # gives the healthcheck grace without flapping the container status.
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=3); sys.exit(0)' || exit 1"]
+      # speaches v0.9.x requires Bearer auth on /health when API_KEY is set
+      # (not just on /v1/*). The healthcheck therefore has to carry the
+      # same Authorization header that every other request does — curl
+      # reads API_KEY from the container env ($$ escapes the compose
+      # variable substitution so $API_KEY reaches the shell). If the user
+      # opts out of STT (STT_API_TOKEN unset), speaches doesn't enforce
+      # auth and curl still gets 200, so this check works in both modes.
+      #
+      # Cold-start on first boot can take several minutes while the ~3 GB
+      # large-v3 CT2 weights download from HuggingFace on the first
+      # transcription request — 180s start_period gives the healthcheck
+      # grace without flapping the container status.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null -H \"Authorization: Bearer $${API_KEY}\" http://127.0.0.1:8000/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
