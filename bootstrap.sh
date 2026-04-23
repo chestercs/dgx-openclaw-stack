@@ -131,12 +131,14 @@ GATEWAY_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 SEARXNG_SECRET_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 TTS_ROUTER_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 TTS_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
+STT_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 
 upsert_env VLLM_API_KEY                "$VLLM_API_KEY_NEW"    '^CHANGE_ME'
 upsert_env OPENCLAW_GATEWAY_TOKEN      "$GATEWAY_TOKEN_NEW"   '^CHANGE_ME'
 upsert_env SEARXNG_SECRET              "$SEARXNG_SECRET_NEW"  '^CHANGE_ME'
 upsert_env OPENCLAW_TTS_ROUTER_API_KEY "$TTS_ROUTER_KEY_NEW"  '^CHANGE_ME'
 upsert_env TTS_API_TOKEN               "$TTS_API_TOKEN_NEW"   '^CHANGE_ME'
+upsert_env STT_API_TOKEN               "$STT_API_TOKEN_NEW"   '^CHANGE_ME'
 
 # ----------------------------------------------------------------------------
 # 3b. Optional: Hungarian TTS opt-in (CC-BY-NC model weights)
@@ -242,4 +244,6 @@ printf 'you re-run the patcher to pick up the new openclaw.json. Full walkthroug
 printf '    %bSETUP.md%b — step-by-step first-boot guide\n' "$BOLD" "$RESET"
 printf '    %bdocs/TROUBLESHOOTING.md%b — common failure modes\n\n' "$BOLD" "$RESET"
 printf 'Hungarian TTS (F5-TTS, CC-BY-NC): opt-in via --profile hu or\n'
-printf 'COMPOSE_PROFILES=hu in .env — see openclaw-tts-f5hun/README.md.\n'
+printf 'COMPOSE_PROFILES=hu in .env — see openclaw-tts-f5hun/README.md.\n\n'
+printf 'Whisper STT (EN + HU autodetect) is enabled by default. Test with:\n\n'
+printf '    %bcurl -F file=@sample.wav -F model=Systran/faster-whisper-large-v3 \\\n        -H "Authorization: Bearer $STT_API_TOKEN" \\\n        http://127.0.0.1:8093/v1/audio/transcriptions%b\n' "$BOLD" "$RESET"

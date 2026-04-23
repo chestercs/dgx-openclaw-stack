@@ -4,7 +4,7 @@ Guidance for Claude Code (and other coding agents) working on this repository.
 
 ## What this repo is
 
-A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 31B NVFP4 on vLLM), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first SearxNG meta-search backend, and a bilingual TTS surface (Kokoro 82M English by default + opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router). Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
+A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 31B NVFP4 on vLLM), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first SearxNG meta-search backend, a bilingual TTS surface (Kokoro 82M English by default + opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router), and a Whisper STT backend (`faster-whisper` large-v3 via the upstream speaches-ai image, EN + HU autodetect). Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
 
 The repo's value proposition is the **wiring**, not any individual component:
 - Model + embedding + gateway + memory + web search are pre-integrated.
@@ -14,8 +14,8 @@ The repo's value proposition is the **wiring**, not any individual component:
 ## Repo layout
 
 ```
-docker-compose.yml      # 8 services default (+1 with --profile hu); GB10 reference profile
-patch-config.mjs        # 13-step idempotent openclaw.json patcher (init container)
+docker-compose.yml      # 9 services default (+1 with --profile hu); GB10 reference profile
+patch-config.mjs        # 14-step idempotent openclaw.json patcher (init container)
 bootstrap.sh            # First-time setup: secrets, .env, host dirs (non-destructive)
 .env.example            # Tunables, well-commented
 templates/              # vLLM tool-calling chat template (gemma4)
@@ -23,6 +23,8 @@ searxng/settings/       # SearxNG override settings (privacy posture)
 openclaw-tts-en/        # English TTS service (Kokoro 82M, Apache 2.0) — default
 openclaw-tts-router/    # OpenAI-compat /v1/audio/speech router (passthrough + ffmpeg)
 openclaw-tts-f5hun/     # OPT-IN Hungarian TTS (F5-TTS, CC-BY-NC weights) — profile=hu
+# openclaw-stt-whisper is the upstream ghcr.io/speaches-ai/speaches-cuda image —
+# no source tree in this repo (zero custom code).
 docs/
   ARCHITECTURE.md       # Service-by-service design rationale
   CUSTOMIZATION.md      # Swap models, retune for your hardware, remote backends
@@ -240,6 +242,14 @@ For the remote-backend use case, the vLLM endpoints **are** expected to be reach
 
 Unlike the vLLM services, the three TTS services *do* publish their port on the host so `curl 127.0.0.1:809{0,1,2}/healthz` works without `docker exec` gymnastics. The defaults (`TTS_EN_BIND=127.0.0.1`, `TTS_F5HUN_BIND=127.0.0.1`, `TTS_ROUTER_BIND=127.0.0.1` in `.env.example`) bind to loopback so LAN clients can't reach them — same security posture as the unpublished vLLM ports, but ergonomic for local debugging. To expose any of them on the LAN, set `TTS_*_BIND=0.0.0.0`. All three services are Bearer-token-protected via the existing TTS tokens, but a leaked token is still a leaked token — keep the loopback default unless you have a reason.
 
+### STT is one service, no router — Whisper autodetects
+
+The STT surface is a single upstream service: `openclaw-stt-whisper` = `ghcr.io/speaches-ai/speaches-cuda` running `Systran/faster-whisper-large-v3` (MIT). No router, no custom Dockerfile, no wrapper code — Whisper autodetects the input language per request, so the bilingual routing that TTS needs is unnecessary. FLEURS Hungarian WER 14.1%, ~3 GB VRAM at float16, port `8093` loopback-only by default (same posture as TTS).
+
+Wired via `tools.media.audio.models[]` in `openclaw.json` (NOT `messages.stt` — that schema name doesn't exist in OpenClaw). See `docs.openclaw.ai/nodes/audio`. Path used by voice-note upload in the Control UI composer, Discord voice channels, VoiceCall CLI, Talk / Voicewake nodes. The Control UI realtime mic button is a separate path — it uses the browser's native Web Speech API (`speech.ts`) and does NOT go through this service; that is an OpenClaw design choice, not a wiring limitation.
+
+Auth isolation: the Bearer lives in the per-entry `headers.Authorization` rather than `apiKey`. The schema defaults `apiKey` to the standard `models.providers.openai` chain (env vars → auth profiles → global provider apiKey), which would collide with any cloud OpenAI account the user also has. Per-entry `headers` overrides are explicitly supported by the schema (`docs.openclaw.ai/nodes/audio`) and keep the Whisper token orthogonal to the global openai apiKey. Patcher step 14 writes the header, and re-runs deep-merge (user-added extra headers survive).
+
 ### HF cache volume label is configurable for sibling-stack sharing
 
 The shared HF cache volume name is `${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}` (default in `.env.example`). The actual cache lives at the bind-mounted host path `${VLLM_HF_CACHE_DIR}` — the volume name is just a Docker label. If you run sibling LLM stacks on the same host that bind-mount the same `VLLM_HF_CACHE_DIR`, set the same `VLLM_HF_CACHE_VOLUME_NAME` in each so they show up under one consistent label in `docker volume ls`. Bridge DNS reachability is unaffected — only the volume label.
@@ -255,8 +265,8 @@ These cover the cases that have actually broken in practice. When making non-tri
 ```bash
 # 1. Compose + patcher syntax
 node --check patch-config.mjs
-docker compose --env-file .env config --services                # lists 8 default services
-docker compose --env-file .env --profile hu config --services   # 9 with HU opt-in active
+docker compose --env-file .env config --services                # lists 9 default services
+docker compose --env-file .env --profile hu config --services   # 10 with HU opt-in active
 
 # 2. End-to-end on a test host (after `docker compose up -d` and onboarding)
 # CONTAINER_NAME_PREFIX (default `dgx-`) already includes the trailing dash —

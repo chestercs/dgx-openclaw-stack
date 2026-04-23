@@ -9,7 +9,7 @@
 // 31B + reasoning + vision prefill + multi-step tool calling.
 //
 // This script makes the desired state deterministic — every `docker compose up`
-// re-applies the 13 steps below in a deep-merge style. Safe to re-run; exits
+// re-applies the 14 steps below in a deep-merge style. Safe to re-run; exits
 // early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
 // (pre-onboarding fresh install) so the gateway container can still boot.
 //
@@ -32,6 +32,11 @@
 //      current VLLM_API_KEY from .env. The agent runner prefers this
 //      credential store over the config-file apiKey; drift here produces
 //      HTTP 401 from vLLM even when providers.vllm.apiKey is correct.
+//  14. Ensure tools.media.audio wires the Whisper STT backend — env-gated by
+//      STT_API_TOKEN. Feeds voice-note upload, Discord voice-channel
+//      transcription, VoiceCall CLI, and Talk / Voicewake nodes. The Control
+//      UI realtime mic button is unaffected — that path uses the browser's
+//      native Web Speech API and bypasses this pipeline.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -568,6 +573,87 @@ if (VLLM_API_KEY) {
   }
 } else {
   console.log('[patch-config] VLLM_API_KEY not set — skipped auth-profiles sync.');
+}
+
+// (14) Ensure tools.media.audio wires the Whisper STT service.
+//      OpenClaw's audio pipeline — voice-note upload in the Control UI chat,
+//      Discord voice-channel transcription, VoiceCall CLI, Talk / Voicewake
+//      nodes — picks the first matching entry in tools.media.audio.models[]
+//      and POSTs to its baseUrl. Per-entry baseUrl overrides the global
+//      models.providers.openai.baseUrl per the audio-node docs, so there is
+//      no need for a separate provider-level openai-stt namespace.
+//
+//      Auth isolation: the schema normally routes provider auth through the
+//      standard chain (auth profiles, env vars, models.providers.openai.apiKey).
+//      To keep the Whisper Bearer token separated from any cloud OpenAI
+//      account the user might also have configured, we write the Bearer
+//      explicitly into headers.Authorization. speaches accepts that form,
+//      and this keeps the STT token orthogonal to the global openai apiKey.
+//
+//      Env-gated: when STT_API_TOKEN is unset, skip cleanly so users can opt
+//      out by clearing the env var (and parking openclaw-stt-whisper with
+//      `profiles: ["never"]` in the compose file). Upsert-by-baseUrl
+//      preserves any unrelated user-added entries (a cloud Deepgram/Groq
+//      fallback, a whisper-cpp CLI entry, …).
+const sttToken = process.env.STT_API_TOKEN?.trim();
+if (sttToken) {
+  config.tools ??= {};
+  config.tools.media ??= {};
+  config.tools.media.audio ??= {};
+
+  if (config.tools.media.audio.enabled !== true) {
+    config.tools.media.audio.enabled = true;
+    changed = true;
+    console.log('[patch-config] tools.media.audio.enabled = true');
+  }
+
+  config.tools.media.audio.models ??= [];
+
+  // OpenClaw convention: trailing slash on baseUrl (same as vllm /
+  // memorySearch). Append one if the env var omits it, so either form works.
+  const sttBaseUrl = (process.env.OPENCLAW_STT_BASE_URL || 'http://openclaw-stt-whisper:8000/v1')
+    .replace(/\/?$/, '/');
+  const sttModel = process.env.OPENCLAW_STT_MODEL || 'Systran/faster-whisper-large-v3';
+  const sttLanguage = process.env.OPENCLAW_STT_LANGUAGE?.trim();
+
+  const desiredEntry = {
+    provider: 'openai',
+    model: sttModel,
+    baseUrl: sttBaseUrl,
+    headers: {
+      Authorization: `Bearer ${sttToken}`,
+    },
+  };
+  if (sttLanguage) desiredEntry.language = sttLanguage;
+
+  const idx = config.tools.media.audio.models.findIndex(
+    (m) => m?.provider === 'openai' && m?.baseUrl === sttBaseUrl,
+  );
+  const existing = idx >= 0 ? config.tools.media.audio.models[idx] : {};
+
+  // Deep-merge headers so the user can layer extra headers onto ours without
+  // losing the Authorization on re-run.
+  const mergedHeaders = { ...(existing.headers || {}), ...desiredEntry.headers };
+  const merged = { ...existing, ...desiredEntry, headers: mergedHeaders };
+
+  const entryDiffers = idx < 0 || JSON.stringify(existing) !== JSON.stringify(merged);
+  if (entryDiffers) {
+    if (idx < 0) {
+      config.tools.media.audio.models.unshift(merged);
+    } else {
+      config.tools.media.audio.models[idx] = merged;
+    }
+    changed = true;
+    const shownKey = `${sttToken.slice(0, 4)}...(len=${sttToken.length})`;
+    const langFrag = sttLanguage ? `, language:${sttLanguage}` : '';
+    console.log(
+      `[patch-config] tools.media.audio.models[${idx < 0 ? 'unshift' : idx}] = ` +
+        `{provider:openai, model:${sttModel}, baseUrl:${sttBaseUrl}, ` +
+        `Authorization:Bearer ${shownKey}${langFrag}}`,
+    );
+  }
+} else {
+  console.log('[patch-config] STT_API_TOKEN not set — skipping tools.media.audio (STT opt-out).');
 }
 
 if (!changed) {

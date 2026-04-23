@@ -154,8 +154,9 @@ docker compose up -d --force-recreate \
 ```
 
 The `openclaw-config-init` container now finds `openclaw.json` and applies all
-11 patcher steps (vllm provider wiring, hybrid memory + MMR, SearxNG
-enablement, dreaming, trustedProxies, TTS provider — see `patch-config.mjs`).
+14 patcher steps (vllm provider wiring, hybrid memory + MMR, SearxNG
+enablement, dreaming, trustedProxies, TTS provider, STT provider — see
+`patch-config.mjs`).
 You'll see `[patch-config]` lines for each change. The gateway restarts and
 picks up the patched config.
 
@@ -193,6 +194,7 @@ Open the Chrome extension and try these in a single chat session:
 | **Image input** | Drag an image into the chat and ask "What's in this picture?" | A description. Vision prefill adds ~1–2 s and ~280 tokens per image. |
 | **Memory recall** | First turn: "Remember my favorite color is ultramarine." Open a *new* chat, ask: "What's my favorite color?" | The new session calls `memory_search` and recovers `ultramarine`. |
 | **Web search** | "Use the `web_search` tool to find the current prime minister of Hungary, then cite the source URL." | The agent calls `web_search`, hits the bundled SearxNG, and answers with a URL. |
+| **Voice-note STT** | Drop a short wav/mp3/m4a into the chat composer and send with any message. | OpenClaw's `tools.media.audio` pipeline POSTs the file to Whisper, substitutes the transcript into the message body, and the agent replies based on the transcribed content. |
 
 Smaller models occasionally skip tool calls on conversational prompts — naming the tool in the question makes the call deterministic during smoke-testing.
 
@@ -201,6 +203,22 @@ Spot-check SearxNG directly:
 ```bash
 docker exec ${PROJ}openclaw-cli curl -s 'http://searxng:8080/search?q=test&format=json' | head
 # Should return a JSON blob with a non-empty `results` array.
+```
+
+Spot-check the Whisper STT backend directly:
+
+```bash
+STT_KEY=$(grep '^STT_API_TOKEN=' .env | cut -d= -f2-)
+curl -s http://127.0.0.1:8093/health | jq .
+# → {"status": "healthy", ...}
+
+# Hungarian autodetect on a short sample (drop in your own HU wav/mp3):
+curl -sS -X POST http://127.0.0.1:8093/v1/audio/transcriptions \
+  -H "Authorization: Bearer $STT_KEY" \
+  -F file=@/path/to/hu_sample.wav \
+  -F model=Systran/faster-whisper-large-v3 \
+  -F response_format=verbose_json | jq '.language, .text'
+# → "hu" + accurate transcript
 ```
 
 ## 8. (Optional) Reverse proxy + TLS

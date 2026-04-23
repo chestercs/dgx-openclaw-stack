@@ -330,6 +330,40 @@ Two-step opt-out:
 
 The HU service is opt-in (`profiles: ["hu"]`) so it's already off by default — no extra step needed.
 
+## Swap the Whisper STT model
+
+The default `Systran/faster-whisper-large-v3` (MIT) is the accuracy-first choice — FLEURS Hungarian WER 14.1% and ~3 GB VRAM at float16. Two alternates are worth knowing:
+
+- **Turbo (speed):** `STT_WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2`. 8× faster inference at ~1.6 GB VRAM. ~equal English WER, but Hungarian WER is NOT independently published — run your own HU samples through both before flipping in production. Especially noticeable on short utterances where the large-v3 prefill cost dominates end-to-end latency.
+- **VRAM-tight (compute_type):** `STT_WHISPER_COMPUTE_TYPE=int8_float16` on either model. Halves VRAM to ~1.5 GB at a 5-10% WER increase. Safe fallback when the LLM + TTS squeeze the GPU budget, or if a Blackwell sm_120 numerical-stability issue turns up.
+
+Either change is a one-line `.env` edit plus `docker compose up -d --force-recreate openclaw-stt-whisper`. The patcher leaves the existing `tools.media.audio.models[]` entry intact and only rewrites `baseUrl`/`headers` when they drift.
+
+## Disable STT entirely
+
+Two-step opt-out, mirrors the TTS path:
+
+1. In `.env`, leave `STT_API_TOKEN` empty. The patcher's step 14 detects this and skips cleanly — `tools.media.audio` stays untouched.
+2. Park the `openclaw-stt-whisper` service with `profiles: ["never"]` in `docker-compose.yml`:
+
+    ```yaml
+    openclaw-stt-whisper:
+      profiles: ["never"]    # add this one line
+      # …rest unchanged…
+    ```
+
+Note: opt-out affects only the voice-note / Discord voice / VoiceCall pipelines. The Control UI realtime mic button uses the browser's Web Speech API independently and stays functional regardless of this service — that is an OpenClaw design choice, not a consequence of the wiring here.
+
+## Remote STT backend
+
+Same pattern as "Run with a remote vLLM backend" above. On a GPU-less host pointing at a remote or cloud Whisper endpoint:
+
+1. Park the local service: add `profiles: ["never"]` to `openclaw-stt-whisper`.
+2. Point the patcher at the remote: `OPENCLAW_STT_BASE_URL=https://your-whisper.example.com/v1/` in `.env`.
+3. Set `STT_API_TOKEN` to whatever Bearer the remote accepts.
+
+The gateway will POST voice notes and voice-channel audio to the remote endpoint. Bridge DNS isn't involved — the URL resolves outside the compose network via the host's DNS.
+
 ## Rotating secrets
 
 Use `./rotate-secrets.sh` to overwrite the auto-generated secrets in `.env` with fresh random values. Sibling of `bootstrap.sh`, same helper style. Handles the three common rotation scenarios:
@@ -345,7 +379,7 @@ Use `./rotate-secrets.sh` to overwrite the auto-generated secrets in `.env` with
 ./rotate-secrets.sh VLLM_API_KEY    # rotate just this key
 ```
 
-The default set (`--all`): `VLLM_API_KEY`, `SEARXNG_SECRET`, `OPENCLAW_TTS_ROUTER_API_KEY`, `TTS_API_TOKEN`, plus `F5HUN_API_TOKEN` only if it is already non-empty (empty = HU TTS opted out of the CC-BY-NC model; `--all` respects that). `OPENCLAW_GATEWAY_TOKEN` is opt-in via `--include-gateway-token` — post-onboarding the real gateway auth lives in `openclaw.json`'s `gateway.auth.token` (picked by the onboarding wizard), so rotating the env var alone is a near no-op. `HUGGING_FACE_HUB_TOKEN` is out of scope (user-owned; can't be generated).
+The default set (`--all`): `VLLM_API_KEY`, `SEARXNG_SECRET`, `OPENCLAW_TTS_ROUTER_API_KEY`, `TTS_API_TOKEN`, `STT_API_TOKEN`, plus `F5HUN_API_TOKEN` only if it is already non-empty (empty = HU TTS opted out of the CC-BY-NC model; `--all` respects that). `OPENCLAW_GATEWAY_TOKEN` is opt-in via `--include-gateway-token` — post-onboarding the real gateway auth lives in `openclaw.json`'s `gateway.auth.token` (picked by the onboarding wizard), so rotating the env var alone is a near no-op. `HUGGING_FACE_HUB_TOKEN` is out of scope (user-owned; can't be generated).
 
 Before every change the script writes a timestamped `.env.backup-YYYYMMDD-HHMMSS` (mode 600), does an atomic write (temp file + `mv`), and runs `docker compose config --quiet` post-write. If the config validation fails, the backup is restored automatically. The script does NOT restart services — it prints the exact `docker compose up -d --force-recreate <services>` command for the services that read each rotated key, and you pick the moment (in-flight agent requests). HU rotations auto-append `--profile hu`.
 

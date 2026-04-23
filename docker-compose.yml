@@ -14,6 +14,7 @@
 #   openclaw-tts-en      — Kokoro 82M (English)         port 8091 (loopback)
 #   openclaw-tts-router  — OpenAI-compat /v1/audio      port 8092 (loopback)
 #   openclaw-tts-f5hun   — F5-TTS Hungarian (opt-in)    port 8090 (loopback, profile=hu)
+#   openclaw-stt-whisper — faster-whisper large-v3      port 8093 (loopback)
 #   openclaw-gateway     — agent gateway + WebSocket    port 18789 (exposed)
 #   openclaw-config-init — idempotent config patcher    one-shot
 #   openclaw-cli         — always-up exec target        shares gateway namespace
@@ -26,8 +27,9 @@
 #   - vLLM ports are intentionally NOT published on the host — uncomment the
 #     `127.0.0.1:` bindings only if you need direct debug access, and keep the
 #     bind on loopback (an unauthenticated 0.0.0.0 vLLM endpoint is an open door).
-#   - TTS ports default to loopback (127.0.0.1) for the same reason; expose on
-#     the LAN by setting TTS_*_BIND=0.0.0.0 in .env (Bearer-token-protected).
+#   - TTS and STT ports default to loopback (127.0.0.1) for the same reason;
+#     expose on the LAN by setting TTS_*_BIND / STT_WHISPER_BIND=0.0.0.0 in
+#     .env (all three surfaces are Bearer-token-protected).
 #   - Only the gateway (18789) is exposed on 0.0.0.0 by default. Put a reverse
 #     proxy (Nginx Proxy Manager, Caddy, Cloudflare tunnel) in front for public
 #     access over wss://.
@@ -68,6 +70,12 @@ volumes:
   # files in here to add custom HU reference voices the service can clone.
   tts-f5hun-voices:
     name: dgx-openclaw-tts-f5hun-voices
+  # faster-whisper weight cache for openclaw-stt-whisper. Holds the ~3 GB
+  # large-v3 CT2-quantized weights (or ~1.6 GB turbo) so `docker compose down`
+  # doesn't re-download them on the next boot. No host bind — speaches
+  # manages layout inside the volume itself.
+  stt-whisper-hf-cache:
+    name: dgx-openclaw-stt-whisper-hf-cache
 
 services:
   ######################
@@ -524,10 +532,102 @@ services:
         max-size: "50m"
 
   ######################
+  ## Whisper STT — faster-whisper large-v3, OpenAI-compatible speech-to-text.
+  #
+  #  Endpoints: POST /v1/audio/transcriptions, POST /v1/audio/translations,
+  #             GET /v1/models, GET /health. Served by the upstream
+  #             ghcr.io/speaches-ai/speaches-cuda image (MIT) — no custom
+  #             Dockerfile, no wrapper code. Backend is CTranslate2 via
+  #             faster-whisper.
+  #
+  #  Model: Systran/faster-whisper-large-v3 (MIT) by default, ~3 GB VRAM at
+  #  compute_type=float16. FLEURS Hungarian WER 14.1% (best validated number
+  #  among OpenAI-compat Whisper servers). Autodetects language per request —
+  #  no bilingual router needed (unlike TTS).
+  #
+  #  Alternate: STT_WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
+  #  for 8x speed at ~1.6 GB VRAM. HU WER not independently published — run
+  #  your own samples through it before switching on production audio.
+  #
+  #  VRAM-tight fallback: STT_WHISPER_COMPUTE_TYPE=int8_float16 halves VRAM
+  #  (~1.5 GB) at a 5-10% WER cost. Safe if the LLM / TTS squeeze the budget.
+  #
+  #  OpenClaw consumption (see patch-config.mjs step 14): wired via
+  #  tools.media.audio.models[] pointing at this service. Used by voice-note
+  #  upload in the Control UI chat (drop a wav/mp3 into the composer), the
+  #  Discord voice-channel transcription, the VoiceCall CLI, and the Talk /
+  #  Voicewake node pipelines. The Control UI realtime mic button is a
+  #  separate path — OpenClaw hardwires speech.ts to the browser's native
+  #  Web Speech API, which does NOT route through this service.
+  #
+  #  GB10 VRAM budget at LLM_GPU_MEM_UTIL=0.68:
+  #    Gemma 4 NVFP4 ~96 GB + bge-m3 ~1.1 GB + Kokoro ~1 GB + Whisper ~3 GB
+  #    ≈ 101 GB used, ~12 GB headroom on the 113 GB effective shared pool.
+  #
+  #  Networking: internal-only by bridge DNS (`openclaw-stt-whisper:8000`).
+  #  Host-side loopback publish below for debug. Bearer-auth: STT_API_TOKEN.
+  #  Set STT_WHISPER_BIND=0.0.0.0 in .env to expose on the LAN (still token-
+  #  protected). Sibling containers always use bridge DNS regardless.
+  #
+  #  Disable: set `profiles: ["never"]` on this service AND leave STT_API_TOKEN
+  #  empty in .env. Patcher step 14 is env-gated (skipped when the token is
+  #  unset), so dropping the token also cleanly opts out of the gateway wiring.
+  ######################
+  openclaw-stt-whisper:
+    image: ghcr.io/speaches-ai/speaches-cuda:${STT_SPEACHES_TAG:-latest}
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-stt-whisper
+    hostname: openclaw-stt-whisper
+    restart: unless-stopped
+    # Host-side bind for debug access. Default 127.0.0.1 = loopback only (LAN
+    # cannot reach it). Set STT_WHISPER_BIND=0.0.0.0 in .env to expose on the
+    # LAN (Bearer-auth via STT_API_TOKEN). Sibling containers (gateway / CLI)
+    # reach the service via bridge DNS regardless of this binding.
+    ports:
+      - "${STT_WHISPER_BIND:-127.0.0.1}:${STT_WHISPER_PORT:-8093}:8000"
+    environment:
+      # speaches Bearer-auth — when set, every /v1/* request must include
+      # `Authorization: Bearer <STT_API_TOKEN>`. /health stays unauthenticated
+      # so the Docker healthcheck and bridge-DNS probes keep working.
+      API_KEY: ${STT_API_TOKEN:-}
+      WHISPER__MODEL: ${STT_WHISPER_MODEL:-Systran/faster-whisper-large-v3}
+      WHISPER__COMPUTE_TYPE: ${STT_WHISPER_COMPUTE_TYPE:-float16}
+      WHISPER__DEVICE: ${STT_WHISPER_DEVICE:-cuda}
+      # 0 = keep the model resident forever (lowest latency, steady VRAM).
+      # >0 = seconds of idle time before speaches evicts the model (frees
+      # VRAM between bursty uses). Default 0 — we budgeted the VRAM anyway.
+      WHISPER__TTL: ${STT_WHISPER_TTL:-0}
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      # speaches-cuda runs as uid 1000 (`ubuntu`) with $HOME=/home/ubuntu.
+      - stt-whisper-hf-cache:/home/ubuntu/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # /health is unauthenticated and returns 200 once the server is up.
+      # Cold-start on first boot can be several minutes while the ~3 GB
+      # large-v3 CT2 weights download from HuggingFace — 180s start_period
+      # gives the healthcheck grace without flapping the container status.
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=3); sys.exit(0)' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+
+  ######################
   ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
   #
   #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 13 steps:
+  #  the onboarding wizard's choices or previous manual edits. 14 steps:
   #
   #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
   #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
@@ -565,6 +665,13 @@ services:
   #       The agent runner reads the credential from this per-agent store, NOT
   #       from models.providers.vllm.apiKey — drift after a .env rotation
   #       produces HTTP 401 from vLLM even when the config-file apiKey is correct.
+  #   14. Ensure tools.media.audio.enabled=true and upsert a models[] entry
+  #       with provider=openai, baseUrl pointing at openclaw-stt-whisper, the
+  #       configured model id, and a per-entry `headers.Authorization: Bearer
+  #       $STT_API_TOKEN` so the Whisper backend auth does not collide with
+  #       any global models.providers.openai.apiKey. Env-gated: skipped when
+  #       STT_API_TOKEN is unset, so removing the token cleanly opts out of
+  #       the gateway wiring (service block can be parked separately).
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.
@@ -595,6 +702,16 @@ services:
       OPENCLAW_TTS_ROUTER_API_KEY: ${OPENCLAW_TTS_ROUTER_API_KEY:-}
       OPENCLAW_TTS_ROUTER_URL: ${OPENCLAW_TTS_ROUTER_URL:-http://openclaw-tts-router:8080/v1}
       OPENCLAW_TTS_DEFAULT_VOICE: ${OPENCLAW_TTS_DEFAULT_VOICE:-af_heart}
+      # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
+      # writes a tools.media.audio.models[] entry with provider=openai,
+      # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
+      # per-entry Authorization Bearer header carrying STT_API_TOKEN (so it
+      # doesn't collide with any global openai apiKey). Leave STT_API_TOKEN
+      # empty to opt out — the patcher skips step 14 cleanly.
+      STT_API_TOKEN: ${STT_API_TOKEN:-}
+      OPENCLAW_STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8000/v1}
+      OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-Systran/faster-whisper-large-v3}
+      OPENCLAW_STT_LANGUAGE: ${OPENCLAW_STT_LANGUAGE:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ./patch-config.mjs:/opt/patch-config.mjs:ro

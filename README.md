@@ -47,7 +47,8 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 | **SearxNG meta-search** | Self-hosted, privacy-respecting web search backend wired into OpenClaw's native `webSearch` provider. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Wikipedia family, Reddit, GitHub, arXiv) — queries never reach Google / Bing / Yandex / Yahoo / Baidu. |
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
 | **Bilingual TTS surface** | OpenAI-compatible `/v1/audio/speech` router fronting Kokoro 82M (English, Apache 2.0, ~500 MB-1 GB VRAM, ships by default) and an opt-in F5-TTS Hungarian backend (CC-BY-NC model weights — see below). Wired into OpenClaw via the sanctioned `messages.tts.providers.openai` baseUrl override. Diacritic-based autodetect re-routes Hungarian-text requests to the HU backend transparently when both are active. |
-| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, flips the bundled SearxNG plugin on, and points the openai TTS provider at the bundled router. |
+| **Whisper STT (EN + HU)** | OpenAI-compatible `/v1/audio/transcriptions` via `Systran/faster-whisper-large-v3` on the upstream speaches-ai image. ~3 GB VRAM, autodetects language (FLEURS Hungarian WER 14.1%). Wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads in the Control UI chat, Discord voice channels, the VoiceCall CLI, and Talk / Voicewake nodes all transcribe through this service. MIT upstream image, zero custom code. |
+| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, flips the bundled SearxNG plugin on, points the openai TTS provider at the bundled router, and upserts the STT entry into `tools.media.audio.models[]`. |
 
 Everything lives in one Docker Compose file. No separate vLLM service definitions, no reverse-proxied DNS trickery, no `host.docker.internal` workarounds — containers reach each other by their compose service name on the default bridge network.
 
@@ -93,7 +94,7 @@ docker compose up -d                        # services start; gateway will crash
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-That's it — the patcher applies all 13 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+That's it — the patcher applies all 14 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Architecture at a glance
 
@@ -130,6 +131,7 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Hybrid retrieval + MMR.** `memorySearch` runs BM25 (SQLite FTS5) alongside vector similarity and re-ranks the candidate set with MMR for diversity — exact-keyword / ID matches stop falling through the cracks of pure cosine search.
 - **Privacy-respecting web search.** Self-hosted SearxNG wired into OpenClaw's native `webSearch` tool. No commercial search API, no query leak to Google / Bing / Yandex. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage + Wikipedia / Reddit / GitHub / arXiv).
 - **Bilingual self-hosted TTS.** Kokoro 82M (English, Apache 2.0) ships by default and runs alongside the LLM on the same GB10 GPU. Optional Hungarian (F5-TTS, opt-in via `--profile hu`) for fully local cross-language voice; details in [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc).
+- **Bilingual self-hosted STT.** `Systran/faster-whisper-large-v3` on the upstream speaches-ai image, autodetecting English and Hungarian (FLEURS HU WER 14.1%). ~3 GB VRAM, wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads, Discord voice, VoiceCall CLI, and Talk/Voicewake nodes all transcribe through it. Details in [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md).
 - **Long context, honest numbers.** 256K model max; realistic stable bands (per user count) are documented in the compose file.
 - **Idempotent configuration.** The patcher re-applies a known-good state on every `up`. Safe to run repeatedly.
 - **Reverse-proxy ready.** `gateway.trustedProxies` is pre-populated; add your LAN CIDR via `OPENCLAW_LAN_CIDR` if needed.
@@ -139,8 +141,8 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```
 dgx-openclaw-stack/
-├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-*)
-├─ patch-config.mjs             # idempotent OpenClaw config patcher (13 steps)
+├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-* + stt-*)
+├─ patch-config.mjs             # idempotent OpenClaw config patcher (14 steps)
 ├─ bootstrap.sh                 # non-destructive first-time setup
 ├─ .env.example                 # documented env template (every tunable lives here)
 ├─ templates/
@@ -155,6 +157,7 @@ dgx-openclaw-stack/
 ├─ openclaw-tts-f5hun/          # OPT-IN Hungarian TTS (CC-BY-NC model weights)
 │  ├─ server/                   #   Dockerfile + F5-TTS wrapper
 │  └─ voices/                   #   Bundled reference voice (Diana Majlinger, public domain)
+# openclaw-stt-whisper is the upstream speaches-ai image — no source in this repo.
 ├─ docs/
 │  ├─ ARCHITECTURE.md           # service-by-service design rationale
 │  ├─ CUSTOMIZATION.md          # model swaps, remote backends, hardware retuning

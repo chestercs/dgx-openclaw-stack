@@ -57,6 +57,7 @@ DEFAULT_KEYS=(
   SEARXNG_SECRET
   OPENCLAW_TTS_ROUTER_API_KEY
   TTS_API_TOKEN
+  STT_API_TOKEN
 )
 F5HUN_KEY=F5HUN_API_TOKEN
 GATEWAY_KEY=OPENCLAW_GATEWAY_TOKEN
@@ -71,6 +72,7 @@ services_for() {
     SEARXNG_SECRET)              echo "searxng" ;;
     OPENCLAW_TTS_ROUTER_API_KEY) echo "openclaw-config-init openclaw-gateway openclaw-cli openclaw-tts-router" ;;
     TTS_API_TOKEN)               echo "openclaw-tts-en openclaw-tts-router" ;;
+    STT_API_TOKEN)               echo "openclaw-stt-whisper openclaw-config-init openclaw-gateway openclaw-cli" ;;
     F5HUN_API_TOKEN)             echo "openclaw-tts-f5hun openclaw-tts-router" ;;
     OPENCLAW_GATEWAY_TOKEN)      echo "openclaw-gateway openclaw-cli" ;;
     *) return 1 ;;
@@ -105,7 +107,8 @@ Flags:
   -h, --help                   Show this help.
 
 Default set (rotated by --all or the interactive menu):
-  VLLM_API_KEY, SEARXNG_SECRET, OPENCLAW_TTS_ROUTER_API_KEY, TTS_API_TOKEN
+  VLLM_API_KEY, SEARXNG_SECRET, OPENCLAW_TTS_ROUTER_API_KEY, TTS_API_TOKEN,
+  STT_API_TOKEN
   (+ F5HUN_API_TOKEN if it is already set in .env — empty F5HUN = opted out
   of the CC-BY-NC Hungarian TTS, and --all respects that).
 

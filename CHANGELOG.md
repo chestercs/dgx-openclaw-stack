@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **STT stack — Whisper large-v3 on the upstream speaches-ai image.**
+  New `openclaw-stt-whisper` service (`ghcr.io/speaches-ai/speaches-cuda`,
+  running `Systran/faster-whisper-large-v3`, MIT) serving the
+  OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`,
+  `/v1/models`, `/health` endpoints. ~3 GB VRAM at float16,
+  autodetects language (FLEURS Hungarian WER 14.1%, the best validated
+  number among the OpenAI-compat candidates — details in
+  `docs/reference/stt-stack.md`). No custom Dockerfile, no wrapper code:
+  we consume the upstream image directly. Consumed by OpenClaw's
+  voice-note upload in the Control UI chat, Discord voice channels, the
+  VoiceCall CLI, and the Talk / Voicewake node pipelines. The Control UI
+  realtime mic button is a separate path — it uses the browser's native
+  Web Speech API (`speech.ts`) and does NOT go through this service;
+  that is OpenClaw's design choice, not a wiring limitation here.
+  Loopback-only publish by default (`127.0.0.1:8093`), Bearer-auth via
+  `STT_API_TOKEN`. Alternates documented in `docs/CUSTOMIZATION.md`:
+  `deepdml/faster-whisper-large-v3-turbo-ct2` (8× faster, ~1.6 GB VRAM,
+  HU WER unpublished — benchmark before flipping), and
+  `STT_WHISPER_COMPUTE_TYPE=int8_float16` as a VRAM-tight fallback.
+- **Patcher step 14 — `tools.media.audio` wiring.** New env-gated step
+  in `patch-config.mjs` that upserts an entry into
+  `tools.media.audio.models[]` with `provider: "openai"`, the configured
+  model id, `baseUrl: http://openclaw-stt-whisper:8000/v1/`, and a
+  per-entry `headers.Authorization: Bearer $STT_API_TOKEN`. Writing the
+  Bearer to `headers` (instead of the `apiKey` field) keeps the Whisper
+  token orthogonal to the global `models.providers.openai.apiKey` —
+  users with a separate cloud OpenAI account aren't affected. Upsert-by-
+  `baseUrl` preserves unrelated user-added entries (Deepgram, a local
+  whisper-cpp CLI entry, …). Env-gated: skips cleanly when
+  `STT_API_TOKEN` is unset, which combined with `profiles: ["never"]` on
+  the service is the full STT opt-out path.
+- **`docs/reference/stt-stack.md`** — new reference doc paralleling
+  `tts-stack.md`. Covers the backend choice (decision matrix vs
+  NVIDIA Parakeet/Canary, Microsoft Phi-4 Multimodal, Distil-Whisper),
+  the three OpenClaw voice surfaces (Control UI mic vs voice-note
+  upload vs Discord/Talk/VoiceCall), the `tools.media.audio` schema,
+  the model catalog (large-v3 default / turbo alternate /
+  int8_float16 fallback), verification recipe, and troubleshooting.
+- **`rotate-secrets.sh`** picks up `STT_API_TOKEN` in the default
+  (`--all`) set. Restart matrix updated: rotating `STT_API_TOKEN`
+  force-recreates `openclaw-stt-whisper openclaw-config-init
+  openclaw-gateway openclaw-cli` so the backend Bearer and the patched
+  `tools.media.audio.models[].headers.Authorization` stay in lockstep.
 - **`docs/TROUBLESHOOTING.md` → "Embedder crashed mid-index"** entry in
   the `vllm-embedding` section. Documents the observed failure mode
   where a transient `cudaErrorNotPermitted` crash leaves the vector
@@ -17,6 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [openclaw/openclaw#70567](https://github.com/openclaw/openclaw/issues/70567);
   until upstream fixes that, any embedder restart is a cue to run a
   forced reindex.
+
+### Changed
+- Patcher step count `13 → 14` (new step 14 wires STT). Header docs in
+  `patch-config.mjs`, `docker-compose.yml`, `CLAUDE.md`,
+  `docs/ARCHITECTURE.md`, `README.md`, `SETUP.md` all updated.
+- Service count `8 → 9` default (`10` with `--profile hu` active) —
+  `openclaw-stt-whisper` joins the default profile.
 
 ## [0.4.3] - 2026-04-23
 

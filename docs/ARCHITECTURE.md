@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how the eight services in `docker-compose.yml` fit together (nine with the optional `hu` profile active) and **why** each design choice was made.
+This document explains how the nine services in `docker-compose.yml` fit together (ten with the optional `hu` profile active) and **why** each design choice was made.
 
 **Audience.** Operators who want to understand what the stack does before running it; contributors planning to modify the compose file or `patch-config.mjs`; anyone comparing this layout against their own self-hosted LLM setup. The compose file and patcher have decisions baked into them that only make sense with the rationale below — read this before tuning them.
 
@@ -181,7 +181,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 13 steps
+### 14 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -199,6 +199,7 @@ Rather than tell users "also click here, there, and there after onboarding", the
     c. `messages.tts.voiceAliases` (`english`, `narrator`, `male`, `female`, `magyar`, `hungarian`).
 12. Mirror `gateway.auth.token` into `gateway.remote.token` so the loopback CLI WS-connect doesn't hit a token mismatch and silently fall back to the embedded runner (a side-car path, not the production agent route).
 13. Sync the per-agent `auth-profiles.json` `vllm:default.key` with `VLLM_API_KEY`. The agent runner reads the credential from this per-agent store, not from `models.providers.vllm.apiKey` — drift after a `.env` rotation produces HTTP 401 from vLLM even when the config-file apiKey is correct.
+14. Ensure `tools.media.audio` wires the Whisper STT backend (env-gated: `STT_API_TOKEN`). Upserts an entry into `tools.media.audio.models[]` with `provider: "openai"`, the configured model id, `baseUrl: http://openclaw-stt-whisper:8000/v1/`, and `headers.Authorization: Bearer $STT_API_TOKEN` so the Whisper Bearer stays isolated from any global `models.providers.openai.apiKey` (upsert-by-baseUrl preserves user-added entries like a Deepgram fallback). Feeds voice-note upload, Discord voice-channel transcription, VoiceCall CLI, Talk / Voicewake nodes. The Control UI realtime mic button is a separate path — it uses the browser's Web Speech API (`speech.ts`) and does NOT go through this pipeline.
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 
@@ -254,17 +255,67 @@ All three TTS services publish to `${TTS_*_BIND:-127.0.0.1}:${TTS_*_PORT:-…}` 
 
 The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis` API — it does NOT call the configured `messages.tts.providers.openai`. Voice surfaces that go through the gateway's TTS pipeline (Discord channel, agent `tts` skill) DO use this router. This is an upstream OpenClaw limitation.
 
+## STT subsystem (1 service)
+
+### Layout
+
+```
+      ┌────────────────────────────────────────────────┐
+      │ OpenClaw gateway                                │
+      │   tools.media.audio.models[0]                   │
+      │     provider: "openai"                          │
+      │     baseUrl:  http://openclaw-stt-whisper:8000/v1/ │
+      │     model:    Systran/faster-whisper-large-v3   │
+      │     headers:  Authorization: Bearer $STT_API_TOKEN │
+      └─────────────────────┬──────────────────────────┘
+                            │ (bridge DNS, POST multipart)
+                            ▼
+         ┌─────────────────────────────────────┐
+         │ openclaw-stt-whisper                 │
+         │  127.0.0.1:8093 (loopback publish)  │
+         │  ghcr.io/speaches-ai/speaches-cuda  │
+         │  Whisper large-v3 (MIT) @ float16   │
+         │  ~3 GB VRAM, autodetect EN + HU     │
+         └─────────────────────────────────────┘
+```
+
+Single upstream service. No custom Dockerfile, no wrapper code — we consume `speaches-cuda`'s OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, `/health` endpoints directly. Whisper autodetects the input language per request, so no bilingual router is needed (contrast with TTS, which needs one backend per language).
+
+### Three voice surfaces, one backend
+
+The STT service backs two of OpenClaw's three voice-input paths:
+
+1. **Control UI realtime mic button** (chat composer mic icon) — browser-native Web Speech API (`speech.ts`). Does NOT use this service. Language support depends on the browser + OS.
+2. **Voice-note attachment** — drop a wav/mp3/m4a/opus into the chat composer. OpenClaw's `tools.media.audio` pipeline picks the first matching `models[]` entry and POSTs the file. Transcript replaces the message body (wrapped in `[Audio]`); slash commands inside the transcript still fire.
+3. **Voicewake / Talk / VoiceCall nodes + Discord voice-channel** — node pipelines (`docs.openclaw.ai/nodes/{talk,voicewake}`, `cli/voicecall`) use the same `tools.media.audio` configuration.
+
+Paths 2 and 3 converge on the single `tools.media.audio.models[]` entry written by patcher step 14.
+
+### Why Whisper large-v3 as default
+
+FLEURS Hungarian WER 14.1% (best validated number among the OpenAI-compatible candidates as of 2026-04). MIT weights + MIT upstream server → no opt-in profile gate needed, ships in the default profile. The alternatives evaluated: NVIDIA Parakeet/Canary (no OpenAI-compat server → requires wrapper code we'd have to maintain), Microsoft Phi-4 Multimodal (Hungarian audio explicitly unsupported), Distil-Whisper (English-only). See `docs/reference/stt-stack.md` for the full comparison matrix.
+
+### Auth isolation via per-entry `headers`
+
+The OpenClaw audio schema resolves provider auth through the standard chain — `models.providers.openai.apiKey` or env vars or auth profiles. If we wrote the Whisper Bearer into `models.providers.openai.apiKey`, it would collide with any cloud OpenAI account the user also configures. Per-entry `headers.Authorization: Bearer <token>` is explicitly supported by `tools.media.audio.models[]` (`docs.openclaw.ai/nodes/audio`) and keeps the STT token orthogonal to the global openai apiKey.
+
+### Port publishing posture
+
+`${STT_WHISPER_BIND:-127.0.0.1}:${STT_WHISPER_PORT:-8093}:8000` — loopback by default, consistent with the TTS services. `curl 127.0.0.1:8093/health` works without `docker exec` gymnastics. Set `STT_WHISPER_BIND=0.0.0.0` in `.env` to expose on the LAN (Bearer-protected via `STT_API_TOKEN`).
+
 ## Volumes
 
 - `hf-cache` (named volume, bound to `$VLLM_HF_CACHE_DIR`) is shared by both vLLM services so the bge-m3 weights live next to the Gemma 4 weights in the same HF cache structure. Both services get `volumes: - hf-cache:/root/.cache/huggingface`. The Docker volume label is `${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}` — change this if a sibling LLM stack on the same host bind-mounts the same `VLLM_HF_CACHE_DIR` and you want one consistent label in `docker volume ls`.
 - `$OPENCLAW_CONFIG_DIR` is bind-mounted into the config-init, gateway, and cli services — they all read/write the same `openclaw.json`, memory/, heartbeat journal.
 - `$OPENCLAW_WORKSPACE_DIR` is bind-mounted into the gateway and cli services — the agent's writable working directory.
 - `tts-en-hf-cache`, `tts-f5hun-hf-cache`, `tts-f5hun-voices` — Docker named volumes (no host bind). Hold runtime HF downloads + user-supplied reference voices for the F5-TTS HU service.
+- `stt-whisper-hf-cache` — Docker named volume for the faster-whisper CT2 weights (~3 GB large-v3 by default). Survives `docker compose down` so the next boot doesn't re-download. No host bind.
 
 ## Networking, trust, and exposure
 
 - **Gateway**: `18789` (and `18790` control) are published to the host. Put a TLS-terminating reverse proxy in front for public access over `wss://`.
 - **vLLM ports stay compose-internal.** For host-side debug, uncomment the `"127.0.0.1:8004:8004"` / `"127.0.0.1:8005:8005"` bindings in `docker-compose.yml`. Binding to `127.0.0.1` keeps them off your LAN.
 - **TTS ports publish to loopback by default** (`127.0.0.1:8090–8092`) — see the TTS subsystem section above. Set `TTS_*_BIND=0.0.0.0` in `.env` to expose on the LAN.
+- **STT port (`openclaw-stt-whisper`) publishes to `127.0.0.1:8093`** by default. Set `STT_WHISPER_BIND=0.0.0.0` to expose on the LAN (Bearer-protected via `STT_API_TOKEN`).
 - `gateway.trustedProxies` includes `172.16.0.0/12` so any reverse proxy on the same docker bridge (or on host-network with bridge-adjacent IPs) is trusted. If you access the gateway **directly** from your LAN (bypassing the proxy), add your LAN CIDR via `OPENCLAW_LAN_CIDR`.
 - The Chrome extension expects `wss://` (secure) for public use. Put a TLS-terminating reverse proxy in front and set `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1` so the gateway accepts the plain `ws://` hop from the proxy on your private network.
