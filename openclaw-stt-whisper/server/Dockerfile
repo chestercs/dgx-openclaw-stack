@@ -34,11 +34,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 python3.12-dev python3-pip \
         ffmpeg libsndfile1 \
-        cmake ninja-build build-essential pybind11-dev \
+        ninja-build build-essential pybind11-dev \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python3
+
+# CMake from pip — Ubuntu 24.04's cmake 3.28 predates Blackwell arch (sm_120)
+# support in FindCUDA/select_compute_arch.cmake. The pip wheel ships a
+# self-contained CMake 3.30+ binary into /usr/local/bin, ahead of the
+# system package on PATH (no apt-install).
+RUN pip install "cmake>=3.30" \
+    && cmake --version
 
 WORKDIR /app
 
@@ -68,7 +75,7 @@ RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
         -DWITH_MKL=OFF \
         -DOPENMP_RUNTIME=COMP \
         -DBUILD_CLI=OFF \
-        -DCUDA_ARCH_LIST="80;90;100;120" \
+        -DCUDA_ARCH_LIST="8.0;9.0;10.0;12.0" \
         -DCMAKE_CUDA_ARCHITECTURES="80;90;100;120" \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -G Ninja \
