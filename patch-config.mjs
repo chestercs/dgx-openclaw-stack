@@ -611,7 +611,7 @@ if (sttToken) {
 
   // OpenClaw convention: trailing slash on baseUrl (same as vllm /
   // memorySearch). Append one if the env var omits it, so either form works.
-  const sttBaseUrl = (process.env.OPENCLAW_STT_BASE_URL || 'http://openclaw-stt-whisper:8000/v1')
+  const sttBaseUrl = (process.env.OPENCLAW_STT_BASE_URL || 'http://openclaw-stt-whisper:8080/v1')
     .replace(/\/?$/, '/');
   const sttModel = process.env.OPENCLAW_STT_MODEL || 'Systran/faster-whisper-large-v3';
   const sttLanguage = process.env.OPENCLAW_STT_LANGUAGE?.trim();

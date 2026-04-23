@@ -23,8 +23,8 @@ searxng/settings/       # SearxNG override settings (privacy posture)
 openclaw-tts-en/        # English TTS service (Kokoro 82M, Apache 2.0) — default
 openclaw-tts-router/    # OpenAI-compat /v1/audio/speech router (passthrough + ffmpeg)
 openclaw-tts-f5hun/     # OPT-IN Hungarian TTS (F5-TTS, CC-BY-NC weights) — profile=hu
-# openclaw-stt-whisper is the upstream ghcr.io/speaches-ai/speaches CUDA image —
-# no source tree in this repo (zero custom code).
+openclaw-stt-whisper/     # Self-built CUDA 13 image (Blackwell compat) — FastAPI
+                          # around faster-whisper large-v3, ~150 LOC wrapper
 docs/
   ARCHITECTURE.md       # Service-by-service design rationale
   CUSTOMIZATION.md      # Swap models, retune for your hardware, remote backends
@@ -244,7 +244,7 @@ Unlike the vLLM services, the three TTS services *do* publish their port on the 
 
 ### STT is one service, no router — Whisper autodetects
 
-The STT surface is a single upstream service: `openclaw-stt-whisper` = `ghcr.io/speaches-ai/speaches:latest-cuda-12.6.3` (upstream-published CUDA variant) running `Systran/faster-whisper-large-v3` (MIT). No router, no custom Dockerfile, no wrapper code — Whisper autodetects the input language per request, so the bilingual routing that TTS needs is unnecessary. FLEURS Hungarian WER 14.1%, ~3 GB VRAM at float16, port `8093` loopback-only by default (same posture as TTS).
+The STT surface is a single service, `openclaw-stt-whisper`, **self-built** from `./openclaw-stt-whisper/server/` on a CUDA 13 base. ~150 LOC FastAPI wrapper around `faster-whisper` running `Systran/faster-whisper-large-v3` (MIT). No router — Whisper autodetects the input language per request, so the bilingual routing that TTS needs is unnecessary. FLEURS Hungarian WER 14.1%, ~3 GB VRAM at float16, port `8093` loopback-only by default (same posture as TTS). The original plan targeted `ghcr.io/speaches-ai/speaches` upstream (zero custom code), but GB10 (sm_120) deploy logs on 2026-04-24 showed the upstream CT2 rejects every low-precision compute type and destabilizes on float32 — a CUDA 13 base + cu130 PyTorch wheels + current `faster-whisper` is the proven path (matches the `vllm-llm` / `openclaw-tts-en` wheel pattern). Swap `build:` back to `image:` when the upstream publishes a Blackwell-tensor-core variant.
 
 Wired via `tools.media.audio.models[]` in `openclaw.json` (NOT `messages.stt` — that schema name doesn't exist in OpenClaw). See `docs.openclaw.ai/nodes/audio`. Path used by voice-note upload in the Control UI composer, Discord voice channels, VoiceCall CLI, Talk / Voicewake nodes. The Control UI realtime mic button is a separate path — it uses the browser's native Web Speech API (`speech.ts`) and does NOT go through this service; that is an OpenClaw design choice, not a wiring limitation.
 

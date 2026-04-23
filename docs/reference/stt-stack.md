@@ -10,22 +10,44 @@ One service in the unified `llm/dgx-openclaw-stack/` compose:
 |---|---|---|---|---|---|
 | `openclaw-stt-whisper` | `Systran/faster-whisper-large-v3` | 8093 | ~3 GB (float16) | MIT | default |
 
-Upstream image: `ghcr.io/speaches-ai/speaches (CUDA tag)`. No custom Dockerfile, no wrapper code — the stack consumes the upstream OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, and `/health` endpoints directly.
+Self-built from `./openclaw-stt-whisper/server/` on `nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04`. ~150 LOC FastAPI wrapper around [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) exposing OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, and `/health` endpoints.
 
-## Why Whisper large-v3 + speaches
+## Why Whisper large-v3 + self-built CUDA 13 image
 
 The backend choice was made 2026-04 against these candidates:
 
 | Candidate | HU WER (FLEURS) | VRAM | Licence | OpenAI-compat server | Verdict |
 |---|---|---|---|---|---|
-| **Whisper large-v3 + speaches** | **14.1%** | ~3 GB | MIT + MIT | ✅ native | ✅ chosen |
-| Whisper large-v3-turbo + speaches | not published | ~1.6 GB | MIT | ✅ native | override (faster, unvalidated HU) |
+| **Whisper large-v3 + self-built CUDA 13** | **14.1%** | ~3 GB | MIT + MIT | ✅ (this repo's wrapper) | ✅ chosen |
+| Whisper large-v3-turbo (same wrapper) | not published | ~1.6 GB | MIT | ✅ | override (faster, unvalidated HU) |
+| `ghcr.io/speaches-ai/speaches` (upstream) | 14.1% | ~3 GB | MIT | ✅ native | ❌ Blackwell sm_120 kernel gap |
 | NVIDIA Parakeet-TDT 0.6B v3 | 15.72% | ~1.2 GB | CC-BY-4.0 | ❌ NeMo-only | wrapper burden |
 | NVIDIA Canary-1B v2 | not published | ~2 GB | CC-BY-4.0 | ❌ NeMo-only | wrapper burden |
 | Microsoft Phi-4 Multimodal | not supported | ~11 GB | MIT | ❌ | no Hungarian audio |
 | Distil-Whisper | n/a | n/a | MIT | ✅ | English-only |
 
 `14.1%` is from the [Whisper Notes benchmark post](https://whispernotes.app/blog/parakeet-v3-default-mac-model) (25-language FLEURS table) — the best validated Hungarian number among the OpenAI-compatible candidates.
+
+### Why self-built instead of the speaches upstream image
+
+On paper `ghcr.io/speaches-ai/speaches` is the ideal dependency: MIT license, active maintenance, ships OpenAI-compatible routes, zero custom code to maintain. The original 2026-04-23 plan selected it. In practice the upstream publishes only CUDA 12.6.3 variants, and on GB10 (sm_120) that image's bundled CTranslate2 rejects every low-precision compute type — `float16`, `int8_float16`, and `int8_bfloat16` all fail with _"target device or backend do not support efficient … computation"_. The `float32` fallback runs on CUDA cores at real-time factor ~1× (2 min audio = 2 min transcribe) while also destabilizing numerically (Whisper generation collapses into compression-ratio loops).
+
+The fix is a CUDA 13 base + cu130 PyTorch wheels + current `faster-whisper` (≥ 1.2), which is the same wheel pattern the surrounding `vllm-llm` and `openclaw-tts-en` services already use successfully on GB10. The wrapper is ~150 LOC of FastAPI + a Bearer-auth middleware — trivial to retire if speaches upstream later publishes a Blackwell-tensor-core variant (swap `build:` back to `image:` in `docker-compose.yml`).
+
+### `compute_type` fallback ladder on Blackwell
+
+If the tensor-core kernels for your chosen precision aren't compiled into the CTranslate2 version that landed with `faster-whisper` at build time, the service raises `ValueError` on the first transcribe. Try these in order:
+
+1. `float16` (default — fastest, ~3 GB VRAM, full precision).
+2. `bfloat16` (same speed class on Blackwell, numerically more robust).
+3. `int8_float16` (~1.5 GB VRAM, 5-10% WER cost).
+4. `int8_bfloat16` (same VRAM as above, different kernel class).
+5. `int8` (CPU-style quant; slow on GPU, reliable fallback).
+6. `float32` (~6 GB VRAM, slowest on the GPU but no quantization or fused kernels — lossless baseline).
+
+### When to switch back to upstream speaches
+
+The moment `ghcr.io/speaches-ai/speaches` publishes a CUDA 13 variant (e.g. `latest-cuda-13.x`) that compiles CT2 tensor-core kernels for sm_120, the swap is a 15-line diff: replace the `build: ./openclaw-stt-whisper/server` + `image: openclaw-stt-whisper:0.1.0` lines with a single `image: ghcr.io/speaches-ai/speaches:<cuda-13-tag>`, re-map the env-var names (`STT_API_TOKEN` → `API_KEY`, `WHISPER_MODEL` → `WHISPER__MODEL`, etc.), and delete the `openclaw-stt-whisper/` directory. A GitHub watch on `speaches-ai/speaches` catches that release.
 
 ## Three voice surfaces in OpenClaw (easy to confuse)
 
@@ -49,7 +71,7 @@ OpenClaw has three speech-input paths; this service only backs two of them.
           {
             "provider": "openai",
             "model": "Systran/faster-whisper-large-v3",
-            "baseUrl": "http://openclaw-stt-whisper:8000/v1/",
+            "baseUrl": "http://openclaw-stt-whisper:8080/v1/",
             "headers": {
               "Authorization": "Bearer <STT_API_TOKEN>"
             }
@@ -94,12 +116,10 @@ Dropping to turbo + Kokoro leaves ~13.5 GB; adding F5-TTS HU on top consumes ~1 
 
 See `.env.example` "STT — faster-whisper large-v3" section. Key entries:
 
-- `STT_API_TOKEN` — Bearer token (required for the service; skip to opt out).
+- `STT_API_TOKEN` — Bearer token (required to lock the service; leaving it empty disables Bearer auth).
 - `STT_WHISPER_MODEL` — HuggingFace model id.
-- `STT_WHISPER_COMPUTE_TYPE` — `float16` (default) or `int8_float16`.
+- `STT_WHISPER_COMPUTE_TYPE` — walk the fallback ladder above if `float16` isn't supported by your CT2 build.
 - `STT_WHISPER_DEVICE` — `cuda` or `cpu`.
-- `STT_WHISPER_TTL` — seconds of idle before VRAM unload (0 = resident).
-- `STT_SPEACHES_TAG` — pin the upstream image once validated.
 - `STT_WHISPER_BIND` / `STT_WHISPER_PORT` — host-side publish (loopback default).
 - `OPENCLAW_STT_BASE_URL` / `OPENCLAW_STT_MODEL` / `OPENCLAW_STT_LANGUAGE` — patcher inputs.
 
@@ -131,8 +151,8 @@ docker exec openclaw-cli jq '.tools.media.audio' $OPENCLAW_CONFIG_DIR/openclaw.j
 - **Cold start takes minutes on first boot** — ~3 GB of large-v3 CT2 weights download from HuggingFace. Subsequent boots reuse the `stt-whisper-hf-cache` volume.
 - **401 Unauthorized from a gateway audio upload** — most likely `STT_API_TOKEN` drift between `.env` and the patched `openclaw.json`. Re-run `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli` to re-apply the patcher after rotating the token.
 - **HU transcripts look rough on your actual audio** — the 14.1% FLEURS number is lab-clean narration. On noisy mic input, poorly-placed ékezetek, or heavy speaker accent, quality degrades. Options: (1) try `large-v3-turbo` for lower latency at comparable quality, (2) switch to `int8_float16` to see if precision matters on your audio, (3) look for a Hungarian Whisper fine-tune on HF, (4) file a follow-up with sample clips for investigation.
-- **Blackwell / sm_120 numerical issues** — CTranslate2 inference is independent of cuBLAS GEMM, so the speaches upstream image is usually stable. If you see NaN spans or garbled Unicode, `STT_WHISPER_COMPUTE_TYPE=int8_float16` is the first mitigation; a self-built `nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04` + `faster-whisper` pip install Dockerfile is the last-resort fallback.
+- **Blackwell / sm_120 kernel class unsupported** — first transcribe raises `ValueError: target device or backend do not support efficient <type> computation`. Walk the `compute_type` fallback ladder above (`float16` → `bfloat16` → `int8_float16` → `int8_bfloat16` → `int8` → `float32`). A `.env` line change + `docker compose up -d --force-recreate openclaw-stt-whisper` is enough; no rebuild.
 
 ## License
 
-MIT Whisper weights (`Systran/faster-whisper-large-v3` is a CT2-quantized rehost of `openai/whisper-large-v3`, MIT) + MIT speaches wrapper. No CC-BY-NC component — no opt-in profile gate needed, the service ships in the default profile.
+MIT Whisper weights (`Systran/faster-whisper-large-v3` is a CT2-quantized rehost of `openai/whisper-large-v3`, MIT) + MIT `faster-whisper` library + MIT wrapper code in this repo. No CC-BY-NC component — no opt-in profile gate needed, the service ships in the default profile.

@@ -72,8 +72,8 @@ volumes:
     name: dgx-openclaw-tts-f5hun-voices
   # faster-whisper weight cache for openclaw-stt-whisper. Holds the ~3 GB
   # large-v3 CT2-quantized weights (or ~1.6 GB turbo) so `docker compose down`
-  # doesn't re-download them on the next boot. No host bind — speaches
-  # manages layout inside the volume itself.
+  # doesn't re-download them on the next boot. No host bind — faster-whisper
+  # manages the HuggingFace cache layout inside the volume itself.
   stt-whisper-hf-cache:
     name: dgx-openclaw-stt-whisper-hf-cache
 
@@ -535,10 +535,20 @@ services:
   ## Whisper STT — faster-whisper large-v3, OpenAI-compatible speech-to-text.
   #
   #  Endpoints: POST /v1/audio/transcriptions, POST /v1/audio/translations,
-  #             GET /v1/models, GET /health. Served by the upstream
-  #             ghcr.io/speaches-ai/speaches CUDA tag (MIT) — no custom
-  #             Dockerfile, no wrapper code. Backend is CTranslate2 via
-  #             faster-whisper.
+  #             GET /v1/models, GET /health. Served by a ~150 LOC FastAPI
+  #             wrapper on top of faster-whisper (CTranslate2 backend), built
+  #             from `./openclaw-stt-whisper/server/` on a CUDA 13 base. MIT
+  #             wrapper code + MIT Whisper weights.
+  #
+  #  Why self-built instead of `ghcr.io/speaches-ai/speaches`: the upstream
+  #  image's published CUDA variant (12.6.3) ships a CTranslate2 that does
+  #  NOT render tensor-core kernels for Blackwell sm_120 — every low-precision
+  #  compute type (float16 / int8_float16 / int8_bfloat16) is rejected, and
+  #  the float32 fallback runs on CUDA cores at real-time factor ~1× while
+  #  also destabilizing numerically. A CUDA 13 base + cu130 PyTorch wheels +
+  #  current faster-whisper is the proven GB10 path (matches the vllm-llm /
+  #  openclaw-tts-en wheel pattern). Swap `build:` back to `image:` if the
+  #  speaches upstream ever publishes a Blackwell-tensor-core variant.
   #
   #  Model: Systran/faster-whisper-large-v3 (MIT) by default, ~3 GB VRAM at
   #  compute_type=float16. FLEURS Hungarian WER 14.1% (best validated number
@@ -564,7 +574,7 @@ services:
   #    Gemma 4 NVFP4 ~96 GB + bge-m3 ~1.1 GB + Kokoro ~1 GB + Whisper ~3 GB
   #    ≈ 101 GB used, ~12 GB headroom on the 113 GB effective shared pool.
   #
-  #  Networking: internal-only by bridge DNS (`openclaw-stt-whisper:8000`).
+  #  Networking: internal-only by bridge DNS (`openclaw-stt-whisper:8080`).
   #  Host-side loopback publish below for debug. Bearer-auth: STT_API_TOKEN.
   #  Set STT_WHISPER_BIND=0.0.0.0 in .env to expose on the LAN (still token-
   #  protected). Sibling containers always use bridge DNS regardless.
@@ -574,7 +584,8 @@ services:
   #  unset), so dropping the token also cleanly opts out of the gateway wiring.
   ######################
   openclaw-stt-whisper:
-    image: ghcr.io/speaches-ai/speaches:${STT_SPEACHES_TAG:-latest-cuda-12.6.3}
+    build: ./openclaw-stt-whisper/server
+    image: openclaw-stt-whisper:0.1.0
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-stt-whisper
     hostname: openclaw-stt-whisper
     restart: unless-stopped
@@ -583,24 +594,23 @@ services:
     # LAN (Bearer-auth via STT_API_TOKEN). Sibling containers (gateway / CLI)
     # reach the service via bridge DNS regardless of this binding.
     ports:
-      - "${STT_WHISPER_BIND:-127.0.0.1}:${STT_WHISPER_PORT:-8093}:8000"
+      - "${STT_WHISPER_BIND:-127.0.0.1}:${STT_WHISPER_PORT:-8093}:8080"
     environment:
-      # speaches Bearer-auth — when set, every /v1/* request must include
-      # `Authorization: Bearer <STT_API_TOKEN>`. /health stays unauthenticated
-      # so the Docker healthcheck and bridge-DNS probes keep working.
-      API_KEY: ${STT_API_TOKEN:-}
-      WHISPER__MODEL: ${STT_WHISPER_MODEL:-Systran/faster-whisper-large-v3}
-      WHISPER__COMPUTE_TYPE: ${STT_WHISPER_COMPUTE_TYPE:-float16}
-      WHISPER__DEVICE: ${STT_WHISPER_DEVICE:-cuda}
-      # 0 = keep the model resident forever (lowest latency, steady VRAM).
-      # >0 = seconds of idle time before speaches evicts the model (frees
-      # VRAM between bursty uses). Default 0 — we budgeted the VRAM anyway.
-      WHISPER__TTL: ${STT_WHISPER_TTL:-0}
+      # When set, every /v1/* request must include `Authorization: Bearer
+      # <STT_API_TOKEN>`. /health is always unauth so Docker healthchecks
+      # and bridge-DNS probes keep working.
+      STT_API_TOKEN: ${STT_API_TOKEN:-}
+      WHISPER_MODEL: ${STT_WHISPER_MODEL:-Systran/faster-whisper-large-v3}
+      WHISPER_COMPUTE_TYPE: ${STT_WHISPER_COMPUTE_TYPE:-float16}
+      WHISPER_DEVICE: ${STT_WHISPER_DEVICE:-cuda}
+      # Optional language pin. Empty = Whisper autodetects per request (default).
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-}
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     volumes:
-      # speaches (CUDA) runs as uid 1000 (`ubuntu`) with $HOME=/home/ubuntu.
-      - stt-whisper-hf-cache:/home/ubuntu/.cache/huggingface
+      # The wrapper runs as root inside the CUDA base image; HF cache lands
+      # in /root/.cache/huggingface.
+      - stt-whisper-hf-cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -609,23 +619,20 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      # speaches v0.9.x requires Bearer auth on /health when API_KEY is set
-      # (not just on /v1/*). The healthcheck therefore has to carry the
-      # same Authorization header that every other request does — curl
-      # reads API_KEY from the container env ($$ escapes the compose
-      # variable substitution so $API_KEY reaches the shell). If the user
-      # opts out of STT (STT_API_TOKEN unset), speaches doesn't enforce
-      # auth and curl still gets 200, so this check works in both modes.
+      # /health is always unauth (the wrapper's auth middleware exempts it by
+      # path), so a plain curl without Authorization is sufficient. No need
+      # for a $$-escaped env-var dance.
       #
-      # Cold-start on first boot can take several minutes while the ~3 GB
-      # large-v3 CT2 weights download from HuggingFace on the first
-      # transcription request — 180s start_period gives the healthcheck
-      # grace without flapping the container status.
-      test: ["CMD-SHELL", "curl -fsS -o /dev/null -H \"Authorization: Bearer $${API_KEY}\" http://127.0.0.1:8000/health || exit 1"]
+      # Cold-start: uvicorn comes up in a few seconds, but the first
+      # transcribe triggers a ~3 GB large-v3 CT2 weights download from
+      # HuggingFace on a fresh volume (5-15 min). The healthcheck itself
+      # doesn't wait on the model load — uvicorn responds to /health
+      # immediately once the app is imported — so 60s start_period is plenty.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 180s
+      start_period: 60s
     logging:
       driver: json-file
       options:
@@ -717,7 +724,7 @@ services:
       # doesn't collide with any global openai apiKey). Leave STT_API_TOKEN
       # empty to opt out — the patcher skips step 14 cleanly.
       STT_API_TOKEN: ${STT_API_TOKEN:-}
-      OPENCLAW_STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8000/v1}
+      OPENCLAW_STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
       OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-Systran/faster-whisper-large-v3}
       OPENCLAW_STT_LANGUAGE: ${OPENCLAW_STT_LANGUAGE:-}
     volumes:

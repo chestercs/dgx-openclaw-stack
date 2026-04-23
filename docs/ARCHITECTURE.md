@@ -264,7 +264,7 @@ The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis`
       │ OpenClaw gateway                                │
       │   tools.media.audio.models[0]                   │
       │     provider: "openai"                          │
-      │     baseUrl:  http://openclaw-stt-whisper:8000/v1/ │
+      │     baseUrl:  http://openclaw-stt-whisper:8080/v1/ │
       │     model:    Systran/faster-whisper-large-v3   │
       │     headers:  Authorization: Bearer $STT_API_TOKEN │
       └─────────────────────┬──────────────────────────┘
@@ -273,13 +273,15 @@ The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis`
          ┌─────────────────────────────────────┐
          │ openclaw-stt-whisper                 │
          │  127.0.0.1:8093 (loopback publish)  │
-         │  ghcr.io/speaches-ai/speaches (CUDA tag)  │
+         │  self-built: CUDA 13 + faster-whisper│
          │  Whisper large-v3 (MIT) @ float16   │
          │  ~3 GB VRAM, autodetect EN + HU     │
          └─────────────────────────────────────┘
 ```
 
-Single upstream service. No custom Dockerfile, no wrapper code — we consume `speaches (CUDA tag)`'s OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, `/health` endpoints directly. Whisper autodetects the input language per request, so no bilingual router is needed (contrast with TTS, which needs one backend per language).
+Single service. Built from `./openclaw-stt-whisper/server/` on a CUDA 13 base with a ~150 LOC FastAPI wrapper around `faster-whisper`. Exposes OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, `/health` endpoints. Whisper autodetects the input language per request, so no bilingual router is needed (contrast with TTS, which needs one backend per language).
+
+The original 2026-04-23 plan pointed at `ghcr.io/speaches-ai/speaches` upstream (zero custom code), but its latest published CUDA tag (12.6.3) rejects every low-precision CT2 compute type on Blackwell sm_120 and destabilizes on `float32`. The CUDA 13 + cu130 PyTorch wheel pattern that `vllm-llm` and `openclaw-tts-en` already use on GB10 is the proven path. The wrapper retires trivially when speaches upstream publishes a Blackwell-tensor-core image (swap `build:` back to `image:` in `docker-compose.yml`).
 
 ### Three voice surfaces, one backend
 
@@ -301,7 +303,7 @@ The OpenClaw audio schema resolves provider auth through the standard chain — 
 
 ### Port publishing posture
 
-`${STT_WHISPER_BIND:-127.0.0.1}:${STT_WHISPER_PORT:-8093}:8000` — loopback by default, consistent with the TTS services. `curl 127.0.0.1:8093/health` works without `docker exec` gymnastics. Set `STT_WHISPER_BIND=0.0.0.0` in `.env` to expose on the LAN (Bearer-protected via `STT_API_TOKEN`).
+`${STT_WHISPER_BIND:-127.0.0.1}:${STT_WHISPER_PORT:-8093}:8080` — loopback by default, consistent with the TTS services. `curl 127.0.0.1:8093/health` works without `docker exec` gymnastics. Set `STT_WHISPER_BIND=0.0.0.0` in `.env` to expose on the LAN (Bearer-protected via `STT_API_TOKEN`).
 
 ## Volumes
 

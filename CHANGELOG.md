@@ -8,29 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **STT stack — Whisper large-v3 on the upstream speaches-ai image.**
-  New `openclaw-stt-whisper` service (`ghcr.io/speaches-ai/speaches (CUDA tag)`,
-  running `Systran/faster-whisper-large-v3`, MIT) serving the
-  OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`,
-  `/v1/models`, `/health` endpoints. ~3 GB VRAM at float16,
-  autodetects language (FLEURS Hungarian WER 14.1%, the best validated
-  number among the OpenAI-compat candidates — details in
-  `docs/reference/stt-stack.md`). No custom Dockerfile, no wrapper code:
-  we consume the upstream image directly. Consumed by OpenClaw's
-  voice-note upload in the Control UI chat, Discord voice channels, the
-  VoiceCall CLI, and the Talk / Voicewake node pipelines. The Control UI
-  realtime mic button is a separate path — it uses the browser's native
-  Web Speech API (`speech.ts`) and does NOT go through this service;
-  that is OpenClaw's design choice, not a wiring limitation here.
+- **STT stack — Whisper large-v3 with a self-built CUDA 13 image.** New
+  `openclaw-stt-whisper` service built from `./openclaw-stt-whisper/server/`
+  on `nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04` + cu130 PyTorch wheels +
+  `faster-whisper>=1.2` + ~150 LOC FastAPI wrapper. Serves OpenAI-compatible
+  `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, `/health`
+  running `Systran/faster-whisper-large-v3` (MIT). ~3 GB VRAM at float16,
+  autodetects language (FLEURS Hungarian WER 14.1%, the best validated number
+  among the OpenAI-compat candidates — details in `docs/reference/stt-stack.md`).
+  Consumed by OpenClaw's voice-note upload in the Control UI chat, Discord
+  voice channels, the VoiceCall CLI, and the Talk / Voicewake node pipelines.
+  The Control UI realtime mic button is a separate path — it uses the
+  browser's native Web Speech API (`speech.ts`) and does NOT go through this
+  service; that is OpenClaw's design choice, not a wiring limitation here.
   Loopback-only publish by default (`127.0.0.1:8093`), Bearer-auth via
   `STT_API_TOKEN`. Alternates documented in `docs/CUSTOMIZATION.md`:
   `deepdml/faster-whisper-large-v3-turbo-ct2` (8× faster, ~1.6 GB VRAM,
-  HU WER unpublished — benchmark before flipping), and
-  `STT_WHISPER_COMPUTE_TYPE=int8_float16` as a VRAM-tight fallback.
+  HU WER unpublished — benchmark before flipping), and a `WHISPER_COMPUTE_TYPE`
+  fallback ladder (`float16` → `bfloat16` → `int8_float16` → `int8_bfloat16`
+  → `int8` → `float32`) for cases where a specific kernel class isn't
+  compiled into the CTranslate2 that ships with `faster-whisper`.
+
+  **Why self-built**: the upstream `ghcr.io/speaches-ai/speaches` image —
+  originally picked to avoid maintaining any custom code — publishes only
+  CUDA 12.6.3 variants, and on GB10 (sm_120) that image's CTranslate2
+  rejects every low-precision compute type and numerically destabilizes on
+  `float32`. A CUDA 13 base + cu130 PyTorch wheels is the proven GB10 path
+  (matches the `vllm-llm` and `openclaw-tts-en` wheel pattern). Swap
+  `build:` back to `image:` in `docker-compose.yml` when the speaches
+  upstream publishes a Blackwell-tensor-core variant — the wrapper retires
+  in a ~15-line diff.
 - **Patcher step 14 — `tools.media.audio` wiring.** New env-gated step
   in `patch-config.mjs` that upserts an entry into
   `tools.media.audio.models[]` with `provider: "openai"`, the configured
-  model id, `baseUrl: http://openclaw-stt-whisper:8000/v1/`, and a
+  model id, `baseUrl: http://openclaw-stt-whisper:8080/v1/`, and a
   per-entry `headers.Authorization: Bearer $STT_API_TOKEN`. Writing the
   Bearer to `headers` (instead of the `apiKey` field) keeps the Whisper
   token orthogonal to the global `models.providers.openai.apiKey` —
