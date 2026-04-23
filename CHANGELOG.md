@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-04-23
+
+Live secret rotation release. Adds `rotate-secrets.sh` as a safe,
+re-runnable sibling to `bootstrap.sh` for rotating the auto-generated
+secrets in an existing `.env` after install — and documents the three
+operator scenarios that call for it.
+
 ### Added
 - **`rotate-secrets.sh` — live secret rotation.** Sibling to `bootstrap.sh`
   for rotating the auto-generated secrets in an existing `.env` after
