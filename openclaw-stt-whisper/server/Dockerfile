@@ -66,6 +66,17 @@ WORKDIR /app
 ARG CT2_VERSION=v4.7.1
 RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
         https://github.com/OpenNMT/CTranslate2.git /tmp/ct2 \
+    # Patch out CT2's call to cuda_select_nvcc_arch_flags — the legacy
+    # FindCUDA module (still referenced at CMakeLists.txt:541) doesn't
+    # know Blackwell names or the 12.0 numeric form, so we can't pass
+    # `120` through its translation layer. Replace the call with a direct
+    # list(APPEND ...) that hard-codes Ampere + Blackwell cubins. nvcc 13
+    # itself knows sm_120 fine — only the cmake-side translator is stale.
+    # Building sm_80 alongside sm_120 means we have a working binary for
+    # pre-Blackwell GPUs (desktop CUDA sandboxes, CI) too; the driver
+    # automatically picks the right one at runtime.
+    && sed -i 's|^\s*cuda_select_nvcc_arch_flags.*$|list(APPEND CUDA_NVCC_FLAGS -gencode arch=compute_80,code=sm_80 -gencode arch=compute_120,code=sm_120)|' \
+        /tmp/ct2/CMakeLists.txt \
     && cmake -S /tmp/ct2 -B /tmp/ct2/build \
         -DCMAKE_BUILD_TYPE=Release \
         -DWITH_CUDA=ON \
@@ -73,8 +84,7 @@ RUN git clone --depth 1 --branch ${CT2_VERSION} --recursive \
         -DWITH_MKL=OFF \
         -DOPENMP_RUNTIME=COMP \
         -DBUILD_CLI=OFF \
-        -DCUDA_ARCH_LIST="Ampere" \
-        -DCMAKE_CUDA_ARCHITECTURES="80" \
+        -DCMAKE_CUDA_ARCHITECTURES="80;120" \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -G Ninja \
     && cmake --build /tmp/ct2/build --target install -j "$(nproc)" \
