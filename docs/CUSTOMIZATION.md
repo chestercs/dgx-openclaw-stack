@@ -528,7 +528,7 @@ If the token leaks (anyone with it can impersonate your bot in any guild it's in
 
 ## Upgrading the OpenClaw gateway
 
-All three OpenClaw containers (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) pull `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest}`. The `:latest` tag moves on every OpenClaw release, so `docker compose pull` can silently bring in a new gateway with schema changes, renamed CLI subcommands, or new channel features. The runbook below makes upgrades deliberate and reversible.
+All three OpenClaw containers (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) resolve their image via `ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}`. The env value carries its own ref qualifier — a tag pin (`:2026.4.22`) or an immutable digest (`@sha256:…`). Default `:latest` moves on every OpenClaw release, so `docker compose pull` can silently bring in a new gateway with schema changes, renamed CLI subcommands, or new channel features. The runbook below makes upgrades deliberate and reversible.
 
 ### Before upgrading
 
@@ -595,9 +595,11 @@ All three OpenClaw containers (`openclaw-config-init`, `openclaw-gateway`, `open
 If the patcher crashes, the agent turn fails, or any live test regresses, pin the previous digest:
 
 ```bash
-echo "OPENCLAW_IMAGE_TAG=sha256:<your-recorded-digest>" >> .env
+echo "OPENCLAW_IMAGE_REF=@sha256:<your-recorded-digest>" >> .env
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
+
+Note the `@sha256:…` prefix — Docker's tag grammar forbids colons inside a tag, so a bare `sha256:…` value produces `invalid reference format`. Always pin digests with the `@` prefix.
 
 If the rollback itself struggles (rare, when the config-init has already mutated `openclaw.json` to a new-schema shape), restore from the pre-upgrade tarball:
 
