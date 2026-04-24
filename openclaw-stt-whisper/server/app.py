@@ -91,16 +91,37 @@ def _resolve_model_path(model_id: str) -> str:
         model_id, converted_dir,
     )
     os.makedirs(os.path.dirname(converted_dir), exist_ok=True)
-    subprocess.run(
-        [
-            "ct2-transformers-converter",
-            "--model", model_id,
-            "--output_dir", converted_dir,
-            "--copy_files", "tokenizer.json", "preprocessor_config.json",
-            "--quantization", "float16",
-        ],
-        check=True,
+    # Not every Hungarian fine-tune repo ships tokenizer.json alongside the
+    # weights — some only have the openai-compatible one baked in implicitly.
+    # faster-whisper falls back to the standard Whisper multilingual tokenizer
+    # at load time when the CT2 folder lacks one, so we try to copy it best-
+    # effort but don't fail the conversion over a missing copy file.
+    base_cmd = [
+        "ct2-transformers-converter",
+        "--model", model_id,
+        "--output_dir", converted_dir,
+        "--quantization", "float16",
+    ]
+    result = subprocess.run(
+        base_cmd + ["--copy_files", "tokenizer.json", "preprocessor_config.json"],
+        capture_output=True, text=True,
     )
+    if result.returncode != 0 and "tokenizer.json does not exist" in (result.stderr or ""):
+        log.warning(
+            "model repo doesn't ship tokenizer.json — retrying conversion "
+            "without it (faster-whisper will load the default Whisper tokenizer)"
+        )
+        # Clean the partial output before retry
+        subprocess.run(["rm", "-rf", converted_dir], check=False)
+        result = subprocess.run(
+            base_cmd + ["--copy_files", "preprocessor_config.json"],
+            capture_output=True, text=True,
+        )
+    if result.returncode != 0:
+        log.error("ct2-transformers-converter failed: %s", result.stderr)
+        raise RuntimeError(
+            f"CT2 conversion failed for {model_id}: {result.stderr[-500:]}"
+        )
     log.info("conversion complete; CT2 artefacts cached at %s", converted_dir)
     return converted_dir
 
