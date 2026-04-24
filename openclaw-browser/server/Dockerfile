@@ -54,7 +54,14 @@ WORKDIR /app
 # them. Re-running `playwright install` is a no-op when a matching
 # binary is already present, so this is cheap and idempotent.
 COPY requirements.txt /app/requirements.txt
-RUN pip install --break-system-packages -r /app/requirements.txt \
+# `--ignore-installed` because Ubuntu Noble's apt-installed Python
+# packages (typing_extensions, pytz, etc., dragged in by the
+# python3-novnc + python3-oslo-* dependency chain) lack pip RECORD
+# files and pip refuses to uninstall them. We're inside a container,
+# so layering pip's newer versions over them is safe — the apt copies
+# stay on disk but Python's import resolution prefers
+# /usr/local/lib (pip's target) over /usr/lib (apt's target).
+RUN pip install --break-system-packages --ignore-installed -r /app/requirements.txt \
     && python -m playwright install chromium \
     && python -c "from playwright.sync_api import sync_playwright; \
         p=sync_playwright().__enter__(); \
