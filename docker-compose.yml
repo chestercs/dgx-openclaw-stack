@@ -701,7 +701,7 @@ services:
   #  gateway starts anyway and the onboarding wizard can run interactively.
   ######################
   openclaw-config-init:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-config-init
     user: "1000:1000"
     restart: "no"
@@ -750,7 +750,7 @@ services:
   #  vllm-llm.
   ######################
   openclaw-gateway:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-gateway
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
@@ -796,7 +796,7 @@ services:
   #  their compose DNS names (vllm-llm, vllm-embedding) with zero extra config.
   ######################
   openclaw-cli:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-cli
     network_mode: "service:openclaw-gateway"
     cap_drop:
