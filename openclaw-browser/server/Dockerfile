@@ -43,17 +43,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Sanity check: Chromium binary on PATH (Playwright installs it during
-# image build via `playwright install chromium`; verify it's present).
-RUN python -c "from playwright.sync_api import sync_playwright; \
-    p=sync_playwright().__enter__(); \
-    print('chromium:', p.chromium.executable_path); \
-    p.__exit__(None,None,None)"
-
 WORKDIR /app
 
+# The mcr.microsoft.com/playwright/python image bundles Python + the
+# browser binaries (under /ms-playwright/) but does NOT preinstall the
+# `playwright` PyPI package itself — that's our job. Install our pinned
+# requirements (which pulls in `playwright==1.58.0`), then run
+# `playwright install --with-deps chromium` defensively in case the
+# pre-baked browser binaries aren't where Playwright Python expects
+# them. Re-running `playwright install` is a no-op when a matching
+# binary is already present, so this is cheap and idempotent.
 COPY requirements.txt /app/requirements.txt
-RUN pip install -r /app/requirements.txt
+RUN pip install --break-system-packages -r /app/requirements.txt \
+    && python -m playwright install chromium \
+    && python -c "from playwright.sync_api import sync_playwright; \
+        p=sync_playwright().__enter__(); \
+        print('chromium:', p.chromium.executable_path); \
+        p.__exit__(None,None,None)"
 
 # App source
 COPY app.py supervise.py extract.py blocklist.py ratelimit.py /app/
