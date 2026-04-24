@@ -238,6 +238,60 @@ docker compose ps openclaw-tts-f5hun       # should be Up (healthy)
 docker exec ${PROJ}openclaw-tts-router curl -sS http://openclaw-tts-f5hun:8080/healthz
 ```
 
+### TTS backend container crash-loops with `torch wheel was built without sm_NNN kernels`
+
+Visible in `docker compose logs openclaw-tts-en` (or `openclaw-tts-f5hun`) as a
+`RuntimeError` from `_verify_gpu_compat()` naming the missing compute
+capability. Means the cu130 torch wheel baked into the image predates your
+GPU's arch (e.g. sm_120 on GB10 before Blackwell-ready cu130 wheels shipped).
+Rebuild with a fresh wheel pull:
+
+```bash
+# EN backend
+docker compose build --no-cache openclaw-tts-en
+# HU backend (requires the `hu` profile flag)
+docker compose --profile hu build --no-cache openclaw-tts-f5hun
+# Then recreate
+docker compose --profile hu up -d --force-recreate openclaw-tts-en openclaw-tts-f5hun
+```
+
+Confirm the fix via the backend's healthz — the `gpu_compat` field now reports
+`ok (sm_XXX; arch_list=[...])`:
+
+```bash
+curl -sS http://127.0.0.1:8091/healthz | jq '{device, gpu_compat}'
+curl -sS http://127.0.0.1:8090/healthz | jq '{device, gpu_compat}'  # f5hun
+```
+
+If you can't rebuild right now, set `KOKORO_DEVICE=cpu` (EN) and
+`F5HUN_DEVICE=cpu` (HU) in `.env`, then recreate — CPU is slower (EN ~5-6s
+first request, HU ~30-100s per clip) but functional.
+
+### `openclaw infer tts convert` returns success but `provider=microsoft` instead of `openai`
+
+Symptom chain: router returned 500 to the OpenAI-compat provider, OpenClaw
+fell through its provider chain, and Microsoft Edge TTS (built-in, cloud,
+free-tier) answered. User-visible outcome: wrong accent / wrong voice.
+Diagnose with `--json`:
+
+```bash
+docker exec ${PROJ}openclaw-cli openclaw infer tts convert \
+  --text "probe" --voice af_heart --output /tmp/t.mp3 --json
+```
+
+Look at `attempts[]` — the `openai` entry will show `outcome: "failed"` with
+a `reasonCode` and error string. Common reasons:
+
+- `provider_error` with `500 Internal Server Error` → backend crashed. See
+  preceding entry (rebuild) or `docker logs openclaw-tts-en`.
+- `provider_error` with `401` → `OPENCLAW_TTS_ROUTER_API_KEY` in `.env`
+  doesn't match `TTS_API_TOKEN` the router is enforcing.
+- `timeout` → backend alive but slow (CPU fallback mid-synthesis).
+
+The provider chain with a healthy local router should always land `openai` as
+the successful attempt; seeing `microsoft` is a signal that something upstream
+needs fixing — not an acceptable steady state.
+
 ### Hungarian text comes out with English phonetics
 
 The diacritic autodetect didn't fire — either the HU backend isn't wired

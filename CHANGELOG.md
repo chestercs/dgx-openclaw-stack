@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **TTS backend fail-fast GPU kernel guard.** `openclaw-tts-en/server/app.py`
+  and `openclaw-tts-f5hun/server/app.py` now run `_verify_gpu_compat()` at
+  import time: if `KOKORO_DEVICE=cuda` / `F5_DEVICE=cuda` but the installed
+  torch wheel lacks the host GPU's compute capability (e.g. sm_120 missing on
+  a stale cu130 wheel), the service exits with an actionable error naming the
+  exact rebuild command. Prevents the previous silent-degradation failure
+  mode where the router's 500 propagated to OpenClaw's fallback chain and
+  Microsoft Edge TTS answered with wrong-accent audio. Both backends also
+  expose `device` + `gpu_compat` in `/healthz` so external monitors can
+  see the GPU state without guessing. Covered in
+  `docs/TROUBLESHOOTING.md` → "TTS backend container crash-loops with torch
+  wheel was built without sm_NNN kernels" and "openclaw infer tts convert
+  returns success but provider=microsoft instead of openai".
+- **Discord bot setup walkthrough (`docs/discord-bot-setup.md`).**
+  Beginner-friendly step-by-step for operators who've never created a
+  Discord bot: three-layer permission model primer (OAuth2 scopes vs bot
+  permissions vs privileged gateway intents), Developer Portal flow, invite
+  URL generation with per-permission explanations, server invite + role
+  hierarchy + channel-level overrides, pre-OpenClaw checkpoint, and
+  Discord-side troubleshooting. Cross-linked from `docs/CUSTOMIZATION.md`
+  (new teaser on the Voice-controlled agent section) and `.env.example`
+  (one-line pointer in the `DISCORD_BOT_TOKEN` comment block).
+  `docs/CUSTOMIZATION.md` Step 1 also corrected: slash-command-only voice
+  bots need **no** privileged intents by default (previously over-requested
+  both Server Members + Message Content Intent; neither is needed for the
+  default path).
 - **Env-pinnable OpenClaw image tag + upgrade runbook.** All three
   `openclaw-{config-init,gateway,cli}` services now resolve the image via
   `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest}`, so operators can

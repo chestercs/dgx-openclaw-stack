@@ -34,6 +34,58 @@ SAMPLE_RATE = 24000  # Kokoro emits 24 kHz mono
 if not API_TOKEN:
     raise RuntimeError("TTS_API_TOKEN env var is required (no anonymous access allowed)")
 
+
+_gpu_compat_status: str = "not-checked"
+
+
+def _verify_gpu_compat() -> None:
+    """Fail fast on GPU/kernel mismatches so we never silently degrade to a
+    500 loop that looks like "broken TTS" to the caller.
+
+    The foot-gun this exists to catch: a cu130 torch wheel whose compiled kernel
+    list doesn't include the current GPU's compute capability (e.g. sm_120 on
+    GB10 before the wheel index shipped Blackwell kernels). Symptom is that
+    Kokoro's KPipeline raises `CUDA requested but not available` on first call
+    — unhelpful and the OpenClaw TTS router quietly falls back to Microsoft
+    Edge TTS, so the operator sees wrong-accent audio, not a failure. Here we
+    check at import time and exit with an actionable rebuild instruction.
+    """
+    global _gpu_compat_status
+    if not DEVICE.startswith("cuda"):
+        _gpu_compat_status = f"cpu-skipped (DEVICE={DEVICE})"
+        return
+    try:
+        import torch  # noqa: WPS433 — deferred so /healthz survives import failures
+    except Exception as exc:
+        _gpu_compat_status = f"torch-import-failed: {exc}"
+        raise RuntimeError(f"KOKORO_DEVICE=cuda but torch import failed: {exc}") from exc
+    if not torch.cuda.is_available():
+        _gpu_compat_status = "cuda-unavailable"
+        raise RuntimeError(
+            "KOKORO_DEVICE=cuda but torch.cuda.is_available() is False. "
+            "The GPU isn't reachable from inside the container — usually an "
+            "nvidia-container-runtime / driver issue on the host. "
+            "Set KOKORO_DEVICE=cpu for a CPU fallback, or fix the host "
+            "toolchain before retrying."
+        )
+    arch_list = torch.cuda.get_arch_list()
+    cc_major, cc_minor = torch.cuda.get_device_capability(0)
+    target = f"sm_{cc_major}{cc_minor}"
+    if target not in arch_list:
+        _gpu_compat_status = f"missing-{target} (torch arch_list={arch_list})"
+        raise RuntimeError(
+            f"KOKORO_DEVICE=cuda but the installed torch wheel was built "
+            f"without {target} kernels (arch_list={arch_list}). Rebuild the "
+            f"image to pick up fresh cu130 wheels:\n"
+            f"    docker compose build --no-cache openclaw-tts-en\n"
+            f"or set KOKORO_DEVICE=cpu to run on CPU (much slower but works)."
+        )
+    _gpu_compat_status = f"ok ({target}; arch_list={arch_list})"
+    log.info("GPU compat check: %s", _gpu_compat_status)
+
+
+_verify_gpu_compat()
+
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -114,6 +166,8 @@ def healthz() -> dict:
     baked = sorted(p.stem for p in voices_dir.glob("*.pt")) if voices_dir.exists() else []
     return {
         "status": "ok",
+        "device": DEVICE,
+        "gpu_compat": _gpu_compat_status,
         "checkpoint_dir_present": KOKORO_LOCAL_DIR.exists(),
         "default_voice_present": DEFAULT_VOICE in baked,
         "voices_baked": baked,

@@ -370,6 +370,8 @@ Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by
 
 **Isolation posture** — this setup deliberately runs the Discord agent in a **separate workspace** from your main `main` agent, so anyone who can speak in the bound voice channel cannot extract memory notes, chat history, or files from your primary workspace. The bot is also sandboxed to a `cautious` exec-policy (approval-gated destructive tools) by default. Keep the token private — anyone with the bot token can impersonate your bot inside any guild it's joined to.
 
+> **New to Discord bots?** Read [`docs/discord-bot-setup.md`](./discord-bot-setup.md) first — it walks through the Developer Portal, the three-layer permission model (OAuth2 scopes vs bot permissions vs privileged intents), and the server invite flow. This runbook assumes you already have a bot application that's authorized in your guild (member list shows it greyed out) and the token is in `.env`.
+
 ### Prerequisites
 
 - The STT + TTS + LLM stack is up and healthy (you've completed onboarding and `curl http://127.0.0.1:18789/healthz` returns ok).
@@ -380,7 +382,7 @@ Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by
 
 1. Go to <https://discord.com/developers/applications> → **New Application**. Name it something identifiable (e.g. `openclaw-gb10`).
 2. Sidebar → **Bot** → **Reset Token** → copy the token. This is the only time you'll see it; store it immediately.
-3. Sidebar → **Bot** → enable **Privileged Gateway Intents**: `Server Members Intent` and `Message Content Intent` (needed for text commands alongside voice).
+3. Sidebar → **Bot** → **Privileged Gateway Intents**: leave all three off for the default voice setup — slash commands (`/vc join`, etc.) do not require privileged intents. Enable **Server Members Intent** only if you want per-speaker attribution ("Alice just said X, reply to her") in multi-speaker voice channels. **Message Content Intent** is only needed for legacy prefix commands (not this integration). See [`docs/discord-bot-setup.md`](./discord-bot-setup.md) §1 for the full decision tree.
 4. Sidebar → **OAuth2** → **URL Generator**:
     - Scopes: `bot`, `applications.commands`
     - Bot Permissions: `Connect`, `Speak`, `View Channels`, `Send Messages`, `Read Message History`, `Use Slash Commands`

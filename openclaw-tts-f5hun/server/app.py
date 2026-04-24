@@ -37,6 +37,59 @@ if not API_TOKEN:
     raise RuntimeError("TTS_API_TOKEN env var is required (no anonymous access allowed)")
 
 
+_gpu_compat_status: str = "not-checked"
+
+
+def _verify_gpu_compat() -> None:
+    """Fail fast on GPU/kernel mismatches so we never silently degrade to a
+    500 loop that looks like "broken TTS" to the caller.
+
+    The foot-gun this exists to catch: a cu130 torch wheel whose compiled kernel
+    list doesn't include the current GPU's compute capability (e.g. sm_120 on
+    GB10 before the wheel index shipped Blackwell kernels). Symptom is that
+    F5-TTS loads fine, then crashes at first synthesis with `RuntimeError: GET
+    was unable to find an engine to execute this computation` — unhelpful and
+    the OpenClaw TTS router quietly falls back to Microsoft Edge TTS, so the
+    operator sees wrong-accent audio, not a failure. Here we check at import
+    time and exit with an actionable rebuild instruction.
+    """
+    global _gpu_compat_status
+    if not DEVICE.startswith("cuda"):
+        _gpu_compat_status = f"cpu-skipped (DEVICE={DEVICE})"
+        return
+    try:
+        import torch  # noqa: WPS433 — deferred so /healthz survives import failures
+    except Exception as exc:
+        _gpu_compat_status = f"torch-import-failed: {exc}"
+        raise RuntimeError(f"F5_DEVICE=cuda but torch import failed: {exc}") from exc
+    if not torch.cuda.is_available():
+        _gpu_compat_status = "cuda-unavailable"
+        raise RuntimeError(
+            "F5_DEVICE=cuda but torch.cuda.is_available() is False. "
+            "The GPU isn't reachable from inside the container — usually an "
+            "nvidia-container-runtime / driver issue on the host. "
+            "Set F5HUN_DEVICE=cpu for a CPU fallback (much slower — F5-TTS "
+            "is ~50× realtime on CPU), or fix the host toolchain."
+        )
+    arch_list = torch.cuda.get_arch_list()
+    cc_major, cc_minor = torch.cuda.get_device_capability(0)
+    target = f"sm_{cc_major}{cc_minor}"
+    if target not in arch_list:
+        _gpu_compat_status = f"missing-{target} (torch arch_list={arch_list})"
+        raise RuntimeError(
+            f"F5_DEVICE=cuda but the installed torch wheel was built "
+            f"without {target} kernels (arch_list={arch_list}). Rebuild the "
+            f"image to pick up fresh cu130 wheels:\n"
+            f"    docker compose --profile hu build --no-cache openclaw-tts-f5hun\n"
+            f"or set F5HUN_DEVICE=cpu to run on CPU (much slower but works)."
+        )
+    _gpu_compat_status = f"ok ({target}; arch_list={arch_list})"
+    log.info("GPU compat check: %s", _gpu_compat_status)
+
+
+_verify_gpu_compat()
+
+
 def seed_voices() -> None:
     """Copy any seed voice files into VOICES_DIR if a same-named file isn't present.
 
@@ -128,6 +181,8 @@ app = FastAPI(title="OpenClaw F5-TTS Hungarian", version="0.1.0")
 def healthz() -> dict:
     return {
         "status": "ok",
+        "device": DEVICE,
+        "gpu_compat": _gpu_compat_status,
         "checkpoint_present": CHECKPOINT_PATH.exists(),
         "vocab_present": VOCAB_PATH.exists(),
         "default_voice_present": (VOICES_DIR / f"{DEFAULT_VOICE}.wav").exists(),
