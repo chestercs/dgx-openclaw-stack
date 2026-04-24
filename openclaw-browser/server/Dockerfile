@@ -41,7 +41,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         novnc websockify \
         tini \
         curl ca-certificates \
+        socat \
     && rm -rf /var/lib/apt/lists/*
+
+# socat is required because Chrome 136+ ignores --remote-debugging-address=
+# 0.0.0.0 (security hardening, https://chromestatus.com/feature/5048140188598272).
+# Chromium binds remote-debugging only on 127.0.0.1; we use socat to forward
+# the externally-published port (9222+offset) to Chromium's loopback port
+# (19222+offset). One socat per profile, ~3 MB resident each.
 
 WORKDIR /app
 

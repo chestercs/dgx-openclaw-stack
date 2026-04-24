@@ -40,6 +40,11 @@ log = logging.getLogger("browser.supervise")
 STORAGE_DIR = Path(os.environ.get("BROWSER_STORAGE_DIR", "/storage"))
 DEFAULT_PROFILE_NAME = "default"
 PORT_BASE = int(os.environ.get("BROWSER_PORT_BASE", "9222"))
+# Internal port that Chromium itself binds on 127.0.0.1 inside the container.
+# A `socat` per profile forwards 0.0.0.0:<external_port> → 127.0.0.1:<internal>.
+# Required because Chrome >=136 ignores --remote-debugging-address=0.0.0.0
+# (https://chromestatus.com/feature/5048140188598272).
+INTERNAL_PORT_BASE = int(os.environ.get("BROWSER_INTERNAL_PORT_BASE", "19222"))
 MAX_PROFILES = int(os.environ.get("BROWSER_MAX_PROFILES", "20"))
 DISPLAY_FOR_HEADFUL = os.environ.get("BROWSER_DISPLAY", ":99")
 
@@ -93,14 +98,18 @@ def parse_profile_names(env_value: str | None) -> list[str]:
 @dataclass
 class Profile:
     name: str
-    port: int
+    port: int                                       # external (published) port — what cdpUrl points at
+    internal_port: int                              # 127.0.0.1 port Chromium binds on
     user_data_dir: Path
-    process: Optional[subprocess.Popen] = None
+    process: Optional[subprocess.Popen] = None      # Chromium
+    socat_process: Optional[subprocess.Popen] = None  # TCP forwarder external→internal
     started_at: float = 0.0
     headful: bool = False
 
     def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        chromium_alive = self.process is not None and self.process.poll() is None
+        socat_alive = self.socat_process is not None and self.socat_process.poll() is None
+        return chromium_alive and socat_alive
 
 
 class Supervisor:
@@ -143,6 +152,7 @@ class Supervisor:
                 {
                     "name": p.name,
                     "port": p.port,
+                    "internal_port": p.internal_port,
                     "user_data_dir": str(p.user_data_dir),
                     "running": p.is_running(),
                     "started_at": p.started_at,
@@ -154,6 +164,11 @@ class Supervisor:
     def get(self, name: str) -> Optional[Profile]:
         with self._lock:
             return self._profiles.get(name)
+
+    def _internal_port_for(self, external_port: int) -> int:
+        """Map external port (9222+offset) → internal Chromium port (19222+offset).
+        Pure offset arithmetic so the mapping is deterministic without state."""
+        return INTERNAL_PORT_BASE + (external_port - PORT_BASE)
 
     def start_profile(self, name: str, *, headful: bool = False, display: str = DISPLAY_FOR_HEADFUL) -> Profile:
         with self._lock:
@@ -168,16 +183,16 @@ class Supervisor:
             user_data_dir.mkdir(parents=True, exist_ok=True)
 
             port = existing.port if existing else self.assign_port(name)
+            internal_port = self._internal_port_for(port)
             chromium = _find_chromium()
 
             args = [
                 chromium,
                 f"--user-data-dir={user_data_dir}",
-                f"--remote-debugging-port={port}",
-                # Bind 0.0.0.0 inside the container so the docker bridge can
-                # reach Chromium from sibling containers; the host-side bind
-                # in compose is loopback-only so the LAN never sees this.
-                "--remote-debugging-address=0.0.0.0",
+                # Chrome >=136 ignores --remote-debugging-address; the binary
+                # always listens on 127.0.0.1 only. We launch on an internal
+                # port and put a socat in front to expose 0.0.0.0:<port>.
+                f"--remote-debugging-port={internal_port}",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-default-apps",
@@ -207,8 +222,8 @@ class Supervisor:
             env.pop("LANG", None)  # avoid locale-dependent test flakes
 
             log.info(
-                "launching Chromium profile=%s port=%s headful=%s user_data_dir=%s",
-                name, port, headful, user_data_dir,
+                "launching Chromium profile=%s external=%s internal=%s headful=%s user_data_dir=%s",
+                name, port, internal_port, headful, user_data_dir,
             )
             proc = subprocess.Popen(
                 args,
@@ -219,17 +234,38 @@ class Supervisor:
                 stdin=subprocess.DEVNULL,
             )
 
-            profile = existing or Profile(name=name, port=port, user_data_dir=user_data_dir)
+            profile = existing or Profile(
+                name=name, port=port, internal_port=internal_port, user_data_dir=user_data_dir,
+            )
             profile.process = proc
             profile.started_at = time.time()
             profile.headful = headful
             self._profiles[name] = profile
 
-            # Wait briefly for Chromium to open its debug port so the very
-            # next `attach` from OpenClaw doesn't 502 on a still-booting
-            # backend. 5s budget covers cold starts; longer waits are rare
-            # and tolerated by the gateway's own retry.
-            self._wait_for_port(port, timeout=5.0)
+            # Wait for Chromium's debug port to come up before launching socat
+            # — socat would otherwise immediately fail TCP connects upstream.
+            if not self._wait_for_port(internal_port, timeout=10.0):
+                log.error("Chromium profile=%s didn't open internal port %s", name, internal_port)
+
+            # Spawn the TCP forwarder. socat fork + reuseaddr lets multiple
+            # parallel attaches share the listener cleanly.
+            socat_args = [
+                "socat",
+                f"TCP-LISTEN:{port},fork,reuseaddr,bind=0.0.0.0",
+                f"TCP:127.0.0.1:{internal_port}",
+            ]
+            log.info("launching socat profile=%s 0.0.0.0:%s -> 127.0.0.1:%s", name, port, internal_port)
+            socat_proc = subprocess.Popen(
+                socat_args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            profile.socat_process = socat_proc
+
+            # Best-effort wait for the external port to open. socat usually
+            # binds in under 100 ms, but give it a generous 3 s window.
+            self._wait_for_port(port, timeout=3.0)
             return profile
 
     def _wait_for_port(self, port: int, *, timeout: float) -> bool:
@@ -245,22 +281,33 @@ class Supervisor:
         return False
 
     def _stop_locked(self, profile: Profile, *, timeout: float = 10.0) -> bool:
+        # Stop Chromium first (so it can flush cookies cleanly), then socat.
+        # If we kill socat first, Chromium thinks its CDP client crashed and
+        # sometimes lingers writing crash reports.
         proc = profile.process
-        if not proc or proc.poll() is not None:
-            profile.process = None
-            return True
-        log.info("stopping Chromium profile=%s pid=%s", profile.name, proc.pid)
-        try:
-            proc.send_signal(signal.SIGTERM)
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            log.warning("Chromium profile=%s did not exit on SIGTERM after %ss; SIGKILL", profile.name, timeout)
-            proc.kill()
+        if proc and proc.poll() is None:
+            log.info("stopping Chromium profile=%s pid=%s", profile.name, proc.pid)
             try:
+                proc.send_signal(signal.SIGTERM)
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                log.error("Chromium profile=%s ignored SIGKILL — process leaked", profile.name)
+                log.warning("Chromium profile=%s did not exit on SIGTERM after %ss; SIGKILL", profile.name, timeout)
+                proc.kill()
+                try:
+                    proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    log.error("Chromium profile=%s ignored SIGKILL — process leaked", profile.name)
         profile.process = None
+
+        socat_proc = profile.socat_process
+        if socat_proc and socat_proc.poll() is None:
+            log.info("stopping socat profile=%s pid=%s", profile.name, socat_proc.pid)
+            try:
+                socat_proc.terminate()
+                socat_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                socat_proc.kill()
+        profile.socat_process = None
         return True
 
     def stop_profile(self, name: str, *, timeout: float = 10.0) -> bool:
