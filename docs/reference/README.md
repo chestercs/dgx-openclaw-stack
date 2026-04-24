@@ -13,6 +13,8 @@ research rationale behind the chosen LLM / TTS stack, this is where to look.
 | [`llm-stack.md`](./llm-stack.md) | Gemma 4 31B variants (BF16 / LiteLLM / NVFP4) + bge-m3 embedding stack architecture |
 | [`tts-stack.md`](./tts-stack.md) | Bilingual TTS (Kokoro EN + F5-TTS HU + router), schema enums, web chat limitation |
 | [`tts-research-hungarian.md`](./tts-research-hungarian.md) | Hungarian TTS open-source landscape (F5-TTS, XTTS, Piper, tier list) |
+| [`stt-stack.md`](./stt-stack.md) | Whisper large-v3 + Trendency HU fine-tune: three voice surfaces, CTranslate2 on Blackwell notes |
+| [`discord-voice-agent.md`](./discord-voice-agent.md) | Discord voice-controlled agent: schema, workspace isolation, threat model, DAVE E2E notes |
 | [`openclaw-internals.md`](./openclaw-internals.md) | OpenClaw v0.4.x internals: 3-store credential layout, schema, patcher steps, releases, persistence, CLI overhead |
 | [`patterns.md`](./patterns.md) | Reusable Docker / dev patterns: cross-compose network, anchored grep, opt-in triple-gate, network namespace, SearxNG gotchas |
 

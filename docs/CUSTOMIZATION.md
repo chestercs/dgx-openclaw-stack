@@ -364,6 +364,139 @@ Same pattern as "Run with a remote vLLM backend" above. On a GPU-less host point
 
 The gateway will POST voice notes and voice-channel audio to the remote endpoint. Bridge DNS isn't involved — the URL resolves outside the compose network via the host's DNS.
 
+## Voice-controlled agent over Discord
+
+Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by voice: speak a request → the bundled Whisper STT transcribes → the agent plans + executes → the bundled TTS speaks the reply into the channel. End-to-end round trip is ~3-5 s on GB10 for a simple tool call.
+
+**Isolation posture** — this setup deliberately runs the Discord agent in a **separate workspace** from your main `main` agent, so anyone who can speak in the bound voice channel cannot extract memory notes, chat history, or files from your primary workspace. The bot is also sandboxed to a `cautious` exec-policy (approval-gated destructive tools) by default. Keep the token private — anyone with the bot token can impersonate your bot inside any guild it's joined to.
+
+### Prerequisites
+
+- The STT + TTS + LLM stack is up and healthy (you've completed onboarding and `curl http://127.0.0.1:18789/healthz` returns ok).
+- A Discord account with a server (guild) you administer.
+- OpenClaw gateway image dated **2026.4.15 or newer** — older images don't speak the `/vc` slash-command protocol. Check with `docker image inspect ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest} --format '{{.Created}}'`; upgrade first via the runbook below if you're behind.
+
+### 1. Create the Discord application + bot
+
+1. Go to <https://discord.com/developers/applications> → **New Application**. Name it something identifiable (e.g. `openclaw-gb10`).
+2. Sidebar → **Bot** → **Reset Token** → copy the token. This is the only time you'll see it; store it immediately.
+3. Sidebar → **Bot** → enable **Privileged Gateway Intents**: `Server Members Intent` and `Message Content Intent` (needed for text commands alongside voice).
+4. Sidebar → **OAuth2** → **URL Generator**:
+    - Scopes: `bot`, `applications.commands`
+    - Bot Permissions: `Connect`, `Speak`, `View Channels`, `Send Messages`, `Read Message History`, `Use Slash Commands`
+5. Copy the generated URL, open it in a browser, pick your server, authorize. The bot appears in your member list (offline until we wire it up below).
+
+### 2. Verify the live gateway speaks the Discord voice protocol
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
+PROJ=${PROJ:-dgx-}
+
+# Read-only probe: does this gateway know the discord channel type?
+docker exec ${PROJ}openclaw-cli openclaw channels capabilities discord
+```
+
+Expected output includes `voice.receive`, `voice.send`, `voice.autoJoin`, `slash-commands`. If the subcommand returns `unknown channel type`, your gateway image is too old — upgrade via the runbook below and retry.
+
+### 3. Prepare the isolated workspace
+
+The main `openclaw-gateway` already bind-mounts `${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw` at the top level. Any subdirectory of the config dir that isn't the `workspace/` path is available inside the container without further mounts — so the isolated workspace lives under the same host tree but is orthogonal to the primary workspace.
+
+```bash
+# Host-side: create the isolated workspace tree. chown to 1000:1000 (the
+# node user inside the container) if the bind-mount root isn't already
+# owned by that uid.
+ISOLATED="$(grep '^OPENCLAW_CONFIG_DIR=' .env | cut -d= -f2)/workspace-discord"
+mkdir -p "$ISOLATED/memory" "$ISOLATED/HEARTBEAT.md"
+rmdir "$ISOLATED/HEARTBEAT.md" 2>/dev/null || true
+: > "$ISOLATED/HEARTBEAT.md"
+# Optional seed — a single permissions note the bot will see on first boot.
+cat > "$ISOLATED/memory/about-this-workspace.md" <<'EOF'
+# Discord-voice agent workspace
+
+This workspace is dedicated to voice-channel interactions in our Discord
+server. It contains NO personal files, NO API keys, NO memory notes from
+the primary OpenClaw workspace. Anyone speaking in a bound voice channel
+can trigger tool calls within this sandbox.
+EOF
+```
+
+### 4. Wire the channel + agent (one-time)
+
+Fill in `DISCORD_BOT_TOKEN` in `.env` and restart the config-init + CLI so the new env reaches the container:
+
+```bash
+# .env
+DISCORD_BOT_TOKEN=your-actual-bot-token
+DISCORD_AGENT_NAME=discord-voice
+
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+```
+
+Then run the CLI sequence — the env var is already exported inside the CLI container:
+
+```bash
+docker exec ${PROJ}openclaw-cli sh -c '
+  set -e
+  # a. Register the Discord channel with the gateway.
+  openclaw channels add --channel discord --token "$DISCORD_BOT_TOKEN"
+
+  # b. Create an isolated agent whose workspace is the new subtree.
+  openclaw agents add "$DISCORD_AGENT_NAME" \
+    --workspace /home/node/.openclaw/workspace-discord \
+    --system-prompt "You are a voice assistant operating inside a shared Discord voice channel. You have no access to the operator'\''s personal workspace or memory. Keep replies concise for speech playback."
+
+  # c. Route Discord channel traffic to that agent.
+  openclaw agents bind --agent "$DISCORD_AGENT_NAME" --channel discord
+
+  # d. Tighten exec-policy: approval-gated destructive tools.
+  openclaw exec-policy preset --agent "$DISCORD_AGENT_NAME" cautious
+
+  # e. Sanity check.
+  openclaw channels list
+  openclaw agents list
+'
+```
+
+If your OpenClaw version uses slightly different flag names (e.g. `--channel-type` instead of `--channel`), run `openclaw <subcommand> --help` inside the CLI — the shape is stable across releases but flag aliases change.
+
+### 5. Join a voice channel and test
+
+1. In Discord, join one of your guild's voice channels.
+2. Type `/vc join` in any text channel the bot can see — the bot joins your current voice channel.
+3. Speak: "Hey, read me the file `memory/about-this-workspace.md`." — after ~3-5 s you should hear the file read aloud.
+4. Try an out-of-bounds request: "Read the file `../workspace/memory/foo.md`" — the agent should refuse. The `..` path escapes the workspace sandbox and the gateway denies the tool call.
+5. `/vc leave` disconnects the bot.
+
+### Optional: auto-join a specific channel on startup
+
+If you always want the bot in the same voice channel without typing `/vc join` after every gateway restart:
+
+1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode).
+2. Right-click the guild → Copy Server ID. Right-click the voice channel → Copy Channel ID.
+3. Set both in `.env`:
+    ```bash
+    DISCORD_AUTOJOIN_GUILD_ID=123456789012345678
+    DISCORD_AUTOJOIN_VOICE_CHANNEL_ID=123456789012345679
+    ```
+4. Run `openclaw channels configure discord voice.autoJoin` with the guild+channel pair — see `openclaw channels configure --help` for the exact flag form in your version.
+
+### Rotating the bot token
+
+If the token leaks (anyone with it can impersonate your bot in any guild it's in):
+
+1. Discord Developer Portal → Bot → **Reset Token**. The old token is invalidated immediately.
+2. Update `DISCORD_BOT_TOKEN` in `.env`.
+3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`.
+4. `docker exec ${PROJ}openclaw-cli openclaw channels update discord --token "$DISCORD_BOT_TOKEN"` (or re-run `channels add` if the update subcommand isn't present — OpenClaw treats re-add as upsert).
+
+### Known limitations
+
+- **Voice wake-word**: the OpenClaw `voicewake` feature is macOS/iOS-client only. In a Discord voice channel, the bot listens continuously while joined — speak during a natural pause to avoid interrupting another speaker. The bot's VAD (voice activity detection) chunks the stream.
+- **Latency**: simple replies are ~3-5 s. Multi-tool agent runs (e.g. web search + file write + verify) can take 10-30 s. The bot stays silent during tool execution.
+- **GDPR / transcript retention**: voice audio is transcribed on-prem by the Whisper service above and the transcript can be stored in `workspace-discord/memory/` depending on agent settings. If your guild has EU residents, document this in your server rules.
+- **Deeper reference**: schema details, isolation internals, DAVE (E2E) encryption notes, and risks in [docs/reference/discord-voice-agent.md](reference/discord-voice-agent.md).
+
 ## Upgrading the OpenClaw gateway
 
 All three OpenClaw containers (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) pull `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest}`. The `:latest` tag moves on every OpenClaw release, so `docker compose pull` can silently bring in a new gateway with schema changes, renamed CLI subcommands, or new channel features. The runbook below makes upgrades deliberate and reversible.

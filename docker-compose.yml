@@ -736,6 +736,17 @@ services:
       OPENCLAW_STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
       OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-Trendency/whisper-large-v3-hu}
       OPENCLAW_STT_LANGUAGE: ${OPENCLAW_STT_LANGUAGE:-}
+      # Discord voice-controlled agent (opt-in). The patcher does not create
+      # channels.discord.* automatically yet — the schema is user-driven via
+      # `openclaw channels add --channel discord --token $DISCORD_BOT_TOKEN`
+      # and `openclaw agents bind` to an isolated agent. These vars are
+      # plumbed so a future patcher step can reference them and so the
+      # setup runbook in docs/CUSTOMIZATION.md can use `docker exec`
+      # `env`-sourced commands.
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_AGENT_NAME: ${DISCORD_AGENT_NAME:-discord-voice}
+      DISCORD_AUTOJOIN_GUILD_ID: ${DISCORD_AUTOJOIN_GUILD_ID:-}
+      DISCORD_AUTOJOIN_VOICE_CHANNEL_ID: ${DISCORD_AUTOJOIN_VOICE_CHANNEL_ID:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ./patch-config.mjs:/opt/patch-config.mjs:ro
@@ -827,6 +838,14 @@ services:
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       OPENCLAW_NO_RESPAWN: "1"
       TZ: ${TZ:-UTC}
+      # Plumbed so the Discord-voice setup runbook can reference them inside
+      # the CLI container without re-entering the bot token. Empty by default
+      # — `openclaw channels add --channel discord --token "$DISCORD_BOT_TOKEN"`
+      # becomes a no-op when unset (the user hasn't opted in yet).
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_AGENT_NAME: ${DISCORD_AGENT_NAME:-discord-voice}
+      DISCORD_AUTOJOIN_GUILD_ID: ${DISCORD_AUTOJOIN_GUILD_ID:-}
+      DISCORD_AUTOJOIN_VOICE_CHANNEL_ID: ${DISCORD_AUTOJOIN_VOICE_CHANNEL_ID:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
