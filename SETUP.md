@@ -221,7 +221,58 @@ curl -sS -X POST http://127.0.0.1:8093/v1/audio/transcriptions \
 # → "hu" + accurate transcript
 ```
 
-## 8. (Optional) Reverse proxy + TLS
+## 8. (Optional) Enable browser automation
+
+If you want the agent to reach login-gated, JS-heavy sites (private GitHub
+wikis, private Notion pages, MediaWiki instances, Patreon archives), the
+`openclaw-browser` service is the path. Re-running `bootstrap.sh` now
+prompts you to opt in; if you said "no" earlier and changed your mind, the
+manual path is:
+
+```bash
+# 1. Generate a token if one isn't already in .env (bootstrap.sh did this if you ran it):
+grep '^BROWSER_API_TOKEN=' .env || \
+  echo "BROWSER_API_TOKEN=$(openssl rand -base64 48 | tr -d '\n')" >> .env
+
+# 2. Add 'browser' to the active profile set:
+#    Either add `COMPOSE_PROFILES=browser` to .env, or pass --profile browser
+#    on every compose command.
+
+# 3. Build + start the service (~1.7 GB image on first build):
+docker compose --profile browser up -d --build openclaw-browser
+```
+
+Once the service is up, onboard each credential **once** via the noVNC
+helper:
+
+```bash
+./bootstrap-browser-login.sh github-user1
+```
+
+The script prints a noVNC URL and (when you're SSH'd in) the autossh
+tunnel recipe to expose it on your laptop. Open the URL, log in to the
+target service with **password + TOTP / SMS OTP / magic link**, hit Enter
+in the terminal — cookies persist for the rest of the upstream session
+(~14d GitHub, ~30d Notion, etc.).
+
+**Limitations to know about:**
+
+- Passkeys (FIDO2/WebAuthn, including Apple Keychain, Windows Hello,
+  Google Password Manager, USB YubiKey) **don't work** over noVNC by W3C
+  origin-bound spec. Use password+TOTP for the noVNC flow, or a
+  long-lived API token (PAT, integration token, service account) and
+  bypass the browser entirely.
+- Vanilla Playwright Chromium has `navigator.webdriver=true`, so
+  Cloudflare-fronted hostile sites will block. The boundary, the
+  rationale, and the optional Patchright swap are documented in
+  [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md).
+
+After onboarding, the agent can reach authenticated content via
+`browser.navigate(url=..., profile="github-user1")`. Re-run the same
+helper script when GitHub's 28-day 2FA window or Notion's ~30-day
+session expires.
+
+## 9. (Optional) Reverse proxy + TLS
 
 For remote access over `wss://`, put any reverse proxy in front of port `18789`. A common setup:
 
@@ -235,7 +286,7 @@ If the proxy sits on the **host network** and sends `X-Forwarded-For`, you're co
 
 If you hit the gateway **directly from your LAN**, add your LAN CIDR via `OPENCLAW_LAN_CIDR=192.168.1.0/24` (or whatever) and re-run `docker compose up -d`. The patcher will update `trustedProxies`.
 
-## 9. (Optional) Daily operations
+## 10. (Optional) Daily operations
 
 - **Stop everything**: `docker compose down` (keeps volumes + config).
 - **Restart a single non-gateway service**: `docker compose up -d --force-recreate vllm-llm`.
@@ -248,7 +299,7 @@ If you hit the gateway **directly from your LAN**, add your LAN CIDR via `OPENCL
 - **Enter the CLI container**: `docker exec -it ${PROJ}openclaw-cli openclaw`.
 - **Back up memory** (do this regularly!): `tar czf openclaw-$(date +%F).tar.gz -C $OPENCLAW_CONFIG_DIR .`.
 
-## 10. Uninstall
+## 11. Uninstall
 
 ```bash
 docker compose down -v                           # containers + non-bind volumes

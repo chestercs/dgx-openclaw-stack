@@ -48,7 +48,8 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
 | **Bilingual TTS surface** | OpenAI-compatible `/v1/audio/speech` router fronting Kokoro 82M (English, Apache 2.0, ~500 MB-1 GB VRAM, ships by default) and an opt-in F5-TTS Hungarian backend (CC-BY-NC model weights — see below). Wired into OpenClaw via the sanctioned `messages.tts.providers.openai` baseUrl override. Diacritic-based autodetect re-routes Hungarian-text requests to the HU backend transparently when both are active. |
 | **Whisper STT (EN + HU)** | OpenAI-compatible `/v1/audio/transcriptions` via `Systran/faster-whisper-large-v3` on a self-built CUDA 13 image (~150 LOC FastAPI wrapper around `faster-whisper` — the upstream speaches image rejects Blackwell tensor-core compute types on sm_120, so we self-build to match the `vllm-llm` / `openclaw-tts-en` wheel pattern). ~3 GB VRAM, autodetects language (FLEURS Hungarian WER 14.1%). Wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads in the Control UI chat, Discord voice channels, the VoiceCall CLI, and Talk / Voicewake nodes all transcribe through this service. MIT wrapper + MIT Whisper weights. |
-| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, flips the bundled SearxNG plugin on, points the openai TTS provider at the bundled router, and upserts the STT entry into `tools.media.audio.models[]`. |
+| **Browser automation (opt-in)** | OpenClaw's built-in `browser` tool attaches to a self-hosted Playwright Chromium cluster over Chrome DevTools Protocol — one warm Chromium per onboarded credential. 1x manual OAuth onboarding per service via a noVNC bridge (`./bootstrap-browser-login.sh github-user1`); afterwards the agent reaches authenticated content with no per-call re-auth until the upstream session expires (~14d GitHub, ~30d Notion, etc.). Activate via `--profile browser`. Apache 2.0. Limitation: passkey-only auth flows don't work over noVNC by W3C origin-bound spec — use password+TOTP or API tokens for those. Details in [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md). |
+| **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, flips the bundled SearxNG plugin on, points the openai TTS provider at the bundled router, upserts the STT entry into `tools.media.audio.models[]`, and writes one `browser.profiles.<name>.cdpUrl` per registered Chromium profile. |
 
 Everything lives in one Docker Compose file. No separate vLLM service definitions, no reverse-proxied DNS trickery, no `host.docker.internal` workarounds — containers reach each other by their compose service name on the default bridge network.
 
@@ -94,7 +95,7 @@ docker compose up -d                        # services start; gateway will crash
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-That's it — the patcher applies all 14 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+That's it — the patcher applies all 15 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Architecture at a glance
 
@@ -141,8 +142,8 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```
 dgx-openclaw-stack/
-├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-* + stt-*)
-├─ patch-config.mjs             # idempotent OpenClaw config patcher (14 steps)
+├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-* + stt-* + browser)
+├─ patch-config.mjs             # idempotent OpenClaw config patcher (15 steps)
 ├─ bootstrap.sh                 # non-destructive first-time setup
 ├─ .env.example                 # documented env template (every tunable lives here)
 ├─ templates/
@@ -159,6 +160,10 @@ dgx-openclaw-stack/
 │  └─ voices/                   #   Bundled reference voice (Diana Majlinger, public domain)
 ├─ openclaw-stt-whisper/        # Self-built CUDA 13 STT image (Blackwell compat)
 │  └─ server/                   #   Dockerfile + FastAPI wrapper around faster-whisper
+├─ openclaw-browser/            # OPT-IN browser automation — Playwright Chromium over CDP
+│  ├─ server/                   #   Dockerfile + FastAPI supervisor + login-helper
+│  └─ config/                   #   Domain blocklist + (placeholder) seccomp profile
+├─ bootstrap-browser-login.sh   # 1x OAuth onboarding helper (noVNC bridge)
 ├─ docs/
 │  ├─ ARCHITECTURE.md           # service-by-service design rationale
 │  ├─ CUSTOMIZATION.md          # model swaps, remote backends, hardware retuning

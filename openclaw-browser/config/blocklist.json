@@ -1,0 +1,16 @@
+{
+  "_comment": "Domain suffix blocklist consulted by openclaw-browser before any agent-driven navigation. Suffix-match: 'bankofamerica.com' blocks 'www.bankofamerica.com' and 'login.bankofamerica.com' alike. Empty list = no policy (operator's risk). Edit and `docker compose restart openclaw-browser` to apply.",
+  "block_suffixes": [
+    "bankofamerica.com",
+    "chase.com",
+    "wellsfargo.com",
+    "citi.com",
+    "irs.gov",
+    "ssa.gov",
+    "healthcare.gov",
+    "myhealthrecord.com",
+    "epicmychart.com"
+  ],
+  "_allow_comment": "Future use: a per-host rate-limit override or per-host stealth-mode flag map. Current build ignores this list; edits here are forward-compatible.",
+  "allow_suffixes": []
+}

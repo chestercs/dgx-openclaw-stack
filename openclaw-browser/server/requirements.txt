@@ -1,0 +1,21 @@
+# openclaw-browser — Python deps. Pinned to majors so a `docker build --no-cache`
+# reproduces the same surface for several months at a time. Move pins forward
+# deliberately when upgrading; do not auto-bump on every rebuild.
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.33
+httpx>=0.27,<0.28
+websockets>=13,<14
+# Playwright pinned to v1.58.2 because that's the multiarch image we build FROM.
+# Mismatched Python-side and image-side Playwright versions are a known foot-gun
+# (browser-binary path differences); keep them locked together.
+playwright==1.58.2
+# Markdown extraction. trafilatura cascades to readability-lxml internally for
+# pages where its primary algorithm scores low — we ship both so the cascade
+# works without an offline fallback.
+trafilatura>=2.0,<3
+readability-lxml>=0.8,<0.9
+lxml>=5,<6
+# Used for retries against the Chromium debug endpoint during startup race
+# (Chromium opens its port a beat after the process is alive).
+tenacity>=9,<10
+python-multipart>=0.0.20,<0.1

@@ -300,6 +300,131 @@ input genuinely has no `áéíóöőúüűÁÉÍÓÖŐÚÜŰ` characters and the
 correctly fell through to the EN backend. To force HU explicitly, ask the
 agent to use voice id `default_hu` or `hu_diana`.
 
+## Browser automation (openclaw-browser)
+
+### `session_expired` from a profile that worked yesterday
+
+Upstream sites expire cookies on their own schedule. Approximate 2026
+defaults:
+
+| Service | Typical session lifetime |
+|---|---|
+| GitHub | 14 days inactive — but **2FA re-prompt at 28 days** from the last 2FA event |
+| Notion (free / pro) | ~30 days |
+| Notion Enterprise | up to 180 days (admin-configurable) |
+| Google consumer | 14 days default; "Stay signed in" extends |
+| MediaWiki | 30 days (default `$wgCookieExpiration`) |
+| Discord | 7 days OAuth tokens |
+
+GitHub's 28-day 2FA window is the surprise: a session can be active and
+still re-prompt for 2FA. Re-onboard with:
+
+```bash
+./bootstrap-browser-login.sh github-user1
+```
+
+(idempotent — runs in place against the existing user-data-dir).
+
+### `bootstrap-browser-login.sh` says "openclaw-browser not reachable"
+
+The browser service is opt-in and not started by `docker compose up -d`
+without `--profile browser`. Either add `browser` to `COMPOSE_PROFILES`
+in `.env` or pass `--profile browser`:
+
+```bash
+docker compose --profile browser up -d --build openclaw-browser
+docker compose --profile browser ps openclaw-browser
+```
+
+If it's running but unreachable, check `BROWSER_BIND` (default
+`127.0.0.1`) and that you're hitting `http://127.0.0.1:9220/healthz`
+from the same host.
+
+### noVNC tab opens but the screen is black
+
+Almost always one of three things:
+
+1. **`shm_size` was reduced.** Chromium needs ≥ 1 GB on `/dev/shm` to render anything non-trivial. Restore the default:
+   ```yaml
+   shm_size: "1gb"
+   ```
+2. **Xvfb didn't start in time.** The `time.sleep(0.5)` in `LoginHelper.start()` covers cold starts. If your host is heavily loaded, raise it. Symptoms: x11vnc starts but reports "no display".
+3. **Browser is paused waiting for user-data-dir to be writable.** Verify the bind mount:
+   ```bash
+   docker compose exec openclaw-browser ls -la /storage
+   ```
+   Should be writable by the container's UID (root in the Playwright base image).
+
+### WebAuthn / passkey screen appears but nothing happens when I click
+
+Expected. WebAuthn over noVNC does NOT work — the W3C spec is
+origin-bound, and the platform authenticator on your laptop has no
+path to the remote Chromium's origin. Workarounds:
+
+1. Pick "Use password instead" on the auth screen if available.
+2. Use a TOTP / SMS OTP option for that account.
+3. For accounts that are passkey-only, switch to an API token /
+   personal access token and route the agent through the service's
+   REST API, bypassing the browser entirely.
+
+USB hardware passkeys (YubiKey) plugged into your laptop are also
+inaccessible — the container does not pass through your laptop's USB
+bus.
+
+### Chromium SIGKILL'd mid-render
+
+Two common root causes:
+
+1. **`shm_size` too small** — see above.
+2. **Docker default seccomp blocks Chromium syscalls.** The compose
+   block ships with a placeholder seccomp profile at
+   `openclaw-browser/config/seccomp.json`. Pull Playwright's upstream
+   profile in for production:
+   ```bash
+   curl -fsS \
+     https://raw.githubusercontent.com/microsoft/playwright/main/utils/docker/seccomp_profile.json \
+     > openclaw-browser/config/seccomp.json
+   ```
+   Then uncomment the `seccomp=` line in the compose service block and
+   `docker compose up -d --force-recreate openclaw-browser`.
+
+### Cloudflare Turnstile / DataDome blocks every navigation
+
+Vanilla Playwright Chromium ships `navigator.webdriver=true`, default
+WebGL fingerprint, default canvas — all detectable by modern bot
+managers. The boundary is documented in
+`docs/reference/browser-automation.md`. Two paths forward:
+
+1. Use the site's official API instead of the browser. Most user-owned
+   accounts have one (GitHub, GitLab, Notion, Linear).
+2. Swap `playwright` for `patchright` in `requirements.txt` and rebuild
+   — see `docs/CUSTOMIZATION.md` → "Swap to Patchright if you need
+   stealth". Apache 2.0; binary-level patches address the most common
+   detection vectors.
+
+### "Profile XYZ exceeds the 20-port range"
+
+You added more than 20 names to `BROWSER_PROFILE_NAMES`. Bump
+`BROWSER_MAX_PROFILES` and the corresponding port range in
+`docker-compose.yml`. See `docs/CUSTOMIZATION.md` → "Expand beyond 20
+profiles".
+
+### `/json/version` returns 401 with the right `?token=`
+
+The token at the URL doesn't reach Chromium (Chromium ignores query
+strings on its discovery endpoint), so 401 here is from the **management
+API** at port 9220 — you're hitting the wrong port. CDP discovery is
+on the per-profile port (default profile = 9222). Confirm:
+
+```bash
+curl -sS "http://127.0.0.1:9222/json/version" | jq
+# This returns Chromium's debug info — no auth required at this layer.
+```
+
+The query-string token is best-effort; production-grade auth needs a
+header-auth reverse proxy in front of the CDP ports (see
+`docs/CUSTOMIZATION.md` → "Expose CDP on the LAN").
+
 ## Host-level issues
 
 ### `nvidia-smi` inside a container fails with `Failed to initialize NVML`

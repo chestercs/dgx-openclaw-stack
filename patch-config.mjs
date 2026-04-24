@@ -9,7 +9,7 @@
 // 31B + reasoning + vision prefill + multi-step tool calling.
 //
 // This script makes the desired state deterministic — every `docker compose up`
-// re-applies the 14 steps below in a deep-merge style. Safe to re-run; exits
+// re-applies the 15 steps below in a deep-merge style. Safe to re-run; exits
 // early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
 // (pre-onboarding fresh install) so the gateway container can still boot.
 //
@@ -37,6 +37,12 @@
 //      transcription, VoiceCall CLI, and Talk / Voicewake nodes. The Control
 //      UI realtime mic button is unaffected — that path uses the browser's
 //      native Web Speech API and bypasses this pipeline.
+//  15. Ensure browser.enabled=true and write one browser.profiles.<name>.cdpUrl
+//      per registered Chromium profile in openclaw-browser. Default profile on
+//      port BROWSER_PORT_BASE; named profiles in BROWSER_PROFILE_NAMES order
+//      get the next ports in sequence. Env-gated by BROWSER_API_TOKEN. Auth is
+//      `?token=<token>` in the URL — OpenClaw's cdpUrl field accepts query
+//      tokens or HTTP Basic only, not Authorization headers.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -654,6 +660,88 @@ if (sttToken) {
   }
 } else {
   console.log('[patch-config] STT_API_TOKEN not set — skipping tools.media.audio (STT opt-out).');
+}
+
+// (15) Ensure OpenClaw's `browser` tool is wired to the self-hosted Chromium
+//      cluster. Port-per-profile routing: default profile on BROWSER_PORT_BASE
+//      (9222), each name in BROWSER_PROFILE_NAMES (comma-separated) on the
+//      next port in sequence. We write one `browser.profiles.<name>.cdpUrl`
+//      per (name, port) pair.
+//
+//      Why port-per-profile rather than ?profile=<name> on a shared port: the
+//      OpenClaw gateway does NOT pass cdpUrl query parameters into Playwright's
+//      `connectOverCDP` — confirmed by upstream issues #4841, #9723, #11926.
+//      Profile selection is done via tool-call argument and resolved against
+//      separate cdpUrl entries. So each Chromium binds its own port and we
+//      enumerate them at patch time.
+//
+//      Auth: query-string `?token=<BROWSER_API_TOKEN>` is the only mechanism
+//      OpenClaw's cdpUrl config field supports (query token or Basic URL auth).
+//      Mitigations against query-string token leakage:
+//        - openclaw-browser binds CDP loopback-only on the host (`BROWSER_BIND`
+//          default 127.0.0.1).
+//        - rotate-secrets.sh handles weekly rotation.
+//        - openclaw-browser's FastAPI configures uvicorn to scrub Authorization
+//          headers from access logs (see app.py).
+//      For a single-operator self-hosted GB10 host, this is acceptable. Do
+//      NOT expose any of these ports on the LAN without putting a header-auth
+//      reverse proxy in front (Caddy / Traefik with a Basic-or-Bearer rule).
+//
+//      Env-gated: when BROWSER_API_TOKEN is unset, leave browser.* untouched
+//      so the operator can opt out by clearing the env var (and parking the
+//      service via `profiles: ["browser"]`, which is the default).
+const browserToken = process.env.BROWSER_API_TOKEN?.trim();
+if (browserToken) {
+  config.browser ??= {};
+  if (config.browser.enabled !== true) {
+    config.browser.enabled = true;
+    changed = true;
+    console.log('[patch-config] browser.enabled = true');
+  }
+  config.browser.profiles ??= {};
+
+  const cdpHost = process.env.BROWSER_CDP_HOST || 'http://openclaw-browser';
+  const portBase = parseInt(process.env.BROWSER_PORT_BASE || '9222', 10);
+  const encToken = encodeURIComponent(browserToken);
+
+  const writeProfile = (name, port, color) => {
+    const cdpUrl = `${cdpHost}:${port}?token=${encToken}`;
+    const existing = config.browser.profiles[name] || {};
+    const desired = { ...existing, cdpUrl, color };
+    if (JSON.stringify(existing) !== JSON.stringify(desired)) {
+      config.browser.profiles[name] = desired;
+      changed = true;
+      const tokenShown = `${browserToken.slice(0, 4)}…(len=${browserToken.length})`;
+      console.log(
+        `[patch-config] browser.profiles.${name}.cdpUrl = ${cdpHost}:${port}?token=${tokenShown}`
+      );
+    }
+  };
+
+  // Default anonymous profile — always present at BROWSER_PORT_BASE.
+  writeProfile('self-hosted', portBase, '#2563EB');
+
+  // Named profiles. Comma-separated in BROWSER_PROFILE_NAMES; ./bootstrap-
+  // browser-login.sh maintains the list, but manual edits work too — just
+  // don't reorder existing names (the index → port mapping is positional).
+  const names = (process.env.BROWSER_PROFILE_NAMES || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  names.forEach((name, idx) => {
+    const port = portBase + 1 + idx;
+    if (port > portBase + 19) {
+      console.warn(
+        `[patch-config] profile "${name}" index ${idx} exceeds the 20-port range ` +
+          `${portBase}-${portBase + 19}; skipping. Bump BROWSER_MAX_PROFILES + the ` +
+          `port range in docker-compose.yml if you need more.`
+      );
+      return;
+    }
+    writeProfile(name, port, '#10B981');
+  });
+} else {
+  console.log('[patch-config] BROWSER_API_TOKEN not set — skipping browser.profiles (browser opt-out).');
 }
 
 if (!changed) {

@@ -181,7 +181,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 14 steps
+### 15 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -200,6 +200,7 @@ Rather than tell users "also click here, there, and there after onboarding", the
 12. Mirror `gateway.auth.token` into `gateway.remote.token` so the loopback CLI WS-connect doesn't hit a token mismatch and silently fall back to the embedded runner (a side-car path, not the production agent route).
 13. Sync the per-agent `auth-profiles.json` `vllm:default.key` with `VLLM_API_KEY`. The agent runner reads the credential from this per-agent store, not from `models.providers.vllm.apiKey` — drift after a `.env` rotation produces HTTP 401 from vLLM even when the config-file apiKey is correct.
 14. Ensure `tools.media.audio` wires the Whisper STT backend (env-gated: `STT_API_TOKEN`). Upserts an entry into `tools.media.audio.models[]` with `provider: "openai"`, the configured model id, `baseUrl: http://openclaw-stt-whisper:8000/v1/`, and `headers.Authorization: Bearer $STT_API_TOKEN` so the Whisper Bearer stays isolated from any global `models.providers.openai.apiKey` (upsert-by-baseUrl preserves user-added entries like a Deepgram fallback). Feeds voice-note upload, Discord voice-channel transcription, VoiceCall CLI, Talk / Voicewake nodes. The Control UI realtime mic button is a separate path — it uses the browser's Web Speech API (`speech.ts`) and does NOT go through this pipeline.
+15. Ensure `browser.enabled = true` and write one `browser.profiles.<name>.cdpUrl` per registered Chromium profile in `openclaw-browser` (env-gated: `BROWSER_API_TOKEN`). Default profile gets port `BROWSER_PORT_BASE` (9222); each name in `BROWSER_PROFILE_NAMES` (comma-separated, populated by `./bootstrap-browser-login.sh`) gets the next port in sequence — port-per-profile because OpenClaw does not forward `?profile=<name>` query params on cdpUrl attaches (issues #4841 / #9723 / #11926). Auth is `?token=<BROWSER_API_TOKEN>` in the URL — OpenClaw's cdpUrl field accepts query tokens or Basic URL auth only, not Authorization headers. Loopback host bind plus weekly rotation are the mitigations against query-string token leakage.
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 
@@ -312,6 +313,87 @@ The OpenClaw audio schema resolves provider auth through the standard chain — 
 - `$OPENCLAW_WORKSPACE_DIR` is bind-mounted into the gateway and cli services — the agent's writable working directory.
 - `tts-en-hf-cache`, `tts-f5hun-hf-cache`, `tts-f5hun-voices` — Docker named volumes (no host bind). Hold runtime HF downloads + user-supplied reference voices for the F5-TTS HU service.
 - `stt-whisper-hf-cache` — Docker named volume for the faster-whisper CT2 weights (~3 GB large-v3 by default). Survives `docker compose down` so the next boot doesn't re-download. No host bind.
+- `browser-storage` — Docker named volume for `openclaw-browser`'s per-profile Chromium user-data-dirs. Cookies + localStorage + IndexedDB persist across container restarts so a 1x manual login holds for the upstream session lifetime (~14d GitHub, ~30d Notion, etc.). Treat backups as secret-equivalent — the contents include live session tokens.
+- `browser-diagnostics` — Docker named volume for failure screenshots + HAR captures from `openclaw-browser`. Diagnostic-only; safe to delete.
+
+## Browser automation subsystem (1 service, opt-in)
+
+```
+   ┌─────────────────────────────────────────────────────┐
+   │ openclaw-gateway                                    │
+   │   browser tool (built-in)                           │
+   │     reads browser.profiles.<name>.cdpUrl from       │
+   │     openclaw.json (written by patch-config step 15) │
+   └────────────────────┬────────────────────────────────┘
+                        │ Playwright connectOverCDP, port-per-profile
+                        ▼
+   ┌─────────────────────────────────────────────────────┐
+   │ openclaw-browser  (profiles: ["browser"])           │
+   │                                                     │
+   │   FastAPI mgmt  (:9220) ─ session lifecycle, login  │
+   │                              helper, /v1/extract    │
+   │                                                     │
+   │   Chromium cluster (port-per-profile)               │
+   │     :9222 default      (anonymous throwaway)        │
+   │     :9223 github-user1 (--user-data-dir=/storage/…) │
+   │     :9224 notion-personal                           │
+   │       …  up to 9241 (20 profiles default)           │
+   │                                                     │
+   │   noVNC bridge (:5901, transient during onboarding) │
+   │     Xvfb :99 + x11vnc + websockify + headful        │
+   │     Chromium for the operator's 1x OAuth flow       │
+   └─────────────────────────────────────────────────────┘
+```
+
+Self-hosted Playwright Chromium that OpenClaw's built-in `browser` tool
+attaches to over Chrome DevTools Protocol. We do not implement any of the
+browser-control surface ourselves — navigate, click, fill, type, evaluate,
+snapshot, screenshot, cookies, storage all live in the gateway.
+
+### Why CDP-attach (not MCP, not a bespoke HTTP tool)
+
+OpenClaw has no MCP slot in its config schema, so MCP would mean a
+custom plugin maintained against every gateway release. A bespoke HTTP
+tool adapter would re-implement the full Playwright control surface
+that OpenClaw already gives us. CDP-attach via `browser.profiles.<name>.cdpUrl`
+is documented and supported; the only custom code we own is the
+supervisor, the login helper, and a small markdown extractor. Full
+rationale in `docs/reference/browser-automation.md`.
+
+### Why port-per-profile
+
+OpenClaw does NOT pass `?profile=<name>` query params from cdpUrl through
+to Playwright's `connectOverCDP` call (issues #4841 / #9723 / #11926).
+Each profile must resolve to a distinct cdpUrl. Solution: each Chromium
+binds its own port. Patcher step 15 enumerates ports deterministically:
+default = `BROWSER_PORT_BASE` (9222), then named profiles in
+`BROWSER_PROFILE_NAMES` order get the next ports.
+
+### Auth posture
+
+`?token=<BROWSER_API_TOKEN>` in the URL — that's the only auth surface
+OpenClaw's cdpUrl field accepts. Mitigations against query-string leakage:
+- `BROWSER_BIND` defaults to 127.0.0.1 (loopback host bind).
+- Sibling containers reach Chromium via the docker bridge (LAN cannot pivot).
+- `rotate-secrets.sh` covers `BROWSER_API_TOKEN` in `--all`.
+
+If you need LAN exposure of CDP, do not relax the bind without a
+reverse-proxy layer that strips the query token and adds proper Bearer
+headers. An unauthenticated remote-debugging-port has been the root
+cause of multiple Chromium credential-theft CVEs.
+
+### 1x OAuth onboarding flow
+
+`./bootstrap-browser-login.sh <profile-name>` POSTs to the FastAPI app's
+`/v1/sessions/<n>/login-helper`, which spins up Xvfb + x11vnc +
+websockify + a headful Chromium for the named profile and returns a
+noVNC URL. The operator opens it in their laptop browser, drives the
+auth flow (password + TOTP — passkeys don't work over noVNC by W3C
+origin-bound spec), hits Enter. The service flushes Chromium (cookies
+persist), tears down the VNC chain, and re-launches Chromium headless
+on the same `--user-data-dir`. The script then appends the profile name
+to `BROWSER_PROFILE_NAMES` and runs `openclaw-config-init` so patcher
+step 15 writes the new `browser.profiles.<n>.cdpUrl` entry.
 
 ## Networking, trust, and exposure
 
@@ -319,5 +401,6 @@ The OpenClaw audio schema resolves provider auth through the standard chain — 
 - **vLLM ports stay compose-internal.** For host-side debug, uncomment the `"127.0.0.1:8004:8004"` / `"127.0.0.1:8005:8005"` bindings in `docker-compose.yml`. Binding to `127.0.0.1` keeps them off your LAN.
 - **TTS ports publish to loopback by default** (`127.0.0.1:8090–8092`) — see the TTS subsystem section above. Set `TTS_*_BIND=0.0.0.0` in `.env` to expose on the LAN.
 - **STT port (`openclaw-stt-whisper`) publishes to `127.0.0.1:8093`** by default. Set `STT_WHISPER_BIND=0.0.0.0` to expose on the LAN (Bearer-protected via `STT_API_TOKEN`).
+- **Browser ports (`openclaw-browser`) publish to `127.0.0.1:9220` (management API) + `127.0.0.1:9222-9241` (Chromium debug ports) + `127.0.0.1:5901` (noVNC during onboarding only)** by default — opt-in via `--profile browser`. Set `BROWSER_BIND=0.0.0.0` only with a header-auth reverse proxy in front; raw CDP ports on the LAN are a credential-theft vector. See `docs/reference/browser-automation.md`.
 - `gateway.trustedProxies` includes `172.16.0.0/12` so any reverse proxy on the same docker bridge (or on host-network with bridge-adjacent IPs) is trusted. If you access the gateway **directly** from your LAN (bypassing the proxy), add your LAN CIDR via `OPENCLAW_LAN_CIDR`.
 - The Chrome extension expects `wss://` (secure) for public use. Put a TLS-terminating reverse proxy in front and set `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1` so the gateway accepts the plain `ws://` hop from the proxy on your private network.

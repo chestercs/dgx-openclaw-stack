@@ -364,6 +364,108 @@ Same pattern as "Run with a remote vLLM backend" above. On a GPU-less host point
 
 The gateway will POST voice notes and voice-channel audio to the remote endpoint. Bridge DNS isn't involved — the URL resolves outside the compose network via the host's DNS.
 
+## Browser automation tuning
+
+The default `openclaw-browser` configuration is calibrated for a single-operator
+GB10 box scraping the operator's own authenticated accounts. A few common
+adjustments:
+
+### Tune the application-layer rate limiter
+
+The shipped per-host token bucket (`BROWSER_RATE_LIMIT_RPS=0.5`,
+`BROWSER_RATE_LIMIT_BURST=5`) is defensive for the public web. For your
+own services (private MediaWiki, Notion, GitHub), bump it:
+
+```bash
+# In .env
+BROWSER_RATE_LIMIT_RPS=5
+BROWSER_RATE_LIMIT_BURST=20
+```
+
+Then `docker compose up -d --force-recreate openclaw-browser`.
+
+### Extend the domain blocklist
+
+Edit `openclaw-browser/config/blocklist.json` and add suffixes to
+`block_suffixes`. The list is consulted at the application layer
+(`/v1/extract`, `/v1/blocklist/check`) — network-level enforcement is a
+Phase 2 enhancement. Reload without restart:
+
+```bash
+curl -X POST -H "Authorization: Bearer $BROWSER_API_TOKEN" \
+  http://127.0.0.1:9220/v1/blocklist/reload
+```
+
+### Expand beyond 20 profiles
+
+`BROWSER_MAX_PROFILES=20` matches the published port range `9222-9241`.
+To go higher, edit `docker-compose.yml`:
+
+```yaml
+ports:
+  - "${BROWSER_BIND:-127.0.0.1}:9222-9261:9222-9261"   # 40 profiles
+```
+
+and in `.env`:
+
+```bash
+BROWSER_MAX_PROFILES=40
+```
+
+The patcher honors the same range automatically.
+
+### Expose CDP on the LAN (do this carefully)
+
+`BROWSER_BIND=127.0.0.1` is the default. The Chromium remote-debugging
+ports give full control of any session connected to them — they are not
+safe to expose on the LAN with only a query-string token. If you need
+LAN access, the recommended pattern is a header-auth reverse proxy
+(Caddy / Traefik) that:
+
+1. Listens on the LAN.
+2. Validates an `Authorization: Bearer` header.
+3. Strips the header and forwards to `127.0.0.1:9222-9241` on the host.
+
+Without that, the query-string token in `cdpUrl` is the only auth surface
+and it leaks into proxy logs, browser histories, and `ps` output. Setting
+`BROWSER_BIND=0.0.0.0` without the proxy is documented as **not
+recommended** in `docs/reference/browser-automation.md`.
+
+### Swap to Patchright if you need stealth
+
+Vanilla Playwright Chromium has `navigator.webdriver=true`, fingerprintable
+canvas + audio + WebGL, default User-Agent leaking the headless tag. Fine
+for the operator's own authenticated accounts; will trip Cloudflare
+Turnstile / DataDome / PerimeterX on hostile public sites.
+
+Patchright (Apache 2.0, https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)
+is a binary-level patched Chromium fork. To swap:
+
+1. In `openclaw-browser/server/requirements.txt`, replace `playwright==1.58.2`
+   with `patchright==1.59.1` (or current).
+2. In `supervise.py`, change `from playwright.sync_api import sync_playwright`
+   to `from patchright.sync_api import sync_playwright`.
+3. Rebuild: `docker compose --profile browser build --no-cache openclaw-browser`.
+
+The control surface is API-compatible. Patchright's binary patches address
+`navigator.webdriver`, runtime detection, and command-line flag leaks.
+
+### Self-host Firecrawl alongside the browser
+
+For static-page fetches that don't need Chromium (the agent just wants
+the article text), a self-hosted Firecrawl sidecar is faster and lighter
+than spinning up a browser context. Issue #22256 confirmed
+`FIRECRAWL_BASE_URL` is overridable. Sketch:
+
+1. Run a Firecrawl container alongside the stack (it has its own
+   docker-compose at https://github.com/firecrawl/firecrawl).
+2. Set `FIRECRAWL_BASE_URL=http://firecrawl:3002` in `.env`.
+3. Set `tools.web.fetch.provider = "firecrawl"` via OpenClaw config.
+
+The agent then has both: `web_fetch` for static pages (fast Firecrawl
+path), `browser` for JS-heavy or login-gated content (slower Chromium
+path).
+
 ## Voice-controlled agent over Discord
 
 Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by voice: speak a request → the bundled Whisper STT transcribes → the agent plans + executes → the bundled TTS speaks the reply into the channel. End-to-end round trip is ~3-5 s on GB10 for a simple tool call.

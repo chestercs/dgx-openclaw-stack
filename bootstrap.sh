@@ -132,6 +132,10 @@ SEARXNG_SECRET_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 TTS_ROUTER_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 TTS_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 STT_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
+# 48 bytes (64 base64 chars) is enough for the browser API. The token also
+# ends up URL-encoded in `?token=…` on cdpUrl entries, so going to 64 bytes
+# would make the URL noticeably longer with no extra security.
+BROWSER_API_TOKEN_NEW="$(openssl rand -base64 48 | tr -d '\n')"
 
 upsert_env VLLM_API_KEY                "$VLLM_API_KEY_NEW"    '^CHANGE_ME'
 upsert_env OPENCLAW_GATEWAY_TOKEN      "$GATEWAY_TOKEN_NEW"   '^CHANGE_ME'
@@ -139,6 +143,7 @@ upsert_env SEARXNG_SECRET              "$SEARXNG_SECRET_NEW"  '^CHANGE_ME'
 upsert_env OPENCLAW_TTS_ROUTER_API_KEY "$TTS_ROUTER_KEY_NEW"  '^CHANGE_ME'
 upsert_env TTS_API_TOKEN               "$TTS_API_TOKEN_NEW"   '^CHANGE_ME'
 upsert_env STT_API_TOKEN               "$STT_API_TOKEN_NEW"   '^CHANGE_ME'
+upsert_env BROWSER_API_TOKEN           "$BROWSER_API_TOKEN_NEW" '^CHANGE_ME'
 
 # ----------------------------------------------------------------------------
 # 3b. Optional: Hungarian TTS opt-in (CC-BY-NC model weights)
@@ -177,6 +182,47 @@ if [[ -z "$hu_token_existing" ]]; then
   fi
 else
   ok "F5HUN_API_TOKEN already present — Hungarian TTS opt-in preserved."
+fi
+
+# ----------------------------------------------------------------------------
+# 3c. Optional: browser automation opt-in
+#
+# Asked once, after the HU TTS prompt. The token is already generated above
+# (so even users who skip the prompt can opt in later by just adding
+# `browser` to COMPOSE_PROFILES). Here we ONLY toggle the compose profile —
+# joining the activation triad (token already set, profile gate, plus the
+# 1x OAuth helper run later for each credential).
+# ----------------------------------------------------------------------------
+existing_profiles=$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- || echo "")
+if [[ ",${existing_profiles}," != *",browser,"* ]]; then
+  printf '\n%bOptional:%b Browser automation (Playwright Chromium) — opt-in.\n' "$BOLD" "$RESET"
+  log "  Opt-in lets the agent reach login-gated, JS-heavy sites: private"
+  log "  Notion pages, GitHub wikis, Patreon archives, MediaWiki, etc."
+  log "  Cost: image is ~1.7 GB (Playwright + Chromium); ~200-400 MB RAM per"
+  log "  warm credential."
+  log ""
+  log "  WORKS over noVNC: password + TOTP / SMS OTP / magic link auth flows."
+  log "  DOES NOT work over noVNC: passkeys (FIDO2/WebAuthn) — W3C origin-"
+  log "  bound. Use API tokens for passkey-only services instead."
+  printf '%bActivate browser automation now? [y/N]:%b ' "$BOLD" "$RESET"
+  read -r br_answer
+  if [[ "$br_answer" =~ ^[Yy]$ ]]; then
+    if [[ -z "$existing_profiles" ]]; then
+      upsert_env COMPOSE_PROFILES "browser" '.*'
+    elif [[ ! "$existing_profiles" =~ (^|,)browser(,|$) ]]; then
+      new_profiles="${existing_profiles},browser"
+      upsert_env COMPOSE_PROFILES "$new_profiles" '.*'
+      ok "COMPOSE_PROFILES → ${new_profiles}"
+    fi
+    ok "Browser automation opt-in: profile activated."
+    ok "  → docker compose --profile browser up -d --build openclaw-browser"
+    ok "  → ./bootstrap-browser-login.sh github-user1     (1x per credential)"
+  else
+    log "Skipped — re-run bootstrap.sh later to enable, or add 'browser' to"
+    log "         COMPOSE_PROFILES in .env by hand."
+  fi
+else
+  ok "COMPOSE_PROFILES already includes 'browser' — opt-in preserved."
 fi
 
 # ----------------------------------------------------------------------------
@@ -246,4 +292,7 @@ printf '    %bdocs/TROUBLESHOOTING.md%b — common failure modes\n\n' "$BOLD" "$
 printf 'Hungarian TTS (F5-TTS, CC-BY-NC): opt-in via --profile hu or\n'
 printf 'COMPOSE_PROFILES=hu in .env — see openclaw-tts-f5hun/README.md.\n\n'
 printf 'Whisper STT (EN + HU autodetect) is enabled by default. Test with:\n\n'
-printf '    %bcurl -F file=@sample.wav -F model=Systran/faster-whisper-large-v3 \\\n        -H "Authorization: Bearer $STT_API_TOKEN" \\\n        http://127.0.0.1:8093/v1/audio/transcriptions%b\n' "$BOLD" "$RESET"
+printf '    %bcurl -F file=@sample.wav -F model=Systran/faster-whisper-large-v3 \\\n        -H "Authorization: Bearer $STT_API_TOKEN" \\\n        http://127.0.0.1:8093/v1/audio/transcriptions%b\n\n' "$BOLD" "$RESET"
+printf 'Browser automation (opt-in via --profile browser): after first boot,\n'
+printf 'onboard each credential once via the noVNC helper:\n\n'
+printf '    %b./bootstrap-browser-login.sh github-user1%b\n' "$BOLD" "$RESET"

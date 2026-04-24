@@ -76,6 +76,18 @@ volumes:
   # manages the HuggingFace cache layout inside the volume itself.
   stt-whisper-hf-cache:
     name: dgx-openclaw-stt-whisper-hf-cache
+  # Per-profile Chromium user-data-dirs for openclaw-browser (only used when
+  # the `browser` Compose profile is active). One subdirectory per onboarded
+  # credential — cookies, localStorage, IndexedDB persist across container
+  # restarts so 1x manual login holds for the full session-cookie lifetime
+  # (~14d GitHub, ~30d Notion, etc.). Treat backups of this volume as
+  # secret-equivalent; the contents include live session tokens.
+  browser-storage:
+    name: dgx-openclaw-browser-storage
+  # Failure screenshots + HAR files for openclaw-browser. Diagnostic-only;
+  # 100 MB cap, oldest-file sweeper trims hourly. Safe to delete at any time.
+  browser-diagnostics:
+    name: dgx-openclaw-browser-diagnostics
 
 services:
   ######################
@@ -653,10 +665,124 @@ services:
         max-size: "50m"
 
   ######################
+  ## Browser automation — Playwright Chromium exposed over Chrome DevTools
+  ## Protocol — OPT-IN (profile=browser).
+  #
+  #  Architecture: one long-lived Chromium per persisted profile (user-data-dir
+  #  on the browser-storage Docker volume) plus one anonymous default profile.
+  #  Each Chromium binds its own remote-debugging port. OpenClaw's built-in
+  #  `browser` tool attaches via browser.profiles.<name>.cdpUrl; no MCP, no
+  #  bespoke tool shim, no custom gateway plugin. See
+  #  docs/reference/browser-automation.md for the full design rationale,
+  #  including why we couldn't use ?profile= query routing (OpenClaw issues
+  #  #4841/#9723/#11926).
+  #
+  #  Why opt-in despite Apache 2.0 + Chromium being free: the Playwright base
+  #  image is ~1.7 GB on aarch64, and one warm Chromium per credential uses
+  #  ~200-400 MB RAM. Users who don't want agent web browsing shouldn't pay
+  #  for that overhead. Activation requires BOTH:
+  #    1. BROWSER_API_TOKEN set in .env (bootstrap.sh handles this).
+  #    2. The `browser` Compose profile active. Either:
+  #         - COMPOSE_PROFILES=browser in .env (preferred), OR
+  #         - --profile browser on the docker compose command line.
+  #
+  #  Networking:
+  #    - 9220:        FastAPI management API + login-helper (operator side).
+  #    - 9222-9241:   Chromium remote-debugging ports (default + 20 named
+  #                   profiles). 9222 = "default" anonymous throwaway profile;
+  #                   9223+ = named profiles in BROWSER_PROFILE_NAMES order.
+  #    - 5901:        noVNC bridge for the 1x OAuth login helper. Active only
+  #                   while bootstrap-browser-login.sh is running.
+  #    All ports loopback-only by default. The OpenClaw gateway reaches the
+  #    Chromium debug ports via bridge DNS at openclaw-browser:9222-9241.
+  #
+  #  Onboarding a credential (1x per service):
+  #    docker compose --profile browser up -d --build openclaw-browser
+  #    ./bootstrap-browser-login.sh github-user1
+  #    # opens noVNC URL → operator logs in (password+TOTP, NOT passkeys —
+  #    # WebAuthn doesn't work over noVNC by W3C spec) → presses Enter
+  #    # → cookies persist; agent can browser.navigate(profile=...) freely
+  #    #   for the next ~14d (GitHub) / ~30d (Notion) / etc.
+  #
+  #  Disable: leave BROWSER_API_TOKEN empty in .env AND drop `browser` from
+  #  COMPOSE_PROFILES. Patcher step 15 is env-gated (skipped when the token
+  #  is unset), so dropping the token cleanly opts out of gateway wiring.
+  ######################
+  openclaw-browser:
+    profiles: ["browser"]
+    build: ./openclaw-browser/server
+    image: openclaw-browser:0.1.0
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-browser
+    hostname: openclaw-browser
+    restart: unless-stopped
+    # tini handles PID 1 already (set by ENTRYPOINT in Dockerfile); also enable
+    # init: true so docker's signalling is clean across the Chromium subprocess
+    # tree.
+    init: true
+    # Loopback-only host bind for the management API and Chromium debug ports.
+    # Set BROWSER_BIND=0.0.0.0 in .env if you need direct LAN access (you
+    # likely don't — the gateway always uses bridge DNS).
+    ports:
+      - "${BROWSER_BIND:-127.0.0.1}:${BROWSER_API_PORT:-9220}:9220"
+      - "${BROWSER_BIND:-127.0.0.1}:9222-9241:9222-9241"
+      - "${BROWSER_VNC_BIND:-127.0.0.1}:${BROWSER_VNC_PORT:-5901}:5901"
+    environment:
+      # Required. Empty value fails fast at app startup (no anonymous access).
+      BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-}
+      # Comma-separated list of named profiles. Maintained by
+      # ./bootstrap-browser-login.sh — manual edits here also work but the
+      # name's port assignment is positional, so don't reorder once profiles
+      # are in active use (it would shuffle each profile's cdpUrl).
+      BROWSER_PROFILE_NAMES: ${BROWSER_PROFILE_NAMES:-}
+      BROWSER_API_PORT: ${BROWSER_API_PORT:-9220}
+      BROWSER_PORT_BASE: ${BROWSER_PORT_BASE:-9222}
+      BROWSER_MAX_PROFILES: ${BROWSER_MAX_PROFILES:-20}
+      BROWSER_RATE_LIMIT_RPS: ${BROWSER_RATE_LIMIT_RPS:-0.5}
+      BROWSER_RATE_LIMIT_BURST: ${BROWSER_RATE_LIMIT_BURST:-5}
+      BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-30000}
+      BROWSER_STORAGE_DIR: /storage
+    volumes:
+      - browser-storage:/storage
+      - browser-diagnostics:/diagnostics
+      - ./openclaw-browser/config:/config:ro
+    tmpfs:
+      # Chromium scratches /tmp at modest volume; cap to 512 MB so a runaway
+      # download can't fill the host's tmpfs ceiling.
+      - /tmp:rw,size=512m
+    # Chromium OOMs without /dev/shm headroom under any moderate workload —
+    # the in-process renderer uses shared memory for inter-thread message
+    # passing. 1 GB is the well-trodden default.
+    shm_size: "1gb"
+    security_opt:
+      - no-new-privileges:true
+      # The seccomp profile shipped at openclaw-browser/config/seccomp.json
+      # is a placeholder by default; pull Playwright's upstream profile in to
+      # block unneeded syscalls. Comment this line out to use Docker's
+      # default profile (works fine for most flows; Chromium can SIGKILL on
+      # certain memory patterns under it).
+      # - seccomp=./openclaw-browser/config/seccomp.json
+    cap_drop: [ALL]
+    # CHOWN, SETUID, SETGID, DAC_OVERRIDE: required for Chromium's per-tab
+    # process spawn (drops privileges to a sandbox UID inside the container).
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    healthcheck:
+      # /healthz is unauthenticated by design; both the Docker probe and
+      # bootstrap-browser-login.sh's preflight rely on it.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:9220/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+
+  ######################
   ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
   #
   #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 14 steps:
+  #  the onboarding wizard's choices or previous manual edits. 15 steps:
   #
   #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
   #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
@@ -701,6 +827,17 @@ services:
   #       any global models.providers.openai.apiKey. Env-gated: skipped when
   #       STT_API_TOKEN is unset, so removing the token cleanly opts out of
   #       the gateway wiring (service block can be parked separately).
+  #   15. Ensure browser.enabled=true and write one browser.profiles.<name>
+  #       entry per registered Chromium profile in openclaw-browser. Default
+  #       profile lands on port BROWSER_PORT_BASE (9222); each name in
+  #       BROWSER_PROFILE_NAMES (comma-separated) gets the next port in
+  #       sequence. Auth is `?token=<BROWSER_API_TOKEN>` in the cdpUrl —
+  #       OpenClaw's cdpUrl config field accepts query tokens and HTTP Basic
+  #       URL auth only, not Authorization headers. Env-gated: skipped when
+  #       BROWSER_API_TOKEN is unset, so leaving the token empty cleanly opts
+  #       out of browser wiring (the openclaw-browser service block is also
+  #       parked behind `profiles: ["browser"]` and stays inactive without
+  #       --profile browser).
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.
@@ -752,6 +889,15 @@ services:
       DISCORD_AGENT_NAME: ${DISCORD_AGENT_NAME:-discord-voice}
       DISCORD_AUTOJOIN_GUILD_ID: ${DISCORD_AUTOJOIN_GUILD_ID:-}
       DISCORD_AUTOJOIN_VOICE_CHANNEL_ID: ${DISCORD_AUTOJOIN_VOICE_CHANNEL_ID:-}
+      # Browser-automation provider wiring (step 15). When BROWSER_API_TOKEN
+      # is set, the patcher writes browser.enabled=true and emits one
+      # browser.profiles.<name>.cdpUrl per registered profile in
+      # BROWSER_PROFILE_NAMES (default profile + named ones). Empty token
+      # opts out — the patcher leaves browser.* untouched.
+      BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-}
+      BROWSER_PROFILE_NAMES: ${BROWSER_PROFILE_NAMES:-}
+      BROWSER_CDP_HOST: ${BROWSER_CDP_HOST:-http://openclaw-browser}
+      BROWSER_PORT_BASE: ${BROWSER_PORT_BASE:-9222}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ./patch-config.mjs:/opt/patch-config.mjs:ro

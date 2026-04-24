@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`openclaw-browser` service — self-hosted Playwright Chromium over CDP
+  (OPT-IN, `--profile browser`).** OpenClaw's built-in `browser` tool
+  attaches via `browser.profiles.<name>.cdpUrl`; one warm Chromium per
+  onboarded credential, persistent user-data-dir on the new
+  `browser-storage` Docker volume so 1x manual login holds for the full
+  upstream session lifetime (~14d GitHub, ~30d Notion). Port-per-profile
+  routing (default 9222, named profiles 9223-9241) because OpenClaw
+  doesn't forward `?profile=<name>` query params on cdpUrl attaches
+  (issues #4841 / #9723 / #11926). FastAPI management API on port 9220
+  (Bearer-auth, distinct from the CDP query-token path). Markdown
+  extraction via trafilatura + readability-lxml fallback exposed at
+  `/v1/extract` for agents that grab HTML via `browser.evaluate` and want
+  cleaner text. Apache 2.0 wrapper code; vanilla Playwright Chromium —
+  no stealth shipped, hostile-CDN sites are out of scope. Detailed
+  rationale (CDP-attach vs MCP, port-per-profile, query-string token
+  trade-off, session expiry matrix, WebAuthn/passkey limitation) in
+  `docs/reference/browser-automation.md`.
+- **`bootstrap-browser-login.sh <profile-name>` — 1x OAuth onboarding
+  helper.** Spins up Xvfb + x11vnc + websockify + headful Chromium for
+  the named profile, prints a noVNC URL (and the autossh tunnel recipe
+  when `$SSH_CONNECTION` is set). Operator drives the auth flow on their
+  laptop browser (password + TOTP / SMS OTP / magic link — passkeys do
+  NOT work over noVNC by W3C origin-bound spec), hits Enter; service
+  flushes Chromium cleanly so cookies persist, tears down the VNC
+  chain, re-launches Chromium headless on the same `--user-data-dir`,
+  appends the profile to `BROWSER_PROFILE_NAMES` in `.env`, and
+  re-runs `openclaw-config-init` so the patcher writes the new
+  `browser.profiles.<n>.cdpUrl` entry.
+- **Patcher step 15 — browser provider wiring.** Env-gated on
+  `BROWSER_API_TOKEN`. Writes `browser.enabled=true` plus one
+  `browser.profiles.<name>.cdpUrl` per registered profile (default
+  `self-hosted` + each name in `BROWSER_PROFILE_NAMES`, comma-separated).
+  Auth is `?token=<...>` in the URL — the only auth surface OpenClaw's
+  cdpUrl config field supports (query token or HTTP Basic only, not
+  Authorization headers).
+- **`bootstrap.sh` browser opt-in prompt.** New interactive block after
+  the HU TTS prompt; generates `BROWSER_API_TOKEN` (48-byte random)
+  alongside the other secrets, asks the operator whether to add
+  `browser` to `COMPOSE_PROFILES`. Idempotent — re-running preserves
+  prior choices.
+- **`rotate-secrets.sh` covers `BROWSER_API_TOKEN`.** Added to
+  `DEFAULT_KEYS`; `--all` rotates it on the same cadence as every other
+  secret. The `--profile browser` flag is appended to the printed
+  recreate command when `BROWSER_API_TOKEN` is in the rotation set
+  (matches the existing `--profile hu` handling for the F5HUN token).
+- **Public docs rewritten / extended for the new service.** README
+  service table row, SETUP.md section 8 ("Enable browser automation"
+  with re-numbered subsequent sections), ARCHITECTURE.md "Browser
+  automation subsystem" + step 15 description, CUSTOMIZATION.md tuning
+  subsections (rate limiter, blocklist, port range, LAN exposure
+  reverse-proxy pattern, Patchright stealth swap, Firecrawl sidecar),
+  TROUBLESHOOTING.md eight new entries (session_expired, noVNC black
+  screen, WebAuthn/passkey limitation, Chromium SIGKILL, Cloudflare
+  block, port range exhaustion, Bearer vs query-token confusion),
+  CLAUDE.md two new "Implementation details worth knowing" entries
+  (CDP-attach + port-per-profile + query-token rationale; WebAuthn
+  doesn't work over noVNC).
+
 ## [0.6.1] - 2026-04-24
 
 Point release with two TTS-router polishes surfaced by the closed-loop

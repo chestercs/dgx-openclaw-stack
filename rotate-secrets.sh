@@ -58,6 +58,7 @@ DEFAULT_KEYS=(
   OPENCLAW_TTS_ROUTER_API_KEY
   TTS_API_TOKEN
   STT_API_TOKEN
+  BROWSER_API_TOKEN
 )
 F5HUN_KEY=F5HUN_API_TOKEN
 GATEWAY_KEY=OPENCLAW_GATEWAY_TOKEN
@@ -74,6 +75,7 @@ services_for() {
     TTS_API_TOKEN)               echo "openclaw-tts-en openclaw-tts-router" ;;
     STT_API_TOKEN)               echo "openclaw-stt-whisper openclaw-config-init openclaw-gateway openclaw-cli" ;;
     F5HUN_API_TOKEN)             echo "openclaw-tts-f5hun openclaw-tts-router" ;;
+    BROWSER_API_TOKEN)           echo "openclaw-browser openclaw-config-init openclaw-gateway openclaw-cli" ;;
     OPENCLAW_GATEWAY_TOKEN)      echo "openclaw-gateway openclaw-cli" ;;
     *) return 1 ;;
   esac
@@ -292,9 +294,16 @@ for k in "${ALL_ROTATABLE[@]}"; do
 done
 
 HU_TOUCHED=0
+BROWSER_TOUCHED=0
 
 for key in "${ROTATE_ORDER[@]}"; do
-  new="$(openssl rand -base64 64 | tr -d '\n')"
+  if [[ "$key" == "BROWSER_API_TOKEN" ]]; then
+    # 48-byte (64 base64-char) token — keeps the URL-encoded form short
+    # since this value also lives in `?token=…` on every cdpUrl entry.
+    new="$(openssl rand -base64 48 | tr -d '\n')"
+  else
+    new="$(openssl rand -base64 64 | tr -d '\n')"
+  fi
   NEW_VALUES[$key]="$new"
   OLD_FP[$key]="$(fp "$(current_value "$key")")"
   NEW_FP[$key]="$(fp "$new")"
@@ -304,6 +313,7 @@ for key in "${ROTATE_ORDER[@]}"; do
     SERVICE_SET[$s]=1
   done
   [[ "$key" == "$F5HUN_KEY" ]] && HU_TOUCHED=1
+  [[ "$key" == "BROWSER_API_TOKEN" ]] && BROWSER_TOUCHED=1
 done
 
 # ----------------------------------------------------------------------------
@@ -324,6 +334,8 @@ SERVICE_ORDER=(
   openclaw-tts-en
   openclaw-tts-f5hun
   openclaw-tts-router
+  openclaw-stt-whisper
+  openclaw-browser
   openclaw-config-init
   openclaw-gateway
   openclaw-cli
@@ -336,6 +348,9 @@ done
 compose_cmd="docker compose"
 if (( HU_TOUCHED )); then
   compose_cmd+=" --profile hu"
+fi
+if (( BROWSER_TOUCHED )); then
+  compose_cmd+=" --profile browser"
 fi
 recreate_cmd="${compose_cmd} up -d --force-recreate ${sorted_services[*]}"
 

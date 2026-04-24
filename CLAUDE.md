@@ -14,23 +14,28 @@ The repo's value proposition is the **wiring**, not any individual component:
 ## Repo layout
 
 ```
-docker-compose.yml      # 9 services default (+1 with --profile hu); GB10 reference profile
-patch-config.mjs        # 14-step idempotent openclaw.json patcher (init container)
+docker-compose.yml      # 9 services default (+1 with --profile hu, +1 with --profile browser); GB10 reference profile
+patch-config.mjs        # 15-step idempotent openclaw.json patcher (init container)
 bootstrap.sh            # First-time setup: secrets, .env, host dirs (non-destructive)
+bootstrap-browser-login.sh  # 1x OAuth onboarding helper for openclaw-browser (noVNC)
 .env.example            # Tunables, well-commented
 templates/              # vLLM tool-calling chat template (gemma4)
 searxng/settings/       # SearxNG override settings (privacy posture)
 openclaw-tts-en/        # English TTS service (Kokoro 82M, Apache 2.0) — default
 openclaw-tts-router/    # OpenAI-compat /v1/audio/speech router (passthrough + ffmpeg)
 openclaw-tts-f5hun/     # OPT-IN Hungarian TTS (F5-TTS, CC-BY-NC weights) — profile=hu
-openclaw-stt-whisper/     # Self-built CUDA 13 image (Blackwell compat) — FastAPI
-                          # around faster-whisper large-v3, ~150 LOC wrapper
+openclaw-stt-whisper/   # Self-built CUDA 13 image (Blackwell compat) — FastAPI
+                        # around faster-whisper large-v3, ~150 LOC wrapper
+openclaw-browser/       # OPT-IN browser automation — Playwright Chromium over CDP,
+                        # one warm Chromium per profile, port-per-profile routing,
+                        # noVNC bridge for 1x OAuth onboarding — profile=browser
 docs/
   ARCHITECTURE.md       # Service-by-service design rationale
   CUSTOMIZATION.md      # Swap models, retune for your hardware, remote backends
   TROUBLESHOOTING.md    # Common failure modes and fixes
   reference/            # Deeper reference: credential layout, patcher internals,
-                        # LLM/TTS research, reusable Docker patterns
+                        # LLM/TTS research, browser-automation design, reusable
+                        # Docker patterns
 SETUP.md                # End-user first-boot walkthrough
 README.md               # Audience-facing pitch + quickstart
 ```
@@ -258,6 +263,20 @@ The shared HF cache volume name is `${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf
 
 The OpenClaw config schema requires trailing slashes on `models.providers.vllm.baseUrl` and `agents.defaults.memorySearch.remote.baseUrl`. The vLLM OpenAI client (used by the gateway) wants `OPENAI_BASE_URL` *without* a trailing slash. The repo handles this asymmetry: the patcher always appends `/v1/` to `LLM_BASE_URL` / `EMBED_BASE_URL`, while compose passes `OPENAI_BASE_URL` straight through. If a user reports "404 Not Found from gateway → vLLM," check whether they accidentally added a trailing slash to `OPENAI_BASE_URL`.
 
+### Browser automation: CDP-attach, port-per-profile, query-string token
+
+`openclaw-browser` is the opt-in `--profile browser` service that OpenClaw's built-in `browser` tool attaches to over Chrome DevTools Protocol. Three implementation details worth internalizing:
+
+1. **CDP-attach beats MCP and bespoke HTTP adapters** — OpenClaw has no MCP slot, and re-implementing navigate/click/fill/extract via a custom HTTP tool would duplicate the gateway's built-in surface. CDP-attach via `browser.profiles.<name>.cdpUrl` lets us own only the supervisor + login helper + markdown extractor (~600 lines). Full rationale in `docs/reference/browser-automation.md`.
+
+2. **Port-per-profile, NOT `?profile=<name>` routing** — OpenClaw issues #4841 / #9723 / #11926 confirm the gateway does NOT pass cdpUrl query params through to Playwright's `connectOverCDP`. So we run one Chromium per profile on a dedicated port (default = `BROWSER_PORT_BASE` 9222, named profiles 9223-9241 in `BROWSER_PROFILE_NAMES` order). Patcher step 15 enumerates the mapping. Don't add cleverness about query-param routing later — it's a known dead end.
+
+3. **Query-string token in cdpUrl is the only auth surface** — OpenClaw's cdpUrl config field accepts `?token=<...>` or HTTP Basic only, not Authorization headers. Mitigations: loopback host bind (`BROWSER_BIND` default `127.0.0.1`), `rotate-secrets.sh --all` covers `BROWSER_API_TOKEN`. The FastAPI management API on port 9220 *does* use Bearer headers; the limitation is purely the CDP attach path. Document any LAN exposure of CDP ports loudly — an unauth'd remote-debugging-port has been the root of multiple Chromium credential-theft CVEs.
+
+### WebAuthn / passkeys do NOT work over the noVNC login helper
+
+The W3C WebAuthn spec is origin-bound. In a noVNC session, the operator's browser is on `http://127.0.0.1:5901` (or via SSH tunnel) but the remote Chromium runs at its own origin. Platform authenticators (Apple Keychain, Windows Hello, Google Password Manager) are bound to the operator's device + origin and cannot reach the remote Chromium's origin. USB hardware passkeys (YubiKey) are not pass-through to the container either. **Document clearly in any onboarding-related guidance: password + TOTP / SMS OTP / magic links work; passkeys don't.** Services that are passkey-only (some Google Workspace SSO) cannot be onboarded via the browser path — use the service's API token / PAT / service account instead.
+
 ## Verification recipes (copy-paste ready)
 
 These cover the cases that have actually broken in practice. When making non-trivial changes, run the relevant ones before declaring done.
@@ -267,6 +286,8 @@ These cover the cases that have actually broken in practice. When making non-tri
 node --check patch-config.mjs
 docker compose --env-file .env config --services                # lists 9 default services
 docker compose --env-file .env --profile hu config --services   # 10 with HU opt-in active
+docker compose --env-file .env --profile browser config --services  # 10 with browser opt-in
+docker compose --env-file .env --profile hu --profile browser config --services  # 11 (both)
 
 # 2. End-to-end on a test host (after `docker compose up -d` and onboarding)
 # CONTAINER_NAME_PREFIX (default `dgx-`) already includes the trailing dash —

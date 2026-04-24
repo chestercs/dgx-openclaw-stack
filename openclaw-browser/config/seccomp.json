@@ -1,0 +1,5 @@
+{
+  "_comment": "Placeholder. The Playwright project ships an upstream-recommended seccomp profile that allows the Chromium-specific syscalls Docker's default profile blocks (most notably user_faultfd, used by Chromium's memory subsystem). Pull the current version from https://raw.githubusercontent.com/microsoft/playwright/main/utils/docker/seccomp_profile.json into this file before the first production build. The compose service references this path via security_opt: seccomp=./openclaw-browser/config/seccomp.json — when this placeholder is in place Docker silently falls back to the default profile, which works for most flows but can SIGKILL Chromium on certain page memory patterns. Phase 2 task: pull the upstream profile and ship it directly here so behavior is reproducible across hosts.",
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "syscalls": []
+}
