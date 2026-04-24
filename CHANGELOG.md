@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Env-pinnable OpenClaw image tag + upgrade runbook.** All three
+  `openclaw-{config-init,gateway,cli}` services now resolve the image via
+  `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest}`, so operators can
+  pin a specific digest or release tag for reproducible deploys and roll
+  back cleanly when a new upstream release regresses. Default `latest`
+  preserves the previous behaviour. `docs/CUSTOMIZATION.md` adds an
+  "Upgrading the OpenClaw gateway" section covering pre-flight digest
+  recording, config + state tarball backup, patcher-log verification,
+  post-upgrade smoke tests (healthz, `memory status --deep`, agent turn,
+  `channels list`), and rollback via env-var pin or tarball restore.
+- **Discord voice-controlled agent: scaffolding + setup runbook.** New
+  opt-in plumbing (`DISCORD_BOT_TOKEN`, `DISCORD_AGENT_NAME`,
+  `DISCORD_AUTOJOIN_GUILD_ID`, `DISCORD_AUTOJOIN_VOICE_CHANNEL_ID` in
+  `.env.example`; env passthrough on both `openclaw-config-init` and
+  `openclaw-cli` so setup commands can reference the token without
+  re-entry) for joining an OpenClaw-controlled bot to a Discord voice
+  channel and driving an agent by voice — speech-in via the bundled
+  Whisper, plan + execute via Gemma 4 with cautious exec-policy,
+  speech-out via the bundled Kokoro/F5-TTS router. Workspace is
+  deliberately isolated at `~/.openclaw/workspace-discord/` (separate from
+  the operator's primary workspace) so anyone with access to the bound
+  voice channel cannot reach personal memory or files. Full runbook in
+  `docs/CUSTOMIZATION.md` → "Voice-controlled agent over Discord";
+  deeper schema + isolation + threat-model notes in
+  `docs/reference/discord-voice-agent.md`. No patcher step yet —
+  `openclaw channels add` remains the canonical write path while the
+  `channels.discord.*` leaf schema stabilizes.
+
 ## [0.5.0] - 2026-04-24
 
 Release rolling up the Speech-to-Text stack. A new OpenAI-compatible
