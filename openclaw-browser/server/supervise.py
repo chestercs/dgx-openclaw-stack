@@ -23,6 +23,7 @@ inherit the upstream-pinned Chromium version from the base image.
 """
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import shutil
@@ -47,22 +48,35 @@ _chromium_executable: Optional[str] = None
 
 
 def _find_chromium() -> str:
-    """Discover the Chromium binary path via the Playwright Python API. Cached
-    after first call. Failing to import Playwright is a startup-blocking
-    error — we fall through to the user with an actionable message."""
+    """Discover the Chromium binary path inside the Playwright base image.
+
+    The mcr.microsoft.com/playwright/python image installs Chromium at
+    /ms-playwright/chromium-<rev>/chrome-linux/chrome at build time. We
+    glob the path so we don't pin the revision number — when the base
+    image bumps Playwright + Chromium, this still resolves to the new
+    binary. Cached after first call.
+
+    We deliberately do NOT call `playwright.sync_api.sync_playwright()`
+    here: this function runs from FastAPI's startup hook, which is
+    inside the asyncio loop, and Playwright's sync API refuses to start
+    in that context (raises "It looks like you are using Playwright Sync
+    API inside the asyncio loop"). We only need the binary path; the
+    glob delivers it without touching Playwright's process model.
+    """
     global _chromium_executable
     if _chromium_executable:
         return _chromium_executable
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        path = p.chromium.executable_path
-    if not path or not Path(path).exists():
+    candidates = sorted(glob.glob("/ms-playwright/chromium-*/chrome-linux/chrome"))
+    if not candidates:
         raise RuntimeError(
-            f"Playwright reported Chromium at {path!r} but the file is missing. "
-            "The container's Playwright + Chromium versions are out of sync — "
-            "rebuild with `docker compose --profile browser build --no-cache "
-            "openclaw-browser`."
+            "No Chromium binary found under /ms-playwright/. The Playwright "
+            "base image should have installed it during build. Rebuild with "
+            "`docker compose --profile browser build --no-cache openclaw-browser` "
+            "and watch for `playwright install chromium` failing."
         )
+    path = candidates[-1]
+    if not Path(path).exists():
+        raise RuntimeError(f"Chromium binary at {path!r} is listed by glob but missing on disk")
     _chromium_executable = path
     log.info("chromium binary path: %s", path)
     return path
