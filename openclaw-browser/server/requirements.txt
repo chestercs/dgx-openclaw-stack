@@ -5,10 +5,12 @@ fastapi>=0.115,<0.116
 uvicorn[standard]>=0.32,<0.33
 httpx>=0.27,<0.28
 websockets>=13,<14
-# Playwright pinned to v1.58.2 because that's the multiarch image we build FROM.
-# Mismatched Python-side and image-side Playwright versions are a known foot-gun
-# (browser-binary path differences); keep them locked together.
-playwright==1.58.2
+# Playwright pinned to v1.58.0 because that's the multiarch image we build FROM
+# (mcr.microsoft.com/playwright/python:v1.58.0-noble is the latest stable on
+# Microsoft's registry as of v0.7.0). Mismatched Python-side and image-side
+# Playwright versions are a known foot-gun (browser-binary path differences);
+# keep them locked together.
+playwright==1.58.0
 # Markdown extraction. trafilatura cascades to readability-lxml internally for
 # pages where its primary algorithm scores low — we ship both so the cascade
 # works without an offline fallback.

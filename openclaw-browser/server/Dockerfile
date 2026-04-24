@@ -22,7 +22,7 @@
 # rarely (only when bumping Playwright or Chromium); cache invalidation
 # storms aren't the threat model. Reproducibility (same versions on
 # every fresh build) is.
-FROM mcr.microsoft.com/playwright/python:v1.58.2-noble
+FROM mcr.microsoft.com/playwright/python:v1.58.0-noble
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
