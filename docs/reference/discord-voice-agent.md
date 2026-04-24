@@ -34,34 +34,31 @@ Every stage is a pre-existing service in this stack. The Discord integration its
 
 ## Schema: `channels.discord.*`
 
-Written by `openclaw channels add --channel discord --token <token>` and tuned via `openclaw channels configure`. Observed on OpenClaw ≥ 2026.4.15:
+Written by `openclaw channels add --channel discord --bot-token <token>` and tuned via subsequent `channels add` re-runs (treated as upsert). Probe the exact shape on your live gateway with `docker exec openclaw-cli openclaw channels capabilities --channel discord --json`. Confirmed on OpenClaw 2026.4.22:
 
 ```json5
 {
   "channels": {
     "discord": {
       "enabled": true,
-      "auth": {
-        "token": "<bot-token>"         // store reads through gateway.authTokenStore
+      // Bot token lives in the gateway credential store, NOT in openclaw.json.
+      // `channels add --bot-token <token>` plumbs it to the right place.
+      "accounts": {
+        "<account-id>": { /* per-account overrides of the top-level voice block */ }
       },
       "voice": {
-        "enabled": true,                // default true when the discord channel is added
-        "daveEncryption": true,         // Discord DAVE E2E voice protocol
-        "decryptionFailureTolerance": 10,
+        "enabled": true,                      // default: true once the account is registered
+        "daveEncryption": true,               // Discord DAVE end-to-end voice protocol
+        "decryptionFailureTolerance": 24,     // consecutive decrypt failures before session recovery
         "autoJoin": [
-          { "guild": "<guild-snowflake>", "channel": "<voice-channel-snowflake>" }
+          { "guildId": "<snowflake>", "channelId": "<voice-channel-snowflake>" }
         ],
-        "vad": {
-          "enabled": true,
-          "silenceTimeoutMs": 800,      // end-of-utterance threshold
-          "interruptOnSpeech": false
-        },
         "tts": {
-          // Optional override; defaults to the gateway-level messages.tts wiring
-          // (patcher step 11). Setting voiceId here pins a specific voice for
-          // this channel — useful if the operator wants Hungarian in one guild
-          // and English in another.
-          "voiceId": "af_heart"
+          // Optional override; if omitted, the voice surface uses the gateway-level
+          // messages.tts wiring (patcher step 11). Same enum shape as top-level
+          // messages.tts: { enabled, auto (off|always|inbound|tagged), mode (final|all),
+          // provider, summaryModel, modelOverrides, providers }. Set voiceId here to
+          // pin a specific voice — e.g. Hungarian in one guild and English in another.
         }
       }
     }
@@ -69,12 +66,14 @@ Written by `openclaw channels add --channel discord --token <token>` and tuned v
 }
 ```
 
+Gotcha on the `autoJoin[]` item keys: they're `guildId` / `channelId` (camelCase, `Id`-suffixed), not `guild` / `channel`. Discord snowflakes are 18-19 digit numeric strings — copy them via Discord Developer Mode → right-click → Copy ID.
+
 **Why not write this from `patch-config.mjs`?** Two reasons:
 
-1. The token is secret-grade and lives in OpenClaw's credential store (`gateway.authTokenStore`), not the plaintext config file. `openclaw channels add` is the only supported path that plumbs the secret through the right store. Writing it to `openclaw.json` directly would leak it into log scrapes and backups.
-2. The exact leaf field names vary slightly between minor OpenClaw releases (we've seen `auth.token` and `bot.token` in the wild). Letting the CLI do the write decouples us from schema drift.
+1. The token is secret-grade and lives in OpenClaw's credential store, not the plaintext config file. `openclaw channels add --bot-token <token>` is the only supported path that plumbs the secret through the right store. Writing it to `openclaw.json` directly would leak it into log scrapes and backups.
+2. The channel block under `channels.discord.accounts.<id>.*` is keyed on an account id the CLI assigns — the patcher would have to enumerate account ids from a dir it doesn't otherwise touch.
 
-If the schema stabilizes across a couple of OpenClaw minor releases, a future patcher step 15 could take over the re-upsert of non-secret fields (voice.enabled, voice.autoJoin, vad.*) while leaving auth.token to the CLI.
+A future patcher step 15 could still take over re-upsert of the non-secret voice fields (`voice.enabled`, `voice.autoJoin`, `voice.decryptionFailureTolerance`) at the top-level `channels.discord.voice.*` namespace, leaving account-level overrides and credentials to the CLI. Not worth doing until someone's running multiple Discord accounts on one gateway.
 
 ## Isolation design
 
@@ -112,7 +111,7 @@ Discord rolled out DAVE (Direct Audio Voice Encryption, an E2EE protocol for voi
 - Our bot is a participant in the DAVE key exchange — it holds the shared group key, so it can decrypt what it's there to listen to.
 - **DAVE does NOT protect against our bot**. Anyone with access to the bot's process can read plaintext. DAVE protects against Discord itself (and against on-path network attackers who aren't in the DAVE group).
 
-`voice.decryptionFailureTolerance: 10` means the bot will tolerate up to 10 consecutive failed DAVE frame decryptions before dropping the voice session — usually a network hiccup, occasionally an out-of-band key rotation race. Raising it papers over legitimate issues; lowering it makes transient LAN jitter disconnect the bot. 10 is a sensible default.
+`voice.decryptionFailureTolerance: 24` is the default — the bot tolerates up to 24 consecutive failed DAVE frame decryptions before attempting session recovery. Usually a network hiccup, occasionally an out-of-band key rotation race. The default comes from `@discordjs/voice`; lowering it makes transient LAN jitter disconnect the bot, raising it papers over legitimate issues. Leave it at 24 unless you have a specific reason.
 
 ## Operational gotchas we've hit or expect
 

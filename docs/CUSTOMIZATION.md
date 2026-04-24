@@ -392,11 +392,12 @@ Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by
 PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
 PROJ=${PROJ:-dgx-}
 
-# Read-only probe: does this gateway know the discord channel type?
-docker exec ${PROJ}openclaw-cli openclaw channels capabilities discord
+# Read-only probe: inspect the Discord plugin's config schema.
+docker exec ${PROJ}openclaw-cli openclaw channels capabilities --channel discord --json \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); v=d['channels'][0]['plugin']['configSchema']['schema']['properties']['voice']['properties']; print(list(v.keys()))"
 ```
 
-Expected output includes `voice.receive`, `voice.send`, `voice.autoJoin`, `slash-commands`. If the subcommand returns `unknown channel type`, your gateway image is too old — upgrade via the runbook below and retry.
+Expected output: `['enabled', 'autoJoin', 'daveEncryption', 'decryptionFailureTolerance', 'tts']`. If the `voice` key is missing, your gateway image is too old — upgrade via the runbook below and retry.
 
 ### 3. Prepare the isolated workspace
 
@@ -438,27 +439,34 @@ Then run the CLI sequence — the env var is already exported inside the CLI con
 ```bash
 docker exec ${PROJ}openclaw-cli sh -c '
   set -e
-  # a. Register the Discord channel with the gateway.
-  openclaw channels add --channel discord --token "$DISCORD_BOT_TOKEN"
+  # a. Register the Discord channel + bot token with the gateway. The
+  #    token lands in the credential store, not in openclaw.json.
+  openclaw channels add --channel discord --bot-token "$DISCORD_BOT_TOKEN"
 
-  # b. Create an isolated agent whose workspace is the new subtree.
+  # b. Create an isolated agent bound to the Discord channel at creation.
+  #    --non-interactive is required when --workspace is passed.
   openclaw agents add "$DISCORD_AGENT_NAME" \
     --workspace /home/node/.openclaw/workspace-discord \
-    --system-prompt "You are a voice assistant operating inside a shared Discord voice channel. You have no access to the operator'\''s personal workspace or memory. Keep replies concise for speech playback."
+    --bind discord \
+    --non-interactive
 
-  # c. Route Discord channel traffic to that agent.
-  openclaw agents bind --agent "$DISCORD_AGENT_NAME" --channel discord
-
-  # d. Tighten exec-policy: approval-gated destructive tools.
+  # c. Tighten exec-policy on that agent: approval-gated destructive tools.
   openclaw exec-policy preset --agent "$DISCORD_AGENT_NAME" cautious
 
-  # e. Sanity check.
+  # d. Sanity check.
   openclaw channels list
   openclaw agents list
+  openclaw agents bindings --agent "$DISCORD_AGENT_NAME"
 '
 ```
 
-If your OpenClaw version uses slightly different flag names (e.g. `--channel-type` instead of `--channel`), run `openclaw <subcommand> --help` inside the CLI — the shape is stable across releases but flag aliases change.
+Verified flag shapes on OpenClaw 2026.4.22:
+
+- `channels add --channel discord --bot-token <token>` — `--token <token>` also works as a generic alias; `--bot-token` is preferred because it matches Discord's credential vocabulary.
+- `agents add <name> --workspace <dir> --bind <channel[:accountId]> --non-interactive` — the isolated agent inherits the default LLM and memory settings; override per-agent via `--model` / the agent's own `openclaw.json` entry if you want different defaults.
+- `exec-policy preset --agent <id> {yolo,cautious,deny-all}` — re-runnable, idempotent. `cautious` is the right preset for a channel that could accept input from anyone in your guild.
+
+Run `openclaw <subcommand> --help` inside the CLI container if your gateway differs.
 
 ### 5. Join a voice channel and test
 
@@ -470,16 +478,34 @@ If your OpenClaw version uses slightly different flag names (e.g. `--channel-typ
 
 ### Optional: auto-join a specific channel on startup
 
-If you always want the bot in the same voice channel without typing `/vc join` after every gateway restart:
+If you always want the bot in the same voice channel without typing `/vc join` after every gateway restart, write the `channels.discord.voice.autoJoin[]` field directly into `openclaw.json` (the CLI does not yet expose a dedicated subcommand for this field). Schema — `autoJoin[].guildId` + `autoJoin[].channelId`, both 18-19 digit numeric Discord snowflakes:
 
-1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode).
-2. Right-click the guild → Copy Server ID. Right-click the voice channel → Copy Channel ID.
-3. Set both in `.env`:
-    ```bash
-    DISCORD_AUTOJOIN_GUILD_ID=123456789012345678
-    DISCORD_AUTOJOIN_VOICE_CHANNEL_ID=123456789012345679
-    ```
-4. Run `openclaw channels configure discord voice.autoJoin` with the guild+channel pair — see `openclaw channels configure --help` for the exact flag form in your version.
+```bash
+# 1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode).
+# 2. Right-click the guild → Copy Server ID. Right-click the voice channel → Copy Channel ID.
+# 3. Set both in .env for reference / future patcher use:
+DISCORD_AUTOJOIN_GUILD_ID=123456789012345678
+DISCORD_AUTOJOIN_VOICE_CHANNEL_ID=123456789012345679
+
+# 4. One-shot JSON patch into openclaw.json (run on the host, NOT inside the container):
+CONFIG="$(grep ^OPENCLAW_CONFIG_DIR .env | cut -d= -f2)/openclaw.json"
+docker compose exec openclaw-config-init node -e "
+  const fs = require('fs');
+  const path = '/home/node/.openclaw/openclaw.json';
+  const c = JSON.parse(fs.readFileSync(path, 'utf8'));
+  c.channels = c.channels || {};
+  c.channels.discord = c.channels.discord || {};
+  c.channels.discord.voice = c.channels.discord.voice || {};
+  c.channels.discord.voice.autoJoin = [{ guildId: process.env.G, channelId: process.env.C }];
+  fs.writeFileSync(path, JSON.stringify(c, null, 2) + '\n');
+  console.log('autoJoin patched.');
+"
+
+# 5. Force-recreate the gateway so the new autoJoin list takes effect:
+docker compose up -d --force-recreate openclaw-gateway openclaw-cli
+```
+
+The one-shot patch is deliberately a direct JSON write rather than a `patch-config.mjs` step because the field is account-keyed in some gateway builds (`channels.discord.accounts.<id>.voice.autoJoin`) and top-level in others; the patcher can't safely auto-pick without probing the live account id. Re-running `openclaw channels add` overwrites the block, so the manual patch has to come last.
 
 ### Rotating the bot token
 
@@ -488,7 +514,10 @@ If the token leaks (anyone with it can impersonate your bot in any guild it's in
 1. Discord Developer Portal → Bot → **Reset Token**. The old token is invalidated immediately.
 2. Update `DISCORD_BOT_TOKEN` in `.env`.
 3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`.
-4. `docker exec ${PROJ}openclaw-cli openclaw channels update discord --token "$DISCORD_BOT_TOKEN"` (or re-run `channels add` if the update subcommand isn't present — OpenClaw treats re-add as upsert).
+4. Re-run `channels add` — it upserts the credential store:
+    ```bash
+    docker exec ${PROJ}openclaw-cli openclaw channels add --channel discord --bot-token "$DISCORD_BOT_TOKEN"
+    ```
 
 ### Known limitations
 
