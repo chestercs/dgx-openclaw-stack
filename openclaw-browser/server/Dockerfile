@@ -76,7 +76,7 @@ RUN pip install --break-system-packages --ignore-installed -r /app/requirements.
         pw.stop()"
 
 # App source
-COPY app.py supervise.py extract.py blocklist.py ratelimit.py /app/
+COPY app.py supervise.py extract.py blocklist.py ratelimit.py cdp_proxy.py /app/
 
 # Storage + diagnostics dirs are bind-mounted at runtime; create the
 # mountpoints so the bind survives even when the volume is empty.

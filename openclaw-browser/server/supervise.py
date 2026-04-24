@@ -247,21 +247,20 @@ class Supervisor:
             if not self._wait_for_port(internal_port, timeout=10.0):
                 log.error("Chromium profile=%s didn't open internal port %s", name, internal_port)
 
-            # Spawn the TCP forwarder. socat fork + reuseaddr lets multiple
-            # parallel attaches share the listener cleanly.
-            socat_args = [
-                "socat",
-                f"TCP-LISTEN:{port},fork,reuseaddr,bind=0.0.0.0",
-                f"TCP:127.0.0.1:{internal_port}",
-            ]
-            log.info("launching socat profile=%s 0.0.0.0:%s -> 127.0.0.1:%s", name, port, internal_port)
+            # Spawn the per-profile HTTP+WS reverse proxy. socat would be
+            # enough for the TCP layer but Chrome >=136 also validates the
+            # HTTP Host header (DNS-rebinding defense) — the proxy rewrites
+            # Host to `localhost:<internal>` before forwarding.
+            proxy_args = ["python", "-m", "cdp_proxy", str(port), str(internal_port)]
+            log.info("launching cdp_proxy profile=%s 0.0.0.0:%s -> 127.0.0.1:%s", name, port, internal_port)
             socat_proc = subprocess.Popen(
-                socat_args,
+                proxy_args,
+                cwd="/app",
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
             )
-            profile.socat_process = socat_proc
+            profile.socat_process = socat_proc  # Field name kept for backwards-compat with /v1/sessions JSON
 
             # Best-effort wait for the external port to open. socat usually
             # binds in under 100 ms, but give it a generous 3 s window.
@@ -301,7 +300,7 @@ class Supervisor:
 
         socat_proc = profile.socat_process
         if socat_proc and socat_proc.poll() is None:
-            log.info("stopping socat profile=%s pid=%s", profile.name, socat_proc.pid)
+            log.info("stopping cdp_proxy profile=%s pid=%s", profile.name, socat_proc.pid)
             try:
                 socat_proc.terminate()
                 socat_proc.wait(timeout=5)
