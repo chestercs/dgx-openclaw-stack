@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **STT default model — Trendency/whisper-large-v3-hu (Apache-2.0)**. After
+  cross-benchmarking on GB10 (2026-04-24), the community Hungarian fine-tune
+  measurably outperformed the vanilla Whisper large-v3 baseline on both
+  Hungarian use cases we stress-tested:
+  - **Clean HU (LibriVox János Vitéz, 3-min slice)**: 7-8 fewer
+    Whisper-typical mis-hearings per chapter — `"Szerelem tüze ég"` vs
+    vanilla's `"Szerelem tüzejék"`, `"csillámló habjára"` vs `"csillám
+    lóhabjára"`, `"térdecskéje"` vs `"térdeskéje"`, `"patak habjain"` vs
+    `"patakhapjaim"`, proper ékezet on `"kökény"` / `"Dúlt fúlt"`.
+  - **Noisy HU (same slice + telephone bandpass + pink noise)**: Trendency
+    kept the 36-segment structure steady (vanilla fragmented to 61
+    segments), finished faster (22.5 s vs 27.3 s wall), and accumulated
+    only 1-2 new mis-hearings under the degradation.
+  - **EN (JFK 11-sec reference clip)**: identical output to vanilla
+    (`"And so, my fellow Americans, ask not what your country can do for
+    you, ask what you can do for your country."`) — no English-side
+    regression at smoke scale.
+  - **Runtime characteristics unchanged**: ~3 GB VRAM at float16,
+    ~0.11-0.12× real-time factor warm, same OpenAI-compat
+    `/v1/audio/transcriptions` interface, same `tools.media.audio`
+    wiring. One observed tulajdonnév-regression: `"Majlinger Diána"` →
+    `"Meilinger Diána"` (Hungarian-only fine-tunes lose some proper-noun
+    specificity). Trade off deemed worth it for the general quality
+    gain.
+
+  **First-boot cost**: the Trendency repo ships safetensors (no CT2
+  weights), so the first transcribe on a fresh volume runs
+  `ct2-transformers-converter --quantization float16` in-process (~3 min
+  including the ~8 GB HF download). The converted CT2 artefacts are
+  cached in the `stt-whisper-hf-cache` volume; subsequent boots load
+  instantly.
+
+  **How to swap back to vanilla**: uncomment `STT_WHISPER_MODEL=Systran/faster-whisper-large-v3`
+  in `.env`. The vanilla CT2 weights are Systran-hosted and load without
+  a conversion step, so flipping between the two is instant once both
+  have been booted at least once.
+
+### Removed
+- **benmajor27/whisper-large-v3-hu_full as a recommended swap option.**
+  The community fine-tune was documented in the STT stack reference as a
+  possible Hungarian swap, but 2026-04-24 validation on GB10 proved it
+  unusable for real-world audio: the model collapses into compression-ratio
+  loops on out-of-distribution input (LibriVox Petőfi, noisy synthetic
+  phone-grade), emitting `"Tüz. Tüz. Tüz."`, long runs of repeated dashes
+  and Unicode replacement characters, and random English tokens where
+  Hungarian should go. The 8.86% CV17 WER from the model card is
+  evaluation-overfit (trained on the full CV17 set, evaluated on the
+  same). Removed from `.env.example` examples, the model catalog in
+  `docs/reference/stt-stack.md`, and the `openclaw-stt-whisper/README.md`.
+  The runtime auto-conversion path still works for any non-CT2 HF repo id
+  the operator puts in `STT_WHISPER_MODEL` — the removal is purely
+  documentation / recommendation.
+
+
 ### Added
 - **STT stack — Whisper large-v3 with a self-built CUDA 13 image.** New
   `openclaw-stt-whisper` service built from `./openclaw-stt-whisper/server/`

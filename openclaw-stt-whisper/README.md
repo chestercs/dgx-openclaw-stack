@@ -53,7 +53,7 @@ apply changes):
 | Variable | Default | Purpose |
 |---|---|---|
 | `STT_API_TOKEN` | _(empty)_ | Bearer token; when set, every `/v1/*` request must carry `Authorization: Bearer <token>`. `/health` always bypasses auth for Docker healthchecks. |
-| `WHISPER_MODEL` | `Systran/faster-whisper-large-v3` | HuggingFace model id. Swap to `deepdml/faster-whisper-large-v3-turbo-ct2` for 8× speed / half VRAM; Hungarian WER on turbo is unvalidated. |
+| `WHISPER_MODEL` | `Trendency/whisper-large-v3-hu` | HuggingFace model id. Default is the Hungarian Whisper fine-tune (Apache-2.0, ~11% CV WER, validated EN parity on the JFK 11-sec clip). Swap to `Systran/faster-whisper-large-v3` for the MIT multilingual baseline, or `deepdml/faster-whisper-large-v3-turbo-ct2` for 8× speed / half VRAM (HU WER on turbo unvalidated). Non-CT2 HF repos auto-convert to CT2 float16 on first boot, cached thereafter. |
 | `WHISPER_DEVICE` | `cuda` | `cuda` or `cpu`. CPU is ~50× slower but a workable fallback on GPU-less hosts. |
 | `WHISPER_COMPUTE_TYPE` | `float16` | One of `float16`, `bfloat16`, `int8_float16`, `int8_bfloat16`, `int8`, `float32`. See fallback ladder below. |
 | `WHISPER_LANGUAGE` | _(empty → autodetect)_ | ISO-639-1 code (e.g. `hu`, `en`). Leave empty so Whisper detects per request. |

@@ -600,7 +600,16 @@ services:
       # <STT_API_TOKEN>`. /health is always unauth so Docker healthchecks
       # and bridge-DNS probes keep working.
       STT_API_TOKEN: ${STT_API_TOKEN:-}
-      WHISPER_MODEL: ${STT_WHISPER_MODEL:-Systran/faster-whisper-large-v3}
+      # Default points at the Hungarian fine-tune (Apache-2.0, ~11% CV WER,
+      # more robust on noisy / phone-grade audio than the vanilla multilingual
+      # large-v3 per 2026-04-24 GB10 validation). English recognition is
+      # unchanged vs vanilla on the JFK 11-sec reference clip. Switch to
+      # `Systran/faster-whisper-large-v3` via STT_WHISPER_MODEL override in
+      # .env if you want the pure multilingual baseline or prefer a slightly
+      # lower Hungarian word error rate for multilingual workloads.
+      # First-boot HF download + CT2 conversion for Trendency is ~3 min,
+      # cached in the stt-whisper-hf-cache volume afterwards.
+      WHISPER_MODEL: ${STT_WHISPER_MODEL:-Trendency/whisper-large-v3-hu}
       WHISPER_COMPUTE_TYPE: ${STT_WHISPER_COMPUTE_TYPE:-float16}
       WHISPER_DEVICE: ${STT_WHISPER_DEVICE:-cuda}
       # Optional language pin. Empty = Whisper autodetects per request (default).
@@ -725,7 +734,7 @@ services:
       # empty to opt out — the patcher skips step 14 cleanly.
       STT_API_TOKEN: ${STT_API_TOKEN:-}
       OPENCLAW_STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
-      OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-Systran/faster-whisper-large-v3}
+      OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-Trendency/whisper-large-v3-hu}
       OPENCLAW_STT_LANGUAGE: ${OPENCLAW_STT_LANGUAGE:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw

@@ -8,7 +8,7 @@ One service in the unified `llm/dgx-openclaw-stack/` compose:
 
 | Service | Model | Port | VRAM | License | Profile |
 |---|---|---|---|---|---|
-| `openclaw-stt-whisper` | `Systran/faster-whisper-large-v3` | 8093 | ~3 GB (float16) | MIT | default |
+| `openclaw-stt-whisper` | `Trendency/whisper-large-v3-hu` (default) / swap to `Systran/faster-whisper-large-v3` for the pure multilingual baseline | 8093 | ~3 GB (float16) | Apache-2.0 / MIT | default |
 
 Self-built from `./openclaw-stt-whisper/server/` on `nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04`. ~150 LOC FastAPI wrapper around [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) exposing OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, and `/health` endpoints.
 
@@ -93,11 +93,14 @@ OpenClaw has three speech-input paths; this service only backs two of them.
 
 | Env override | VRAM | Trade-off |
 |---|---|---|
-| `STT_WHISPER_MODEL=Systran/faster-whisper-large-v3` (default) | ~3 GB | Multilingual baseline. Validated FLEURS HU WER 14.1%. Balanced EN + HU. |
-| `STT_WHISPER_MODEL=benmajor27/whisper-large-v3-hu_full` | ~3 GB | Hungarian fine-tune (Apache-2.0). Published 8.86% CV17 WER is training-set-overfit; realistic FLEURS HU ~10-12%. English recognition may degrade. Auto-converts from HF transformers format to CT2 on first boot (~3 min), cached. |
-| `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu` | ~3 GB | Hungarian fine-tune (Apache-2.0). 11.26% CV19/20/21 WER with a cleaner train/eval split → more honest published number. Same first-boot auto-conversion flow. |
+| `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu` (default) | ~3 GB | Hungarian Whisper fine-tune (Apache-2.0). Published 11.26% CV19/20/21 WER with a clean train/eval split. 2026-04-24 GB10 validation: ~7-8 fewer mis-hearings per chapter than vanilla on LibriVox HU, holds up cleanly under telephone-bandpass + pink-noise degradation, and the JFK 11-sec EN reference clip transcribes identically to the vanilla baseline (no English-side regression at smoke scale). Auto-converts from HF transformers format to CT2 float16 on first boot (~3 min), cached in the stt-whisper-hf-cache volume thereafter. |
+| `STT_WHISPER_MODEL=Systran/faster-whisper-large-v3` | ~3 GB | Pure multilingual baseline. MIT-licensed, FLEURS HU WER 14.1%. Pick this if your workload is English-heavy, you need the broadest out-of-language robustness, or you want the tightest licence (MIT vs Apache-2.0). On noisy HU this model fragments segments more (61 vs 36 on the 3-min stress test) but keeps the Hungarian proper nouns slightly more reliably. |
 | `STT_WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2` | ~1.6 GB | 8× faster, ~equal EN WER. HU WER NOT independently published — run your own samples before flipping. |
 | `STT_WHISPER_COMPUTE_TYPE=int8_float16` | ~1.5 GB | 5-10% WER increase on any model. Safe VRAM fallback if the LLM + TTS squeeze the budget, or if a Blackwell sm_120 numerical issue appears. |
+
+Community Hungarian fine-tunes we evaluated and **rejected**:
+
+- **benmajor27/whisper-large-v3-hu_full** — published 8.86% CV17 WER looked promising, but 2026-04-24 validation showed it was trained on the full CV17 set and evaluated on CV17, so the published number is overfit. Out-of-distribution audio (LibriVox Petőfi, noisy synthetic phone-grade) causes the decoder to collapse into long compression-ratio loops (`"Tüz. Tüz. Tüz. ..."`, `"-‑-‑-‑-‑-‑"`, `"��������"`, random `"a the in the"` English tokens). Do not swap in this model.
 
 ### HuggingFace transformers → CT2 auto-conversion
 
