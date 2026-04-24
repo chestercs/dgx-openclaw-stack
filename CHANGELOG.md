@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-24
+
+Release hardens the self-hosted TTS pipeline against wheel drift and ships a
+beginner-friendly Discord bot setup walkthrough. Triggered by a real
+production regression where the 2026-04-22 cu130 torch wheels baked into
+`openclaw-tts-en` and `openclaw-tts-f5hun` shipped without Blackwell kernels:
+every synthesis request returned 500, OpenClaw's TTS provider chain fell
+through to Microsoft Edge TTS, and Hungarian voice requests came back with
+an English-accented Microsoft voice instead of the bundled F5-TTS. A
+`docker compose build --no-cache` on the two TTS services picks up the
+now-Blackwell-ready wheel; the new runtime guard ensures the same failure
+mode can't recur silently — it exits with an actionable rebuild command at
+startup if the wheel's `arch_list` can't cover the current GPU. The guard
+also handles PTX forward-compat correctly: GB10 reports `sm_121` while the
+current cu130 wheel's top kernel is `sm_120`, which JIT-compiles to sm_121
+fine; the health endpoint surfaces this as `gpu_compat: ok ptx-fwd (...)`
+so operators can distinguish an exact-match happy-path from a
+forward-compat one that will JIT on first call.
+
 ### Added
 - **TTS backend fail-fast GPU kernel guard.** `openclaw-tts-en/server/app.py`
   and `openclaw-tts-f5hun/server/app.py` now run `_verify_gpu_compat()` at
