@@ -6,3 +6,8 @@ faster-whisper>=1.2.0
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
+# transformers: required by `ct2-transformers-converter` when the operator
+# points STT_WHISPER_MODEL at a non-CT2 HuggingFace repo (e.g. a Hungarian
+# Whisper fine-tune) and the app converts it to CT2 float16 on first boot.
+# If you never swap models, this stays dormant.
+transformers>=4.45

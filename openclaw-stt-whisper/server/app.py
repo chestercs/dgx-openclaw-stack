@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import subprocess
 from typing import Any, Iterable
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -50,14 +51,69 @@ if not API_TOKEN:
 _model: WhisperModel | None = None
 
 
+# HF repo-ids that faster-whisper can load directly (they ship CT2 weights).
+# Anything else with a "/" in it is treated as a HuggingFace transformers
+# repo (safetensors), converted to CT2 on first boot, and cached.
+_CT2_REPO_PREFIXES = (
+    "Systran/",
+    "deepdml/",
+    "openai/",          # falls through to faster-whisper's HF-hub converter
+)
+
+
+def _resolve_model_path(model_id: str) -> str:
+    """If model_id is a local filesystem path, return as-is.
+    If it's a HF repo that already ships CT2 weights, return as-is.
+    Otherwise (a HF transformers-format repo, e.g. a community HU fine-tune),
+    run ct2-transformers-converter once, cache the CT2 output on the
+    HF cache volume, and return the local CT2 directory path.
+
+    The conversion is idempotent — subsequent boots find the cached output
+    and skip straight to WhisperModel loading.
+    """
+    if model_id.startswith(("/", "./")):
+        return model_id
+    if model_id.startswith(_CT2_REPO_PREFIXES):
+        return model_id
+
+    safe_name = model_id.replace("/", "--")
+    cache_root = os.environ.get("HF_HOME", "/root/.cache/huggingface")
+    converted_dir = os.path.join(cache_root, "ct2-converted", safe_name)
+    marker = os.path.join(converted_dir, "model.bin")
+
+    if os.path.exists(marker):
+        log.info("using cached CT2 conversion: %s -> %s", model_id, converted_dir)
+        return converted_dir
+
+    log.info(
+        "converting HuggingFace transformers model %s -> CT2 float16 at %s "
+        "(first boot only, ~2-5 min)",
+        model_id, converted_dir,
+    )
+    os.makedirs(os.path.dirname(converted_dir), exist_ok=True)
+    subprocess.run(
+        [
+            "ct2-transformers-converter",
+            "--model", model_id,
+            "--output_dir", converted_dir,
+            "--copy_files", "tokenizer.json", "preprocessor_config.json",
+            "--quantization", "float16",
+        ],
+        check=True,
+    )
+    log.info("conversion complete; CT2 artefacts cached at %s", converted_dir)
+    return converted_dir
+
+
 def get_model() -> WhisperModel:
     global _model
     if _model is None:
+        resolved = _resolve_model_path(MODEL_ID)
         log.info(
-            "loading faster-whisper: model=%s device=%s compute_type=%s",
-            MODEL_ID, DEVICE, COMPUTE_TYPE,
+            "loading faster-whisper: model=%s (resolved=%s) device=%s compute_type=%s",
+            MODEL_ID, resolved, DEVICE, COMPUTE_TYPE,
         )
-        _model = WhisperModel(MODEL_ID, device=DEVICE, compute_type=COMPUTE_TYPE)
+        _model = WhisperModel(resolved, device=DEVICE, compute_type=COMPUTE_TYPE)
         log.info("model loaded")
     return _model
 

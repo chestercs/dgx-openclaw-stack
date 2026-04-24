@@ -93,9 +93,17 @@ OpenClaw has three speech-input paths; this service only backs two of them.
 
 | Env override | VRAM | Trade-off |
 |---|---|---|
-| `STT_WHISPER_MODEL=Systran/faster-whisper-large-v3` (default) | ~3 GB | Best validated HU WER (14.1%). Use in doubt. |
+| `STT_WHISPER_MODEL=Systran/faster-whisper-large-v3` (default) | ~3 GB | Multilingual baseline. Validated FLEURS HU WER 14.1%. Balanced EN + HU. |
+| `STT_WHISPER_MODEL=benmajor27/whisper-large-v3-hu_full` | ~3 GB | Hungarian fine-tune (Apache-2.0). Published 8.86% CV17 WER is training-set-overfit; realistic FLEURS HU ~10-12%. English recognition may degrade. Auto-converts from HF transformers format to CT2 on first boot (~3 min), cached. |
+| `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu` | ~3 GB | Hungarian fine-tune (Apache-2.0). 11.26% CV19/20/21 WER with a cleaner train/eval split → more honest published number. Same first-boot auto-conversion flow. |
 | `STT_WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2` | ~1.6 GB | 8× faster, ~equal EN WER. HU WER NOT independently published — run your own samples before flipping. |
 | `STT_WHISPER_COMPUTE_TYPE=int8_float16` | ~1.5 GB | 5-10% WER increase on any model. Safe VRAM fallback if the LLM + TTS squeeze the budget, or if a Blackwell sm_120 numerical issue appears. |
+
+### HuggingFace transformers → CT2 auto-conversion
+
+When `STT_WHISPER_MODEL` points at a HuggingFace repo that does NOT ship CT2-format weights (e.g. most community Hungarian fine-tunes), the wrapper detects it on first boot and runs `ct2-transformers-converter --quantization float16` transparently. Cache lands in `/root/.cache/huggingface/ct2-converted/<safe-name>/` inside the `stt-whisper-hf-cache` volume. Subsequent boots skip the conversion and load straight into CT2.
+
+Any HF repo id starting with `Systran/`, `deepdml/`, or `openai/` is treated as already-CT2 and loaded without conversion. Local paths (starting with `/` or `./`) are passed through unchanged.
 
 ## VRAM budget on GB10
 
