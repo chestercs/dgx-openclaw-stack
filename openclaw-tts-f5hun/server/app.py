@@ -74,16 +74,44 @@ def _verify_gpu_compat() -> None:
     arch_list = torch.cuda.get_arch_list()
     cc_major, cc_minor = torch.cuda.get_device_capability(0)
     target = f"sm_{cc_major}{cc_minor}"
-    if target not in arch_list:
+    # PTX forward-compat: exact match is ideal (no JIT cost), but a lower arch
+    # in the wheel also works — CUDA driver JIT-compiles the embedded PTX to
+    # the current device at first kernel launch. Only fail if the current
+    # capability exceeds every arch the wheel ships (nothing to JIT from).
+    # Example: GB10 reports sm_121 but cu130 wheels currently ship sm_120 max
+    # — that's fine, sm_120 PTX → sm_121 JIT is standard forward-compat.
+    import re
+    def _sm_num(entry: str) -> int:
+        m = re.match(r"sm_(\d+)", entry)
+        return int(m.group(1)) if m else -1
+    target_num = cc_major * 10 + cc_minor
+    wheel_archs = sorted({_sm_num(a) for a in arch_list if a.startswith("sm_")} - {-1})
+    if target_num in wheel_archs:
+        _gpu_compat_status = f"ok exact ({target}; arch_list={arch_list})"
+    elif wheel_archs and max(wheel_archs) < target_num:
+        best = max(wheel_archs)
+        _gpu_compat_status = (
+            f"ok ptx-fwd ({target} via sm_{best} forward-compat JIT; "
+            f"arch_list={arch_list})"
+        )
+        log.warning(
+            "Running on PTX forward-compat: GPU is %s but wheel max kernel "
+            "is sm_%s. First kernel launch per op JIT-compiles PTX → expect "
+            "brief extra latency on cold calls. Rebuild with --no-cache once "
+            "a %s-native wheel lands upstream to remove the JIT.",
+            target, best, target,
+        )
+    else:
         _gpu_compat_status = f"missing-{target} (torch arch_list={arch_list})"
         raise RuntimeError(
-            f"F5_DEVICE=cuda but the installed torch wheel was built "
-            f"without {target} kernels (arch_list={arch_list}). Rebuild the "
-            f"image to pick up fresh cu130 wheels:\n"
+            f"F5_DEVICE=cuda but the installed torch wheel has no kernel "
+            f"compatible with {target} (arch_list={arch_list}). The GPU's "
+            f"compute capability is newer than everything the wheel ships, "
+            f"so PTX forward-compat can't help. Rebuild the image with a "
+            f"newer cu130 wheel:\n"
             f"    docker compose --profile hu build --no-cache openclaw-tts-f5hun\n"
             f"or set F5HUN_DEVICE=cpu to run on CPU (much slower but works)."
         )
-    _gpu_compat_status = f"ok ({target}; arch_list={arch_list})"
     log.info("GPU compat check: %s", _gpu_compat_status)
 
 
