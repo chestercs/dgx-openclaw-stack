@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-24
+
+Release rolling up the Speech-to-Text stack. A new OpenAI-compatible
+`openclaw-stt-whisper` service joins the default compose (loopback publish
+`127.0.0.1:8093`), wired into OpenClaw's `tools.media.audio` pipeline via a
+new idempotent patcher step 14 — voice-note upload in the Control UI chat,
+Discord voice channels, VoiceCall CLI, and Talk / Voicewake nodes all
+transcribe through it. Built from `./openclaw-stt-whisper/server/` on a
+CUDA 13 base (Blackwell-ready CT2 compiled from source) with a ~150 LOC
+FastAPI wrapper around `faster-whisper`. Default model: the Hungarian
+Whisper fine-tune `Trendency/whisper-large-v3-hu` (Apache-2.0) — measurably
+better on Hungarian at the same English accuracy per the included
+validation. Service count `8 → 9` default, patcher step count `13 → 14`,
+`rotate-secrets.sh` default set grows by `STT_API_TOKEN`. See the entries
+already documented under `[Unreleased]` above (this release absorbs them
+wholesale — no further changes).
+
 ### Changed
 - **STT default model — Trendency/whisper-large-v3-hu (Apache-2.0)**. After
   cross-benchmarking on GB10 (2026-04-24), the community Hungarian fine-tune
@@ -401,7 +418,9 @@ catch up with the two patcher steps added post-tag.
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.3.0...v0.4.0
