@@ -517,6 +517,11 @@ services:
       F5HUN_API_TOKEN: ${F5HUN_API_TOKEN:-}
       ROUTER_DEFAULT_VOICE: ${TTS_ROUTER_DEFAULT_VOICE:-af_heart}
       HU_AUTOROUTE_VOICE: ${TTS_HU_AUTOROUTE_VOICE:-default_hu}
+      # Prepend this many ms of leading silence to every TTS reply. F5-TTS has
+      # near-zero onset silence, which collides with Whisper's STT warm-up and
+      # drops the first phoneme (observed "Szia" -> "Zia"). 300 ms is empirically
+      # fine for both EN + HU. Set ROUTER_LEADING_SILENCE_MS=0 in .env to skip.
+      ROUTER_LEADING_SILENCE_MS: ${ROUTER_LEADING_SILENCE_MS:-300}
     depends_on:
       openclaw-tts-en:
         condition: service_healthy

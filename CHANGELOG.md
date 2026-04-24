@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-24
+
+Point release with two TTS-router polishes surfaced by the closed-loop
+benchmark (`scripts/bench_tts_stt_roundtrip.py`) — both in the router only,
+no backend or model changes.
+
+### Added
+- **Leading silence pad in the TTS router (`ROUTER_LEADING_SILENCE_MS`,
+  default 300 ms).** F5-TTS emits audio with near-zero onset silence — the
+  first phoneme starts at t=0 — which collides with Whisper's ~50-100 ms
+  STT warm-up window and drops the first phoneme. Benchmark surface was
+  "Szia Petya, ez egy rövid teszt" → "Zia Petya, ez egy rövid teszt"
+  (16.7% WER on a 6-word clip). The router now pipes every backend output
+  through an ffmpeg `adelay` filter that prepends `ROUTER_LEADING_SILENCE_MS`
+  of silence before converting to the client-requested format. Overhead is
+  sub-millisecond; set to 0 to revert (brings back the onset-clip bug).
+  Kokoro EN was not the primary motivation (its training audio has natural
+  leading silence) but the pad applies uniformly and is harmless for
+  English too.
+- **TTS→STT closed-loop benchmark (`scripts/bench_tts_stt_roundtrip.py`).**
+  Already landed in 0.6.0; calling it out here because the 0.6.1 fix was
+  discovered by running it. Measures per-size WER + latency for backend-direct
+  and router paths across EN (Kokoro) + HU (F5-TTS).
+
+### Changed
+- **Router ffmpeg path now mandatory for every response_format.** Previously
+  wav/pcm/flac/ogg short-circuited past ffmpeg when the backend already
+  produced the requested format; with the silence pad that's no longer
+  possible, so every format goes through ffmpeg (adelay + re-encode). When
+  `ROUTER_LEADING_SILENCE_MS=0` and the backend format already matches the
+  client format, we still take the legacy fast path — the refactor is
+  strictly additive, not a regression for operators who opt out.
+
 ## [0.6.0] - 2026-04-24
 
 Release hardens the self-hosted TTS pipeline against wheel drift and ships a

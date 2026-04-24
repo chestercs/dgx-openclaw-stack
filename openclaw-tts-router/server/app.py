@@ -41,6 +41,15 @@ EN_URL = os.environ.get("EN_URL", "http://openclaw-tts-en:8080/v1/audio/speech")
 F5HUN_URL = os.environ.get("F5HUN_URL", "").strip()
 DEFAULT_VOICE = os.environ.get("ROUTER_DEFAULT_VOICE", "af_heart")
 TIMEOUT_S = float(os.environ.get("ROUTER_TIMEOUT", "60"))
+# F5-TTS outputs audio with essentially zero leading silence (first phoneme
+# starts at t=0). Whisper's STT first ~50-100 ms goes to AGC + attention
+# warm-up and drops that onset phoneme — observed as "Szia" → "Zia" in the
+# roundtrip benchmark. A 200-400 ms leading silence gives the STT room to
+# settle before real speech starts. Kokoro EN is less affected because its
+# training audio has natural leading silence baked in, but the pad is cheap
+# (<1 ms ffmpeg overhead) and harmless, so we apply uniformly. Set to 0 to
+# disable entirely (will bring back the onset-clip bug on HU short utterances).
+LEADING_SILENCE_MS = int(os.environ.get("ROUTER_LEADING_SILENCE_MS", "300"))
 
 # A Hungarian backend is enabled only when both URL and token are present.
 # Without one the router is EN-only — HU voice ids return 404 and the
@@ -105,8 +114,8 @@ BACKENDS: dict[str, tuple[str, str]] = {"en": (EN_URL, EN_TOKEN)}
 if F5HUN_ENABLED:
     BACKENDS["f5hun"] = (F5HUN_URL, F5HUN_TOKEN)
 
-log.info("router started: backends=%s default_voice=%s hu_autoroute=%s",
-         sorted(BACKENDS.keys()), DEFAULT_VOICE, HU_AUTOROUTE_VOICE or "(disabled)")
+log.info("router started: backends=%s default_voice=%s hu_autoroute=%s silence_pad=%dms",
+         sorted(BACKENDS.keys()), DEFAULT_VOICE, HU_AUTOROUTE_VOICE or "(disabled)", LEADING_SILENCE_MS)
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -124,18 +133,26 @@ class SpeechRequest(BaseModel):
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
-# ffmpeg transcode specs keyed by the OpenAI response_format name the client asks for.
-#   backend_fmt  = what we request from the Kokoro/F5 backend (native no-transcode)
-#   ff_args      = ffmpeg output args; None means no transcode (pass backend bytes through)
+# ffmpeg specs keyed by the OpenAI response_format name the client asks for.
+#   backend_fmt  = what we request from the Kokoro/F5 backend
+#   ff_args      = ffmpeg output args that produce the client-requested format
 #   content_type = HTTP response Content-Type the browser/SDK expects
+# Every format now has non-None ff_args — even "passthrough" (wav→wav, flac→flac)
+# cases re-encode through ffmpeg so the leading-silence filter applies uniformly.
+# When LEADING_SILENCE_MS == 0 and the backend already produced the client's
+# format, we skip ffmpeg entirely (fast path).
 _FMT_SPECS: dict[str, dict] = {
-    "wav":  {"backend_fmt": "wav",  "ff_args": None,
+    "wav":  {"backend_fmt": "wav",
+             "ff_args": ["-c:a", "pcm_s16le", "-f", "wav"],
              "content_type": "audio/wav"},
-    "pcm":  {"backend_fmt": "wav",  "ff_args": None,
+    "pcm":  {"backend_fmt": "wav",
+             "ff_args": ["-c:a", "pcm_s16le", "-f", "wav"],
              "content_type": "audio/wav"},
-    "flac": {"backend_fmt": "flac", "ff_args": None,
+    "flac": {"backend_fmt": "flac",
+             "ff_args": ["-c:a", "flac", "-f", "flac"],
              "content_type": "audio/flac"},
-    "ogg":  {"backend_fmt": "ogg",  "ff_args": None,
+    "ogg":  {"backend_fmt": "ogg",
+             "ff_args": ["-c:a", "libvorbis", "-f", "ogg"],
              "content_type": "audio/ogg"},
     "mp3":  {"backend_fmt": "wav",
              "ff_args": ["-c:a", "libmp3lame", "-b:a", "128k", "-f", "mp3"],
@@ -149,17 +166,25 @@ _FMT_SPECS: dict[str, dict] = {
 }
 
 
-async def ffmpeg_transcode(wav_bytes: bytes, ff_args: list[str]) -> bytes:
-    """Pipe wav in on stdin, read transcoded bytes from stdout."""
+async def ffmpeg_process(audio: bytes, ff_args: list[str], silence_ms: int) -> bytes:
+    """Run the backend output through ffmpeg. Adds leading silence if silence_ms > 0,
+    then encodes to the client-requested format. adelay with all=1 applies the
+    delay to every channel regardless of mono/stereo — Kokoro is mono 24 kHz and
+    F5-TTS is mono 24 kHz, but the all=1 form is future-proof."""
+    cmd = ["ffmpeg", "-loglevel", "error", "-i", "pipe:0"]
+    if silence_ms > 0:
+        cmd.extend(["-af", f"adelay={silence_ms}:all=1"])
+    cmd.extend(ff_args)
+    cmd.append("pipe:1")
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", *ff_args, "pipe:1",
+        *cmd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await proc.communicate(input=wav_bytes)
+    out, err = await proc.communicate(input=audio)
     if proc.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"ffmpeg transcode failed: {err.decode(errors='replace')}")
+        raise HTTPException(status_code=500, detail=f"ffmpeg failed: {err.decode(errors='replace')}")
     return out
 
 
@@ -228,8 +253,13 @@ async def speech(req: SpeechRequest) -> Response:
         raise HTTPException(status_code=r.status_code, detail=r.text)
 
     content = r.content
-    if spec["ff_args"] is not None:
-        log.info("transcoding %d bytes backend wav -> %s", len(content), req.response_format)
-        content = await ffmpeg_transcode(content, spec["ff_args"])
-        log.info("transcoded to %d bytes (%s)", len(content), spec["content_type"])
+    # Fast path: backend format already matches client format AND no silence
+    # pad is configured — stream backend bytes through unchanged. Everything
+    # else goes through ffmpeg for the adelay filter + format conversion.
+    needs_ffmpeg = LEADING_SILENCE_MS > 0 or backend_fmt != req.response_format
+    if needs_ffmpeg:
+        log.info("ffmpeg processing %d bytes backend %s -> %s (silence_pad=%d ms)",
+                 len(content), backend_fmt, req.response_format, LEADING_SILENCE_MS)
+        content = await ffmpeg_process(content, spec["ff_args"], LEADING_SILENCE_MS)
+        log.info("ffmpeg produced %d bytes (%s)", len(content), spec["content_type"])
     return Response(content=content, media_type=spec["content_type"])
