@@ -94,9 +94,22 @@ async def proxy_ws(request: web.Request, internal_port: int) -> web.WebSocketRes
     return ws_client
 
 
-async def proxy_http(request: web.Request, internal_port: int) -> web.Response:
+async def proxy_http(request: web.Request, internal_port: int, external_port: int) -> web.Response:
     """Plain HTTP forwarder for CDP discovery (/json/version, /json/list,
-    /json/protocol, etc.). Rewrites Host header before forwarding.
+    /json/protocol, etc.). Rewrites Host header before forwarding, and
+    rewrites Chromium's response body so the `webSocketDebuggerUrl` and
+    `devtoolsFrontendUrl` fields point at the externally-reachable
+    hostname:port the client used — not the internal `localhost:19222`
+    Chromium would otherwise advertise.
+
+    Why the body rewrite matters: Playwright's `connectOverCDP` calls
+    /json/version, takes `webSocketDebuggerUrl` literally, and connects
+    to it. Without the rewrite the gateway would attempt
+    `ws://localhost:19222/devtools/browser/<id>` from inside its OWN
+    network namespace — port 19222 isn't published, so the WS handshake
+    fails. We rewrite both `localhost:<internal>` and `127.0.0.1:<internal>`
+    to the request's host:port (which lands back on this proxy on the
+    next hop).
     """
     upstream_url = f"http://127.0.0.1:{internal_port}{request.path_qs}"
 
@@ -113,6 +126,10 @@ async def proxy_http(request: web.Request, internal_port: int) -> web.Response:
     forward_headers["Host"] = f"localhost:{internal_port}"
 
     body = await request.read() if request.body_exists else None
+
+    # Capture the incoming Host so we can rewrite the response with it.
+    # Default to `<bind_ip>:<external_port>` if no Host header (rare).
+    client_host = request.headers.get("Host") or f"127.0.0.1:{external_port}"
 
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -133,6 +150,24 @@ async def proxy_http(request: web.Request, internal_port: int) -> web.Response:
                         "content-encoding", "content-length",
                     )
                 }
+                # Rewrite hostname:port references in the response body.
+                # /json/version, /json/list, /json/new return text/JSON
+                # with these embedded; other endpoints just pass through.
+                content_type = upstream.headers.get("Content-Type", "").lower()
+                if (
+                    response_body
+                    and ("json" in content_type or "text" in content_type)
+                    and len(response_body) < HTTP_MAX_BODY
+                ):
+                    body_text = response_body.decode("utf-8", errors="replace")
+                    needles = (
+                        f"localhost:{internal_port}",
+                        f"127.0.0.1:{internal_port}",
+                    )
+                    for needle in needles:
+                        body_text = body_text.replace(needle, client_host)
+                    response_body = body_text.encode("utf-8")
+
                 return web.Response(
                     status=upstream.status,
                     headers=response_headers,
@@ -146,19 +181,19 @@ async def proxy_http(request: web.Request, internal_port: int) -> web.Response:
             return web.Response(status=504, text="upstream timeout")
 
 
-def make_handler(internal_port: int):
+def make_handler(internal_port: int, external_port: int):
     async def handler(request: web.Request) -> web.StreamResponse:
         upgrade = request.headers.get("Upgrade", "").lower()
         if upgrade == "websocket":
             return await proxy_ws(request, internal_port)
-        return await proxy_http(request, internal_port)
+        return await proxy_http(request, internal_port, external_port)
 
     return handler
 
 
 async def main(external_port: int, internal_port: int) -> None:
     app = web.Application(client_max_size=HTTP_MAX_BODY)
-    handler = make_handler(internal_port)
+    handler = make_handler(internal_port, external_port)
     # Match every path/method — we're a transparent proxy for whatever
     # Chromium's CDP HTTP server exposes.
     app.router.add_route("*", "/{tail:.*}", handler)
