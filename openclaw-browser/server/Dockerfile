@@ -64,9 +64,9 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --break-system-packages --ignore-installed -r /app/requirements.txt \
     && python -m playwright install chromium \
     && python -c "from playwright.sync_api import sync_playwright; \
-        p=sync_playwright().__enter__(); \
-        print('chromium:', p.chromium.executable_path); \
-        p.__exit__(None,None,None)"
+        pw=sync_playwright().start(); \
+        print('chromium:', pw.chromium.executable_path); \
+        pw.stop()"
 
 # App source
 COPY app.py supervise.py extract.py blocklist.py ratelimit.py /app/
