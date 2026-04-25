@@ -136,6 +136,11 @@ STT_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 # ends up URL-encoded in `?token=…` on cdpUrl entries, so going to 64 bytes
 # would make the URL noticeably longer with no extra security.
 BROWSER_API_TOKEN_NEW="$(openssl rand -base64 48 | tr -d '\n')"
+# noVNC bridge password. Only the first ~8 chars are effective at the RFB
+# wire layer; we still ship 32 random chars so rotation matches the other
+# secrets and the operator never sees the placeholder. Loopback bind is the
+# real defense.
+BROWSER_VNC_PASSWORD_NEW="$(openssl rand -base64 24 | tr -d '\n=+/' | head -c 32)"
 
 upsert_env VLLM_API_KEY                "$VLLM_API_KEY_NEW"    '^CHANGE_ME'
 upsert_env OPENCLAW_GATEWAY_TOKEN      "$GATEWAY_TOKEN_NEW"   '^CHANGE_ME'
@@ -144,6 +149,7 @@ upsert_env OPENCLAW_TTS_ROUTER_API_KEY "$TTS_ROUTER_KEY_NEW"  '^CHANGE_ME'
 upsert_env TTS_API_TOKEN               "$TTS_API_TOKEN_NEW"   '^CHANGE_ME'
 upsert_env STT_API_TOKEN               "$STT_API_TOKEN_NEW"   '^CHANGE_ME'
 upsert_env BROWSER_API_TOKEN           "$BROWSER_API_TOKEN_NEW" '^CHANGE_ME'
+upsert_env BROWSER_VNC_PASSWORD        "$BROWSER_VNC_PASSWORD_NEW" '^CHANGE_ME'
 
 # ----------------------------------------------------------------------------
 # 3b. Optional: Hungarian TTS opt-in (CC-BY-NC model weights)

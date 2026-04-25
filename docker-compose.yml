@@ -691,8 +691,9 @@ services:
   #    - 9222-9241:   Chromium remote-debugging ports (default + 20 named
   #                   profiles). 9222 = "default" anonymous throwaway profile;
   #                   9223+ = named profiles in BROWSER_PROFILE_NAMES order.
-  #    - 5901:        noVNC bridge for the 1x OAuth login helper. Active only
-  #                   while bootstrap-browser-login.sh is running.
+  #    - 5901:        noVNC bridge — ALWAYS-ON since v0.7.0. Auth via
+  #                   BROWSER_VNC_PASSWORD; the screen is blank when no
+  #                   profile is in headful mode (login-helper toggle).
   #    All ports loopback-only by default. The OpenClaw gateway reaches the
   #    Chromium debug ports via bridge DNS at openclaw-browser:9222-9241.
   #
@@ -729,6 +730,11 @@ services:
     environment:
       # Required. Empty value fails fast at app startup (no anonymous access).
       BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-}
+      # Required. Persistent password for the always-on noVNC bridge —
+      # bootstrap.sh generates this on first run, rotate-secrets.sh --all
+      # rotates it. Empty / placeholder fails fast at app startup.
+      BROWSER_VNC_PASSWORD: ${BROWSER_VNC_PASSWORD:-}
+      BROWSER_VNC_PORT: ${BROWSER_VNC_PORT:-5901}
       # Comma-separated list of named profiles. Maintained by
       # ./bootstrap-browser-login.sh — manual edits here also work but the
       # name's port assignment is positional, so don't reorder once profiles
@@ -900,6 +906,11 @@ services:
       BROWSER_PORT_BASE: ${BROWSER_PORT_BASE:-9222}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+      # Workspace mount — patcher step 16 writes a soft policy block into
+      # AGENTS.md (browser-profile use guidance). Same path the gateway
+      # mounts the workspace at, so the markdown lands where the agent
+      # reads it.
+      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
       - ./patch-config.mjs:/opt/patch-config.mjs:ro
     entrypoint: ["node", "/opt/patch-config.mjs"]
 

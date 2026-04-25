@@ -59,6 +59,7 @@ DEFAULT_KEYS=(
   TTS_API_TOKEN
   STT_API_TOKEN
   BROWSER_API_TOKEN
+  BROWSER_VNC_PASSWORD
 )
 F5HUN_KEY=F5HUN_API_TOKEN
 GATEWAY_KEY=OPENCLAW_GATEWAY_TOKEN
@@ -76,6 +77,7 @@ services_for() {
     STT_API_TOKEN)               echo "openclaw-stt-whisper openclaw-config-init openclaw-gateway openclaw-cli" ;;
     F5HUN_API_TOKEN)             echo "openclaw-tts-f5hun openclaw-tts-router" ;;
     BROWSER_API_TOKEN)           echo "openclaw-browser openclaw-config-init openclaw-gateway openclaw-cli" ;;
+    BROWSER_VNC_PASSWORD)        echo "openclaw-browser" ;;
     OPENCLAW_GATEWAY_TOKEN)      echo "openclaw-gateway openclaw-cli" ;;
     *) return 1 ;;
   esac
@@ -301,6 +303,12 @@ for key in "${ROTATE_ORDER[@]}"; do
     # 48-byte (64 base64-char) token — keeps the URL-encoded form short
     # since this value also lives in `?token=…` on every cdpUrl entry.
     new="$(openssl rand -base64 48 | tr -d '\n')"
+  elif [[ "$key" == "BROWSER_VNC_PASSWORD" ]]; then
+    # 32-char alnum value. Effective entropy is ~48 bits regardless (RFB
+    # truncates to 8 chars on the wire), but keeping the visible value
+    # full-length matches the other secrets and avoids a special case in
+    # the .env upsert path.
+    new="$(openssl rand -base64 24 | tr -d '\n=+/' | head -c 32)"
   else
     new="$(openssl rand -base64 64 | tr -d '\n')"
   fi

@@ -230,9 +230,12 @@ prompts you to opt in; if you said "no" earlier and changed your mind, the
 manual path is:
 
 ```bash
-# 1. Generate a token if one isn't already in .env (bootstrap.sh did this if you ran it):
+# 1. Generate the two browser secrets if they aren't already in .env
+#    (bootstrap.sh did this if you ran it):
 grep '^BROWSER_API_TOKEN=' .env || \
   echo "BROWSER_API_TOKEN=$(openssl rand -base64 48 | tr -d '\n')" >> .env
+grep '^BROWSER_VNC_PASSWORD=' .env || \
+  echo "BROWSER_VNC_PASSWORD=$(openssl rand -base64 24 | tr -d '\n=+/' | head -c 32)" >> .env
 
 # 2. Add 'browser' to the active profile set:
 #    Either add `COMPOSE_PROFILES=browser` to .env, or pass --profile browser
@@ -243,7 +246,8 @@ docker compose --profile browser up -d --build openclaw-browser
 ```
 
 Once the service is up, onboard each credential **once** via the noVNC
-helper:
+helper. The bridge is always-on (since v0.7.0) — the persistent password
+in `BROWSER_VNC_PASSWORD` lets you peek any time the container is up:
 
 ```bash
 ./bootstrap-browser-login.sh github-user1

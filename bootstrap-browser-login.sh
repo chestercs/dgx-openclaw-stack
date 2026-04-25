@@ -104,9 +104,16 @@ eval "$ENV_VARS"
 BROWSER_API_TOKEN="${BROWSER_API_TOKEN:-}"
 BROWSER_API_PORT="${BROWSER_API_PORT:-9220}"
 BROWSER_VNC_PORT="${BROWSER_VNC_PORT:-5901}"
+BROWSER_VNC_PASSWORD_FROM_ENV="${BROWSER_VNC_PASSWORD:-}"
 
 if [[ -z "$BROWSER_API_TOKEN" ]] || [[ "$BROWSER_API_TOKEN" =~ ^CHANGE_ME ]]; then
   err "BROWSER_API_TOKEN is empty or still placeholder — run ./bootstrap.sh and answer 'y' at the browser prompt."
+  exit 1
+fi
+
+if [[ -z "$BROWSER_VNC_PASSWORD_FROM_ENV" ]] || [[ "$BROWSER_VNC_PASSWORD_FROM_ENV" =~ ^CHANGE_ME ]]; then
+  err "BROWSER_VNC_PASSWORD is empty or still placeholder — run ./bootstrap.sh to generate one,"
+  err "or rotate it explicitly: ./rotate-secrets.sh BROWSER_VNC_PASSWORD"
   exit 1
 fi
 
@@ -117,24 +124,25 @@ if ! curl -fsS "http://127.0.0.1:${BROWSER_API_PORT}/healthz" >/dev/null 2>&1; t
   exit 1
 fi
 
-# Generate a one-time password for the noVNC session. Hex-only to dodge
-# URL-encoding edge cases in the noVNC URL bar.
-OTP="$(openssl rand -hex 6)"
-
-# Start the headful + noVNC bridge.
-log "Starting headful Chromium for profile '${PROFILE_NAME}'…"
+# Toggle the profile's Chromium into headful mode on the always-on VNC
+# bridge. The bridge password lives in BROWSER_VNC_PASSWORD; the API
+# returns the noVNC URL with that password already embedded.
+log "Switching profile '${PROFILE_NAME}' to headful on the VNC bridge…"
 START_RESPONSE="$(
   curl -fsS -X POST \
     -H "Authorization: Bearer ${BROWSER_API_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "$(printf '{"otp":"%s","vnc_port":%s,"timeout_min":30}' "$OTP" "$BROWSER_VNC_PORT")" \
     "http://127.0.0.1:${BROWSER_API_PORT}/v1/sessions/${PROFILE_NAME}/login-helper" \
 )" || {
-  err "login-helper start failed. Is profile '${PROFILE_NAME}' already in a helper session? Try POST /v1/sessions/${PROFILE_NAME}/login-helper/cancel"
+  err "login-helper start failed. Is another profile in a helper session?"
+  err "  curl -X POST -H 'Authorization: Bearer …' http://127.0.0.1:${BROWSER_API_PORT}/v1/sessions/<name>/login-helper/cancel"
   exit 1
 }
 
-VNC_URL="http://127.0.0.1:${BROWSER_VNC_PORT}/vnc.html?host=127.0.0.1&port=${BROWSER_VNC_PORT}&password=${OTP}"
+# Pull the URL out of the JSON response. Server-rendered so we never
+# guess what host/port the operator should use — handy when the operator
+# overrode BROWSER_VNC_PORT in .env.
+VNC_URL="$(printf '%s' "$START_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["vnc_url"])' 2>/dev/null \
+  || echo "http://127.0.0.1:${BROWSER_VNC_PORT}/vnc.html?host=127.0.0.1&port=${BROWSER_VNC_PORT}&password=${BROWSER_VNC_PASSWORD_FROM_ENV}")
 
 # Cleanup trap — if the operator Ctrl-C's, cancel the helper so we don't
 # leak a headful Chromium + Xvfb + websockify until the next restart.

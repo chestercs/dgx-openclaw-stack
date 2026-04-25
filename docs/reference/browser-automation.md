@@ -108,31 +108,70 @@ forwarding). Document in your deployment that the CDP port is
 network-reachable; an unauthenticated remote-debugging port has been
 the root cause of multiple Chromium credential-theft CVEs.
 
+## Always-on noVNC bridge
+
+Since v0.7.0 the VNC stack is part of the container's normal lifecycle:
+Xvfb + x11vnc + websockify spin up at app startup, persist for the
+container's lifetime, and authenticate via `BROWSER_VNC_PASSWORD` (set
+by `bootstrap.sh`, rotated by `rotate-secrets.sh --all`). Anyone with
+the password can attach the noVNC URL any time the container is up:
+
+```bash
+curl -fsS -H "Authorization: Bearer $BROWSER_API_TOKEN" \
+  http://127.0.0.1:9220/v1/vnc | jq -r .vnc_url
+```
+
+Outside an active login-helper session the screen is blank — no headful
+Chromium is attached to the bridge's Xvfb display. To peek at a
+profile's view, push it into headful mode (next section).
+
+Earlier revisions (≤ v0.6.x) span the VNC chain up only for the
+duration of a login-helper session, with a freshly-generated OTP each
+time. The OTP-per-session UX was awkward (copy a fresh password every
+onboarding round, no peeking-at-the-agent without spinning the helper)
+and the persistent password matches how `BROWSER_API_TOKEN` already
+works.
+
+### Effective entropy
+
+The legacy VNC RFB Type-2 handshake truncates the password to 8 chars
+on the wire, so anything beyond ~48 bits of effective entropy is
+theatre. Real defense-in-depth is the loopback bind on
+`BROWSER_VNC_BIND` (default `127.0.0.1`) plus the LAN being trusted.
+**Don't expose the noVNC port to the public internet.** If you need
+remote access, SSH-tunnel the loopback port — the script prints the
+autossh recipe automatically when `$SSH_CONNECTION` is set.
+
 ## 1x OAuth onboarding flow
 
 The operator wants one manual login per credential, no per-call
 re-auth. The flow ships as `bootstrap-browser-login.sh <profile-name>`:
 
-1. Operator runs the script. It POSTs `/v1/sessions/<n>/login-helper` to
-   the FastAPI app inside the container with a freshly-generated OTP.
-2. The service starts Xvfb on `:99`, x11vnc on loopback 5900 with the
-   OTP as password, websockify wrapping x11vnc on 5901, and a HEADFUL
-   Chromium on display `:99` with the same `--user-data-dir=/storage/<n>/`
-   the headless Chromium will use later.
+1. Operator runs the script. It POSTs `/v1/sessions/<n>/login-helper`
+   to the FastAPI app inside the container — empty body, the bridge
+   password lives in `BROWSER_VNC_PASSWORD` and the API picks it up
+   from the environment.
+2. The service stops the headless Chromium for that profile and
+   re-launches it HEADFUL on the bridge's Xvfb display (`:99`), same
+   `--user-data-dir=/storage/<n>/` the headless Chromium uses. The
+   VNC infrastructure was already running; no per-session spin-up.
 3. The script prints the noVNC URL
-   `http://127.0.0.1:5901/vnc.html?...&password=<OTP>`. If the operator
-   is SSH'd in (`$SSH_CONNECTION` set), the script also prints an
-   autossh tunnel recipe so the operator's laptop browser can reach the
-   loopback port.
+   `http://127.0.0.1:5901/vnc.html?...&password=<persistent>` (server-
+   rendered from the API response, so the host/port/password match the
+   container's actual config). If the operator is SSH'd in
+   (`$SSH_CONNECTION` set), the script also prints an autossh tunnel
+   recipe so the operator's laptop browser can reach the loopback port.
 4. The operator opens the URL on their laptop, drives the auth flow:
    password + TOTP / SMS OTP / magic link. Closes the tab.
 5. Operator hits Enter in the terminal. The script POSTs `/finish`,
-   which closes Chromium cleanly (so cookies flush), tears down the VNC
-   chain, deletes the OTP password file, and re-launches Chromium
-   headless on the same `--user-data-dir`.
+   which closes Chromium cleanly (so cookies flush) and re-launches
+   Chromium headless on the same `--user-data-dir`. The VNC bridge
+   stays running — only the headful Chromium is replaced.
 6. The script appends the profile name to `BROWSER_PROFILE_NAMES` in
    `.env` and runs `docker compose run --rm openclaw-config-init` so
-   patcher step 15 writes the new `browser.profiles.<n>.cdpUrl` entry.
+   patcher step 15 writes the new `browser.profiles.<n>.cdpUrl` entry
+   (and step 16 idempotently appends the soft-policy block to the
+   workspace `AGENTS.md`).
 
 After this, the agent can call `browser.navigate(url=...,
 profile="<n>")` and the warm Chromium serves authenticated content —

@@ -338,75 +338,105 @@ class Supervisor:
 
 
 # ----------------------------------------------------------------------
-# Login helper — single-operator state machine. At most one headful
-# Chromium with VNC bridge is active at a time. The operator runs
-# bootstrap-browser-login.sh, which POSTs to /v1/sessions/<n>/login-helper,
-# walks through the noVNC URL, then POSTs /finish.
+# noVNC bridge — always-on infrastructure (Xvfb + x11vnc + websockify).
+#
+# Earlier revisions span this stack up only for the duration of a
+# login-helper session, with a fresh OTP each time. v0.7.0 made the
+# bridge persistent: the operator can attach the noVNC URL any time the
+# container is up, and login-helper now only toggles a profile's Chromium
+# between headless and headful on the bridge's existing Xvfb display.
+# Rationale: the OTP-per-session UX was awkward (you had to copy a fresh
+# password every onboarding round, and no peeking-at-the-agent without
+# spinning the helper). A persistent bridge with a rotated env-managed
+# password matches how `BROWSER_API_TOKEN` already works.
 # ----------------------------------------------------------------------
 @dataclass
-class _HelperProcs:
+class _BridgeProcs:
     xvfb: Optional[subprocess.Popen] = None
     x11vnc: Optional[subprocess.Popen] = None
     websockify: Optional[subprocess.Popen] = None
 
 
-class LoginHelper:
-    def __init__(self, supervisor: Supervisor) -> None:
-        self.supervisor = supervisor
-        self._lock = threading.Lock()
-        self._active_profile: Optional[str] = None
-        self._procs: _HelperProcs = _HelperProcs()
-        self._otp: Optional[str] = None
+class VncBridge:
+    """Always-on Xvfb + x11vnc + websockify, started at app startup.
 
-    def is_active(self) -> bool:
-        return self._active_profile is not None
+    Auth: BROWSER_VNC_PASSWORD from the environment, written to a 0600
+    passwd file (kept off `ps` output). The same password rides in the
+    `?password=…` query of the URL we hand the operator.
 
-    def active_profile(self) -> Optional[str]:
-        return self._active_profile
+    Effective entropy is RFB-truncated to 8 chars on the wire; the real
+    isolation is the loopback host bind on `BROWSER_VNC_BIND` (default
+    127.0.0.1). Don't expose the noVNC port on the LAN without a real
+    auth proxy in front."""
 
-    def start(
+    def __init__(
         self,
-        profile: str,
-        otp: str,
+        password: str,
         *,
         vnc_port: int = 5901,
         display: str = DISPLAY_FOR_HEADFUL,
-    ) -> dict:
+    ) -> None:
+        if not password:
+            raise RuntimeError(
+                "BROWSER_VNC_PASSWORD env var is required (no anonymous noVNC). "
+                "bootstrap.sh generates this on first run; rotate-secrets.sh --all rotates it."
+            )
+        self.password = password
+        self.vnc_port = vnc_port
+        self.display = display
+        self._procs = _BridgeProcs()
+        self._lock = threading.Lock()
+        self._started = False
+
+    def is_running(self) -> bool:
+        return self._started and all(
+            p is not None and p.poll() is None
+            for p in (self._procs.xvfb, self._procs.x11vnc, self._procs.websockify)
+        )
+
+    def vnc_url(self, host: str = "127.0.0.1") -> str:
+        return (
+            f"http://{host}:{self.vnc_port}/vnc.html"
+            f"?host={host}&port={self.vnc_port}&password={self.password}"
+        )
+
+    def start(self) -> None:
         with self._lock:
-            if self._active_profile:
-                raise RuntimeError(
-                    f"login helper already active for profile '{self._active_profile}' — "
-                    f"call /finish on that one first"
-                )
+            if self._started:
+                return
+            log.info(
+                "vnc-bridge: starting Xvfb + x11vnc + websockify on display=%s port=%s",
+                self.display,
+                self.vnc_port,
+            )
 
-            log.info("login-helper start: profile=%s vnc_port=%s display=%s", profile, vnc_port, display)
-
-            # 1. Xvfb on the chosen display. -nolisten tcp keeps the X
+            # 1. Xvfb on the configured display. -nolisten tcp keeps the X
             #    server unreachable from the network — only x11vnc on
             #    loopback can attach to it.
             self._procs.xvfb = subprocess.Popen(
-                ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                ["Xvfb", self.display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             time.sleep(0.5)
 
-            # 2. Build a passwd file for x11vnc — keeps the OTP out of the
-            #    process command line (where `ps` would expose it).
-            passwd_file = Path(f"/tmp/x11vnc-{profile}.passwd")
+            # 2. Build a passwd file for x11vnc — keeps the password out
+            #    of the process command line (where `ps` would expose it).
+            passwd_file = Path("/tmp/x11vnc.passwd")
             subprocess.run(
-                ["x11vnc", "-storepasswd", otp, str(passwd_file)],
-                check=True, stdout=subprocess.DEVNULL,
+                ["x11vnc", "-storepasswd", self.password, str(passwd_file)],
+                check=True,
+                stdout=subprocess.DEVNULL,
             )
-            # 0600 — only the running user reads it.
             os.chmod(passwd_file, 0o600)
 
             # 3. x11vnc on loopback inside the container. websockify is the
             #    public face — x11vnc itself never accepts a non-loopback
-            #    TCP client, so a port-scanner on the bridge can't reach it.
+            #    TCP client.
             self._procs.x11vnc = subprocess.Popen(
                 [
                     "x11vnc",
-                    "-display", display,
+                    "-display", self.display,
                     "-rfbport", "5900",
                     "-localhost",
                     "-rfbauth", str(passwd_file),
@@ -414,39 +444,91 @@ class LoginHelper:
                     "-shared",
                     "-forever",
                 ],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             time.sleep(0.4)
 
             # 4. websockify wraps x11vnc's RFB stream in WebSocket and
             #    serves the noVNC HTML/JS bundle from /usr/share/novnc.
             #    Bind 0.0.0.0 inside container; compose's loopback host
-            #    bind keeps it off the LAN.
+            #    bind keeps the port off the LAN.
             self._procs.websockify = subprocess.Popen(
                 [
                     "websockify",
                     "--web", "/usr/share/novnc",
-                    f"0.0.0.0:{vnc_port}",
+                    f"0.0.0.0:{self.vnc_port}",
                     "127.0.0.1:5900",
                 ],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             time.sleep(0.3)
+            self._started = True
 
-            # 5. Stop any headless Chromium for this profile and start it
-            #    headful on the Xvfb display. Same user-data-dir, same port
-            #    — when the operator finishes and we restart headless,
-            #    cookies they accumulated are right there waiting.
-            self.supervisor.restart_profile(profile, headful=True, display=display)
+    def stop(self) -> None:
+        with self._lock:
+            if not self._started:
+                return
+            for proc, name in [
+                (self._procs.websockify, "websockify"),
+                (self._procs.x11vnc, "x11vnc"),
+                (self._procs.xvfb, "Xvfb"),
+            ]:
+                if proc and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        log.warning("vnc-bridge: %s ignored SIGTERM, killing", name)
+                        proc.kill()
+            self._procs = _BridgeProcs()
+            passwd_file = Path("/tmp/x11vnc.passwd")
+            if passwd_file.exists():
+                passwd_file.unlink()
+            self._started = False
+
+
+# ----------------------------------------------------------------------
+# Login helper — single-operator state machine that toggles a profile's
+# Chromium between headless and headful on the always-on VNC bridge. At
+# most one profile can be in headful mode at a time (one Xvfb display).
+# ----------------------------------------------------------------------
+class LoginHelper:
+    def __init__(self, supervisor: Supervisor, vnc_bridge: VncBridge) -> None:
+        self.supervisor = supervisor
+        self.vnc_bridge = vnc_bridge
+        self._lock = threading.Lock()
+        self._active_profile: Optional[str] = None
+
+    def is_active(self) -> bool:
+        return self._active_profile is not None
+
+    def active_profile(self) -> Optional[str]:
+        return self._active_profile
+
+    def start(self, profile: str) -> dict:
+        with self._lock:
+            if self._active_profile and self._active_profile != profile:
+                raise RuntimeError(
+                    f"login helper already active for profile '{self._active_profile}' — "
+                    f"call /finish on that one first"
+                )
+
+            log.info("login-helper start: profile=%s display=%s", profile, self.vnc_bridge.display)
+
+            # Restart this profile's Chromium in headful mode on the
+            # bridge's Xvfb display. Same user-data-dir, same port — when
+            # /finish relaunches headless, accumulated cookies persist.
+            self.supervisor.restart_profile(
+                profile, headful=True, display=self.vnc_bridge.display
+            )
 
             self._active_profile = profile
-            self._otp = otp
-
             return {
                 "profile": profile,
-                "vnc_port": vnc_port,
-                "vnc_url": f"http://127.0.0.1:{vnc_port}/vnc.html?host=127.0.0.1&port={vnc_port}&password={otp}",
-                "expires_in_seconds": 1800,
+                "vnc_port": self.vnc_bridge.vnc_port,
+                "vnc_url": self.vnc_bridge.vnc_url(),
                 "next_step": (
                     "Open the URL in your laptop browser, complete the auth flow "
                     "(password + TOTP / SMS — passkeys won't work over noVNC), "
@@ -460,57 +542,22 @@ class LoginHelper:
                 raise RuntimeError("no active login helper to finish")
             profile_name = self._active_profile
 
-            # 1. Stop the headful Chromium cleanly so cookies flush to disk.
+            # 1. Stop the headful Chromium cleanly so cookies flush.
             self.supervisor.stop_profile(profile_name)
-
-            # 2. Tear down the VNC chain in reverse-launch order.
-            for proc, name in [
-                (self._procs.websockify, "websockify"),
-                (self._procs.x11vnc, "x11vnc"),
-                (self._procs.xvfb, "Xvfb"),
-            ]:
-                if proc and proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        log.warning("login-helper: %s ignored SIGTERM, killing", name)
-                        proc.kill()
-            self._procs = _HelperProcs()
-
-            # 3. Wipe the OTP passwd file.
-            passwd_file = Path(f"/tmp/x11vnc-{profile_name}.passwd")
-            if passwd_file.exists():
-                passwd_file.unlink()
-
-            # 4. Re-launch Chromium headless on the saved user-data-dir.
+            # 2. Re-launch Chromium headless on the saved user-data-dir.
             self.supervisor.start_profile(profile_name, headful=False)
-
             self._active_profile = None
-            self._otp = None
             return {"profile": profile_name, "status": "saved"}
 
     def cancel(self) -> dict:
-        """Same as finish() but does NOT relaunch Chromium headless. Used when
-        the operator aborts the helper (Ctrl-C in the bootstrap script).
-        Cookies that were captured up to the cancel time still persist in
-        the user-data-dir (Chromium flushes on SIGTERM)."""
+        """Same as finish() but does NOT relaunch Chromium headless. Used
+        when the operator aborts the helper (Ctrl-C in the bootstrap
+        script). Cookies captured up to cancel time persist (Chromium
+        flushes on SIGTERM)."""
         with self._lock:
             if not self._active_profile:
                 return {"status": "noop"}
             profile_name = self._active_profile
             self.supervisor.stop_profile(profile_name)
-            for proc in [self._procs.websockify, self._procs.x11vnc, self._procs.xvfb]:
-                if proc and proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-            self._procs = _HelperProcs()
-            passwd_file = Path(f"/tmp/x11vnc-{profile_name}.passwd")
-            if passwd_file.exists():
-                passwd_file.unlink()
             self._active_profile = None
-            self._otp = None
             return {"profile": profile_name, "status": "cancelled"}

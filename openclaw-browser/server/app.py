@@ -47,6 +47,7 @@ from supervise import (
     DEFAULT_PROFILE_NAME,
     LoginHelper,
     Supervisor,
+    VncBridge,
     parse_profile_names,
 )
 
@@ -57,6 +58,14 @@ log = logging.getLogger("browser.app")
 API_TOKEN = os.environ.get("BROWSER_API_TOKEN", "").strip()
 if not API_TOKEN:
     raise RuntimeError("BROWSER_API_TOKEN env var is required (no anonymous access allowed)")
+
+VNC_PASSWORD = os.environ.get("BROWSER_VNC_PASSWORD", "").strip()
+if not VNC_PASSWORD:
+    raise RuntimeError(
+        "BROWSER_VNC_PASSWORD env var is required (always-on noVNC bridge has no anonymous mode). "
+        "Run ./bootstrap.sh to generate one, or rotate-secrets.sh BROWSER_VNC_PASSWORD."
+    )
+VNC_PORT = int(os.environ.get("BROWSER_VNC_PORT", "5901"))
 
 
 bearer = HTTPBearer(auto_error=False)
@@ -80,7 +89,8 @@ def _validate_profile_name(name: str) -> None:
 
 
 supervisor = Supervisor()
-login_helper = LoginHelper(supervisor)
+vnc_bridge = VncBridge(VNC_PASSWORD, vnc_port=VNC_PORT)
+login_helper = LoginHelper(supervisor, vnc_bridge)
 blocklist = Blocklist()
 limiter = RateLimiter()
 
@@ -90,10 +100,20 @@ app = FastAPI(title="openclaw-browser", version="0.1.0")
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """Launch the default profile + every named profile from
-    BROWSER_PROFILE_NAMES. Failure to launch one profile does NOT stop the
-    others — agents that don't use a broken profile keep working, and the
-    /healthz endpoint surfaces which one fell over."""
+    """Bring up the always-on VNC bridge, then launch the default profile
+    + every named profile from BROWSER_PROFILE_NAMES. Failure to launch
+    one profile does NOT stop the others — agents that don't use a broken
+    profile keep working, and /healthz surfaces which one fell over.
+
+    The VNC bridge starting before any Chromium is intentional: a profile
+    bumped into headful mode (login-helper or the future
+    /v1/sessions/<n>/headful endpoint) needs the Xvfb display ready
+    before Chromium attaches."""
+    try:
+        vnc_bridge.start()
+    except Exception as exc:
+        log.exception("vnc-bridge failed to start: %s", exc)
+
     log.info("startup: launching default + named profiles")
     try:
         supervisor.start_profile(DEFAULT_PROFILE_NAME)
@@ -116,6 +136,10 @@ def on_shutdown() -> None:
         except Exception:
             pass
     supervisor.stop_all()
+    try:
+        vnc_bridge.stop()
+    except Exception:
+        log.exception("vnc-bridge shutdown failed")
 
 
 @app.get("/healthz")
@@ -123,9 +147,27 @@ def healthz() -> dict:
     return {
         "status": "ok",
         "profiles": supervisor.list_profiles(),
+        "vnc_bridge_running": vnc_bridge.is_running(),
+        "vnc_port": vnc_bridge.vnc_port,
         "login_helper_active": login_helper.is_active(),
         "login_helper_profile": login_helper.active_profile(),
         "uptime_s": time.time() - START_TIME,
+    }
+
+
+@app.get("/v1/vnc", dependencies=[Depends(require_token)])
+def vnc_info() -> dict:
+    """Return the always-on noVNC URL.
+
+    The URL embeds the persistent password as `?password=<...>` for the
+    noVNC client's auto-fill. Outside an active login-helper session the
+    screen is blank (no headful Chromium attached); start one with
+    POST /v1/sessions/{name}/login-helper to peek at a profile."""
+    return {
+        "vnc_url": vnc_bridge.vnc_url(),
+        "vnc_port": vnc_bridge.vnc_port,
+        "running": vnc_bridge.is_running(),
+        "headful_profile": login_helper.active_profile(),
     }
 
 
@@ -179,21 +221,19 @@ def restart_session(name: str) -> dict:
 
 
 # ----------------------------------------------------------------------
-# Login helper (1x OAuth onboarding via headful Chromium + noVNC)
+# Login helper — toggle a profile's Chromium between headless and headful
+# on the always-on VNC bridge. No request body fields needed: the bridge
+# password lives in BROWSER_VNC_PASSWORD and the port is fixed at startup.
+# An empty body is accepted so curl-based callers can POST without
+# crafting a Content-Type header.
 # ----------------------------------------------------------------------
-class LoginHelperRequest(BaseModel):
-    otp: str = Field(..., min_length=4, max_length=64)
-    vnc_port: int = Field(default=5901, ge=1, le=65535)
-    timeout_min: int = Field(default=30, ge=1, le=240)
-
-
 @app.post("/v1/sessions/{name}/login-helper", dependencies=[Depends(require_token)])
-def start_login_helper(name: str, req: LoginHelperRequest) -> dict:
+def start_login_helper(name: str) -> dict:
     _validate_profile_name(name)
     if name == DEFAULT_PROFILE_NAME:
         raise HTTPException(status_code=400, detail="cannot run login-helper on the default (anonymous) profile")
     try:
-        return login_helper.start(name, req.otp, vnc_port=req.vnc_port)
+        return login_helper.start(name)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
