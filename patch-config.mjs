@@ -49,6 +49,12 @@
 //      to treat credentialed browser profiles (anything other than the
 //      anonymous default) as opt-in. SOFT layer — prompt-injection can
 //      override it. Hard layer would be a separate `bot-ops` agent.
+//  17. Append a `browser.act` cheatsheet block to the same AGENTS.md.
+//      Smaller open models (Gemma 4 in particular) emit the flat
+//      {element,text} shape on kind="fill" actions that need the nested
+//      {fields:[{ref,type,value}]} shape — the normalizer rejects it and
+//      the agent doom-loops. The cheatsheet shows the right shape next to
+//      a labelled wrong shape, plus a one-line recovery hint.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -815,6 +821,66 @@ if (fs.existsSync(WORKSPACE_AGENTS_PATH)) {
     '[patch-config] workspace/AGENTS.md not found — skipping browser-profile policy ' +
       '(workspace not yet mounted or onboarded).'
   );
+}
+
+// (17) Browser tool usage cheatsheet in workspace/AGENTS.md.
+//
+//      Why: Gemma 4 (and other smaller open models) routinely emit the wrong
+//      parameter shape for `browser.act` — most often calling kind="fill"
+//      with the flat {element, text} pair that's correct for "click"/"type"
+//      instead of the nested {fields: [{ref, type, value}]} the normalizer
+//      requires (extensions/browser/src/browser/routes/agent.act.normalize.ts:217
+//      "fill requires fields", schema in form-fields.ts:23-38). The model
+//      then doom-loops on retries — context fills with normalizer errors,
+//      multilingual output starts to degrade, and the agent eventually
+//      gives up with an apology. A short, concrete cheatsheet in the file
+//      every session reads at startup is the cheapest reliable fix.
+//
+//      Limited scope by design: only the three actions the model gets wrong
+//      most often (fill / click / type) plus an explicit recovery line.
+//      The full schema would be ~200 lines and push out other context.
+const TOOLS_CHEATSHEET_START = '<!-- patch-config:browser-tools:start -->';
+const TOOLS_CHEATSHEET_END = '<!-- patch-config:browser-tools:end -->';
+const TOOLS_CHEATSHEET_BODY =
+  '\n## Browser tool usage — quick reference\n\n' +
+  '`browser.act` routes by `kind`. Each kind has its own parameter shape.\n' +
+  'Mixing them produces normalizer errors that look like the tool is broken\n' +
+  'but are actually schema mismatches.\n\n' +
+  '### `kind="fill"` — fill one or more form fields\n\n' +
+  'Always nested under a `fields` array, even for a single field:\n\n' +
+  '```json\n' +
+  '{"action": "act", "kind": "fill", "profile": "<name>",\n' +
+  ' "fields": [\n' +
+  '   {"ref": "e14", "type": "text", "value": "MyUsername"},\n' +
+  '   {"ref": "e15", "type": "text", "value": "secret"}\n' +
+  ' ]}\n' +
+  '```\n\n' +
+  '**Wrong** (this is what produces `"fill requires fields"`):\n\n' +
+  '```json\n' +
+  '{"action": "act", "kind": "fill", "element": "e14", "text": "..."}\n' +
+  '```\n\n' +
+  '### `kind="click"` — click an element by ref\n\n' +
+  '```json\n' +
+  '{"action": "act", "kind": "click", "profile": "<name>", "ref": "e10"}\n' +
+  '```\n\n' +
+  '### `kind="type"` — type into the focused element\n\n' +
+  '```json\n' +
+  '{"action": "act", "kind": "type", "profile": "<name>", "text": "hello"}\n' +
+  '```\n\n' +
+  '### Recovery\n\n' +
+  'If `browser.act` returns `"fill requires fields"`, you used the flat\n' +
+  'shape on a fill action. Re-emit with `fields: [{ref, type, value}]`.\n' +
+  'Do NOT abandon the task or apologize to the operator; one corrected\n' +
+  'call resolves it.\n';
+
+if (fs.existsSync(WORKSPACE_AGENTS_PATH)) {
+  const agentsMd = fs.readFileSync(WORKSPACE_AGENTS_PATH, 'utf8');
+  if (!agentsMd.includes(TOOLS_CHEATSHEET_START)) {
+    const sep = agentsMd.endsWith('\n') ? '' : '\n';
+    const block = `${sep}\n${TOOLS_CHEATSHEET_START}\n${TOOLS_CHEATSHEET_BODY}${TOOLS_CHEATSHEET_END}\n`;
+    fs.appendFileSync(WORKSPACE_AGENTS_PATH, block);
+    console.log('[patch-config] AGENTS.md += browser-tools cheatsheet block');
+  }
 }
 
 if (!changed) {

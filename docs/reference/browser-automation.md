@@ -322,6 +322,31 @@ patches). Pin it in `requirements.txt` instead of `playwright`,
 update the import in `supervise.py`, rebuild. Document in
 `docs/CUSTOMIZATION.md` when this lands.
 
+## Coaching the model on `browser.act` parameter shapes
+
+`browser.act` routes to different action handlers by `kind`, and each
+handler has its own parameter shape — flat `{ref}` for `click`, flat
+`{text}` for `type`, but nested `{fields: [{ref, type, value}]}` for
+`fill`. Smaller open models (Gemma 4 in particular) routinely call
+`fill` with the flat `{element, text}` they used for `click`, get back
+`"fill requires fields"` from the normalizer
+(`extensions/browser/src/browser/routes/agent.act.normalize.ts:217`),
+retry the same broken shape, fill the context with normalizer errors,
+and eventually doom-loop into an apology and a "give up" suggestion.
+
+Patcher step 17 (added in v0.7.1) writes a small cheatsheet block into
+the workspace `AGENTS.md` showing the right shape for `fill` / `click`
+/ `type` next to a labelled wrong shape, plus a one-line recovery hint
+("if you see `fill requires fields`, re-emit with `fields: [...]`"). It
+sits next to the browser-profile policy block from step 16, in the file
+every agent session reads at startup. Idempotent block markers so
+re-runs don't duplicate it; cap on length is intentional (a full schema
+dump would push out other context every session).
+
+If you swap to a larger / better-tuned model and want to drop the
+cheatsheet, comment out step 17 in `patch-config.mjs` — the existing
+block in `AGENTS.md` stays, but won't be re-added on fresh installs.
+
 ## Known limitations and Phase 2 candidates
 
 - `?profile=` query routing (currently uses port-per-profile) — would

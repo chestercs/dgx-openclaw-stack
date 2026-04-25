@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-04-25
+
+Patcher step 17 — `browser.act` cheatsheet block in workspace
+`AGENTS.md`. Smaller open models (Gemma 4 in particular) routinely emit
+the flat `{element, text}` shape on `kind="fill"` actions that need the
+nested `{fields: [{ref, type, value}]}` shape; the normalizer rejects
+the call with `"fill requires fields"`, the model retries the same
+broken shape, context fills with errors, and the agent eventually gives
+up with an apology. The cheatsheet sits next to the existing browser-
+profile policy block in the file every session reads at startup,
+showing the right shape for `fill` / `click` / `type` plus a labelled
+wrong shape and a one-line recovery hint. Idempotent (HTML-comment
+markers `patch-config:browser-tools:start / :end`).
+
+No upstream OpenClaw or compose changes — same workspace mount the
+v0.7.0 patcher already uses for step 16.
+
 ## [0.7.0] - 2026-04-25
 
 Browser-automation hardening release. Focuses on three things that bit
@@ -641,7 +658,8 @@ catch up with the two patcher steps added post-tag.
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.5.0...v0.6.0
