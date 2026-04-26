@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - 2026-04-27
+
+Chat-side image rendering. The OpenClaw web/control UI (2026.4.22)
+ignores MCP `image` content blocks in tool results — the v0.9.4
+attempt produced the bytes but the chat showed only the metadata
+JSON. Fix: emit a `display_markdown` field in the generate response
+with markdown image syntax pointing at the host-browser-reachable
+URL; the agent pastes it into its reply, and the chat surface
+renders markdown inside agent text replies just fine.
+
+### Added
+- **`COMFYUI_EXTERNAL_URL` env var** (defaults to `COMFYUI_URL`).
+  The browser-reachable URL embedded in `display_markdown`. Operators
+  typically set this to the host LAN IP (e.g.
+  `http://192.168.x.x:13036`) or a tunnel/proxy URL —
+  `host.docker.internal` doesn't resolve from the operator's browser,
+  so the default only works inside the docker bridge.
+- **`display_markdown` field** in the `comfyui_image__generate`
+  response. One markdown image per generated PNG using the external
+  URL: `![<filename>](<external_url><fetch_url_path>)`. Emitted
+  unconditionally — light enough (~150 chars per image) that even
+  multi-image batches don't push the agent context.
+- **`agent_hint` field** in the same response: a one-sentence
+  instruction telling the agent to paste `display_markdown` verbatim
+  into the reply. Surfaced because tool description prose is easy
+  for the LLM to skim past — repeating it in the structured result
+  improves compliance.
+
+### Changed
+- **`comfyui_image__generate` description** now opens with the rule:
+  ALWAYS paste `display_markdown` into the final reply. Without that
+  paste the user sees only the JSON metadata.
+- **The bridge response also returns `comfyui_external_url`**
+  alongside `comfyui_base_url` so chat surfaces / userscripts that
+  want to construct their own URLs have both.
+
+### Migration
+- Set `COMFYUI_EXTERNAL_URL` in `.env` (host LAN IP recommended).
+- Bridge image rebuild + recreate.
+- No patcher / compose-services / network changes.
+
 ## [0.9.4] - 2026-04-27
 
 UX fix on top of v0.9.3 — generated images now render in the chat

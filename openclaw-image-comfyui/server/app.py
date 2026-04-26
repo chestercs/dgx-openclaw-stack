@@ -66,6 +66,15 @@ if not TOKEN:
     raise RuntimeError("IMAGE_GEN_API_TOKEN must be set (bridge refuses to start without auth).")
 
 COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://host.docker.internal:13036").rstrip("/")
+# COMFYUI_EXTERNAL_URL is the host-browser-reachable URL — used to build the
+# `display_markdown` field that the agent can paste into its reply so the
+# chat surface renders the image inline. `host.docker.internal` is a
+# container-only hostname and does NOT resolve from the operator's browser,
+# so the operator typically sets this to the host's LAN IP, e.g.
+# `http://192.168.x.x:13036`. Defaults to COMFYUI_URL if unset, which
+# means the markdown will only work from inside the docker bridge — set
+# the env var explicitly for chat rendering to work.
+COMFYUI_EXTERNAL_URL = os.environ.get("COMFYUI_EXTERNAL_URL", COMFYUI_URL).rstrip("/")
 DEFAULT_TIMEOUT_S = float(os.environ.get("IMAGE_GEN_TIMEOUT_S", "600"))
 MAX_OUTPUT_BYTES = int(os.environ.get("IMAGE_GEN_MAX_OUTPUT_BYTES", str(50 * 1024 * 1024)))
 MAX_CONCURRENCY = int(os.environ.get("IMAGE_GEN_MAX_CONCURRENCY", "1"))
@@ -90,16 +99,20 @@ TOOLS = [
         "description": (
             "Generate one or more images via the operator's ComfyUI install. "
             "Returns metadata (prompt_id, workflow, seed, elapsed_s, per-image "
-            "filename + size + width/height). The PNG bytes themselves are NOT "
-            "in the response by default — embedding ~200 KB of base64 per image "
-            "would balloon the agent's context (50K+ tokens) and 5-10× the "
-            "wall clock for the next LLM call's prefill on Gemma 4 NVFP4. "
-            "Operators or chat surfaces fetch the actual PNG from the operator's "
-            "ComfyUI install via `GET /view?filename=<filename>&type=output&"
-            "subfolder=<subfolder>` (filename + subfolder come back in this "
-            "response). Pass `include_base64=true` only when you genuinely "
-            "need the bytes inside the agent reply (e.g., a follow-up tool "
-            "call that will hash them); the agent run will be much slower."
+            "filename + size + width/height) PLUS a `display_markdown` field "
+            "containing markdown image syntax with the host-browser-reachable "
+            "URL. ALWAYS paste the `display_markdown` value verbatim into "
+            "your final reply (wrap your own commentary around it) so the "
+            "chat surface renders the image inline. Without that paste the "
+            "user only sees the JSON metadata and not the actual image."
+            "\n\n"
+            "The PNG bytes themselves are NOT in the response by default — "
+            "embedding ~200 KB of base64 per image would balloon the agent's "
+            "context (50K+ tokens) and 5-10× the wall clock for the next "
+            "LLM call's prefill on Gemma 4 NVFP4. The chat surface fetches "
+            "the actual PNG from the operator's ComfyUI install via the URL "
+            "the markdown points at. Pass `include_base64=true` only when "
+            "you genuinely need the bytes inside the agent reply (rare)."
             "\n\n"
             "`workflow` selects a JSON template under workflows/; the bridge "
             "binds your params (prompt, dimensions, sampler, seed, ...) to "
@@ -328,6 +341,18 @@ async def _tool_generate(args: dict) -> dict:
             for img in images:
                 img.pop("_b64_blob", None)
 
+        # `display_markdown` is the chat-side rendering hint: a markdown
+        # image-list using the host-browser-reachable URL. The agent
+        # should paste this into its reply so the OpenClaw chat surface
+        # renders the image inline (the chat surface ignores the MCP
+        # `image` content-type as of OpenClaw 2026.4.22, but does
+        # render markdown inside the agent's text reply).
+        display_lines = []
+        for img in images:
+            url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
+            display_lines.append(f"![{img['filename']}]({url})")
+        display_markdown = "\n".join(display_lines)
+
         return {
             "prompt_id": prompt_id,
             "workflow_used": workflow_name,
@@ -336,6 +361,13 @@ async def _tool_generate(args: dict) -> dict:
             "include_base64": include_base64,
             "attach_image_content": attach_image_content,
             "comfyui_base_url": COMFYUI_URL,
+            "comfyui_external_url": COMFYUI_EXTERNAL_URL,
+            "display_markdown": display_markdown,
+            "agent_hint": (
+                "Paste the `display_markdown` value verbatim into your "
+                "reply so the chat surface renders the generated "
+                "image(s). Wrap your own commentary around it."
+            ),
             "images": images,
             "_attachments": attachments,
         }

@@ -59,6 +59,13 @@ services:
       # empty when uvicorn launches (auth-required by design).
       IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
       COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:13036}
+      # Browser-reachable URL — used in the `display_markdown` field of
+      # the generate response so the agent can paste a working image
+      # markdown into its chat reply. host.docker.internal does NOT
+      # resolve from the operator's browser; set this to the host LAN IP
+      # (or Cloudflare-tunnel-mapped subdomain) for chat-side rendering
+      # to work. Defaults to COMFYUI_URL — set explicitly for chat use.
+      COMFYUI_EXTERNAL_URL: ${COMFYUI_EXTERNAL_URL:-${COMFYUI_URL:-http://host.docker.internal:13036}}
       IMAGE_GEN_TIMEOUT_S: ${IMAGE_GEN_TIMEOUT_S:-600}
       IMAGE_GEN_MAX_CONCURRENCY: ${IMAGE_GEN_MAX_CONCURRENCY:-1}
       IMAGE_GEN_MAX_OUTPUT_BYTES: ${IMAGE_GEN_MAX_OUTPUT_BYTES:-52428800}
