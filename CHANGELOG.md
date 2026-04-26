@@ -5,6 +5,65 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-04-26
+
+Browser-automation hardening — bundled response to a real-world failure
+mode (the v0.7.0 stack tried to do agent-driven registration on a
+Hungarian browser game, the agent doom-looped on a `browser.act`
+schema mismatch, then on closer inspection the underlying vLLM
+streaming tool-call parser was leaking pipe-quote tokens into the
+JSON arguments). Three independent fixes ride together:
+
+### Added
+- **`openclaw-vllm-proxy` service.** Drop-in OpenAI-compatible proxy
+  in front of `vllm-llm`, in the default profile (no extra opt-in).
+  Forces `stream=false` on every chat-completions request to dodge
+  vllm-project/vllm#38946 (the gemma4 streaming tool-call parser leaks
+  `<|"|>` string-delimiter literals into `tool_calls.arguments`), then
+  re-fragments the bug-free non-streaming response back into a single
+  SSE chunk so the gateway's stream reader is happy. Also runs a JSON-
+  level normalizer over `browser.act` arguments to repair the recurring
+  Gemma 4 mistake of emitting `request: {...}` without `request.kind`,
+  by mirroring top-level `kind` / `ref` / `text` / `fields` into the
+  wrapper. ~250 LOC FastAPI + httpx, no GPU. `LLM_BASE_URL` and
+  `OPENAI_BASE_URL` defaults updated to point at `vllm-llm-proxy:8004`.
+  When the upstream vLLM streaming-bug fix lands, drop the service and
+  point the URLs back at `vllm-llm:8004` directly.
+- **Stealth Chromium launch flags** (`openclaw-browser`).
+  `--disable-blink-features=AutomationControlled`, `--disable-infobars`,
+  `--exclude-switches=enable-automation`. Soft layer — hides the most
+  common automation fingerprints (navigator.webdriver, "Chrome is being
+  controlled" infobar) so light bot-detection systems don't auto-reject
+  on first page load. Does NOT spoof the full Patchright fingerprint
+  set; deeper anti-bot frameworks (hCaptcha behavioral biometrics,
+  DataDome) still detect.
+- **Viewport size is now fixed and configurable.**
+  `BROWSER_VIEWPORT_WIDTH` / `BROWSER_VIEWPORT_HEIGHT` env vars (default
+  `1920` / `1080`) drive both the Xvfb screen dimensions and the
+  Chromium `--window-size` launch flag, kept in lock-step so iframe-
+  rect math, full-page screenshots, and pixel-coord automation all
+  agree on the same coordinate space. Earlier revisions hard-coded
+  Xvfb to 1280x800 and let Chromium pick its own (small) default,
+  which made screenshot-driven workflows hit-and-miss.
+
+### Changed
+- **Patcher step 15 `cdpHost` URL is unchanged**, but the OpenClaw
+  config now writes `models.providers.vllm.baseUrl` pointing at
+  `vllm-llm-proxy:8004/v1/`. Memory-search embeddings keep going
+  directly to `vllm-embedding:8005` (no streaming, no tool calls,
+  no need to proxy).
+
+### Honest limitations (carried forward as docs)
+- **hCaptcha behavioral biometrics still detect us.** The combined
+  stealth flags + playwright-stealth init scripts get past
+  `bot.sannysoft.com` checks, but real-world hCaptcha challenges
+  (drag-puzzle, click-on-odd, image-grid) reset on the first
+  CDP-driven mouse event. This is a known limit of vanilla Playwright
+  Chromium against modern anti-bot infrastructure — a Patchright /
+  full Chromium fork is the documented Phase 2 swap. Operator manual
+  via noVNC remains the supported path for CAPTCHA-protected flows.
+  Documented in `docs/reference/browser-automation.md`.
+
 ## [0.7.1] - 2026-04-25
 
 Patcher step 17 — `browser.act` cheatsheet block in workspace
@@ -658,7 +717,8 @@ catch up with the two patcher steps added post-tag.
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.6.0...v0.6.1

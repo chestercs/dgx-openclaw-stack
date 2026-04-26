@@ -186,6 +186,16 @@ class Supervisor:
             internal_port = self._internal_port_for(port)
             chromium = _find_chromium()
 
+            # Window size — must match the Xvfb screen for headful sessions
+            # so the Chromium viewport, the operator's noVNC view, and any
+            # pixel-coord automation all agree on the same coordinate space.
+            # Without this flag the Chromium binary picks a small default
+            # (~800x600) regardless of the Xvfb screen size, which makes
+            # full-page screenshots come back at the wrong resolution and
+            # any iframe-rect math goes off.
+            window_w = os.environ.get("BROWSER_VIEWPORT_WIDTH", "1920")
+            window_h = os.environ.get("BROWSER_VIEWPORT_HEIGHT", "1080")
+
             args = [
                 chromium,
                 f"--user-data-dir={user_data_dir}",
@@ -193,6 +203,8 @@ class Supervisor:
                 # always listens on 127.0.0.1 only. We launch on an internal
                 # port and put a socat in front to expose 0.0.0.0:<port>.
                 f"--remote-debugging-port={internal_port}",
+                f"--window-size={window_w},{window_h}",
+                "--window-position=0,0",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-default-apps",
@@ -207,6 +219,19 @@ class Supervisor:
                 # for headless automation.
                 "--password-store=basic",
                 "--use-mock-keychain",
+                # Soft stealth: hide the most common automation fingerprints
+                # so anti-bot frameworks (hCaptcha risk-score, Cloudflare bot
+                # heuristics, DataDome) don't auto-reject the session on
+                # first contact. Removes the AutomationControlled blink
+                # feature and skips the "Chrome is being controlled by
+                # automated test software" infobar. Does NOT spoof the
+                # full Patchright fingerprint set (ChromeDriver presence,
+                # subtle WebGL/Canvas marks, mouse-movement biometrics) —
+                # for sites that fingerprint deeper, Patchright remains
+                # the Phase 2 swap. See docs/reference/browser-automation.md.
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--exclude-switches=enable-automation",
             ]
             if headful:
                 args.append("--start-maximized")
@@ -413,8 +438,15 @@ class VncBridge:
             # 1. Xvfb on the configured display. -nolisten tcp keeps the X
             #    server unreachable from the network — only x11vnc on
             #    loopback can attach to it.
+            # Xvfb resolution — Full HD by default. The headful Chromium
+            # attached for login-helper / pixel-coord interaction renders
+            # at this size. Smaller (1280x800) cramps anti-bot CAPTCHA
+            # iframes and forces awkward viewport zoom; bigger costs a
+            # bit of RAM but matches what real desktops report.
+            xvfb_w = os.environ.get("BROWSER_VIEWPORT_WIDTH", "1920")
+            xvfb_h = os.environ.get("BROWSER_VIEWPORT_HEIGHT", "1080")
             self._procs.xvfb = subprocess.Popen(
-                ["Xvfb", self.display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+                ["Xvfb", self.display, "-screen", "0", f"{xvfb_w}x{xvfb_h}x24", "-nolisten", "tcp"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
