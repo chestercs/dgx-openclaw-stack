@@ -130,6 +130,62 @@ stale when OpenClaw added native MCP client support.
   upstream OpenClaw / npm interaction, unrelated to the sandbox
   changes; documented here so future deploys know it's benign.
 
+### GB10 second-pass smoke (2026-04-26 22:00, post-correctness fixes)
+
+After the per-session lock race fix, the Mcp-Session-Id echo, and
+the MPLBACKEND drop, ran a wider smoke matrix. All green:
+
+- **Mcp-Session-Id**: client-supplied header round-trips on
+  `tools/list`. A fresh `initialize` request with no header gets a
+  16-byte `token_urlsafe` minted in the response header.
+- **Error handling**: `raise ValueError("test boom")` returns
+  `isError: true` and a structured `error: { type: "ValueError",
+  message: "test boom", traceback: <non-empty> }`. Kernel state
+  survives — same `session_id` keeps working on the next call.
+- **Timeout / interrupt_kernel**: `time.sleep(12)` with `timeout_s=3`
+  returns `error.type="TimeoutError"`, `duration_ms ≈ 3001`. The
+  kernel is interrupted, not killed; subsequent calls work.
+- **Plot output**: `fig, ax = plt.subplots(); ax.plot(...); fig`
+  returns `plots: [<base64 PNG>]` (PNG header `iVBORw0KGgoAAAA...`),
+  with `result: "<Figure size 640x480 with 1 Axes>"` carrying the
+  matplotlib repr. The kernel's matplotlib_inline backend publishes
+  via iopub `display_data`. Verified that the previous
+  `MPLBACKEND=Agg` env var killed this — Agg never publishes.
+- **`python_session_reset`**: returns `{ session_id, existed: true }`,
+  follow-up `python_exec` on the same `session_id` correctly raises
+  `NameError` for previously-defined names. Lock and entry are popped
+  together; no leak.
+- **Multi-session concurrency**: two parallel `python_exec` calls on
+  different `session_id`s with `time.sleep(3)` finish in ~3.3 s wall
+  (parallel), not ~6 s (serialized). Per-session lock isolates
+  correctly across concurrent kernels.
+- **Output truncation**: `print("x" * 15 MB)` with default 10 MB cap
+  returns `truncated: true`, `stdout` length `10485779` (10 MB +
+  19-byte truncation marker). 5 MB stdout (under cap) returns
+  `truncated: false`.
+- **Patcher cleanup branch**: setting `PYTHON_SANDBOX_API_TOKEN=` and
+  `--force-recreate openclaw-config-init` produces
+  `[patch-config] PYTHON_SANDBOX_API_TOKEN unset — removed
+  mcp.servers.python_sandbox.` and the entire `mcp` parent object is
+  deleted from `openclaw.json` (no orphan `mcp.servers: {}` shell).
+  Restoring the token + recreate writes the four fields back.
+- **Token rotation E2E**: `./rotate-secrets.sh -y
+  PYTHON_SANDBOX_API_TOKEN` rotates with `--all`-style audit
+  output (sha256 fingerprints, planned restart command, validated
+  via `docker compose config`). After running the printed
+  `--force-recreate openclaw-python-sandbox openclaw-config-init
+  openclaw-gateway openclaw-cli`, the OLD token returns 401 against
+  `/mcp`, the NEW token returns 200 with the tools list, and the
+  bearer in `openclaw.json` matches the container's
+  `PYTHON_SANDBOX_API_TOKEN` env. Agent end-to-end via the gateway
+  with the new token is green (`VAL: 63` from `print(7*9)`).
+- **Permission gotcha during deploy**: `bootstrap.sh`,
+  `rotate-secrets.sh`, and `bootstrap-browser-login.sh` lost their
+  executable bit through the Windows-side commit. Fixed with `git
+  update-index --chmod=+x`; one-time `chmod +x` was needed on
+  GB10 before this commit landed. After this commit, fresh clones
+  inherit the right mode.
+
 ## [0.7.3] - 2026-04-26
 
 Tooling persistence — the runtime tools we leaned on heavily during
