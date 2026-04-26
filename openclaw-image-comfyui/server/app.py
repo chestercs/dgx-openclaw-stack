@@ -80,7 +80,13 @@ SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.1.0"}
 
 TOOLS = [
     {
-        "name": "comfyui_image__generate",
+        # Bare tool names — OpenClaw gateway prefixes them with the server name
+        # (`comfyui_image`) before surfacing in the agent catalog. The
+        # python-sandbox sibling does the same (`python_exec`, not
+        # `python_sandbox__python_exec`); pre-prefixing here would result in
+        # double-prefixed names like `comfyui_image__comfyui_image__generate`
+        # in the agent's tool catalog.
+        "name": "generate",
         "description": (
             "Generate one or more images via the operator's ComfyUI install. "
             "Returns base64-encoded PNG bytes the agent can render or save. "
@@ -113,7 +119,7 @@ TOOLS = [
         },
     },
     {
-        "name": "comfyui_image__list_workflows",
+        "name": "list_workflows",
         "description": (
             "List the workflow templates the bridge ships, with their "
             "tunable parameters and defaults. Use this to discover which "
@@ -127,7 +133,7 @@ TOOLS = [
         },
     },
     {
-        "name": "comfyui_image__cancel",
+        "name": "cancel",
         "description": (
             "Best-effort cancel of an in-flight prompt by id. Useful if a "
             "long render needs to be aborted (e.g. wrong prompt). Returns "
@@ -286,9 +292,9 @@ async def _tool_generate(args: dict) -> dict:
 
 
 TOOL_HANDLERS = {
-    "comfyui_image__generate":       _tool_generate,
-    "comfyui_image__list_workflows": _tool_list_workflows,
-    "comfyui_image__cancel":         _tool_cancel,
+    "generate":       _tool_generate,
+    "list_workflows": _tool_list_workflows,
+    "cancel":         _tool_cancel,
 }
 
 
