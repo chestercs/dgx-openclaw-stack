@@ -515,9 +515,12 @@ curl -sS -X POST http://127.0.0.1:8094/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | jq '.result.tools[].name'    # → python_exec, python_session_reset
 
-# Agent end-to-end
+# Agent end-to-end. The tool's catalog name is python_sandbox__python_exec
+# (OpenClaw <server>__<tool> convention). Use the prefixed name in prompts —
+# Gemma 4 NVFP4 silently fails to call the tool when only the bare name is
+# given. See docs/reference/python-sandbox.md for the verification trail.
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
-  --message "Use python_exec to compute 2**128. Reply only with 'POW: <value>'." \
+  --message 'Call python_sandbox__python_exec with code="print(2**128)". Reply with the printed value prefixed by VAL:' \
   --thinking medium --json --timeout 180 \
   | jq '.toolSummary, .finalAssistantVisibleText'
 ```

@@ -94,6 +94,42 @@ stale when OpenClaw added native MCP client support.
   landed in v0.7.0 / v0.7.1) but the comment hadn't followed; this
   release brings them back in sync and adds step 18.
 
+### GB10 deploy notes (2026-04-26 evening)
+- `docker compose --profile python build openclaw-python-sandbox`
+  succeeds in ~18s (slim base + cached pandas/numpy/scipy ARM64
+  wheels). Image: `openclaw-python-sandbox:0.1.0`,
+  `sha256:5d4b0b33c4c4...`.
+- Patcher step 18 logs four lines on first run after the token is
+  set: `mcp.servers.python_sandbox.{transport,url,connectionTimeoutMs,headers}`,
+  with the headers value redacted as `<set>` so the bearer doesn't
+  hit the audit log.
+- `/healthz` returns `ok kernels=0` immediately (no kernel is
+  spawned at startup; first `python_exec` lazy-spawns one).
+- Direct MCP `tools/list` returns `python_exec` and
+  `python_session_reset`.
+- Direct `python_exec` call: `import pandas as pd, numpy as np;
+  print(2**128)` returns `pandas 2.3.3 numpy 2.4.4` and the integer
+  in 543ms (cold first call).
+- Persistence smoke (set `x=42, y=[1,2,3]` in session=demo, then
+  `print(x, y, sum(y))` in the same session) returns `42 [1, 2, 3] 6`.
+- **Tool prefix gotcha**: OpenClaw surfaces external MCP tools under
+  `<server>__<tool>`, so the catalog name is
+  `python_sandbox__python_exec`. Gemma 4 31B NVFP4 silently fails
+  to call the tool when the prompt refers to `python_exec` without
+  the prefix (no failure logged, just an unrelated reply). With
+  the prefixed name + `--thinking medium`, the agent calls the tool
+  first try (1 call, 0 failures, correct result). All
+  documentation now uses the prefixed form.
+- A CLI plugin-loader hiccup hit during the post-patch
+  `--force-recreate openclaw-cli` step: stale `node_modules` for the
+  bundled `kimi-coding` and `openai` extensions caused
+  `npm error ENOTEMPTY` on `rmdir`. Recreating the CLI container
+  one more time (`docker compose up -d --force-recreate openclaw-cli`)
+  resolved it cleanly — the second recreate gets a fresh image
+  layer extraction with no stale `node_modules`. This is an
+  upstream OpenClaw / npm interaction, unrelated to the sandbox
+  changes; documented here so future deploys know it's benign.
+
 ## [0.7.3] - 2026-04-26
 
 Tooling persistence — the runtime tools we leaned on heavily during

@@ -427,7 +427,24 @@ header-auth reverse proxy in front of the CDP ports (see
 
 ## Python sandbox (openclaw-python-sandbox)
 
-### Agent says "I don't have a python_exec tool"
+### Agent ignores the tool / replies without calling python_exec
+
+Most likely: you referred to the tool as `python_exec` in the prompt,
+but OpenClaw exposes external MCP tools under
+`<server_name>__<tool_name>`. The catalog name is
+`python_sandbox__python_exec` — Gemma 4 NVFP4 silently fails to match
+the bare name and emits an unrelated reply (verified 2026-04-26 on GB10).
+
+Fix: use the prefixed name in your prompt:
+
+```text
+Call python_sandbox__python_exec with code="print(2**128)". Reply with VAL: <result>.
+```
+
+If the prefixed name still doesn't trigger a call, follow the
+"tool not registered" diagnostic chain below.
+
+### Agent says "I don't have a python_exec tool" / "no python_sandbox__python_exec"
 
 The MCP server isn't wired into the gateway. Three failure modes,
 diagnose in order:

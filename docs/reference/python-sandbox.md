@@ -137,6 +137,23 @@ payload. `isError: true` is set when the kernel raised an uncaught
 exception so the agent can decide whether to retry, change strategy, or
 surface the error.
 
+### Tool name prefix in the agent's catalog
+
+OpenClaw surfaces external MCP tools under `<server_name>__<tool_name>`
+to keep the namespace flat and unambiguous. So the agent sees:
+
+- `python_sandbox__python_exec`
+- `python_sandbox__python_session_reset`
+
+**Refer to the tools by the prefixed name in agent prompts.** Verified
+on GB10 with Gemma 4 31B NVFP4 (2026-04-26): a prompt asking for
+"the python_exec tool" without the `python_sandbox__` prefix produced
+no tool call at all (the model returned an unrelated reply, no
+failures logged). The prefixed form `python_sandbox__python_exec`
+worked first try with `--thinking medium`. If you write higher-level
+tooling that constructs prompts for this sandbox, always use the
+prefixed name.
+
 ## Threat model
 
 **Trusted-prompt only.** The container has Linux namespaces (PID, NET,
@@ -256,9 +273,12 @@ curl -sS -X POST http://127.0.0.1:8094/mcp \
   | jq -r '.result.content[0].text' | jq .stdout
 # → "42\n"
 
-# 5. Agent end-to-end via gateway
+# 5. Agent end-to-end via gateway. NOTE: refer to the tool by its
+#    prefixed name (python_sandbox__python_exec). Without the prefix,
+#    Gemma 4 NVFP4 silently fails to call the tool — see "Tool name
+#    prefix" above.
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
-  --message "Use python_exec to compute 2**128. Reply only with 'POW: <value>'." \
+  --message 'Call python_sandbox__python_exec with code="print(2**128)". Reply with the printed value prefixed by VAL:' \
   --thinking medium --json --timeout 180 \
   | jq '.toolSummary, .finalAssistantVisibleText'
 ```
