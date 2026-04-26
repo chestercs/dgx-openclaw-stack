@@ -1,0 +1,19 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2,<3
+# We implement the MCP Streamable-HTTP wire protocol directly inside app.py
+# (one POST handler, JSON-RPC dispatch, ~150 LOC). Pulling in the official
+# `mcp` SDK was tempting, but its API has churned across 1.x and the surface
+# we need (one Streamable-HTTP endpoint + tools/list + tools/call) is small
+# enough that doing it by hand is more honest about the contract.
+# Kernel pool — ipykernel is the kernel itself, jupyter_client speaks ZMQ to it
+jupyter_client>=8.6,<9
+ipykernel>=6.29,<7
+# Data-science stack baked in so sessions can do real analysis without
+# pip-installing during the agent run. Pinned to wide ranges; ARM64 wheels
+# are available on PyPI for all of these as of 2026-04.
+pandas>=2.2,<3
+numpy>=1.26,<3
+matplotlib>=3.8,<4
+scikit-learn>=1.4,<2
+scipy>=1.13,<2

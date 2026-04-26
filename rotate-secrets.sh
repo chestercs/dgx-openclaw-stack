@@ -62,9 +62,13 @@ DEFAULT_KEYS=(
   BROWSER_VNC_PASSWORD
 )
 F5HUN_KEY=F5HUN_API_TOKEN
+PYTHON_SANDBOX_KEY=PYTHON_SANDBOX_API_TOKEN
 GATEWAY_KEY=OPENCLAW_GATEWAY_TOKEN
 
-ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$F5HUN_KEY" "$GATEWAY_KEY")
+# F5HUN_KEY and PYTHON_SANDBOX_KEY are conditional: --all auto-includes
+# them only when already set (an empty value = the user opted out, and
+# auto-generating one would re-enable a service they declined).
+ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$F5HUN_KEY" "$PYTHON_SANDBOX_KEY" "$GATEWAY_KEY")
 
 # Map a rotated key to the space-separated compose service list that reads it.
 # Keep this aligned with docker-compose.yml — see plan for line-number refs.
@@ -77,6 +81,7 @@ services_for() {
     STT_API_TOKEN)               echo "openclaw-stt-whisper openclaw-config-init openclaw-gateway openclaw-cli" ;;
     F5HUN_API_TOKEN)             echo "openclaw-tts-f5hun openclaw-tts-router" ;;
     BROWSER_API_TOKEN)           echo "openclaw-browser openclaw-config-init openclaw-gateway openclaw-cli" ;;
+    PYTHON_SANDBOX_API_TOKEN)    echo "openclaw-python-sandbox openclaw-config-init openclaw-gateway openclaw-cli" ;;
     BROWSER_VNC_PASSWORD)        echo "openclaw-browser" ;;
     OPENCLAW_GATEWAY_TOKEN)      echo "openclaw-gateway openclaw-cli" ;;
     *) return 1 ;;
@@ -112,15 +117,19 @@ Flags:
 
 Default set (rotated by --all or the interactive menu):
   VLLM_API_KEY, SEARXNG_SECRET, OPENCLAW_TTS_ROUTER_API_KEY, TTS_API_TOKEN,
-  STT_API_TOKEN
+  STT_API_TOKEN, BROWSER_API_TOKEN, BROWSER_VNC_PASSWORD
   (+ F5HUN_API_TOKEN if it is already set in .env — empty F5HUN = opted out
-  of the CC-BY-NC Hungarian TTS, and --all respects that).
+  of the CC-BY-NC Hungarian TTS, and --all respects that.
+  + PYTHON_SANDBOX_API_TOKEN under the same conditional rule — empty token
+  means the sandbox opt-in was declined and --all does not silently re-enable it.)
 
 Explicit positional args rotate any rotatable key regardless of current
-value, including F5HUN_API_TOKEN and OPENCLAW_GATEWAY_TOKEN:
+value, including F5HUN_API_TOKEN, PYTHON_SANDBOX_API_TOKEN, and
+OPENCLAW_GATEWAY_TOKEN:
 
   ./rotate-secrets.sh VLLM_API_KEY TTS_API_TOKEN
   ./rotate-secrets.sh F5HUN_API_TOKEN
+  ./rotate-secrets.sh PYTHON_SANDBOX_API_TOKEN
 
 Out of scope:
   HUGGING_FACE_HUB_TOKEN — user-owned, cannot be generated. Set manually.
@@ -225,6 +234,11 @@ if (( ROTATE_ALL )); then
   if [[ -n "$(current_value "$F5HUN_KEY")" ]]; then
     add_key "$F5HUN_KEY"
   fi
+  # Same logic for the Python sandbox: empty token = the user declined the
+  # opt-in, --all should not silently re-enable it by generating one.
+  if [[ -n "$(current_value "$PYTHON_SANDBOX_KEY")" ]]; then
+    add_key "$PYTHON_SANDBOX_KEY"
+  fi
   if (( INCLUDE_GATEWAY )); then
     add_key "$GATEWAY_KEY"
   fi
@@ -251,6 +265,14 @@ if (( ${#ROTATE_MAP[@]} == 0 )); then
     printf '    Rotate? [y/N]: '
     read -r ans
     [[ "$ans" =~ ^[Yy]$ ]] && add_key "$F5HUN_KEY"
+  fi
+
+  # Python sandbox: same conditional logic — only offered if already set.
+  if [[ -n "$(current_value "$PYTHON_SANDBOX_KEY")" ]]; then
+    printf '  %s — fp=%s\n' "$PYTHON_SANDBOX_KEY" "$(fp "$(current_value "$PYTHON_SANDBOX_KEY")")"
+    printf '    Rotate? [y/N]: '
+    read -r ans
+    [[ "$ans" =~ ^[Yy]$ ]] && add_key "$PYTHON_SANDBOX_KEY"
   fi
 
   # Gateway offered only if the flag was set — mirrors --all behavior so
@@ -297,6 +319,7 @@ done
 
 HU_TOUCHED=0
 BROWSER_TOUCHED=0
+PYTHON_SANDBOX_TOUCHED=0
 
 for key in "${ROTATE_ORDER[@]}"; do
   if [[ "$key" == "BROWSER_API_TOKEN" ]]; then
@@ -322,6 +345,7 @@ for key in "${ROTATE_ORDER[@]}"; do
   done
   [[ "$key" == "$F5HUN_KEY" ]] && HU_TOUCHED=1
   [[ "$key" == "BROWSER_API_TOKEN" ]] && BROWSER_TOUCHED=1
+  [[ "$key" == "$PYTHON_SANDBOX_KEY" ]] && PYTHON_SANDBOX_TOUCHED=1
 done
 
 # ----------------------------------------------------------------------------
@@ -344,6 +368,7 @@ SERVICE_ORDER=(
   openclaw-tts-router
   openclaw-stt-whisper
   openclaw-browser
+  openclaw-python-sandbox
   openclaw-config-init
   openclaw-gateway
   openclaw-cli
@@ -359,6 +384,9 @@ if (( HU_TOUCHED )); then
 fi
 if (( BROWSER_TOUCHED )); then
   compose_cmd+=" --profile browser"
+fi
+if (( PYTHON_SANDBOX_TOUCHED )); then
+  compose_cmd+=" --profile python"
 fi
 recreate_cmd="${compose_cmd} up -d --force-recreate ${sorted_services[*]}"
 

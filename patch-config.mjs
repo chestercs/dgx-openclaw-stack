@@ -9,7 +9,7 @@
 // 31B + reasoning + vision prefill + multi-step tool calling.
 //
 // This script makes the desired state deterministic — every `docker compose up`
-// re-applies the 15 steps below in a deep-merge style. Safe to re-run; exits
+// re-applies the 18 steps below in a deep-merge style. Safe to re-run; exits
 // early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
 // (pre-onboarding fresh install) so the gateway container can still boot.
 //
@@ -55,6 +55,13 @@
 //      {fields:[{ref,type,value}]} shape — the normalizer rejects it and
 //      the agent doom-loops. The cheatsheet shows the right shape next to
 //      a labelled wrong shape, plus a one-line recovery hint.
+//  18. Wire mcp.servers.python_sandbox at the openclaw-python-sandbox
+//      service (transport: streamable-http, Bearer auth via headers).
+//      Env-gated by PYTHON_SANDBOX_API_TOKEN; when unset, the entry is
+//      removed from openclaw.json (and the parent mcp.servers / mcp object
+//      cleaned up if they end up empty) so the gateway doesn't try to dial
+//      a parked service. Schema verified against docs.openclaw.ai/cli/mcp
+//      on 2026-04-26.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -880,6 +887,48 @@ if (fs.existsSync(WORKSPACE_AGENTS_PATH)) {
     const block = `${sep}\n${TOOLS_CHEATSHEET_START}\n${TOOLS_CHEATSHEET_BODY}${TOOLS_CHEATSHEET_END}\n`;
     fs.appendFileSync(WORKSPACE_AGENTS_PATH, block);
     console.log('[patch-config] AGENTS.md += browser-tools cheatsheet block');
+  }
+}
+
+// ─── 18. Python sandbox MCP wiring ───────────────────────────────────────────
+// Env-gated by PYTHON_SANDBOX_API_TOKEN. When set, register an HTTP MCP
+// server entry under config.mcp.servers.python_sandbox with the verified
+// schema shape (transport, url, connectionTimeoutMs, headers). When unset,
+// remove any prior entry so the gateway doesn't try to dial a parked
+// service — and clean up empty parent objects too. Schema verified against
+// docs.openclaw.ai/cli/mcp on 2026-04-26 (path: mcp.servers.<name>).
+const PYTHON_SANDBOX_TOKEN = process.env.PYTHON_SANDBOX_API_TOKEN || '';
+const PYTHON_SANDBOX_URL = process.env.PYTHON_SANDBOX_URL || 'http://openclaw-python-sandbox:8094/mcp';
+
+if (PYTHON_SANDBOX_TOKEN) {
+  config.mcp ??= {};
+  config.mcp.servers ??= {};
+  config.mcp.servers.python_sandbox ??= {};
+  const ms = config.mcp.servers.python_sandbox;
+  const desired = {
+    transport: 'streamable-http',
+    url: PYTHON_SANDBOX_URL,
+    connectionTimeoutMs: 10000,
+    headers: { Authorization: `Bearer ${PYTHON_SANDBOX_TOKEN}` },
+  };
+  for (const [k, v] of Object.entries(desired)) {
+    if (JSON.stringify(ms[k]) !== JSON.stringify(v)) {
+      ms[k] = v;
+      changed = true;
+      // Don't log the bearer string itself — only that it changed.
+      const printable = k === 'headers' ? '<set>' : JSON.stringify(v);
+      console.log(`[patch-config] mcp.servers.python_sandbox.${k} = ${printable}`);
+    }
+  }
+} else if (config.mcp?.servers?.python_sandbox) {
+  delete config.mcp.servers.python_sandbox;
+  changed = true;
+  console.log('[patch-config] PYTHON_SANDBOX_API_TOKEN unset — removed mcp.servers.python_sandbox.');
+  if (config.mcp.servers && Object.keys(config.mcp.servers).length === 0) {
+    delete config.mcp.servers;
+  }
+  if (config.mcp && Object.keys(config.mcp).length === 0) {
+    delete config.mcp;
   }
 }
 

@@ -466,6 +466,125 @@ The agent then has both: `web_fetch` for static pages (fast Firecrawl
 path), `browser` for JS-heavy or login-gated content (slower Chromium
 path).
 
+## Python code execution sandbox
+
+OpenClaw can execute Python the agent writes — load a CSV, run pandas,
+return a chart — via a self-hosted MCP server bundled in this stack.
+**Opt-in, profile=python.** See
+[`reference/python-sandbox.md`](./reference/python-sandbox.md) for the
+full design rationale (why this and not the native `code_execution`
+tool or `agents.defaults.sandbox`).
+
+### Activation
+
+Three pieces must align (mirrors the HU-TTS / browser opt-in pattern):
+
+1. **Token**: `bootstrap.sh` prompts for opt-in on first run and fills
+   `PYTHON_SANDBOX_API_TOKEN` with `openssl rand -base64 48`. Re-runs
+   are no-ops if already set. To opt in later by hand:
+   ```bash
+   PYTHON_SANDBOX_API_TOKEN=$(openssl rand -base64 48)
+   echo "PYTHON_SANDBOX_API_TOKEN=$PYTHON_SANDBOX_API_TOKEN" >> .env
+   ```
+
+2. **Compose profile**: add `python` to `COMPOSE_PROFILES` in `.env`,
+   or pass `--profile python` on every docker compose command.
+
+3. **Patcher**: the next `docker compose up -d` runs step 18 of
+   `patch-config.mjs`, which writes `mcp.servers.python_sandbox` into
+   `openclaw.json`. The gateway picks this up on next reload.
+
+```bash
+docker compose --profile python up -d --build openclaw-python-sandbox
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+```
+
+After the gateway picks up the new MCP server, the agent's tool
+catalog gains `python_exec` and `python_session_reset`.
+
+### Verification
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+TOKEN=$(grep '^PYTHON_SANDBOX_API_TOKEN=' .env | cut -d= -f2-)
+
+curl -fsS http://127.0.0.1:8094/healthz                    # → ok kernels=0
+
+curl -sS -X POST http://127.0.0.1:8094/mcp \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  | jq '.result.tools[].name'    # → python_exec, python_session_reset
+
+# Agent end-to-end
+docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
+  --message "Use python_exec to compute 2**128. Reply only with 'POW: <value>'." \
+  --thinking medium --json --timeout 180 \
+  | jq '.toolSummary, .finalAssistantVisibleText'
+```
+
+### Tuning
+
+The defaults target single-user analysis on GB10:
+
+- `PYTHON_SANDBOX_MEMORY_MB=8192` — bump if you load multi-GB
+  dataframes; the docker engine OOM-kills the kernel on overshoot.
+- `PYTHON_SANDBOX_KERNEL_TIMEOUT_S=30` — bump for long-running
+  reductions; the kernel is *interrupted* (not killed) on exceed, so
+  state survives.
+- `PYTHON_SANDBOX_MAX_OUTPUT_BYTES=10485760` — truncation cap on
+  combined `stdout + stderr + plot` bytes per call. Save big figures
+  to `/workspace/foo.png` and return the path instead of inlining
+  large base64 PNGs.
+
+### Hardening: hard egress block
+
+The default v0.8.0 ships **no hard egress block**. Egress is implicitly
+limited because the kernel runs without root and doesn't import
+network libraries by default, but a determined agent can still reach
+SearxNG / vLLM / the LAN via `urllib`. To enforce no-egress:
+
+1. Create an internal docker network:
+   ```bash
+   docker network create --internal openclaw-python-sandbox-net
+   ```
+2. Override the service in a `docker-compose.override.yml`:
+   ```yaml
+   services:
+     openclaw-python-sandbox:
+       networks:
+         - openclaw-python-sandbox-net
+   networks:
+     openclaw-python-sandbox-net:
+       external: true
+   ```
+3. Recreate the service. The OpenClaw gateway must be on the same
+   network to reach the MCP endpoint — add it there too if the
+   override fully replaces the default network attachment.
+
+A future v0.8.x patch will fold this in via the `PYTHON_SANDBOX_NETWORK`
+env var; today the env var is a documented placeholder only.
+
+### Adding libraries
+
+`pip install` won't work at runtime (no egress). To add a library:
+
+1. Edit `openclaw-python-sandbox/server/requirements.txt`.
+2. Rebuild: `docker compose --profile python build openclaw-python-sandbox`.
+3. Recreate: `docker compose --profile python up -d openclaw-python-sandbox`.
+4. State in active sessions is lost; the next `python_exec` against
+   any session_id starts a fresh kernel.
+
+### Disabling
+
+Either lever opts out independently:
+
+- Drop `python` from `COMPOSE_PROFILES`. The service stays parked.
+- Empty `PYTHON_SANDBOX_API_TOKEN`. The patcher's step 18 removes
+  `mcp.servers.python_sandbox` from `openclaw.json` on the next run,
+  so the gateway stops trying to dial a parked service.
+
+Both are safe and reversible.
+
 ## Voice-controlled agent over Discord
 
 Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by voice: speak a request → the bundled Whisper STT transcribes → the agent plans + executes → the bundled TTS speaks the reply into the channel. End-to-end round trip is ~3-5 s on GB10 for a simple tool call.

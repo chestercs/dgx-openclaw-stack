@@ -425,6 +425,72 @@ The query-string token is best-effort; production-grade auth needs a
 header-auth reverse proxy in front of the CDP ports (see
 `docs/CUSTOMIZATION.md` → "Expose CDP on the LAN").
 
+## Python sandbox (openclaw-python-sandbox)
+
+### Agent says "I don't have a python_exec tool"
+
+The MCP server isn't wired into the gateway. Three failure modes,
+diagnose in order:
+
+1. **Service not running.** `docker compose ps openclaw-python-sandbox`
+   should show it healthy. If it's missing, you didn't activate the
+   profile — add `python` to `COMPOSE_PROFILES` in `.env` (or pass
+   `--profile python`) and `docker compose up -d openclaw-python-sandbox`.
+2. **Token unset.** `grep '^PYTHON_SANDBOX_API_TOKEN=' .env` returns an
+   empty value or the placeholder. The patcher's step 18 skips when
+   the token is empty. Either run `bootstrap.sh` and choose opt-in,
+   or set the value by hand and re-run the patcher:
+   `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`.
+3. **Patcher hasn't run since opt-in.** `docker compose logs
+   openclaw-config-init | grep python_sandbox` should show the
+   `mcp.servers.python_sandbox.*` write lines from the last patcher
+   run. If absent, force-recreate the init service to retrigger.
+
+Confirm the wiring landed:
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker exec ${PROJ}openclaw-cli sh -c \
+  'cat ~/.openclaw/openclaw.json | jq ".mcp.servers.python_sandbox"'
+# Should print { "transport": "streamable-http", "url": "...", "headers": {...} }
+```
+
+### `python_exec` returns `TimeoutError: execution exceeded 30.0s`
+
+The kernel was interrupted mid-run. Two common causes:
+
+- **Genuinely long computation.** Bump `PYTHON_SANDBOX_KERNEL_TIMEOUT_S`
+  in `.env`, recreate the service. The kernel is *interrupted* (not
+  killed) on timeout, so any session state (loaded dataframes,
+  imports) survives. The next call against the same `session_id`
+  inherits that state.
+- **Accidental `time.sleep` or blocking I/O.** If the agent wrote
+  `time.sleep(...)`, the kernel was idle, not computing. Inspect with
+  `docker exec ${PROJ}openclaw-python-sandbox curl -sS
+  http://127.0.0.1:8094/healthz` — if `kernels=N` for `N>0`, kernels
+  are alive. Reset the session via `python_session_reset` and
+  re-prompt the agent without the sleep.
+
+### Kernel OOM-killed mid-call (no error, just truncated output + fresh state)
+
+The container hit `mem_limit` (default 8 GB) and the docker engine
+SIGKILL'd the kernel. The next `python_exec` call against the same
+`session_id` transparently starts a fresh kernel — but the prior
+state (variables, loaded data) is gone.
+
+Three mitigations:
+
+1. **Bump the cap.** Edit `PYTHON_SANDBOX_MEMORY_MB` in `.env`,
+   recreate the service. Watch GB10 vLLM headroom (`docker stats
+   ${PROJ}vllm-llm`) — going over ~16 GB sandbox cap on a 128 GB box
+   is fine; on smaller systems you may starve the LLM.
+2. **Save big intermediate results to `/workspace`.** A 10 GB
+   dataframe in RAM gets killed; the same dataframe written to
+   `/workspace/data.parquet` and re-loaded as needed survives.
+3. **Use `del` and `gc.collect()` after large operations.** ipykernel
+   doesn't always free memory aggressively after a `del`; explicit
+   `gc.collect()` plus `python_session_reset` for a clean slate is
+   the reliable path.
+
 ## Host-level issues
 
 ### `nvidia-smi` inside a container fails with `Failed to initialize NVML`

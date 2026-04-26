@@ -5,6 +5,95 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-04-26
+
+Self-hosted Python code-execution sandbox via MCP — the agent can now
+write Python in tool calls, get stdout / stderr / inline plots back,
+and keep variables alive across calls within a session. Plus a
+documentation freshness pass for the MCP-related comments that became
+stale when OpenClaw added native MCP client support.
+
+### Added
+- **`openclaw-python-sandbox` service** — opt-in
+  (`COMPOSE_PROFILES=python` + non-empty `PYTHON_SANDBOX_API_TOKEN`).
+  One container, one uvicorn process. Persistent ipykernel per
+  `session_id` (lazy spawn, idle reaper at 30 min default), data-
+  science stack baked in (pandas, numpy, matplotlib `Agg` backend,
+  scikit-learn, scipy). `MCP Streamable-HTTP` wire protocol on
+  `POST /mcp`, hand-rolled in `server/app.py` (~250 LOC, no SDK
+  dependency). Two tools surface to the agent: `python_exec(code,
+  session_id, timeout_s)` and `python_session_reset(session_id)`.
+- **Patcher step 18** — `mcp.servers.python_sandbox` deep-merge,
+  env-gated by `PYTHON_SANDBOX_API_TOKEN`. Schema verified against
+  `docs.openclaw.ai/cli/mcp` on 2026-04-26 (`url`, `transport:
+  streamable-http`, `connectionTimeoutMs`, `headers`). When the
+  token is unset, the entry is *removed* (and empty parent objects
+  cleaned up) so the gateway doesn't try to dial a parked service.
+- **`bootstrap.sh` opt-in prompt** — section 3d, after the browser
+  prompt. Token-presence guard so re-runs don't re-ask. Best-effort
+  `COMPOSE_PROFILES` toggle so the activation triad lights up in
+  one step.
+- **`rotate-secrets.sh` registers `PYTHON_SANDBOX_API_TOKEN`** as a
+  conditional secret — auto-included in `--all` only when already
+  set (same posture as `F5HUN_API_TOKEN`). Empty token = the user
+  declined opt-in; `--all` does not silently re-enable. Restart
+  matrix maps the key to `openclaw-python-sandbox`,
+  `openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`.
+- **`.env.example` block** for the new tunables: `*_API_TOKEN`,
+  `*_PORT`, `*_BIND`, `*_KERNEL_TIMEOUT_S`, `*_MAX_OUTPUT_BYTES`,
+  `*_IDLE_TTL_S`, `*_REAP_INTERVAL_S`, `*_MEMORY_MB`, `*_CPUS`.
+  Two documented placeholders (`*_NETWORK`, `*_GPU`) reserved for
+  future v0.8.x patches.
+- **`docs/reference/python-sandbox.md`** — design rationale (why
+  MCP and not native `code_execution` / `agents.defaults.sandbox`),
+  threat model, kernel pool architecture, MCP wire protocol shapes,
+  tunable reference, verification recipes, known limits.
+- **CUSTOMIZATION.md** "Python code execution sandbox" section
+  with activation walkthrough, tuning guide, hard-egress hardening
+  recipe (docker `--internal` network override), library-add
+  workflow, disable steps.
+- **ARCHITECTURE.md** "Python sandbox subsystem" subsection +
+  patcher-step list expansion (15 → 18) + networking-trust
+  exposure list update.
+- **TROUBLESHOOTING.md** entries for the three common failure
+  modes: tool-not-registered (token / profile / patcher chain),
+  kernel timeout (genuine long compute vs accidental sleep), OOM
+  kill mid-call.
+
+### Documented
+- **MCP-stale comment fixups across 3 files**. Verify-first
+  WebFetch on 2026-04-26 confirmed `docs.openclaw.ai/cli/mcp.md`
+  lists native MCP client support — `openclaw mcp serve|list|show
+  |set|unset`, config schema `mcp.servers.<name>`, transports
+  stdio / SSE-HTTP / Streamable-HTTP. The repo's own design notes
+  in `CLAUDE.md` (line ~270), `docs/ARCHITECTURE.md` (line ~355),
+  and `docs/reference/browser-automation.md` (line ~33) all
+  asserted "no MCP slot" — true at v0.7.0 design time
+  (2026-04-25), stale by v0.8.0. Each comment now reads as
+  history (the CDP-attach decision was correct *then*; the
+  browser stack stays on CDP-attach because port-per-profile +
+  cdpUrl token routing is the actual constraint, not transport
+  shape) and points new MCP-based tool wiring at
+  `mcp.servers.<name>`.
+- **Honest limit: no hard egress block in v0.8.0.** The container
+  has no curl / wget / requests-by-default and runs without root,
+  so the kernel can't open raw sockets or apt-install — but
+  `urllib` / `http.client` / `socket` work. Hard isolation is a
+  documented `--internal` docker network override; a future
+  v0.8.x patch will fold the wiring in via `PYTHON_SANDBOX_NETWORK`.
+- **Honest limit: trusted-prompt only.** Container namespaces +
+  non-root user defend the host filesystem. Python introspection
+  could in principle drive a kernel exploit chain to escape the
+  container — gVisor / Kata Containers documented as the upgrade
+  path for multi-tenant deployments.
+
+### Changed
+- **Patcher header comment in `docker-compose.yml` and inline
+  `patch-config.mjs` doc-block** updated from "15 steps" to "18
+  steps". The repo had been at 17 steps in code (steps 16 and 17
+  landed in v0.7.0 / v0.7.1) but the comment hadn't followed; this
+  release brings them back in sync and adds step 18.
+
 ## [0.7.3] - 2026-04-26
 
 Tooling persistence — the runtime tools we leaned on heavily during
@@ -760,7 +849,8 @@ catch up with the two patcher steps added post-tag.
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.0...v0.7.1

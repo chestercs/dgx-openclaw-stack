@@ -29,12 +29,21 @@ on first request. Patchright is documented as a Phase 2 swap if needed.
 
 Three integration paths were considered.
 
-**MCP** was the original framing in the wishlist. The OpenClaw config
-schema has no slot for MCP servers (no `plugins.entries.mcp.*`, no
-`tools.mcp.servers[]`). Adding one would require either a custom
-upstream plugin, which would have to be maintained against every
+**MCP** was the original framing in the wishlist. At v0.7.0 design time
+(2026-04-25) the OpenClaw config schema had no slot for MCP servers (no
+`plugins.entries.mcp.*`, no `tools.mcp.servers[]`). Adding one would
+have required either a custom upstream plugin maintained against every
 OpenClaw release, or a wrapper that re-implements every browser tool the
-agent needs. Both expand the surface area we own. Rejected.
+agent needs. Both expanded the surface area we own. Rejected.
+
+Native MCP client support landed in OpenClaw shortly after — `mcp.servers.<name>`
+with stdio / SSE-HTTP / Streamable-HTTP transports (verified 2026-04-26).
+Net new tool wiring (e.g. the v0.8.0+ Python sandbox) defaults to MCP.
+The browser stack stays on CDP-attach because the constraint was
+port-per-profile routing (issues #4841 / #9723 / #11926) and CDP
+Bearer-token semantics — neither problem is solved by switching transport.
+If a future structural reason emerges (multi-host browser pool, per-tool
+allow-list shape change), MCP is now a viable alternative.
 
 **Bespoke HTTP tool adapter (SearxNG-style)** would mean a FastAPI
 service exposing routes like `POST /v1/fetch` that the agent calls via

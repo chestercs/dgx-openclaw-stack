@@ -181,7 +181,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 15 steps
+### 18 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -201,6 +201,9 @@ Rather than tell users "also click here, there, and there after onboarding", the
 13. Sync the per-agent `auth-profiles.json` `vllm:default.key` with `VLLM_API_KEY`. The agent runner reads the credential from this per-agent store, not from `models.providers.vllm.apiKey` — drift after a `.env` rotation produces HTTP 401 from vLLM even when the config-file apiKey is correct.
 14. Ensure `tools.media.audio` wires the Whisper STT backend (env-gated: `STT_API_TOKEN`). Upserts an entry into `tools.media.audio.models[]` with `provider: "openai"`, the configured model id, `baseUrl: http://openclaw-stt-whisper:8000/v1/`, and `headers.Authorization: Bearer $STT_API_TOKEN` so the Whisper Bearer stays isolated from any global `models.providers.openai.apiKey` (upsert-by-baseUrl preserves user-added entries like a Deepgram fallback). Feeds voice-note upload, Discord voice-channel transcription, VoiceCall CLI, Talk / Voicewake nodes. The Control UI realtime mic button is a separate path — it uses the browser's Web Speech API (`speech.ts`) and does NOT go through this pipeline.
 15. Ensure `browser.enabled = true` and write one `browser.profiles.<name>.cdpUrl` per registered Chromium profile in `openclaw-browser` (env-gated: `BROWSER_API_TOKEN`). Default profile gets port `BROWSER_PORT_BASE` (9222); each name in `BROWSER_PROFILE_NAMES` (comma-separated, populated by `./bootstrap-browser-login.sh`) gets the next port in sequence — port-per-profile because OpenClaw does not forward `?profile=<name>` query params on cdpUrl attaches (issues #4841 / #9723 / #11926). Auth is `?token=<BROWSER_API_TOKEN>` in the URL — OpenClaw's cdpUrl field accepts query tokens or Basic URL auth only, not Authorization headers. Loopback host bind plus weekly rotation are the mitigations against query-string token leakage.
+16. Idempotently inject a soft browser-policy block into the workspace `AGENTS.md` (HTML-comment-marked region, deep-merge-style append-once). Tells the agent: default profile for throwaway browsing, opt in to credentialed profiles only when the task requires that identity, never persist via the default profile. Soft layer — prompt-injection can override; the hard layer would be a separate `bot-ops` agent.
+17. Idempotently inject a `browser.act` cheatsheet block into the same `AGENTS.md`. Smaller open models (Gemma 4 in particular) routinely emit the flat `{element, text}` shape on `kind="fill"` actions that need the nested `{fields: [{ref, type, value}]}` shape; the cheatsheet shows the right shape next to a labelled wrong shape plus a one-line recovery hint.
+18. Wire `mcp.servers.python_sandbox` at the `openclaw-python-sandbox` service (env-gated: `PYTHON_SANDBOX_API_TOKEN`). Streamable-HTTP transport, 10-second connect timeout, Bearer auth via `headers.Authorization`. When the token is unset, the entry is *removed* from `openclaw.json` (and empty parent objects cleaned up) so the gateway doesn't try to dial a parked service. Schema verified against `docs.openclaw.ai/cli/mcp` on 2026-04-26.
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 
@@ -352,13 +355,17 @@ snapshot, screenshot, cookies, storage all live in the gateway.
 
 ### Why CDP-attach (not MCP, not a bespoke HTTP tool)
 
-OpenClaw has no MCP slot in its config schema, so MCP would mean a
-custom plugin maintained against every gateway release. A bespoke HTTP
-tool adapter would re-implement the full Playwright control surface
-that OpenClaw already gives us. CDP-attach via `browser.profiles.<name>.cdpUrl`
-is documented and supported; the only custom code we own is the
-supervisor, the login helper, and a small markdown extractor. Full
-rationale in `docs/reference/browser-automation.md`.
+At v0.7.0 design time (2026-04-25) OpenClaw had no MCP slot in its config
+schema, so MCP would have meant a custom plugin maintained against every
+gateway release. A bespoke HTTP tool adapter would re-implement the full
+Playwright control surface that OpenClaw already gives us. CDP-attach via
+`browser.profiles.<name>.cdpUrl` was documented and supported; the only
+custom code we own is the supervisor, the login helper, and a small
+markdown extractor. Native MCP client support landed shortly after via
+`mcp.servers.<name>` (transports: stdio / SSE-HTTP / Streamable-HTTP), so
+net new tools default to MCP — but the browser stack stays on CDP-attach
+because port-per-profile + query-string token routing already works.
+Full rationale in `docs/reference/browser-automation.md`.
 
 ### Why port-per-profile
 
@@ -395,6 +402,90 @@ on the same `--user-data-dir`. The script then appends the profile name
 to `BROWSER_PROFILE_NAMES` and runs `openclaw-config-init` so patcher
 step 15 writes the new `browser.profiles.<n>.cdpUrl` entry.
 
+## Python sandbox subsystem (1 service, opt-in)
+
+`openclaw-python-sandbox` is the v0.8.0+ opt-in `--profile python`
+service that gives the agent a `python_exec` tool over MCP — load a
+CSV, run pandas, return a chart, persist state across calls.
+
+### Why MCP, not the native `code_execution` tool
+
+OpenClaw exposes a native `code_execution` tool, but it routes to xAI's
+Responses API (cloud, paid, requires `XAI_API_KEY`). This stack is
+self-hosted by design. We could also lean on `agents.defaults.sandbox`
++ the generic `exec` tool, but that knob is gateway-wide and one-shot
+per call (no session persistence, every other tool's behavior changes
+too). MCP gives us a Python-specific, scoped, opt-in surface.
+
+OpenClaw added native MCP client support shortly after v0.7.0 — config
+path `mcp.servers.<name>`, transports stdio / SSE-HTTP /
+Streamable-HTTP. We use Streamable-HTTP at
+`http://openclaw-python-sandbox:8094/mcp` with a Bearer header.
+
+### Layout
+
+One container, one uvicorn process:
+
+- **FastAPI `/mcp` endpoint** — JSON-RPC 2.0 over POST,
+  Streamable-HTTP transport, Bearer auth. Hand-rolled (~250 LOC) so
+  the protocol shape isn't pinned to the churning `mcp` Python SDK.
+- **`KernelPool`** — `jupyter_client.MultiKernelManager` wrapping
+  one ipykernel child per `session_id`. Lazy spawn, idle reaper
+  (default 30 min TTL on a 5 min sweep), per-session async lock so
+  concurrent calls on the same kernel serialize.
+- **`/workspace` bind** — `${OPENCLAW_WORKSPACE_DIR}/sandbox/` on
+  the host, mounted rw. The agent's canonical place to read/write
+  files; survives container restarts.
+
+The kernel pool runs in-process via `jupyter_client` rather than
+fronting a separate Jupyter Kernel Gateway subprocess — saves a HTTP
+hop per call and removes second-process lifecycle coordination.
+
+### Patcher wiring (step 18)
+
+When `PYTHON_SANDBOX_API_TOKEN` is set, `patch-config.mjs` step 18
+writes:
+
+```json
+"mcp": {
+  "servers": {
+    "python_sandbox": {
+      "transport": "streamable-http",
+      "url": "http://openclaw-python-sandbox:8094/mcp",
+      "connectionTimeoutMs": 10000,
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+When the token is unset, the entry is *removed* (and empty parent
+objects cleaned up) so the gateway doesn't try to dial a parked
+service. The bootstrap-prompt + Compose profile + patcher step
+together form the standard three-lever opt-in triad used elsewhere
+in the repo.
+
+### Threat model
+
+Trusted-prompt only. Container namespaces + non-root user (UID 1000)
++ `cap_drop: [ALL]` + `no-new-privileges:true` protect the host
+filesystem; Python introspection or a kernel-exploit chain could in
+principle escape. We don't ship gVisor / firecracker — that's the
+upgrade path for multi-tenant deployments. The default
+`PYTHON_SANDBOX_NETWORK=none` env var is a documented placeholder
+only; today egress is implicitly limited but not enforced. See
+`docs/reference/python-sandbox.md` for the full threat model and
+`docs/CUSTOMIZATION.md` for the hard-egress hardening recipe.
+
+### Port publishing posture
+
+`8094` publishes to `127.0.0.1` only by default
+(`PYTHON_SANDBOX_BIND`); the gateway uses bridge DNS so the host
+publish is operator ergonomics for `curl` smoke tests. Resource caps:
+`PYTHON_SANDBOX_MEMORY_MB=8192`, `PYTHON_SANDBOX_CPUS=4` — both are
+docker-engine-enforced hard limits, OOM-killed kernels return on the
+next call as a fresh kernel.
+
 ## Networking, trust, and exposure
 
 - **Gateway**: `18789` (and `18790` control) are published to the host. Put a TLS-terminating reverse proxy in front for public access over `wss://`.
@@ -402,5 +493,6 @@ step 15 writes the new `browser.profiles.<n>.cdpUrl` entry.
 - **TTS ports publish to loopback by default** (`127.0.0.1:8090–8092`) — see the TTS subsystem section above. Set `TTS_*_BIND=0.0.0.0` in `.env` to expose on the LAN.
 - **STT port (`openclaw-stt-whisper`) publishes to `127.0.0.1:8093`** by default. Set `STT_WHISPER_BIND=0.0.0.0` to expose on the LAN (Bearer-protected via `STT_API_TOKEN`).
 - **Browser ports (`openclaw-browser`) publish to `127.0.0.1:9220` (management API) + `127.0.0.1:9222-9241` (Chromium debug ports) + `127.0.0.1:5901` (noVNC during onboarding only)** by default — opt-in via `--profile browser`. Set `BROWSER_BIND=0.0.0.0` only with a header-auth reverse proxy in front; raw CDP ports on the LAN are a credential-theft vector. See `docs/reference/browser-automation.md`.
+- **Python sandbox port (`openclaw-python-sandbox`) publishes to `127.0.0.1:8094`** by default — opt-in via `--profile python`. Bearer-protected via `PYTHON_SANDBOX_API_TOKEN`. Set `PYTHON_SANDBOX_BIND=0.0.0.0` only behind a header-auth reverse proxy. See `docs/reference/python-sandbox.md`.
 - `gateway.trustedProxies` includes `172.16.0.0/12` so any reverse proxy on the same docker bridge (or on host-network with bridge-adjacent IPs) is trusted. If you access the gateway **directly** from your LAN (bypassing the proxy), add your LAN CIDR via `OPENCLAW_LAN_CIDR`.
 - The Chrome extension expects `wss://` (secure) for public use. Put a TLS-terminating reverse proxy in front and set `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1` so the gateway accepts the plain `ws://` hop from the proxy on your private network.

@@ -232,6 +232,50 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 3d. Optional: Python code-execution sandbox opt-in
+#
+# Asked once, after the browser opt-in. Token-presence guard so re-runs
+# never re-ask. Wires both the secret and (best-effort) the Compose
+# profile so the activation triad (token + profile + patcher step) lights
+# up in one go.
+# ----------------------------------------------------------------------------
+py_token_existing=$(grep -E '^PYTHON_SANDBOX_API_TOKEN=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
+if [[ -z "$py_token_existing" ]]; then
+  printf '\n%bOptional:%b Python code-execution sandbox — opt-in.\n' "$BOLD" "$RESET"
+  log "  Wires a self-hosted Python execution backend (persistent ipykernel"
+  log "  per session, pandas/numpy/matplotlib/scikit-learn/scipy baked in)"
+  log "  to OpenClaw via MCP. Two tools the agent gets: python_exec(code,"
+  log "  session_id) and python_session_reset(session_id)."
+  log ""
+  log "  Cost: image is ~1.5-2 GB; default 8 GB RAM cap, 4 CPUs per kernel."
+  log "  Threat model: trusted-prompt only (container namespaces, no gVisor)."
+  log "  Egress is implicitly limited (no curl/requests in image)."
+  printf '%bActivate Python sandbox now? [y/N]:%b ' "$BOLD" "$RESET"
+  read -r py_answer
+  if [[ "$py_answer" =~ ^[Yy]$ ]]; then
+    PYTHON_SANDBOX_TOKEN_NEW="$(openssl rand -base64 48 | tr -d '\n')"
+    upsert_env PYTHON_SANDBOX_API_TOKEN "$PYTHON_SANDBOX_TOKEN_NEW" '.*'
+    # Best-effort COMPOSE_PROFILES toggle (same pattern as the browser block).
+    py_existing_profiles=$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- || echo "")
+    if [[ -z "$py_existing_profiles" ]]; then
+      upsert_env COMPOSE_PROFILES "python" '.*'
+    elif [[ ! "$py_existing_profiles" =~ (^|,)python(,|$) ]]; then
+      new_profiles="${py_existing_profiles},python"
+      upsert_env COMPOSE_PROFILES "$new_profiles" '.*'
+      ok "COMPOSE_PROFILES → ${new_profiles}"
+    fi
+    ok "Python sandbox opt-in: secrets set + profile activated."
+    ok "  → docker compose --profile python up -d --build openclaw-python-sandbox"
+    ok "  → docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli"
+  else
+    log "Skipped — re-run bootstrap.sh later to enable, or set"
+    log "         PYTHON_SANDBOX_API_TOKEN in .env by hand."
+  fi
+else
+  ok "PYTHON_SANDBOX_API_TOKEN already present — Python sandbox opt-in preserved."
+fi
+
+# ----------------------------------------------------------------------------
 # 4. HuggingFace token
 # ----------------------------------------------------------------------------
 current_hf=$(grep -E '^HUGGING_FACE_HUB_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2-)

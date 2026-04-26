@@ -834,10 +834,113 @@ services:
         max-size: "50m"
 
   ######################
+  ## Python code-execution sandbox — OPT-IN (profile=python).
+  #
+  #  Self-hosted Python execution environment that the OpenClaw agent reaches
+  #  over MCP (mcp.servers.python_sandbox, transport: streamable-http). One
+  #  long-lived ipykernel per session_id — state (variables, imports, loaded
+  #  CSVs) survives across calls so a multi-step analysis works without
+  #  re-loading the dataset on every tool call. See
+  #  docs/reference/python-sandbox.md for the full design rationale.
+  #
+  #  Why not the OpenClaw native `code_execution` tool: it routes to xAI's
+  #  Responses API (cloud, paid). This stack is self-hosted by design.
+  #  Why not `agents.defaults.sandbox` + the `exec` tool: that controls
+  #  shell-tool execution gateway-wide; flipping it to Python-as-default
+  #  would change behavior for every other tool too. The MCP path is
+  #  Python-specific, scoped, and opt-in.
+  #
+  #  Activation requires BOTH:
+  #    1. PYTHON_SANDBOX_API_TOKEN set in .env (bootstrap.sh handles this).
+  #    2. The `python` Compose profile active. Either:
+  #         - COMPOSE_PROFILES=python in .env (preferred), OR
+  #         - --profile python on the docker compose command line.
+  #
+  #  Networking:
+  #    - 8094 (MCP Streamable-HTTP, Bearer-auth'd).
+  #    Loopback-only by default — the gateway reaches it via bridge DNS at
+  #    openclaw-python-sandbox:8094. No published Chromium-style debug ports.
+  #
+  #  Egress: see PYTHON_SANDBOX_NETWORK in .env.example. Default "none" —
+  #  user code can't reach SearxNG, vLLM, or the LAN. "bridge" is the
+  #  override for use cases that genuinely need outbound HTTP (e.g.,
+  #  scraping a public API the agent has been told to query).
+  #
+  #  Resources: 8 GB RAM + 4 CPU default (PYTHON_SANDBOX_MEMORY_MB,
+  #  PYTHON_SANDBOX_CPUS). On GB10 with the default vLLM profile this
+  #  leaves headroom; tune up if you load multi-GB dataframes.
+  #
+  #  Disable: leave PYTHON_SANDBOX_API_TOKEN empty AND drop `python` from
+  #  COMPOSE_PROFILES. Patcher step 18 is env-gated (skipped when the
+  #  token is unset), so the gateway wiring opts out cleanly.
+  ######################
+  openclaw-python-sandbox:
+    profiles: ["python"]
+    build:
+      context: ./openclaw-python-sandbox/server
+      dockerfile: Dockerfile
+    image: openclaw-python-sandbox:0.1.0
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-python-sandbox
+    hostname: openclaw-python-sandbox
+    user: "1000:1000"
+    restart: unless-stopped
+    init: true
+    ports:
+      # Loopback bind so the host-side smoke command (curl /healthz) works
+      # without docker exec gymnastics. The gateway uses bridge DNS, so
+      # publishing isn't strictly required — it's purely operator ergonomics.
+      - "${PYTHON_SANDBOX_BIND:-127.0.0.1}:${PYTHON_SANDBOX_PORT:-8094}:8094"
+    environment:
+      # Required. Empty value fails fast at app startup — a token-less
+      # sandbox would let any container on the bridge run arbitrary code.
+      PYTHON_SANDBOX_API_TOKEN: ${PYTHON_SANDBOX_API_TOKEN:-}
+      # Per-execution wall-clock cap. Long-running analyses can bump this;
+      # the kernel is interrupted (not killed) on timeout so subsequent
+      # calls in the same session keep working.
+      PYTHON_SANDBOX_KERNEL_TIMEOUT_S: ${PYTHON_SANDBOX_KERNEL_TIMEOUT_S:-30}
+      # Truncation cap on (stdout + stderr + plot bytes) returned per call.
+      # 10 MB is generous for tool-call payloads; bump if you regularly
+      # send large plots.
+      PYTHON_SANDBOX_MAX_OUTPUT_BYTES: ${PYTHON_SANDBOX_MAX_OUTPUT_BYTES:-10485760}
+      # Idle kernel reaper: shut down kernels not used for this many seconds.
+      # Trades memory for warm-cache convenience; a reaped session loses
+      # state and the next call starts fresh.
+      PYTHON_SANDBOX_IDLE_TTL_S: ${PYTHON_SANDBOX_IDLE_TTL_S:-1800}
+      PYTHON_SANDBOX_REAP_INTERVAL_S: ${PYTHON_SANDBOX_REAP_INTERVAL_S:-300}
+    volumes:
+      # /workspace is the canonical place for the agent to read/write files.
+      # Bind-mounted from the host so files persist across recreates and so
+      # the operator can drop CSVs in for the agent to analyze.
+      - ${OPENCLAW_WORKSPACE_DIR}/sandbox:/workspace:rw
+    # No `networks:` directive — the sandbox joins the project's default
+    # bridge so the gateway can reach it via DNS at openclaw-python-sandbox.
+    # PYTHON_SANDBOX_NETWORK in .env is a documented placeholder for a
+    # future v0.8.x patch that will offer an `internal: true` network
+    # opt-in; today, egress is controlled by the absence of network-using
+    # libraries in the image plus the kernel's lack of root for raw
+    # sockets. If you need hard network isolation, drop a docker network
+    # rule (`docker network create --internal`) and override at runtime.
+    mem_limit: ${PYTHON_SANDBOX_MEMORY_MB:-8192}m
+    cpus: ${PYTHON_SANDBOX_CPUS:-4}
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8094/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+
+  ######################
   ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
   #
   #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 15 steps:
+  #  the onboarding wizard's choices or previous manual edits. 18 steps:
   #
   #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
   #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
@@ -893,6 +996,24 @@ services:
   #       out of browser wiring (the openclaw-browser service block is also
   #       parked behind `profiles: ["browser"]` and stays inactive without
   #       --profile browser).
+  #   16. Idempotently inject a soft browser-policy block into the workspace
+  #       AGENTS.md (HTML-comment-marked region, deep-merge style). Tells the
+  #       agent: default profile for throwaway browsing, opt-in to the
+  #       credentialed profiles only when the task requires that identity,
+  #       never persist via the default profile. v0.7.0+.
+  #   17. Idempotently inject a browser.act cheatsheet block into the
+  #       workspace AGENTS.md. Smaller open models (Gemma 4 in particular)
+  #       routinely emit the flat {element, text} shape on kind="fill"
+  #       actions; the cheatsheet shows the right nested {fields: [...]}
+  #       shape so the normalizer doesn't reject the call and the agent
+  #       doesn't doom-loop trying to re-emit a broken request. v0.7.1+.
+  #   18. Ensure mcp.servers.python_sandbox is wired at the
+  #       openclaw-python-sandbox service (transport: streamable-http,
+  #       headers Authorization: Bearer $PYTHON_SANDBOX_API_TOKEN). Env-gated:
+  #       when PYTHON_SANDBOX_API_TOKEN is unset, the entry is REMOVED from
+  #       openclaw.json so the gateway doesn't try to dial a parked service
+  #       (the openclaw-python-sandbox block is also parked behind
+  #       `profiles: ["python"]`). v0.8.0+.
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.
@@ -958,6 +1079,13 @@ services:
       BROWSER_PROFILE_NAMES: ${BROWSER_PROFILE_NAMES:-}
       BROWSER_CDP_HOST: ${BROWSER_CDP_HOST:-http://openclaw-browser}
       BROWSER_PORT_BASE: ${BROWSER_PORT_BASE:-9222}
+      # Python sandbox MCP wiring (step 18). When PYTHON_SANDBOX_API_TOKEN
+      # is set, the patcher writes mcp.servers.python_sandbox pointing at
+      # the openclaw-python-sandbox service (transport: streamable-http).
+      # Empty token opts out — the patcher removes the entry from
+      # openclaw.json so the gateway doesn't try to dial a parked service.
+      PYTHON_SANDBOX_API_TOKEN: ${PYTHON_SANDBOX_API_TOKEN:-}
+      PYTHON_SANDBOX_URL: ${PYTHON_SANDBOX_URL:-http://openclaw-python-sandbox:8094/mcp}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

@@ -28,3 +28,7 @@ desktop.ini
 # instructions, sample audio, host-only userscripts, private knowledge
 # base, etc).
 private/
+
+# Python bytecode
+__pycache__/
+*.pyc
