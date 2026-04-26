@@ -27,3 +27,12 @@ lxml>=5,<6
 # (Chromium opens its port a beat after the process is alive).
 tenacity>=9,<10
 python-multipart>=0.0.20,<0.1
+# Soft anti-bot fingerprint masking applied per-page via add_init_script:
+# navigator.webdriver=false, window.chrome mock, plugin spoofing, sane
+# language headers, WebGL/Canvas neutralization. Used by ad-hoc operator
+# scripts that talk to the headful Chromium over CDP (e.g. for sites
+# that bot-detect at the page-load layer rather than at the network).
+# Modern hCaptcha behavioral biometrics still see through this — see
+# klanhaboru.md decisions log — but it gets you past bot.sannysoft.com,
+# Cloudflare's gentler challenges, and most non-aggressive sites.
+playwright-stealth>=2.0,<3

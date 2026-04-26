@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-04-26
+
+Tooling persistence — the runtime tools we leaned on heavily during
+the v0.7.2 session investigation (xdotool, ImageMagick, playwright-
+stealth) are now baked into the `openclaw-browser` image so a
+`docker compose build --no-cache` brings them back automatically.
+
+### Added
+- **`xdotool`** in the `openclaw-browser` image (apt). OS-level mouse
+  driver for `DISPLAY=:99`. Required when an agent-driven flow needs
+  the *physical* X cursor to move (some site CAPTCHAs and animation-
+  heavy UIs fingerprint the real X11 cursor, not just the JS event
+  surface). Playwright's `mouse.move/down/up` dispatches CDP Input
+  events that update the JS layer but DON'T move the X cursor;
+  `xdotool` fills that gap so headful flows look closer to a human
+  session. Coord note: viewport y + ~90 px (Chrome's chrome bar) =
+  X11 y, when running against a 1920x1080 Chromium window.
+- **`imagemagick`** in the same image. `import -window root` captures
+  the X11 root window *including* the cursor — the CDP-side
+  `Page.captureScreenshot` does not. Useful for debugging where a
+  click actually landed visually.
+- **`playwright-stealth>=2.0,<3`** in
+  `openclaw-browser/server/requirements.txt`. Soft anti-bot
+  fingerprint masking (navigator.webdriver=false, window.chrome mock,
+  plugin spoof, language + WebGL/Canvas neutralization) applied via
+  per-page `add_init_script`. Enough to pass `bot.sannysoft.com` and
+  Cloudflare's gentler challenges; **NOT** enough to pass modern
+  hCaptcha behavioral biometrics.
+
+### Documented (no code change, but captured for future reference)
+- Modern hCaptcha (sitekey rotation, multi-modal challenge engine,
+  behavioral biometrics) is **not bypassable** with the layered
+  open-source stack we ship: stealth flags + playwright-stealth +
+  xdotool + visible cursor. The mechanical click works; the
+  fingerprint wins. Patchright Chromium fork + paid solver service
+  are the documented next-step options. See
+  `workspace/memory/klanhaboru.md` for the full investigation log.
+- Stealth Chromium with `--disable-blink-features=AutomationControlled`
+  surfaces a *"You are using an unsupported command line flag"*
+  warning in the Chrome address bar. Visible in any X11 root-window
+  screenshot. May contribute to anti-bot fingerprinting; suppression
+  would need a Chromium build flag patch (Patchright territory).
+
 ## [0.7.2] - 2026-04-26
 
 Browser-automation hardening — bundled response to a real-world failure
@@ -717,7 +760,8 @@ catch up with the two patcher steps added post-tag.
 - Documentation: `README.md`, `SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/CUSTOMIZATION.md`, `docs/TROUBLESHOOTING.md`.
 
-[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/chestercs/dgx-openclaw-stack/compare/v0.6.1...v0.7.0

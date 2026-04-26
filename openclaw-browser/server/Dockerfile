@@ -42,6 +42,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
         curl ca-certificates \
         socat \
+        # OS-level mouse driver — required for any agent-driven flow that
+        # needs the *physical* X cursor to move (e.g. site CAPTCHAs whose
+        # canvas-side handlers fingerprint the real X11 hardware cursor,
+        # not just JS-level synthetic mouse events). Playwright's
+        # mouse.move/down/up dispatches CDP Input events that update the
+        # JS event surface but DON'T move the X cursor; xdotool fills
+        # that gap so headful flows look closer to a human session.
+        xdotool \
+        # Imagemagick `import` captures the X11 root window — useful for
+        # debugging interaction flows where the operator wants to see
+        # what the headful Chromium renders, including the cursor.
+        # The CDP-side screenshot (Page.captureScreenshot) does NOT
+        # include the X cursor; `import` does.
+        imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 # socat is required because Chrome 136+ ignores --remote-debugging-address=
