@@ -940,7 +940,7 @@ services:
   ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
   #
   #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 18 steps:
+  #  the onboarding wizard's choices or previous manual edits. 19 steps:
   #
   #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
   #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
@@ -1014,6 +1014,14 @@ services:
   #       openclaw.json so the gateway doesn't try to dial a parked service
   #       (the openclaw-python-sandbox block is also parked behind
   #       `profiles: ["python"]`). v0.8.0+.
+  #   19. Ensure mcp.servers.comfyui_image is wired at the
+  #       openclaw-image-comfyui bridge (transport: streamable-http, headers
+  #       Authorization: Bearer $IMAGE_GEN_API_TOKEN). The bridge lives in a
+  #       SEPARATE compose file (openclaw-image-comfyui/docker-compose.yml,
+  #       opt-in via `--profile image-gen`) joined to this stack's bridge
+  #       via external-network reference. Env-gated: when IMAGE_GEN_API_TOKEN
+  #       is unset, the entry is REMOVED from openclaw.json so the gateway
+  #       doesn't try to dial a parked service. v0.9.0+.
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.
@@ -1086,6 +1094,16 @@ services:
       # openclaw.json so the gateway doesn't try to dial a parked service.
       PYTHON_SANDBOX_API_TOKEN: ${PYTHON_SANDBOX_API_TOKEN:-}
       PYTHON_SANDBOX_URL: ${PYTHON_SANDBOX_URL:-http://openclaw-python-sandbox:8094/mcp}
+      # Image-generation bridge MCP wiring (step 19). When IMAGE_GEN_API_TOKEN
+      # is set, the patcher writes mcp.servers.comfyui_image pointing at the
+      # openclaw-image-comfyui service (transport: streamable-http). The
+      # bridge runs in a SEPARATE compose file
+      # (openclaw-image-comfyui/docker-compose.yml) joined to this stack's
+      # bridge via an external-network reference, so bridge DNS resolves
+      # `openclaw-image-comfyui:9095` once both composes are up. Empty token
+      # opts out — patcher removes the entry from openclaw.json.
+      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
+      IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

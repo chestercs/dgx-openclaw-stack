@@ -9,7 +9,7 @@
 // 31B + reasoning + vision prefill + multi-step tool calling.
 //
 // This script makes the desired state deterministic — every `docker compose up`
-// re-applies the 18 steps below in a deep-merge style. Safe to re-run; exits
+// re-applies the 19 steps below in a deep-merge style. Safe to re-run; exits
 // early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
 // (pre-onboarding fresh install) so the gateway container can still boot.
 //
@@ -62,6 +62,13 @@
 //      cleaned up if they end up empty) so the gateway doesn't try to dial
 //      a parked service. Schema verified against docs.openclaw.ai/cli/mcp
 //      on 2026-04-26.
+//  19. Wire mcp.servers.comfyui_image at the openclaw-image-comfyui bridge
+//      (separate compose file at openclaw-image-comfyui/docker-compose.yml,
+//      joined to this stack's bridge via external-network reference).
+//      Env-gated by IMAGE_GEN_API_TOKEN; same shape as step 18 (transport,
+//      url, connectionTimeoutMs, headers.Authorization). When unset, the
+//      entry is removed (and parent mcp objects cleaned up) so the gateway
+//      doesn't try to dial a parked bridge.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -924,6 +931,48 @@ if (PYTHON_SANDBOX_TOKEN) {
   delete config.mcp.servers.python_sandbox;
   changed = true;
   console.log('[patch-config] PYTHON_SANDBOX_API_TOKEN unset — removed mcp.servers.python_sandbox.');
+  if (config.mcp.servers && Object.keys(config.mcp.servers).length === 0) {
+    delete config.mcp.servers;
+  }
+  if (config.mcp && Object.keys(config.mcp).length === 0) {
+    delete config.mcp;
+  }
+}
+
+// ─── 19. Image-generation bridge MCP wiring ──────────────────────────────────
+// Env-gated by IMAGE_GEN_API_TOKEN. The bridge runs in a SEPARATE compose file
+// (openclaw-image-comfyui/docker-compose.yml) joined to this stack's bridge
+// via an external-network reference, so as far as the gateway is concerned
+// `openclaw-image-comfyui:9095` resolves over bridge DNS just like any other
+// in-stack service. Same shape as step 18 (transport, url,
+// connectionTimeoutMs, headers); cleanup branch on unset mirrors step 18 too.
+const IMAGE_GEN_TOKEN = process.env.IMAGE_GEN_API_TOKEN || '';
+const IMAGE_GEN_URL = process.env.IMAGE_GEN_URL || 'http://openclaw-image-comfyui:9095/mcp';
+
+if (IMAGE_GEN_TOKEN) {
+  config.mcp ??= {};
+  config.mcp.servers ??= {};
+  config.mcp.servers.comfyui_image ??= {};
+  const ms = config.mcp.servers.comfyui_image;
+  const desired = {
+    transport: 'streamable-http',
+    url: IMAGE_GEN_URL,
+    connectionTimeoutMs: 10000,
+    headers: { Authorization: `Bearer ${IMAGE_GEN_TOKEN}` },
+  };
+  for (const [k, v] of Object.entries(desired)) {
+    if (JSON.stringify(ms[k]) !== JSON.stringify(v)) {
+      ms[k] = v;
+      changed = true;
+      // Don't log the bearer string itself — only that it changed.
+      const printable = k === 'headers' ? '<set>' : JSON.stringify(v);
+      console.log(`[patch-config] mcp.servers.comfyui_image.${k} = ${printable}`);
+    }
+  }
+} else if (config.mcp?.servers?.comfyui_image) {
+  delete config.mcp.servers.comfyui_image;
+  changed = true;
+  console.log('[patch-config] IMAGE_GEN_API_TOKEN unset — removed mcp.servers.comfyui_image.');
   if (config.mcp.servers && Object.keys(config.mcp.servers).length === 0) {
     delete config.mcp.servers;
   }

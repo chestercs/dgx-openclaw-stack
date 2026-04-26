@@ -18,6 +18,7 @@ research rationale behind the chosen LLM / TTS stack, this is where to look.
 | [`openclaw-internals.md`](./openclaw-internals.md) | OpenClaw v0.4.x internals: 3-store credential layout, schema, patcher steps, releases, persistence, CLI overhead |
 | [`browser-automation.md`](./browser-automation.md) | Playwright Chromium over CDP: port-per-profile, query-string token, noVNC bridge, threat model |
 | [`python-sandbox.md`](./python-sandbox.md) | Python code-execution sandbox: MCP wiring, kernel pool, threat model, why not OpenClaw native or `agents.defaults.sandbox` |
+| [`image-comfyui-bridge.md`](./image-comfyui-bridge.md) | Image-generation MCP bridge → ComfyUI: cross-compose join, host-gateway hop, workflow template architecture, threat model |
 | [`patterns.md`](./patterns.md) | Reusable Docker / dev patterns: cross-compose network, anchored grep, opt-in triple-gate, network namespace, SearxNG gotchas |
 
 ## Related docs

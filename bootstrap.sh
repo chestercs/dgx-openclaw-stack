@@ -276,6 +276,55 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 3e. Optional: Image-generation bridge opt-in (ComfyUI MCP)
+#
+# Same opt-in posture as 3d, with one twist: the bridge service lives in a
+# SEPARATE compose file (openclaw-image-comfyui/docker-compose.yml) and the
+# `image-gen` profile toggle below is advisory — `docker compose up -d` on
+# the main stack does NOT start the bridge. The operator brings it up
+# explicitly with the second command printed at the end of the block.
+# ----------------------------------------------------------------------------
+img_token_existing=$(grep -E '^IMAGE_GEN_API_TOKEN=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
+if [[ -z "$img_token_existing" ]]; then
+  printf '\n%bOptional:%b Image-generation bridge (ComfyUI MCP) — opt-in.\n' "$BOLD" "$RESET"
+  log "  Wires a thin Python bridge that exposes comfyui_image__generate to"
+  log "  OpenClaw via MCP. The actual generation runs on YOUR existing ComfyUI"
+  log "  install (a separate compose, reached via host-gateway). The bridge is"
+  log "  model-agnostic — you pick the checkpoints; this repo ships no weights."
+  log ""
+  log "  NOTE: this opt-in lives in a SEPARATE compose file"
+  log "        (openclaw-image-comfyui/docker-compose.yml). The 'image-gen'"
+  log "        profile toggle below is advisory — you bring the bridge up"
+  log "        explicitly with the second 'docker compose -f …' command below."
+  printf '%bActivate image-generation bridge now? [y/N]:%b ' "$BOLD" "$RESET"
+  read -r img_answer
+  if [[ "$img_answer" =~ ^[Yy]$ ]]; then
+    IMAGE_GEN_TOKEN_NEW="$(openssl rand -base64 48 | tr -d '\n')"
+    upsert_env IMAGE_GEN_API_TOKEN "$IMAGE_GEN_TOKEN_NEW" '.*'
+    printf '%bComfyUI URL%b [default: http://host.docker.internal:13036]: ' "$BOLD" "$RESET"
+    read -r img_url_answer
+    upsert_env COMFYUI_URL "${img_url_answer:-http://host.docker.internal:13036}" '.*'
+    # Best-effort COMPOSE_PROFILES toggle (same shape as 3d, advisory only).
+    img_existing_profiles=$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- || echo "")
+    if [[ -z "$img_existing_profiles" ]]; then
+      upsert_env COMPOSE_PROFILES "image-gen" '.*'
+    elif [[ ! "$img_existing_profiles" =~ (^|,)image-gen(,|$) ]]; then
+      new_profiles="${img_existing_profiles},image-gen"
+      upsert_env COMPOSE_PROFILES "$new_profiles" '.*'
+      ok "COMPOSE_PROFILES → ${new_profiles}"
+    fi
+    ok "Image-gen bridge opt-in: token + URL set, profile listed."
+    ok "  → docker compose -f openclaw-image-comfyui/docker-compose.yml --profile image-gen up -d --build"
+    ok "  → docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli"
+  else
+    log "Skipped — re-run bootstrap.sh later to enable, or set"
+    log "         IMAGE_GEN_API_TOKEN in .env by hand."
+  fi
+else
+  ok "IMAGE_GEN_API_TOKEN already present — image-gen bridge opt-in preserved."
+fi
+
+# ----------------------------------------------------------------------------
 # 4. HuggingFace token
 # ----------------------------------------------------------------------------
 current_hf=$(grep -E '^HUGGING_FACE_HUB_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2-)
@@ -345,4 +394,8 @@ printf 'Whisper STT (EN + HU autodetect) is enabled by default. Test with:\n\n'
 printf '    %bcurl -F file=@sample.wav -F model=Systran/faster-whisper-large-v3 \\\n        -H "Authorization: Bearer $STT_API_TOKEN" \\\n        http://127.0.0.1:8093/v1/audio/transcriptions%b\n\n' "$BOLD" "$RESET"
 printf 'Browser automation (opt-in via --profile browser): after first boot,\n'
 printf 'onboard each credential once via the noVNC helper:\n\n'
-printf '    %b./bootstrap-browser-login.sh github-user1%b\n' "$BOLD" "$RESET"
+printf '    %b./bootstrap-browser-login.sh github-user1%b\n\n' "$BOLD" "$RESET"
+printf 'Image generation (opt-in, ComfyUI MCP bridge): lives in a SEPARATE\n'
+printf 'compose file. After your existing ComfyUI is reachable on\n'
+printf 'host.docker.internal:13036, bring up the bridge:\n\n'
+printf '    %bdocker compose -f openclaw-image-comfyui/docker-compose.yml \\\n        --profile image-gen up -d --build%b\n' "$BOLD" "$RESET"

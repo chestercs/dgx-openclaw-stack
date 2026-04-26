@@ -1,0 +1,104 @@
+# =====================================================================
+# Image generation MCP bridge for the dgx-openclaw-stack.
+#
+# This compose file is INTENTIONALLY separate from the main stack
+# `docker-compose.yml` at the repo root — image generation is a
+# satellite feature wired in via MCP, not part of the always-on default
+# profile. Cross-compose join is handled by the `external: true`
+# network reference at the bottom: this service attaches to the main
+# stack's bridge network so the OpenClaw gateway can dial it as
+# `http://openclaw-image-comfyui:9095/mcp` over bridge DNS.
+#
+# Activation:
+#   1. Make sure the main stack is up at least once (the bridge network
+#      is created lazily by the main `docker compose up`).
+#   2. Set IMAGE_GEN_API_TOKEN in the main .env (bootstrap.sh prompt 3e
+#      handles this, or `./rotate-secrets.sh IMAGE_GEN_API_TOKEN`).
+#   3. Build + start:
+#        docker compose -f openclaw-image-comfyui/docker-compose.yml \
+#                       --env-file ../.env --profile image-gen \
+#                       up -d --build
+#   4. Re-run the patcher so the gateway picks up `mcp.servers.comfyui_image`:
+#        docker compose -f docker-compose.yml up -d --force-recreate \
+#                       openclaw-config-init openclaw-gateway openclaw-cli
+#
+# The bridge reaches the operator's existing ComfyUI install via
+# host-gateway (`COMFYUI_URL=http://host.docker.internal:13036` by
+# default). It never owns a GPU itself — heavy lifting happens inside
+# the user's separate ComfyUI compose project.
+# =====================================================================
+
+services:
+  openclaw-image-comfyui:
+    build:
+      context: ./server
+    image: openclaw-image-comfyui:0.1.0
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
+    hostname: openclaw-image-comfyui
+    # `image-gen` profile gates this service so an absent --profile flag
+    # leaves it parked. Mirrors the python-sandbox / hu-tts / browser opt-in
+    # patterns; the operator must opt in explicitly.
+    profiles: ["image-gen"]
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    ports:
+      # Loopback-only by default (same posture as TTS/STT/sandbox).
+      # Flip to 0.0.0.0 only if you have a reason — the Bearer token is
+      # the only auth surface and a leaked token is still a leaked token.
+      - "${IMAGE_GEN_BIND:-127.0.0.1}:${IMAGE_GEN_PORT:-9095}:9095"
+    extra_hosts:
+      # Reach the user's ComfyUI install (running in a separate compose,
+      # port-published on the host) from inside this bridge container.
+      # `host-gateway` works on Linux 20.10+; the variable resolves to
+      # the docker bridge's host IP at container start.
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Empty default so `docker compose ... config` works pre-onboarding;
+      # the bridge's app.py raises a RuntimeError at startup if it's still
+      # empty when uvicorn launches (auth-required by design).
+      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
+      COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:13036}
+      IMAGE_GEN_TIMEOUT_S: ${IMAGE_GEN_TIMEOUT_S:-600}
+      IMAGE_GEN_MAX_CONCURRENCY: ${IMAGE_GEN_MAX_CONCURRENCY:-1}
+      IMAGE_GEN_MAX_OUTPUT_BYTES: ${IMAGE_GEN_MAX_OUTPUT_BYTES:-52428800}
+      IMAGE_GEN_POLL_INTERVAL_S: ${IMAGE_GEN_POLL_INTERVAL_S:-0.5}
+      IMAGE_GEN_POLL_BACKOFF_MAX_S: ${IMAGE_GEN_POLL_BACKOFF_MAX_S:-2.0}
+    volumes:
+      # workflows/ is COPYed into the image AND bind-mounted ro so
+      # operators can drop new templates without rebuilding. The bridge
+      # parses the directory at startup; restart the container to pick
+      # up new files.
+      - ./server/workflows:/app/workflows:ro
+    cap_drop: [ALL]
+    security_opt:
+      - "no-new-privileges:true"
+    mem_limit: 1024m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9095/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+# ─────────────────────────────────────────────────────────────────────
+# Cross-compose network join: attach to the main stack's bridge so the
+# OpenClaw gateway can resolve `openclaw-image-comfyui:9095` over
+# bridge DNS. The main stack must be `up` at least once before this
+# compose can start (the network is created on demand by the main
+# `docker compose up`).
+#
+# `name:` follows the docker convention `<COMPOSE_PROJECT_NAME>_default`.
+# Override `COMPOSE_PROJECT_NAME` in your .env if your main stack uses
+# a non-default project name.
+# ─────────────────────────────────────────────────────────────────────
+networks:
+  default:
+    name: ${COMPOSE_PROJECT_NAME:-dgx-openclaw}_default
+    external: true

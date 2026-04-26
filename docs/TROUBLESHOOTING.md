@@ -508,6 +508,122 @@ Three mitigations:
    `gc.collect()` plus `python_session_reset` for a clean slate is
    the reliable path.
 
+## Image-gen bridge (openclaw-image-comfyui)
+
+### Agent can't find `comfyui_image__generate` / says no such tool
+
+Three failure modes — diagnose in order:
+
+1. **Bridge not running.** The bridge lives in a SEPARATE compose file
+   (`openclaw-image-comfyui/docker-compose.yml`). `docker compose up
+   -d` from the repo root does NOT start it; you have to bring it up
+   explicitly:
+   ```bash
+   docker compose -f openclaw-image-comfyui/docker-compose.yml \
+                  --env-file .env --profile image-gen up -d --build
+   ```
+2. **Token unset.** `grep '^IMAGE_GEN_API_TOKEN=' .env` returns
+   empty. Patcher step 19 skips (and removes any prior wiring) when
+   the token is empty. Either run `bootstrap.sh` and choose opt-in
+   3e, or use `./rotate-secrets.sh IMAGE_GEN_API_TOKEN`.
+3. **Patcher hasn't run since opt-in.** `docker compose logs
+   openclaw-config-init | grep comfyui_image` should show
+   `mcp.servers.comfyui_image.*` write lines from the last patcher
+   run. If absent, force-recreate the init service:
+   ```bash
+   docker compose up -d --force-recreate \
+                  openclaw-config-init openclaw-gateway openclaw-cli
+   ```
+
+Confirm the wiring landed:
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker exec ${PROJ}openclaw-cli sh -c \
+  'cat ~/.openclaw/openclaw.json | jq ".mcp.servers.comfyui_image"'
+# Should print { "transport": "streamable-http", "url": "...", "headers": {...} }
+```
+
+Same tool-prefix gotcha as the Python sandbox: in your prompts use
+the full `comfyui_image__generate` name, NOT bare `generate` —
+Gemma 4 NVFP4 silently fails to match unprefixed names.
+
+### Bridge healthy but generate returns "comfyui_error: connect to host.docker.internal:13036 failed"
+
+The bridge can't reach your existing ComfyUI install. Test the hop
+directly:
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker exec ${PROJ}openclaw-image-comfyui curl -fsS \
+  http://host.docker.internal:13036/system_stats | head -c 200
+```
+
+Three common causes:
+
+1. **ComfyUI isn't actually published on `13036`.** Confirm the
+   port-publish in your ComfyUI compose: `docker port comfyui` should
+   show `8188/tcp -> 0.0.0.0:13036` (or wherever you published it).
+   Adjust `COMFYUI_URL` in `.env` to match.
+2. **ComfyUI binds loopback inside its container but the publish is
+   to `127.0.0.1` only on the host.** That's fine — the bridge uses
+   `host.docker.internal:host-gateway` which routes to the host's
+   docker bridge IP, and `127.0.0.1`-published ports are reachable
+   from that interface on Linux. If you locked the publish to a
+   specific external IP, switch the bridge's `COMFYUI_URL` to that IP.
+3. **`host-gateway` not supported.** Requires Docker 20.10+. Older
+   Docker: replace `host.docker.internal:host-gateway` in
+   `openclaw-image-comfyui/docker-compose.yml` with the actual host
+   bridge IP (`172.17.0.1` typically), or move to a shared external
+   network.
+
+### `comfyui_error: prompt rejected (HTTP 400): … missing model …`
+
+The workflow JSON references a checkpoint name (`ckpt_name`) that
+doesn't exist in your ComfyUI's `basedir/models/checkpoints/`. Two
+causes:
+
+1. **Workflow has the `REPLACE_ME.safetensors` placeholder** and you
+   didn't pass `checkpoint=...`. The bridge will refuse cleanly with
+   `_metadata.checkpoint_required` — re-prompt with an explicit
+   `checkpoint` argument referring to a file that exists in your
+   ComfyUI checkpoints directory.
+2. **You passed a checkpoint that isn't installed.** List what's
+   actually present:
+   ```bash
+   ls /media/usb/comfyui/basedir/models/checkpoints/
+   ```
+   (or wherever your ComfyUI's basedir lives — check the
+   `COMFY_UI_APP_BASEDIR_PATH` in your ComfyUI compose's `.env`).
+
+### Generate returns "comfyui_restarted: prompt … disappeared from /history"
+
+Your ComfyUI process restarted (manually, OOM, supervisor) while the
+bridge was polling for a result. The bridge surfaces a one-line error
+rather than hanging. Check:
+
+```bash
+docker compose -f /path/to/your/comfyui/docker-compose.yml ps
+docker compose -f /path/to/your/comfyui/docker-compose.yml logs --tail=50 comfyui
+```
+
+Re-run the generate call once the ComfyUI is healthy again.
+
+### Everything works but LLM token generation pauses for 20-30s during image rendering
+
+ComfyUI runs on the same GB10 GPU as vLLM. Concurrent generation
+pre-empts LLM token gen. Two mitigations:
+
+1. **Default already serializes the bridge.** `IMAGE_GEN_MAX_CONCURRENCY=1`
+   means the bridge holds an `asyncio.Lock` so two parallel agent
+   calls won't double-tap the GPU. If you've changed this to `0`,
+   change it back.
+2. **Model swap to a faster workflow.** FLUX Schnell at 4 steps
+   finishes in ~3-8s; SDXL at 25 steps takes 20-40s. Use Schnell when
+   the agent doesn't need maximum quality.
+
+If the contention is unacceptable: move ComfyUI to a separate GPU/box
+and point `COMFYUI_URL` at the new endpoint.
+
 ## Host-level issues
 
 ### `nvidia-smi` inside a container fails with `Failed to initialize NVML`

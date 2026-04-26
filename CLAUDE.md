@@ -277,6 +277,18 @@ The OpenClaw config schema requires trailing slashes on `models.providers.vllm.b
 
 The W3C WebAuthn spec is origin-bound. In a noVNC session, the operator's browser is on `http://127.0.0.1:5901` (or via SSH tunnel) but the remote Chromium runs at its own origin. Platform authenticators (Apple Keychain, Windows Hello, Google Password Manager) are bound to the operator's device + origin and cannot reach the remote Chromium's origin. USB hardware passkeys (YubiKey) are not pass-through to the container either. **Document clearly in any onboarding-related guidance: password + TOTP / SMS OTP / magic links work; passkeys don't.** Services that are passkey-only (some Google Workspace SSO) cannot be onboarded via the browser path — use the service's API token / PAT / service account instead.
 
+### Image-gen bridge: separate compose, host-gateway hop, model-agnostic
+
+`openclaw-image-comfyui` is the v0.9.0+ opt-in `--profile image-gen` bridge that exposes `comfyui_image__*` MCP tools to the agent and proxies generation to the operator's existing ComfyUI install. Four implementation details worth internalizing:
+
+1. **First service in this stack to live in its own compose file.** Every other service is in the main `docker-compose.yml`; this one lives in `openclaw-image-comfyui/docker-compose.yml`. Rationale: the operator likely already runs ComfyUI for unrelated reasons; duplicating it inside the main stack would put two ComfyUI processes on the same GB10 GPU. Trade-off: the bridge compose attaches to the main stack's bridge via `external: true`, so the main stack must be `up` at least once before the bridge can start. **`./rotate-secrets.sh IMAGE_GEN_API_TOKEN` therefore prints two `up -d --force-recreate` commands** (one per compose) — this is by design, not a bug to "simplify" away.
+
+2. **Host-gateway, not shared external network.** The bridge reaches the user's ComfyUI (separate compose project, e.g. `petyus-gpt`) via `extra_hosts: host.docker.internal:host-gateway` + `COMFYUI_URL=http://host.docker.internal:13036`. We deliberately do NOT require modifying the user's existing ComfyUI compose. LAN-resident ComfyUI works too: set `COMFYUI_URL=http://192.168.x.x:<port>`. See `docs/reference/image-comfyui-bridge.md` for the table comparing all three options.
+
+3. **Tool-prefix gotcha re-applies.** OpenClaw flattens MCP tool namespaces with `<server>__<tool>` — the agent must call `comfyui_image__generate`, NOT bare `generate`. Same finding as the python sandbox; document any agent-facing prompt with the prefixed name.
+
+4. **Model-agnostic by design.** The repo ships NO model weights. Workflow templates under `server/workflows/` use `"REPLACE_ME.safetensors"` as a placeholder; the bridge refuses to generate without either an explicit `checkpoint=` arg or an operator-edited workflow. Operator picks the upstream models (FLUX Dev / Schnell, SDXL fine-tunes — Pony XL, Illustrious XL, RealVisXL — adult fine-tunes, …) under whichever license they accept. Same posture as F5-TTS HU's CC-BY-NC isolation.
+
 ## Verification recipes (copy-paste ready)
 
 These cover the cases that have actually broken in practice. When making non-trivial changes, run the relevant ones before declaring done.

@@ -63,12 +63,13 @@ DEFAULT_KEYS=(
 )
 F5HUN_KEY=F5HUN_API_TOKEN
 PYTHON_SANDBOX_KEY=PYTHON_SANDBOX_API_TOKEN
+IMAGE_GEN_KEY=IMAGE_GEN_API_TOKEN
 GATEWAY_KEY=OPENCLAW_GATEWAY_TOKEN
 
-# F5HUN_KEY and PYTHON_SANDBOX_KEY are conditional: --all auto-includes
-# them only when already set (an empty value = the user opted out, and
-# auto-generating one would re-enable a service they declined).
-ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$F5HUN_KEY" "$PYTHON_SANDBOX_KEY" "$GATEWAY_KEY")
+# F5HUN_KEY, PYTHON_SANDBOX_KEY, and IMAGE_GEN_KEY are conditional: --all
+# auto-includes them only when already set (an empty value = the user opted
+# out, and auto-generating one would re-enable a service they declined).
+ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$F5HUN_KEY" "$PYTHON_SANDBOX_KEY" "$IMAGE_GEN_KEY" "$GATEWAY_KEY")
 
 # Map a rotated key to the space-separated compose service list that reads it.
 # Keep this aligned with docker-compose.yml — see plan for line-number refs.
@@ -82,6 +83,7 @@ services_for() {
     F5HUN_API_TOKEN)             echo "openclaw-tts-f5hun openclaw-tts-router" ;;
     BROWSER_API_TOKEN)           echo "openclaw-browser openclaw-config-init openclaw-gateway openclaw-cli" ;;
     PYTHON_SANDBOX_API_TOKEN)    echo "openclaw-python-sandbox openclaw-config-init openclaw-gateway openclaw-cli" ;;
+    IMAGE_GEN_API_TOKEN)         echo "openclaw-image-comfyui openclaw-config-init openclaw-gateway openclaw-cli" ;;
     BROWSER_VNC_PASSWORD)        echo "openclaw-browser" ;;
     OPENCLAW_GATEWAY_TOKEN)      echo "openclaw-gateway openclaw-cli" ;;
     *) return 1 ;;
@@ -121,15 +123,18 @@ Default set (rotated by --all or the interactive menu):
   (+ F5HUN_API_TOKEN if it is already set in .env — empty F5HUN = opted out
   of the CC-BY-NC Hungarian TTS, and --all respects that.
   + PYTHON_SANDBOX_API_TOKEN under the same conditional rule — empty token
-  means the sandbox opt-in was declined and --all does not silently re-enable it.)
+  means the sandbox opt-in was declined and --all does not silently re-enable it.
+  + IMAGE_GEN_API_TOKEN under the same conditional rule — empty token means
+  the ComfyUI bridge opt-in was declined; --all does not regenerate it.)
 
 Explicit positional args rotate any rotatable key regardless of current
-value, including F5HUN_API_TOKEN, PYTHON_SANDBOX_API_TOKEN, and
-OPENCLAW_GATEWAY_TOKEN:
+value, including F5HUN_API_TOKEN, PYTHON_SANDBOX_API_TOKEN,
+IMAGE_GEN_API_TOKEN, and OPENCLAW_GATEWAY_TOKEN:
 
   ./rotate-secrets.sh VLLM_API_KEY TTS_API_TOKEN
   ./rotate-secrets.sh F5HUN_API_TOKEN
   ./rotate-secrets.sh PYTHON_SANDBOX_API_TOKEN
+  ./rotate-secrets.sh IMAGE_GEN_API_TOKEN
 
 Out of scope:
   HUGGING_FACE_HUB_TOKEN — user-owned, cannot be generated. Set manually.
@@ -239,6 +244,11 @@ if (( ROTATE_ALL )); then
   if [[ -n "$(current_value "$PYTHON_SANDBOX_KEY")" ]]; then
     add_key "$PYTHON_SANDBOX_KEY"
   fi
+  # Same conditional rule for the image-gen bridge — empty token means the
+  # operator declined the bridge opt-in, --all should not regenerate it.
+  if [[ -n "$(current_value "$IMAGE_GEN_KEY")" ]]; then
+    add_key "$IMAGE_GEN_KEY"
+  fi
   if (( INCLUDE_GATEWAY )); then
     add_key "$GATEWAY_KEY"
   fi
@@ -273,6 +283,14 @@ if (( ${#ROTATE_MAP[@]} == 0 )); then
     printf '    Rotate? [y/N]: '
     read -r ans
     [[ "$ans" =~ ^[Yy]$ ]] && add_key "$PYTHON_SANDBOX_KEY"
+  fi
+
+  # Image-gen bridge: same conditional logic — only offered if already set.
+  if [[ -n "$(current_value "$IMAGE_GEN_KEY")" ]]; then
+    printf '  %s — fp=%s\n' "$IMAGE_GEN_KEY" "$(fp "$(current_value "$IMAGE_GEN_KEY")")"
+    printf '    Rotate? [y/N]: '
+    read -r ans
+    [[ "$ans" =~ ^[Yy]$ ]] && add_key "$IMAGE_GEN_KEY"
   fi
 
   # Gateway offered only if the flag was set — mirrors --all behavior so
@@ -320,6 +338,7 @@ done
 HU_TOUCHED=0
 BROWSER_TOUCHED=0
 PYTHON_SANDBOX_TOUCHED=0
+IMAGE_GEN_TOUCHED=0
 
 for key in "${ROTATE_ORDER[@]}"; do
   if [[ "$key" == "BROWSER_API_TOKEN" ]]; then
@@ -346,6 +365,7 @@ for key in "${ROTATE_ORDER[@]}"; do
   [[ "$key" == "$F5HUN_KEY" ]] && HU_TOUCHED=1
   [[ "$key" == "BROWSER_API_TOKEN" ]] && BROWSER_TOUCHED=1
   [[ "$key" == "$PYTHON_SANDBOX_KEY" ]] && PYTHON_SANDBOX_TOUCHED=1
+  [[ "$key" == "$IMAGE_GEN_KEY" ]] && IMAGE_GEN_TOUCHED=1
 done
 
 # ----------------------------------------------------------------------------
@@ -392,6 +412,14 @@ recreate_cmd="${compose_cmd} up -d --force-recreate ${sorted_services[*]}"
 
 printf '\n%bRestart command (run when you are ready):%b\n' "$BOLD" "$RESET"
 printf '  %s\n' "$recreate_cmd"
+
+# Image-gen bridge lives in a SEPARATE compose file (it joins the main
+# stack's bridge via external network). Surface a second recreate command
+# so the operator doesn't have to hunt for it.
+if (( IMAGE_GEN_TOUCHED )); then
+  printf '\n%bAlso restart the image-gen bridge (separate compose):%b\n' "$BOLD" "$RESET"
+  printf '  docker compose -f openclaw-image-comfyui/docker-compose.yml --profile image-gen up -d --force-recreate openclaw-image-comfyui\n'
+fi
 
 # ----------------------------------------------------------------------------
 # Dry-run stops here. Nothing written to disk.

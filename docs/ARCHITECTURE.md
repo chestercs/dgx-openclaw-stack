@@ -181,7 +181,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 18 steps
+### 19 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -204,6 +204,7 @@ Rather than tell users "also click here, there, and there after onboarding", the
 16. Idempotently inject a soft browser-policy block into the workspace `AGENTS.md` (HTML-comment-marked region, deep-merge-style append-once). Tells the agent: default profile for throwaway browsing, opt in to credentialed profiles only when the task requires that identity, never persist via the default profile. Soft layer — prompt-injection can override; the hard layer would be a separate `bot-ops` agent.
 17. Idempotently inject a `browser.act` cheatsheet block into the same `AGENTS.md`. Smaller open models (Gemma 4 in particular) routinely emit the flat `{element, text}` shape on `kind="fill"` actions that need the nested `{fields: [{ref, type, value}]}` shape; the cheatsheet shows the right shape next to a labelled wrong shape plus a one-line recovery hint.
 18. Wire `mcp.servers.python_sandbox` at the `openclaw-python-sandbox` service (env-gated: `PYTHON_SANDBOX_API_TOKEN`). Streamable-HTTP transport, 10-second connect timeout, Bearer auth via `headers.Authorization`. When the token is unset, the entry is *removed* from `openclaw.json` (and empty parent objects cleaned up) so the gateway doesn't try to dial a parked service. Schema verified against `docs.openclaw.ai/cli/mcp` on 2026-04-26.
+19. Wire `mcp.servers.comfyui_image` at the `openclaw-image-comfyui` bridge (env-gated: `IMAGE_GEN_API_TOKEN`). Same shape as step 18 (Streamable-HTTP, 10-second connect timeout, Bearer auth via `headers.Authorization`). The bridge runs in a *separate compose file* (`openclaw-image-comfyui/docker-compose.yml`, opt-in via `--profile image-gen`) and joins this stack's bridge via an `external: true` network reference, so bridge DNS resolves `openclaw-image-comfyui:9095` once both composes are up. When the token is unset the entry is *removed* (with parent cleanup) so the gateway doesn't try to dial a parked bridge.
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 
@@ -486,6 +487,110 @@ publish is operator ergonomics for `curl` smoke tests. Resource caps:
 docker-engine-enforced hard limits, OOM-killed kernels return on the
 next call as a fresh kernel.
 
+## Image-gen bridge subsystem (1 service, opt-in, separate compose)
+
+`openclaw-image-comfyui` is the v0.9.0+ opt-in `--profile image-gen`
+bridge that exposes `comfyui_image__*` tools to the agent and proxies
+to the operator's existing ComfyUI install. Lives in **its own compose
+file** (`openclaw-image-comfyui/docker-compose.yml`) — every other
+service in this stack is in the main `docker-compose.yml`, and this is
+the first deliberate exception. Rationale: image generation is a
+satellite feature, the operator likely already runs ComfyUI for
+unrelated reasons, and the bridge ships no model weights or GPU
+workload of its own.
+
+### Layout
+
+```
+   ┌──────────────────────────────────────────────┐
+   │ openclaw-gateway                             │
+   │   mcp.servers.comfyui_image (step 19)        │
+   │     transport: streamable-http               │
+   │     url: http://openclaw-image-comfyui:9095/mcp │
+   │     headers.Authorization: Bearer …          │
+   └────────────────────┬─────────────────────────┘
+                        │ bridge DNS over the main stack network
+                        ▼
+   ┌──────────────────────────────────────────────┐
+   │ openclaw-image-comfyui (separate compose)    │
+   │   FastAPI MCP wire (~250 LOC)                │
+   │   workflow loader (class_type + targets)     │
+   │   asyncio.Lock (single-flight default)       │
+   │   no GPU, no torch, no model weights         │
+   └────────────────────┬─────────────────────────┘
+                        │ HTTP via host-gateway
+                        │ host.docker.internal:13036
+                        ▼
+   ┌──────────────────────────────────────────────┐
+   │ YOUR existing ComfyUI install                │
+   │   (separate compose project, e.g. petyus-gpt) │
+   │   /prompt /history /view /queue /interrupt   │
+   └──────────────────────────────────────────────┘
+```
+
+### Cross-compose join
+
+The bridge attaches to the main stack's bridge network via
+`external: true`. The named-network reference defaults to
+`${COMPOSE_PROJECT_NAME:-dgx-openclaw}_default`. Implication: the
+main stack must be `up` at least once before this bridge can start
+(otherwise the network doesn't exist yet). Documented in the bridge's
+README and in the bootstrap-output line that appears after a
+successful prompt 3e.
+
+### Why not run ComfyUI in this compose
+
+Two reasons:
+
+1. The operator already runs one. Duplicating ComfyUI inside the main
+   stack would put two ComfyUI processes on the same GB10 GPU,
+   competing for VRAM and pre-empting each other.
+2. License isolation. The bridge ships no model weights — operators
+   pick checkpoints (FLUX Dev / Schnell, SDXL fine-tunes, Pony XL,
+   Illustrious, RealVisXL, …) under whichever upstream license they
+   accept; this stack stays content-agnostic. Same posture as F5-TTS
+   HU's CC-BY-NC opt-in.
+
+### Concurrency: single-flight by default
+
+`IMAGE_GEN_MAX_CONCURRENCY=1` (`asyncio.Semaphore(1)`). ComfyUI runs
+on the same GB10 GPU as vLLM; concurrent generation pauses LLM token
+generation. Set to `0` for pass-through only if your ComfyUI lives on
+a different GPU. Higher integers (`2`, `3`, …) increase bridge
+parallelism but the GPU still bottlenecks at one render at a time.
+
+### Workflow templates
+
+Two reference templates ship under `server/workflows/`:
+`flux-schnell.json` (4-step distilled) and `sdxl-base.json` (25-step
+generic). Each declares `_metadata.targets` mapping bridge parameter
+names (`prompt`, `negative`, `checkpoint`, `width`, `height`, …) to
+node ids and `inputs.*` keys. Both ship with the
+`"REPLACE_ME.safetensors"` placeholder; the bridge refuses to
+generate with the placeholder, forcing the operator to either pass
+`checkpoint=` per call or edit the JSON once. See
+`docs/reference/image-comfyui-bridge.md` for the design rationale and
+`openclaw-image-comfyui/server/workflows/README.md` for the authoring
+guide.
+
+### Threat model
+
+The bridge is content- and model-agnostic. Bearer auth on `POST /mcp`
+(`IMAGE_GEN_API_TOKEN`); rotation requires a cross-compose
+force-recreate (`./rotate-secrets.sh IMAGE_GEN_API_TOKEN` prints both
+commands). The bridge → ComfyUI hop is unauth'd by ComfyUI default —
+mitigation is keeping ComfyUI's port loopback-only on the host. The
+bridge container is `cap_drop: [ALL]`, `no-new-privileges`,
+`mem_limit: 1024m`, non-root `1000:1000`. See
+`docs/reference/image-comfyui-bridge.md` for the full threat model.
+
+### Port publishing posture
+
+`9095` publishes to `127.0.0.1` only by default (`IMAGE_GEN_BIND`);
+the gateway reaches it via bridge DNS so the host publish is operator
+ergonomics for `curl` smoke tests. Set `IMAGE_GEN_BIND=0.0.0.0` only
+behind a header-auth reverse proxy.
+
 ## Networking, trust, and exposure
 
 - **Gateway**: `18789` (and `18790` control) are published to the host. Put a TLS-terminating reverse proxy in front for public access over `wss://`.
@@ -494,5 +599,6 @@ next call as a fresh kernel.
 - **STT port (`openclaw-stt-whisper`) publishes to `127.0.0.1:8093`** by default. Set `STT_WHISPER_BIND=0.0.0.0` to expose on the LAN (Bearer-protected via `STT_API_TOKEN`).
 - **Browser ports (`openclaw-browser`) publish to `127.0.0.1:9220` (management API) + `127.0.0.1:9222-9241` (Chromium debug ports) + `127.0.0.1:5901` (noVNC during onboarding only)** by default — opt-in via `--profile browser`. Set `BROWSER_BIND=0.0.0.0` only with a header-auth reverse proxy in front; raw CDP ports on the LAN are a credential-theft vector. See `docs/reference/browser-automation.md`.
 - **Python sandbox port (`openclaw-python-sandbox`) publishes to `127.0.0.1:8094`** by default — opt-in via `--profile python`. Bearer-protected via `PYTHON_SANDBOX_API_TOKEN`. Set `PYTHON_SANDBOX_BIND=0.0.0.0` only behind a header-auth reverse proxy. See `docs/reference/python-sandbox.md`.
+- **Image-gen bridge port (`openclaw-image-comfyui`) publishes to `127.0.0.1:9095`** by default — opt-in via `--profile image-gen`, lives in a separate compose file. Bearer-protected via `IMAGE_GEN_API_TOKEN`. The bridge → ComfyUI hop is unauth'd (ComfyUI default); keep ComfyUI's port loopback-only on the host. See `docs/reference/image-comfyui-bridge.md`.
 - `gateway.trustedProxies` includes `172.16.0.0/12` so any reverse proxy on the same docker bridge (or on host-network with bridge-adjacent IPs) is trusted. If you access the gateway **directly** from your LAN (bypassing the proxy), add your LAN CIDR via `OPENCLAW_LAN_CIDR`.
 - The Chrome extension expects `wss://` (secure) for public use. Put a TLS-terminating reverse proxy in front and set `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1` so the gateway accepts the plain `ws://` hop from the proxy on your private network.

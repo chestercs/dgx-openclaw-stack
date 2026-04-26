@@ -588,6 +588,135 @@ Either lever opts out independently:
 
 Both are safe and reversible.
 
+## Image generation bridge (ComfyUI MCP)
+
+A thin MCP bridge that lets the OpenClaw agent drive image generation on
+your existing ComfyUI install. The bridge ships **no model weights** —
+you bring whatever checkpoints you want (FLUX Dev / Schnell, SDXL base,
+Pony XL / Illustrious XL / RealVisXL fine-tunes, …); the bridge submits
+workflow JSON templates to ComfyUI's HTTP API and returns base64-encoded
+PNGs to the agent. Three tools surface in the agent catalog:
+`comfyui_image__generate`, `comfyui_image__list_workflows`,
+`comfyui_image__cancel`.
+
+This opt-in lives in a **separate compose file**
+(`openclaw-image-comfyui/docker-compose.yml`) — not in the main stack
+compose. `docker compose up -d` from the repo root does NOT start the
+bridge; the operator brings it up explicitly.
+
+> **License posture.** This repo ships no model weights of any kind.
+> Checkpoint, LoRA, and workflow choices — and their respective
+> licenses (FLUX Dev's research-use terms, Pony Diffusion XL's
+> CC-BY-NC-style restrictions, vendor-specific clauses on Illustrious /
+> RealVisXL / etc.) — are entirely the operator's responsibility. Same
+> posture as the F5-TTS HU opt-in.
+
+### Activation
+
+Three independent levers must all be true before the agent sees the
+`comfyui_image__*` tools:
+
+1. **Set `IMAGE_GEN_API_TOKEN` in the main `.env`.** `bootstrap.sh`
+   prompt 3e handles this on first run; on existing installs use
+   `./rotate-secrets.sh IMAGE_GEN_API_TOKEN -y`.
+2. **Confirm `COMFYUI_URL` matches your ComfyUI install.** The default
+   `http://host.docker.internal:13036` works when ComfyUI is in a
+   sibling compose on the same host with port `13036:8188` published
+   on loopback. For a LAN-resident ComfyUI, set
+   `COMFYUI_URL=http://192.168.x.x:13036` in the main `.env`.
+3. **Bring the bridge up** (separate compose):
+
+   ```bash
+   docker compose -f openclaw-image-comfyui/docker-compose.yml \
+                  --env-file .env --profile image-gen \
+                  up -d --build
+   ```
+
+4. **Re-run the patcher** so the gateway picks up the new MCP server:
+
+   ```bash
+   docker compose up -d --force-recreate \
+                  openclaw-config-init openclaw-gateway openclaw-cli
+   ```
+
+Step 19 of `patch-config.mjs` writes `mcp.servers.comfyui_image` into
+`openclaw.json` only when `IMAGE_GEN_API_TOKEN` is set; an empty token
+removes the entry on the next patcher run.
+
+### Smoke test
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+TOKEN=$(grep '^IMAGE_GEN_API_TOKEN=' .env | cut -d= -f2-)
+
+# Bridge healthcheck + workflow inventory
+curl -fsS http://127.0.0.1:9095/healthz
+curl -sS -X POST http://127.0.0.1:9095/mcp \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  | jq '.result.tools[].name'
+
+# End-to-end via the agent (picks a checkpoint that actually exists in
+# your ComfyUI's basedir/models/checkpoints/)
+docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
+  --message "Use comfyui_image__generate with workflow=flux-schnell, checkpoint=flux1-schnell-fp8.safetensors, prompt='a red cube on a white background', width=512, height=512. Reply with the prompt_id." \
+  --thinking medium --json --timeout 240 \
+  | jq '.toolSummary, .finalAssistantVisibleText'
+```
+
+### Adding a model
+
+The bridge reads checkpoints from your existing ComfyUI's
+`basedir/models/checkpoints/` directory — no new bind mounts are
+needed in this stack. To use a new model:
+
+1. Drop the `.safetensors` file into your ComfyUI's
+   `basedir/models/checkpoints/` directory (matches the path your
+   ComfyUI compose has bind-mounted as `/basedir`).
+2. Either pass `checkpoint=<filename>.safetensors` per `generate`
+   call, OR edit a shipped workflow JSON
+   (`openclaw-image-comfyui/server/workflows/<name>.json`) and replace
+   the `"REPLACE_ME.safetensors"` placeholder once.
+3. If you edited a workflow JSON, restart the bridge so it reloads:
+   ```bash
+   docker compose -f openclaw-image-comfyui/docker-compose.yml \
+                  up -d --force-recreate openclaw-image-comfyui
+   ```
+
+### Adding a custom workflow
+
+See `openclaw-image-comfyui/server/workflows/README.md` for the
+authoring guide. TL;DR: in ComfyUI, click **Save (API Format)**, drop
+the JSON into the bridge's `workflows/` directory, prepend a
+`_metadata` block declaring `targets.prompt` and `targets.negative`
+(other targets are auto-resolved by `class_type`), restart the bridge.
+
+### Tuning
+
+| Variable | Default | Use when |
+|--|--|--|
+| `IMAGE_GEN_MAX_CONCURRENCY` | `1` (single-flight) | Drop to `0` only if your ComfyUI runs on a different GPU than vLLM. Otherwise concurrent generation pauses LLM tokens. |
+| `IMAGE_GEN_TIMEOUT_S` | `600` | Bump if your workflows do >25-step SDXL or batched FLUX renders that approach the 10-minute cap. |
+| `IMAGE_GEN_MAX_OUTPUT_BYTES` | `52428800` (50 MiB) | Bump if `batch_size > 1` at high resolution; lower to throttle agent context bloat if you only ever ask for one 1024x1024 image. |
+| `IMAGE_GEN_BIND` | `127.0.0.1` | Set to `0.0.0.0` only if you want to call the MCP endpoint from a LAN client through a header-auth reverse proxy. |
+
+### Disabling
+
+Either lever opts out independently:
+
+- **Stop the bridge container**: `docker compose -f
+  openclaw-image-comfyui/docker-compose.yml down`. The bridge stays
+  off until you bring it back up; the rest of the stack is unaffected.
+- **Empty `IMAGE_GEN_API_TOKEN`**. The next patcher run removes
+  `mcp.servers.comfyui_image` from `openclaw.json`, so the gateway
+  stops trying to dial a parked bridge:
+  ```bash
+  docker compose up -d --force-recreate \
+                 openclaw-config-init openclaw-gateway openclaw-cli
+  ```
+
+Both are safe and reversible.
+
 ## Voice-controlled agent over Discord
 
 Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by voice: speak a request → the bundled Whisper STT transcribes → the agent plans + executes → the bundled TTS speaks the reply into the channel. End-to-end round trip is ~3-5 s on GB10 for a simple tool call.

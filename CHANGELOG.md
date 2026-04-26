@@ -5,6 +5,150 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-04-26
+
+Image-generation MCP bridge — the agent can now drive image generation
+on the operator's existing ComfyUI install via three new tools
+(`comfyui_image__generate`, `comfyui_image__list_workflows`,
+`comfyui_image__cancel`). The bridge is content- and model-agnostic;
+the repo ships no model weights. First service in the stack to live in
+its own Compose file (`openclaw-image-comfyui/docker-compose.yml`) —
+deliberate separation from the main stack so the bridge can be brought
+up independently and to keep the main `docker compose up -d` invariant
+("9 default services") unchanged.
+
+### Added
+- **`openclaw-image-comfyui` service** — opt-in
+  (`COMPOSE_PROFILES=image-gen` + non-empty `IMAGE_GEN_API_TOKEN`).
+  Lives in a separate compose file
+  (`openclaw-image-comfyui/docker-compose.yml`) joined to the main
+  stack's bridge via `external: true` network reference. One container,
+  one uvicorn process. No GPU, no torch, no model weights — pure HTTP
+  wrapper. MCP Streamable-HTTP wire on `POST /mcp`, hand-rolled in
+  `server/app.py` (~250 LOC, no SDK dependency, mirrors the v0.8.0
+  python-sandbox pattern). Three tools surface: `comfyui_image__generate
+  (prompt, workflow, width, height, steps, cfg, seed, negative,
+  checkpoint, sampler, scheduler, batch_size, timeout_s)`,
+  `comfyui_image__list_workflows()`, `comfyui_image__cancel(prompt_id)`.
+- **Patcher step 19** — `mcp.servers.comfyui_image` deep-merge,
+  env-gated by `IMAGE_GEN_API_TOKEN`. Same shape as step 18
+  (`transport: streamable-http`, `url`, `connectionTimeoutMs`,
+  `headers.Authorization`). When the token is unset, the entry is
+  *removed* (and empty parent objects cleaned up) so the gateway
+  doesn't try to dial a parked bridge.
+- **Workflow template engine** (`server/workflow_loader.py`) — parses
+  ComfyUI API-format JSON exports, strips a bridge-only `_metadata`
+  block, substitutes user params (prompt, seed, dimensions, sampler,
+  ...) into nodes by `class_type` lookup or explicit `targets` mapping.
+  Substitution is by node-id + input-key, never by string-replace —
+  prompts that legitimately contain `${…}` patterns (LoRA syntax,
+  embedding refs) survive intact.
+- **Two reference workflows** — `flux-schnell.json` (4-step distilled,
+  fastest), `sdxl-base.json` (25-step, generic SDXL fine-tune carrier).
+  Both ship with `"REPLACE_ME.safetensors"` checkpoint placeholder; the
+  bridge refuses to generate without either an explicit `checkpoint=`
+  arg or an operator-edited workflow JSON. License posture: this repo
+  ships no model weights — operators pick FLUX Dev / Schnell, SDXL
+  fine-tunes (Pony XL, Illustrious XL, RealVisXL, adult fine-tunes,
+  ...) under whichever upstream license they accept.
+- **`server/comfy_client.py`** — async httpx wrapper around ComfyUI's
+  `/prompt`, `/history/{id}`, `/view`, `/queue`, `/interrupt`. Polling
+  loop with 0.5s start, ×1.5 backoff, 2s cap, total budget
+  `IMAGE_GEN_TIMEOUT_S`. Detects mid-render ComfyUI restart
+  (`/history/{id}` 404 after a confirmed submission) and surfaces
+  `ComfyUIRestartedError` rather than hanging until timeout.
+- **Single-flight by default** — `IMAGE_GEN_MAX_CONCURRENCY=1` via
+  `asyncio.Semaphore(1)`. ComfyUI runs on the same GB10 GPU as vLLM;
+  concurrent generation pauses LLM token gen and is observable as
+  multi-second user stalls. Set to `0` for pass-through if your ComfyUI
+  is on a different GPU.
+- **`bootstrap.sh` opt-in prompt 3e** — after the python sandbox
+  prompt. Token-presence guard so re-runs don't re-ask. `openssl rand
+  -base64 48` to mint. Optional `COMFYUI_URL` follow-up prompt with
+  `http://host.docker.internal:13036` default. Best-effort
+  `COMPOSE_PROFILES` toggle (advisory: the bridge lives in a separate
+  compose file so the `image-gen` profile gate is informational, not
+  load-bearing).
+- **`rotate-secrets.sh` registers `IMAGE_GEN_API_TOKEN`** as a
+  conditional secret — auto-included in `--all` only when already set
+  (mirrors `F5HUN_API_TOKEN` / `PYTHON_SANDBOX_API_TOKEN`). Restart
+  matrix maps the key to `openclaw-image-comfyui openclaw-config-init
+  openclaw-gateway openclaw-cli`. Post-rotation print emits TWO
+  `up -d --force-recreate` commands (one per compose file) — the
+  bridge's `force-recreate openclaw-image-comfyui` cannot be merged
+  into the main stack's command because the bridge is in a different
+  compose project.
+- **`.env.example` block** for the new tunables: `IMAGE_GEN_API_TOKEN`,
+  `COMFYUI_URL`, `IMAGE_GEN_BIND/PORT`, `IMAGE_GEN_TIMEOUT_S`,
+  `IMAGE_GEN_MAX_CONCURRENCY`, `IMAGE_GEN_MAX_OUTPUT_BYTES`,
+  `IMAGE_GEN_POLL_INTERVAL_S`, `IMAGE_GEN_POLL_BACKOFF_MAX_S`. Section
+  documents the model-agnostic posture and links to the bridge's
+  `workflows/` README for the workflow authoring guide.
+- **`docs/reference/image-comfyui-bridge.md`** — design rationale (why
+  MCP not OpenAI-compat shim, why host-gateway not shared external
+  network, why separate compose), threat model, workflow template
+  architecture, verification recipes, known limits.
+- **`docs/CUSTOMIZATION.md` "Image generation bridge (ComfyUI MCP)"
+  section** with activation walkthrough, smoke tests, model-add
+  workflow, custom-workflow authoring pointer, tuning, disable steps.
+  Single explicit paragraph on license posture: model + workflow
+  choice + their respective licenses (FLUX Dev research-use terms,
+  Pony XL CC-BY-NC, vendor clauses, ...) are operator's
+  responsibility.
+- **`docs/ARCHITECTURE.md` "Image-gen bridge subsystem" subsection** +
+  patcher-step list expansion (18 → 19) + networking-trust exposure
+  list update + cross-compose join section explaining the
+  `external: true` network reference + why-not-run-ComfyUI-here
+  rationale.
+- **`docs/TROUBLESHOOTING.md` four new entries** under "Image-gen
+  bridge (openclaw-image-comfyui)": agent-can't-find-tool diagnostic
+  chain (mirroring the python-sandbox tool-prefix gotcha), bridge →
+  ComfyUI host-gateway hop reachability test, missing-checkpoint /
+  REPLACE_ME placeholder error, mid-render ComfyUI restart recovery,
+  GPU contention with vLLM token gen.
+- **`docs/reference/README.md`** indexes the new
+  `image-comfyui-bridge.md` reference doc.
+- **`CLAUDE.md` (root) "Image-gen bridge: separate compose,
+  host-gateway hop, model-agnostic"** implementation-detail nugget.
+  Captures: separate-compose precedent, host-gateway hop choice,
+  tool-prefix gotcha re-applies (`comfyui_image__*`), deliberate
+  model-agnosticism.
+- **`private/docs/todos.md`** — wishlist #4 ✅ DONE.
+
+### Changed
+- **Patcher header comment in `docker-compose.yml` and inline
+  `patch-config.mjs` doc-block** updated from "18 steps" to "19
+  steps". Top-level step 19 entry added in both places.
+- **`docker-compose.yml` `openclaw-config-init` env block** gets
+  `IMAGE_GEN_API_TOKEN` and `IMAGE_GEN_URL` so step 19 can deep-merge.
+- **`bootstrap.sh` final summary block** mentions the bridge's
+  separate-compose `up -d --build` invocation.
+- **`rotate-secrets.sh` usage()** documents `IMAGE_GEN_API_TOKEN` in
+  the conditional-key set + as an explicit positional arg example.
+
+### Documented
+- **Honest limit: no img2img yet.** Shipped workflows are
+  text-to-image only. Adding img2img needs a `LoadImage` node in the
+  workflow + a bridge code path to ferry uploaded base bytes into
+  ComfyUI's input directory. Pending a use case that asks for it.
+- **Honest limit: no streaming progress.** A 25-step SDXL render takes
+  20-40s; the agent waits in the tool call until the PNG arrives.
+  Bound by `IMAGE_GEN_TIMEOUT_S` (default 600s).
+- **Honest limit: bridge → ComfyUI hop is unauth'd.** Mitigated by
+  ComfyUI's port being loopback-only on the host. Documented loudly
+  that publishing ComfyUI's port on a routable interface is a
+  separate ComfyUI-default risk, orthogonal to this bridge.
+
+### Pending GB10 deploy + smoke (2026-04-26 evening)
+Code-level stable; not yet deployed end-to-end. Remaining
+verification recipes (per `docs/reference/image-comfyui-bridge.md`):
+build + bring up the bridge, healthz + tools/list direct curl, agent
+end-to-end via `openclaw agent --message "Use comfyui_image__generate
+..."`, token rotation E2E (cross-compose force-recreate), cleanup
+branch (token unset → entry removed), restart-mid-gen recovery
+(`ComfyUIRestartedError` path), single-flight serialization vs
+pass-through behavior under concurrent agent calls.
+
 ## [0.8.0] - 2026-04-26
 
 Self-hosted Python code-execution sandbox via MCP — the agent can now
