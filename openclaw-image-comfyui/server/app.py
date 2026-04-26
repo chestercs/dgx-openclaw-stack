@@ -124,7 +124,8 @@ TOOLS = [
                 "scheduler":  {"type": "string",  "description": "KSampler `scheduler` override."},
                 "batch_size": {"type": "integer", "description": "Number of images per call (default 1)."},
                 "timeout_s":  {"type": "number",  "description": f"Max wall-clock seconds to wait for the render. Default {DEFAULT_TIMEOUT_S:.0f}."},
-                "include_base64": {"type": "boolean", "description": "Embed the PNG bytes as base64 in the response. Default false (returns metadata only — keeps the agent's context light). Set true only when you need the bytes inside the agent reply.", "default": False},
+                "include_base64": {"type": "boolean", "description": "Embed the PNG bytes as base64 in the response's text content. Default false (returns metadata only — keeps the agent's context light). Set true only when you need the bytes inside the agent reply.", "default": False},
+                "attach_image_content": {"type": "boolean", "description": "Add the PNG bytes as MCP `image` content items alongside the metadata text content. Default true — chat surfaces that honor the MCP image content type (OpenClaw web/control UI) render the image inline; clients that ignore it lose nothing. Disable if your chat surface mistakenly prefills image content into the LLM context.", "default": True},
             },
             "required": ["prompt"],
             "additionalProperties": False,
@@ -240,12 +241,15 @@ async def _tool_generate(args: dict) -> dict:
     except (TypeError, ValueError):
         timeout_s = DEFAULT_TIMEOUT_S
 
-    # Default OFF: a 200 KB base64 PNG = ~50K tokens in the agent's chat
-    # history; the next LLM-call prefill on Gemma 4 NVFP4 takes minutes
-    # at ~16 tok/s prefill speed for uncached content. Operators / chat
-    # surfaces fetch the actual PNG via ComfyUI's /view endpoint with
-    # the filename + subfolder we return below.
+    # `include_base64` (default false) puts the PNG bytes into the
+    # response's TEXT content (forces the LLM to prefill them — slow).
+    # `attach_image_content` (default true) puts the PNG bytes into a
+    # SEPARATE MCP `image` content item alongside the text — chat
+    # surfaces that honor MCP image content render it as an attachment;
+    # clients that ignore it lose nothing. The agent's text-context
+    # prefill stays light either way.
     include_base64 = bool(args.get("include_base64", False))
+    attach_image_content = bool(args.get("attach_image_content", True))
 
     client_id = uuid.uuid4().hex
     started = time.monotonic()
@@ -282,6 +286,7 @@ async def _tool_generate(args: dict) -> dict:
             except Exception:
                 # Don't fail generation on a metadata read; fall back to defaults.
                 width, height, fmt = 0, 0, "png"
+            b64 = base64.b64encode(data).decode("ascii")
             entry = {
                 "format": fmt,
                 "filename": out["filename"],
@@ -297,8 +302,31 @@ async def _tool_generate(args: dict) -> dict:
                 ),
             }
             if include_base64:
-                entry["base64"] = base64.b64encode(data).decode("ascii")
+                entry["base64"] = b64
+            entry["_b64_blob"] = b64  # internal — extracted by MCP wire
             images.append(entry)
+
+        # Strip the per-image internal _b64_blob into a top-level
+        # _attachments list before returning. The MCP `tools/call`
+        # handler reads `_attachments` and emits one MCP `image`
+        # content item per entry — separate from the text content
+        # the LLM sees. Set attach_image_content=false to skip this
+        # step and return only the text metadata.
+        attachments = []
+        if attach_image_content:
+            for img in images:
+                attachments.append({
+                    "mime_type": (
+                        f"image/{img['format']}"
+                        if img['format'] in ("png", "jpeg", "webp")
+                        else "image/png"
+                    ),
+                    "data": img.pop("_b64_blob"),
+                    "filename": img["filename"],
+                })
+        else:
+            for img in images:
+                img.pop("_b64_blob", None)
 
         return {
             "prompt_id": prompt_id,
@@ -306,8 +334,10 @@ async def _tool_generate(args: dict) -> dict:
             "seed_used": seed_val,
             "elapsed_s": round(time.monotonic() - started, 3),
             "include_base64": include_base64,
+            "attach_image_content": attach_image_content,
             "comfyui_base_url": COMFYUI_URL,
             "images": images,
+            "_attachments": attachments,
         }
 
     if _gen_sem is None:
@@ -381,12 +411,28 @@ async def _handle_message(msg: dict) -> Optional[dict]:
         except Exception as e:  # noqa: BLE001
             log.exception("tool call %s raised", name)
             return _jsonrpc_error(id_, -32603, f"{type(e).__name__}: {e}")
+        # Internal `_attachments` is the bridge's signal to add MCP
+        # `image` content items alongside the text. Pop it BEFORE
+        # serializing the text content so the base64 doesn't end up
+        # in the JSON the LLM prefills.
+        attachments = []
+        if isinstance(tool_result, dict):
+            attachments = tool_result.pop("_attachments", []) or []
+        content: list[dict] = [
+            {"type": "text", "text": json.dumps(tool_result, default=str)}
+        ]
+        for att in attachments:
+            data = att.get("data")
+            if not isinstance(data, str) or not data:
+                continue
+            content.append({
+                "type": "image",
+                "data": data,
+                "mimeType": att.get("mime_type") or "image/png",
+            })
         return _jsonrpc_result(
             id_,
-            {
-                "content": [{"type": "text", "text": json.dumps(tool_result, default=str)}],
-                "isError": is_error,
-            },
+            {"content": content, "isError": is_error},
         )
 
     if is_notification:

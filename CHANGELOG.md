@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-04-27
+
+UX fix on top of v0.9.3 — generated images now render in the chat
+surface without putting the base64 into the agent's prefill context.
+The bridge emits an MCP `image` content item alongside the metadata
+text content; chat surfaces that honor the MCP image content type
+(OpenClaw web/control UI per the MCP spec) render it inline; clients
+that ignore unknown content types lose nothing. The text content
+the LLM actually prefills stays metadata-only.
+
+### Added
+- **MCP `image` content emission** in `comfyui_image__generate`'s
+  `tools/call` response. Each generated image becomes one
+  `{type: "image", data: <base64>, mimeType: "image/png"}` content
+  item in the response's `content` array, alongside the existing text
+  metadata content.
+- **`attach_image_content: bool` parameter** (default `true`).
+  Controls whether the bridge emits MCP image content items. Set
+  `false` if your chat surface mistakenly prefills image content
+  blocks into the LLM's text context (verify-first; not observed on
+  OpenClaw 2026.4.22 with Gemma 4 NVFP4 — the spec says image content
+  is host-renderable, not text-prefilled).
+
+### Changed
+- **`_tool_generate` builds an internal `_attachments` list** that the
+  MCP wire dispatch extracts before serializing the tool result text.
+  The text content the LLM prefills remains the same metadata-only
+  payload v0.9.3 introduced — the image bytes never appear in the
+  text JSON. `include_base64=true` still forces the bytes into the
+  text content for clients that want them inline (rare).
+
+### Verify
+- `comfyui_image__generate` agent E2E with default `attach_image_content`:
+  - Tool catalog still shows `comfyui_image__generate`.
+  - Agent reply includes the metadata + the image renders in the
+    OpenClaw chat surface.
+  - Run wall clock should match the v0.9.3 metadata-only timing
+    (~10-20s for SD1.5 512×512), NOT the v0.9.0 50K-token-prefill
+    minutes — confirming the MCP image content is NOT being text-
+    prefilled by the runtime.
+
 ## [0.9.3] - 2026-04-27
 
 Bridge response-shape change. `comfyui_image__generate` no longer
