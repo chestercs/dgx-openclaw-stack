@@ -89,7 +89,18 @@ TOOLS = [
         "name": "generate",
         "description": (
             "Generate one or more images via the operator's ComfyUI install. "
-            "Returns base64-encoded PNG bytes the agent can render or save. "
+            "Returns metadata (prompt_id, workflow, seed, elapsed_s, per-image "
+            "filename + size + width/height). The PNG bytes themselves are NOT "
+            "in the response by default — embedding ~200 KB of base64 per image "
+            "would balloon the agent's context (50K+ tokens) and 5-10× the "
+            "wall clock for the next LLM call's prefill on Gemma 4 NVFP4. "
+            "Operators or chat surfaces fetch the actual PNG from the operator's "
+            "ComfyUI install via `GET /view?filename=<filename>&type=output&"
+            "subfolder=<subfolder>` (filename + subfolder come back in this "
+            "response). Pass `include_base64=true` only when you genuinely "
+            "need the bytes inside the agent reply (e.g., a follow-up tool "
+            "call that will hash them); the agent run will be much slower."
+            "\n\n"
             "`workflow` selects a JSON template under workflows/; the bridge "
             "binds your params (prompt, dimensions, sampler, seed, ...) to "
             "the template's tunable nodes and submits to ComfyUI's queue. "
@@ -113,6 +124,7 @@ TOOLS = [
                 "scheduler":  {"type": "string",  "description": "KSampler `scheduler` override."},
                 "batch_size": {"type": "integer", "description": "Number of images per call (default 1)."},
                 "timeout_s":  {"type": "number",  "description": f"Max wall-clock seconds to wait for the render. Default {DEFAULT_TIMEOUT_S:.0f}."},
+                "include_base64": {"type": "boolean", "description": "Embed the PNG bytes as base64 in the response. Default false (returns metadata only — keeps the agent's context light). Set true only when you need the bytes inside the agent reply.", "default": False},
             },
             "required": ["prompt"],
             "additionalProperties": False,
@@ -228,6 +240,13 @@ async def _tool_generate(args: dict) -> dict:
     except (TypeError, ValueError):
         timeout_s = DEFAULT_TIMEOUT_S
 
+    # Default OFF: a 200 KB base64 PNG = ~50K tokens in the agent's chat
+    # history; the next LLM-call prefill on Gemma 4 NVFP4 takes minutes
+    # at ~16 tok/s prefill speed for uncached content. Operators / chat
+    # surfaces fetch the actual PNG via ComfyUI's /view endpoint with
+    # the filename + subfolder we return below.
+    include_base64 = bool(args.get("include_base64", False))
+
     client_id = uuid.uuid4().hex
     started = time.monotonic()
 
@@ -263,25 +282,31 @@ async def _tool_generate(args: dict) -> dict:
             except Exception:
                 # Don't fail generation on a metadata read; fall back to defaults.
                 width, height, fmt = 0, 0, "png"
-            images.append(
-                {
-                    "format": fmt,
-                    "base64": base64.b64encode(data).decode("ascii"),
-                    "filename": out["filename"],
-                    "subfolder": out["subfolder"],
-                    "type": out["type"],
-                    "node_id": out["node_id"],
-                    "width": width,
-                    "height": height,
-                    "byte_size": len(data),
-                }
-            )
+            entry = {
+                "format": fmt,
+                "filename": out["filename"],
+                "subfolder": out["subfolder"],
+                "type": out["type"],
+                "node_id": out["node_id"],
+                "width": width,
+                "height": height,
+                "byte_size": len(data),
+                "fetch_url_path": (
+                    f"/view?filename={out['filename']}"
+                    f"&type={out['type']}&subfolder={out['subfolder']}"
+                ),
+            }
+            if include_base64:
+                entry["base64"] = base64.b64encode(data).decode("ascii")
+            images.append(entry)
 
         return {
             "prompt_id": prompt_id,
             "workflow_used": workflow_name,
             "seed_used": seed_val,
             "elapsed_s": round(time.monotonic() - started, 3),
+            "include_base64": include_base64,
+            "comfyui_base_url": COMFYUI_URL,
             "images": images,
         }
 

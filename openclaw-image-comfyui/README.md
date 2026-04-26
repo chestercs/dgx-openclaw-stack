@@ -26,8 +26,15 @@ as F5-TTS HU and the Python sandbox.
 ## What's in the box
 
 - **Three MCP tools** surfaced through OpenClaw's tool catalog:
-  - `comfyui_image__generate(prompt, workflow, ...)` — submit a
-    workflow, poll, return base64 PNGs.
+  - `comfyui_image__generate(prompt, workflow, ..., include_base64=false)` —
+    submit a workflow, poll, return image **metadata** (filename,
+    width/height, byte size, fetch URL path). PNG bytes are NOT in the
+    response by default — they would balloon the agent's context to
+    50K+ tokens per image and 5-10× the next LLM call's wall clock.
+    Operators or chat surfaces fetch the actual PNG via ComfyUI's
+    `GET /view?filename=…&type=output&subfolder=…` endpoint with the
+    metadata returned. Pass `include_base64=true` only when you need
+    the bytes inside the agent reply.
   - `comfyui_image__list_workflows()` — list shipped templates with
     their tunable params and defaults.
   - `comfyui_image__cancel(prompt_id)` — best-effort abort of an

@@ -96,6 +96,32 @@ The `client_id` field is regenerated per request (`uuid.uuid4().hex`)
 so the WebSocket feed (which we don't currently consume) would route
 cleanly if we ever needed it.
 
+## Response shape: metadata-only by default (v0.9.3+)
+
+The `generate` tool result no longer embeds the PNG bytes by default.
+Each `images[]` entry contains `format`, `filename`, `subfolder`, `type`,
+`node_id`, `width`, `height`, `byte_size`, and `fetch_url_path` — the
+relative URL on ComfyUI's HTTP API to retrieve the actual file. The
+top-level result also carries `comfyui_base_url`, so the agent (or a
+chat surface) can reconstruct a full URL: `{comfyui_base_url}{fetch_url_path}`.
+
+Why default-off: a single 512×512 PNG is ~30-100 KB, base64-encoded
+~40-130 KB chars ≈ 10-30K tokens. A 1024×1024 image gets to 50-100K
+tokens easily. Embedding that in the agent's chat history forces the
+next LLM call's prefill to chew through every uncached token; on
+Gemma 4 NVFP4 (~16 tok/s prefill for new content) a single 1024×1024
+generate balloons the run from ~10s to >50 minutes — far past any
+realistic `--timeout`. The v0.9.0/v0.9.2 GB10 smoke tests reproduced
+this exactly: direct MCP `tools/call generate` returned in 6.25s, the
+agent-wrapped run timed out at 600s while the LLM was still prefilling
+the response.
+
+Pass `include_base64=true` only when you need the bytes inside the
+agent reply (e.g., a follow-up tool call that hashes them, or a
+specialty chat surface that consumes data URIs from tool results).
+The bridge itself doesn't change — `IMAGE_GEN_MAX_OUTPUT_BYTES` still
+caps the total base64 payload when it IS requested.
+
 ## Concurrency: single-flight by default
 
 `IMAGE_GEN_MAX_CONCURRENCY=1` is the default. ComfyUI runs on the same

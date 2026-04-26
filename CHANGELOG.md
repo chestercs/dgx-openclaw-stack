@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-04-27
+
+Bridge response-shape change. `comfyui_image__generate` no longer
+embeds the PNG bytes in the tool result by default — agent runs that
+called the tool with the v0.9.0/v0.9.2 default were timing out for a
+different reason than the multi-step issue v0.9.2 covered: the
+~50K-token base64 payload was forcing the next LLM-call's prefill to
+chew through tens of thousands of uncached tokens at Gemma 4 NVFP4's
+~16 tok/s prefill speed. Direct MCP `tools/call generate` returned in
+6.25s (verified on GB10); the agent-wrapped run timed out at 600s
+while the LLM was still prefilling the response.
+
+### Changed
+- **`comfyui_image__generate` returns metadata only by default.**
+  Each `images[]` entry now contains `format`, `filename`, `subfolder`,
+  `type`, `node_id`, `width`, `height`, `byte_size`, and a new
+  `fetch_url_path` (relative URL on ComfyUI's HTTP API). The top-level
+  result also carries `comfyui_base_url` so the agent can reconstruct a
+  full fetchable URL: `{comfyui_base_url}{fetch_url_path}`. Operators
+  and chat surfaces fetch the actual PNG via ComfyUI's `GET /view`
+  endpoint with the metadata.
+- **New `include_base64: bool` parameter** (default `false`). Set
+  `true` to opt in to the old behavior — the PNG bytes appear under
+  `images[].base64` and the result also has `include_base64: true` at
+  the top level. Use only when you genuinely need the bytes inside the
+  agent reply (e.g., a follow-up tool call that hashes them).
+- **`comfyui_image__generate` description** rewritten to lead with the
+  rationale and the `/view` fallback so the agent picks the right
+  default unprompted.
+
+### Documented
+- **`docs/reference/image-comfyui-bridge.md` new "Response shape"
+  section** with the prefill-throughput math and the v0.9.0/v0.9.2
+  reproduction trail.
+- **`openclaw-image-comfyui/README.md` "What's in the box"** rewritten
+  to describe the metadata-only default and the `/view` fetch pattern.
+
+### Migration
+- No `.env` changes; no patcher changes; no breaking compose changes.
+- Bridge image rebuild + recreate required to pick up the new
+  response-shape default:
+  `docker compose -f openclaw-image-comfyui/docker-compose.yml --profile image-gen up -d --build openclaw-image-comfyui`
+
 ## [0.9.2] - 2026-04-27
 
 Documentation-only release. Captures the multi-step tool-call timeout
