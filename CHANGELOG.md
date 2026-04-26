@@ -5,6 +5,64 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-04-27
+
+Documentation-only release. Captures the multi-step tool-call timeout
+finding from the v0.9.0 GB10 smoke and bumps every documented agent
+invocation to `--timeout 600`, the safe floor for any tool-using run on
+Gemma 4 NVFP4 with the current MCP catalog.
+
+### Documented
+- **`docs/TROUBLESHOOTING.md` "Agent runs (multi-step tool calls)"
+  section** — diagnostic chain for `Request was aborted` /
+  `embedded run timeout` errors on tool-using agent runs. Spelled out:
+  Gemma 4 NVFP4 generates ~6 tok/s on GB10; a multi-step tool-call run
+  does 2-3 LLM calls of ~200 tokens each → 90-120s wall-clock; the
+  default `--timeout 60` aborts mid-run; bump to `300` (single tool) or
+  `600` (multi-step). Also covers `--thinking off` for routine tool
+  calls and trimming the catalog by dropping unused profiles.
+- **`CLAUDE.md` (root) new "Multi-step tool-call agent runs need a
+  generous --timeout" implementation-detail nugget.** Captures the
+  generation-throughput math, the failure mode (gateway logs
+  `rawErrorPreview: "Request was aborted." failoverReason: "timeout"`,
+  empty agent reply), the fix, and the rule that any documented
+  tool-using prompt in this repo must use `--timeout 600`.
+- **`docs/CUSTOMIZATION.md` Python sandbox + Image-gen smoke tests
+  bumped to `--timeout 600`** with an inline comment cross-linking to
+  the troubleshooting section.
+- **`docs/reference/image-comfyui-bridge.md` verification recipe**
+  bumped to `--timeout 600`.
+
+### Changed
+- **CLAUDE.md "Useful one-liners" multi-tool agent example** uses
+  `--timeout 600` (was `--timeout 240`).
+- **CLAUDE.md "Verification recipes" web_search example** uses
+  `--timeout 600` (was `--timeout 180`).
+
+### GB10 deploy notes (2026-04-27 hajnal)
+- Direct MCP `tools/call generate` end-to-end: DreamShaper SD1.5,
+  512×512, 15 steps, 6.25s wall-clock on GB10.
+- Agent E2E `comfyui_image__list_workflows` with `--timeout 600`:
+  `toolSummary {calls:1, failures:0}, stopReason: stop`. Reply:
+  `NAMES: flux-schnell, sdxl-base`.
+- Same diagnostic was reproducing on `python_sandbox__python_exec` —
+  not a v0.9.0 regression, broader Gemma-4-NVFP4 + multi-step
+  tool-call timing footprint that the documentation now reflects.
+
+## [0.9.1] - 2026-04-27
+
+Patch release. Fixes a tool-name double-prefix bug discovered on the
+v0.9.0 GB10 smoke.
+
+### Fixed
+- **Bridge tool names are now bare** (`generate`, `list_workflows`,
+  `cancel`) instead of pre-prefixed (`comfyui_image__generate`, …).
+  The OpenClaw gateway prefixes MCP tool names with `<server>__` at
+  surface time; pre-prefixing produced
+  `comfyui_image__comfyui_image__generate` in the agent catalog,
+  which the agent's prompt couldn't match. Mirrors the python-sandbox
+  sibling, which always used bare `python_exec`.
+
 ## [0.9.0] - 2026-04-26
 
 Image-generation MCP bridge — the agent can now drive image generation

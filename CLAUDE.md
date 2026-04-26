@@ -123,9 +123,11 @@ docker exec ${PROJ}openclaw-cli curl -sS "http://searxng:8080/search?q=test&form
 docker exec ${PROJ}openclaw-cli openclaw memory status --deep
 docker exec ${PROJ}openclaw-cli openclaw memory search "your query"
 
-# Multi-tool agent run via the gateway
+# Multi-tool agent run via the gateway. `--timeout 600` is the safe floor
+# for any tool-using run on Gemma 4 NVFP4 (see "Multi-step tool-call
+# agent runs need a generous --timeout" in Implementation details).
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
-  --message "Use web_search to find …" --thinking medium --json --timeout 240
+  --message "Use web_search to find …" --thinking off --json --timeout 600
 ```
 
 ## Implementation details worth knowing
@@ -289,6 +291,14 @@ The W3C WebAuthn spec is origin-bound. In a noVNC session, the operator's browse
 
 4. **Model-agnostic by design.** The repo ships NO model weights. Workflow templates under `server/workflows/` use `"REPLACE_ME.safetensors"` as a placeholder; the bridge refuses to generate without either an explicit `checkpoint=` arg or an operator-edited workflow. Operator picks the upstream models (FLUX Dev / Schnell, SDXL fine-tunes — Pony XL, Illustrious XL, RealVisXL — adult fine-tunes, …) under whichever license they accept. Same posture as F5-TTS HU's CC-BY-NC isolation.
 
+### Multi-step tool-call agent runs need a generous `--timeout`
+
+Gemma 4 NVFP4 generates at ~6 tok/s on GB10. A multi-step tool-call agent run does several LLM calls in sequence: system-prompt prefill → tool-call args → tool-result digestion → final reply. Each leg is ~100-300 tokens, which adds up to 90-130s of wall-clock for a 3-call run. With the current MCP catalog (`python_sandbox__*`, `comfyui_image__*`, plus the always-on memory/file/exec/browser surface) the system-prompt prefill alone burns the first 3-5s of every call.
+
+The default `openclaw agent --timeout` of 60s was repeatedly tripping during v0.9.0 smoke tests with both `python_sandbox__python_exec` and `comfyui_image__list_workflows` — the gateway logs `embedded run timeout, rawErrorPreview: "Request was aborted." failoverReason: "timeout"` and the agent reply field is empty. Bumping to `--timeout 600` resolves it cleanly; `--timeout 300` is the floor for single-tool runs. The vLLM idle watchdog (`agents.defaults.llm.idleTimeoutSeconds=300`, patcher step 8) is independent — it only catches a stuck connection, not a slow-but-progressing run. Reasoning multipliers (`--thinking medium`, `--thinking high`) make this 2-3× worse; reserve them for genuinely hard prompts.
+
+When a tool-using prompt is documented anywhere in this repo (CLAUDE.md, CUSTOMIZATION.md, README.md, docs/reference/, …) it must use `--timeout 600`. Don't drop it to 60-180s for "looks cleaner" — the next person to copy-paste it will hit the timeout and waste an hour debugging.
+
 ## Verification recipes (copy-paste ready)
 
 These cover the cases that have actually broken in practice. When making non-trivial changes, run the relevant ones before declaring done.
@@ -319,7 +329,7 @@ docker exec ${PROJ}openclaw-cli sh -c \
 
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message "Use web_search to find the title of docker.com. Reply with TITLE: <title>" \
-  --thinking off --json --timeout 180 \
+  --thinking off --json --timeout 600 \
   | jq '.toolSummary, .finalAssistantVisibleText'
                                                         # → tools: ["web_search"], failures: 0
                                                         # → "TITLE: Docker: …"

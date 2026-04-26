@@ -521,8 +521,12 @@ curl -sS -X POST http://127.0.0.1:8094/mcp \
 # given. See docs/reference/python-sandbox.md for the verification trail.
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message 'Call python_sandbox__python_exec with code="print(2**128)". Reply with the printed value prefixed by VAL:' \
-  --thinking medium --json --timeout 180 \
+  --thinking off --json --timeout 600 \
   | jq '.toolSummary, .finalAssistantVisibleText'
+# `--timeout 600` because Gemma 4 NVFP4 generates ~6 tok/s on GB10 and a
+# multi-step tool-call run does 2-3 LLM calls of ~200 tokens each. Lower
+# timeouts (60-180s) abort the run with `Request was aborted`. See
+# docs/TROUBLESHOOTING.md → "Agent runs (multi-step tool calls)".
 ```
 
 ### Tuning
@@ -660,8 +664,12 @@ curl -sS -X POST http://127.0.0.1:9095/mcp \
 # your ComfyUI's basedir/models/checkpoints/)
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message "Use comfyui_image__generate with workflow=flux-schnell, checkpoint=flux1-schnell-fp8.safetensors, prompt='a red cube on a white background', width=512, height=512. Reply with the prompt_id." \
-  --thinking medium --json --timeout 240 \
+  --thinking off --json --timeout 600 \
   | jq '.toolSummary, .finalAssistantVisibleText'
+# `--timeout 600` is the safe floor for any agent run that calls an MCP
+# tool. Gemma 4 NVFP4 on GB10 averages ~6 tok/s; a multi-step tool-call
+# run easily wants 90-120s of wall clock. See
+# docs/TROUBLESHOOTING.md → "Agent runs (multi-step tool calls)".
 ```
 
 ### Adding a model

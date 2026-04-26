@@ -624,6 +624,52 @@ pre-empts LLM token gen. Two mitigations:
 If the contention is unacceptable: move ComfyUI to a separate GPU/box
 and point `COMFYUI_URL` at the new endpoint.
 
+## Agent runs (multi-step tool calls)
+
+### Agent run times out with `Request was aborted` even though vLLM is healthy
+
+Symptom: `openclaw agent --message "..."` returns
+`livenessState: blocked` or `Request timed out before a response was
+generated.` The gateway log shows
+`embedded run timeout: timeoutMs=NNNN` and
+`rawErrorPreview: "Request was aborted." failoverReason: "timeout"`.
+vLLM logs show successful 200 OK chat-completion responses with normal
+generation throughput (~6 tok/s on GB10).
+
+This is **not a tool-call parser bug** — the agent runtime simply
+hit the `--timeout` budget mid-run. Multi-step tool-call agents do
+several LLM calls per run (system-prompt prefill → tool-call args
+→ tool-result digestion → final reply), each producing 100-300
+tokens. On GB10 at ~6 tok/s that's ~30s per call; a 3-call
+tool-using run easily wants 90-120s. Add a 5-MCP-tool catalog and
+the system-prompt prefill for the first call alone burns 3-5s.
+
+Fixes, in order of preference:
+
+1. **Pass a generous `--timeout` to the agent invocation.** For any
+   tool-using run with the current MCP catalog (Python sandbox +
+   ComfyUI bridge + node tools + memory plugin):
+   ```bash
+   docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
+     --message "..." --thinking off --json --timeout 600
+   ```
+   `300` is the floor for single-tool runs; `600` is safe for
+   multi-step (e.g. `comfyui_image__list_workflows` then
+   `comfyui_image__generate` in the same run).
+2. **Use `--thinking off` for routine tool calls.** `medium` or
+   `high` reasoning multiplies the token budget by 2-3×. Reserve
+   reasoning for actually hard prompts.
+3. **Trim the tool catalog if you have no use for some.** Drop
+   `python` from `COMPOSE_PROFILES` (or empty
+   `PYTHON_SANDBOX_API_TOKEN`) if you don't run code; same for
+   `image-gen` / `IMAGE_GEN_API_TOKEN`. Each opt-out shaves
+   1-2 KB of system prompt and one less round of tool advertising.
+
+The vLLM idle watchdog (`agents.defaults.llm.idleTimeoutSeconds`,
+patcher step 8 sets 300) is independent of `--timeout` — it
+guards against a stuck LLM connection, not a slow-but-progressing
+multi-step run.
+
 ## Host-level issues
 
 ### `nvidia-smi` inside a container fails with `Failed to initialize NVML`

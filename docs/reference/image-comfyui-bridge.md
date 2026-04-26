@@ -177,7 +177,7 @@ curl -sS -X POST http://127.0.0.1:9095/mcp \
 # 4. End-to-end generate via the agent (after the patcher has wired step 19)
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message "Use comfyui_image__generate to render a 512x512 image of a red cube on a white background. Reply with the image's prompt_id." \
-  --thinking medium --json --timeout 240 \
+  --thinking off --json --timeout 600 \
   | jq '.toolSummary, .finalAssistantVisibleText'
 
 # 5. Cleanup (token unset → entry removed)
