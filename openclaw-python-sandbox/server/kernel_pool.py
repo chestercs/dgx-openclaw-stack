@@ -34,7 +34,6 @@ log = logging.getLogger("kernel-pool")
 class _Entry:
     kernel_id: str
     last_used: float = field(default_factory=time.time)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class KernelPool:
@@ -42,12 +41,19 @@ class KernelPool:
 
     Methods are async so they cooperate with FastAPI; the underlying
     jupyter_client calls are sync and run on the default thread executor.
+
+    Session locks live in a separate `_locks` dict (not on `_Entry`) so
+    two callers racing on the same `session_id` always observe the same
+    lock object — even when one of them finds `_sessions[sid]` empty and
+    has to start a kernel. Both dicts are popped together on reset/reap
+    so neither leaks across long-running deployments.
     """
 
     def __init__(self, idle_ttl_s: float = 1800.0):
         self._mkm = MultiKernelManager()
         self._mkm.kernel_name = "python3"
         self._sessions: dict[str, _Entry] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
         self._idle_ttl_s = idle_ttl_s
 
@@ -55,31 +61,29 @@ class KernelPool:
         """Return a live kernel_id for the given session, starting one if needed."""
         async with self._global_lock:
             entry = self._sessions.get(sid)
-            if entry is not None:
-                # Verify the kernel is still alive (it could have been
-                # reaped by an out-of-band shutdown; treat that as "needs
-                # a fresh one").
-                if entry.kernel_id in self._mkm:
-                    entry.last_used = time.time()
-                    return entry.kernel_id
-                self._sessions.pop(sid, None)
+            if entry is not None and entry.kernel_id in self._mkm:
+                entry.last_used = time.time()
+                return entry.kernel_id
+            # Stale or missing entry — start fresh.
+            self._sessions.pop(sid, None)
             kernel_id = await asyncio.to_thread(self._mkm.start_kernel)
-            entry = _Entry(kernel_id=kernel_id)
-            self._sessions[sid] = entry
+            self._sessions[sid] = _Entry(kernel_id=kernel_id)
             log.info("started kernel session=%s kernel_id=%s", sid, kernel_id)
             return kernel_id
 
     async def session_lock(self, sid: str) -> asyncio.Lock:
         """Per-session lock so concurrent python_exec calls on the same
-        session serialize (a kernel processes one execute_request at a time)."""
+        session serialize (a kernel processes one execute_request at a time).
+
+        Lives in `_locks`, not on `_Entry`, so it survives the brief
+        moment when `_ensure_kernel` pops a stale entry — without that
+        the lock would be replaced mid-flight and two executes would run
+        without serialization.
+        """
         async with self._global_lock:
-            entry = self._sessions.get(sid)
-            if entry is None:
-                # Create a lock-only placeholder entry so callers can
-                # acquire the lock before _ensure_kernel races.
-                entry = _Entry(kernel_id="")
-                self._sessions[sid] = entry
-            return entry.lock
+            if sid not in self._locks:
+                self._locks[sid] = asyncio.Lock()
+            return self._locks[sid]
 
     async def execute(
         self,
@@ -178,9 +182,15 @@ class KernelPool:
                 client.stop_channels()
 
     async def reset(self, sid: str) -> bool:
-        """Shut down the session's kernel; returns True if one existed."""
+        """Shut down the session's kernel; returns True if one existed.
+
+        Pops both _sessions[sid] and _locks[sid] so neither dict leaks
+        across long deployments — a session that comes back gets a fresh
+        kernel and a fresh lock anyway.
+        """
         async with self._global_lock:
             entry = self._sessions.pop(sid, None)
+            self._locks.pop(sid, None)
             if entry is None or not entry.kernel_id:
                 return False
             kernel_id = entry.kernel_id

@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
 from typing import Any, Optional
 
@@ -237,6 +238,28 @@ async def healthz() -> PlainTextResponse:
     return PlainTextResponse(f"ok kernels={n}\n")
 
 
+def _resolve_session_header(request: Request, payload: Any) -> Optional[str]:
+    """Decide what to put in the response's Mcp-Session-Id header.
+
+    MCP spec: the client may send Mcp-Session-Id on any request, and the
+    server echoes it back. On a fresh `initialize` request without one,
+    the server may mint a new id and the client uses it on subsequent
+    requests. We don't track session state server-side (kernel sessions
+    are application-level via tool args), but echoing keeps clients that
+    do care about transport-level sessions happy.
+    """
+    incoming = request.headers.get("Mcp-Session-Id")
+    if incoming:
+        return incoming
+    # Mint a new id only on `initialize` (with or without batching).
+    is_initialize = False
+    if isinstance(payload, dict):
+        is_initialize = payload.get("method") == "initialize"
+    elif isinstance(payload, list):
+        is_initialize = any(isinstance(m, dict) and m.get("method") == "initialize" for m in payload)
+    return secrets.token_urlsafe(16) if is_initialize else None
+
+
 @app.post("/mcp", dependencies=[Depends(require_token)])
 async def mcp_endpoint(request: Request) -> JSONResponse:
     """MCP Streamable-HTTP entry point. Accepts a single JSON-RPC
@@ -253,19 +276,22 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
             content=_jsonrpc_error(None, -32700, f"parse error: {e}"),
         )
 
+    session_id = _resolve_session_header(request, payload)
+    response_headers = {"Mcp-Session-Id": session_id} if session_id else None
+
     if isinstance(payload, list):
         # Batch request — handle each, drop None (notification) responses.
         responses = await asyncio.gather(*(_handle_message(m) for m in payload))
         responses = [r for r in responses if r is not None]
         if not responses:
-            return JSONResponse(status_code=202, content=None)
-        return JSONResponse(content=responses)
+            return JSONResponse(status_code=202, content=None, headers=response_headers)
+        return JSONResponse(content=responses, headers=response_headers)
 
     if isinstance(payload, dict):
         response = await _handle_message(payload)
         if response is None:
-            return JSONResponse(status_code=202, content=None)
-        return JSONResponse(content=response)
+            return JSONResponse(status_code=202, content=None, headers=response_headers)
+        return JSONResponse(content=response, headers=response_headers)
 
     return JSONResponse(
         status_code=400,
