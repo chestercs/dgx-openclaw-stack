@@ -19,8 +19,13 @@
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    MPLBACKEND=Agg
+    PIP_NO_CACHE_DIR=1
+# Note: MPLBACKEND is intentionally NOT set to Agg. ipykernel ships with
+# matplotlib_inline (the inline backend) and selects it automatically; that
+# backend is what publishes figure PNGs as iopub `display_data` messages so
+# the agent receives plots in `result.plots[]`. Forcing Agg via env would
+# silently kill plot delivery — a `<Figure size ...>` repr would land in
+# `result.result` but `plots` would be empty (verified 2026-04-26 smoke).
 
 # tini = clean PID 1 + sigterm propagation; curl for the healthcheck;
 # build-essential is needed for some scientific-Python wheels on ARM64

@@ -214,9 +214,12 @@ What we explicitly do **not** ship:
 ## Known limits
 
 - **Headless only**: no `tkinter`, no Jupyter widgets, no GUI. The
-  kernel runs with `MPLBACKEND=Agg` hard-set, so `plt.show()` returns
-  silently and figures come back as base64 PNGs via the iopub
-  `display_data` channel.
+  kernel uses the `matplotlib_inline` backend (ipykernel's default,
+  hard-set against an Agg override that would silently kill plot
+  delivery). Figures published by the kernel land as base64 PNGs in
+  `result.plots[]` via iopub `display_data`. To trigger publication,
+  let the figure be the last expression of a cell (e.g. `fig` on its
+  own line) or call `display(fig)` explicitly.
 - **No `pip install` at runtime by design.** No egress + no root means
   the kernel can't bring in new packages. To add a library, edit
   `openclaw-python-sandbox/server/requirements.txt` and rebuild the
