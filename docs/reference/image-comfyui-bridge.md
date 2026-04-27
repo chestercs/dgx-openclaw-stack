@@ -176,6 +176,83 @@ transparently.
 Track upstream openclaw releases for native MCP image-content
 rendering or a server-side proxy.
 
+## Token-auth via `auth_request` (v0.9.8–v0.9.10, what actually shipped)
+
+Default for v0.9.8+: the bridge's `/view` URL is gated by an NGINX
+`auth_request` chain that delegates token validation to the bridge's
+`GET /auth-validate` endpoint, so the secret never appears in the
+proxy admin config. The chat-image URL the bridge embeds carries
+`?token=<COMFYUI_VIEW_TOKEN>` and works on direct navigation
+(operator clicks the URL out of the tool-output JSON, opens in a
+new tab) — no Basic auth dialog, no per-origin credential cache.
+
+The bridge's `app.py` reads the token from the request query string
+first; when empty (the `auth_request` sub-request has a static URI
+and parent `$args` don't propagate), it falls back to parsing the
+`X-Original-URI` header that the proxy sets to `$request_uri`. The
+constant-time compare uses `secrets.compare_digest`.
+
+### NPM custom-location split
+
+Two custom locations on the proxy host:
+
+```nginx
+# /auth-validate — internal, called only by NGINX's auth_request
+location /auth-validate {
+    internal;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header X-Original-URI $request_uri;
+    # NPM auto-emits proxy_pass http://<host>:9095 from the form fields
+}
+
+# /view — chat-image fetch endpoint, gated by auth_request
+location /view {
+    auth_request /auth-validate;
+    # NPM auto-emits proxy_pass http://<comfyui-host>:13036
+}
+```
+
+Plus three Access-List settings that have to line up:
+
+1. **Satisfy Any** on Details — so the auth_request 200 alone
+   satisfies the request (otherwise `Satisfy All` requires Basic
+   creds AND IP-allow AND auth_request all together).
+2. **No `Allow all` on Rules** — drop it. Just leave the
+   auto-fallback `deny all`. With `Satisfy Any` + `Allow all` an IP
+   match alone passes everything, leaking `/view` to anyone who
+   knows the URL.
+3. **Don't add `auth_basic off;`** to either custom location's
+   Advanced. NPM already emits `auth_basic "Authorization required";`
+   from the Access List, and a second `auth_basic` directive is an
+   `[emerg]` config error. The Satisfy Any setting is the lever.
+
+### Verify recipe
+
+```bash
+TOKEN=$(grep '^COMFYUI_VIEW_TOKEN=' .env | cut -d= -f2-)
+# /view + valid token  -> 200 (chat-image works)
+curl -sS -o /dev/null -w "%{http_code}\n" \
+  "https://vision.example.com/view?filename=foo.png&type=output&subfolder=openclaw-bridge&token=$TOKEN"
+# /view no token       -> 401 (token gate)
+# /view wrong token    -> 401 (constant-time compare)
+# /api/view no creds   -> 401 (Basic auth challenge for the UI assets)
+# /                    -> 401 (Basic auth challenge for the UI HTML)
+# /auth-validate direct -> 404 (`internal;` blocks external access)
+```
+
+### Token rotation
+
+```bash
+./rotate-secrets.sh COMFYUI_VIEW_TOKEN
+docker compose -f openclaw-image-comfyui/docker-compose.yml \
+               up -d --force-recreate openclaw-image-comfyui
+```
+
+The NPM admin GUI doesn't need editing — the proxy just proxies the
+token over to the bridge for validation, and the bridge picks up the
+new env on recreate.
+
 ## Concurrency: single-flight by default
 
 `IMAGE_GEN_MAX_CONCURRENCY=1` is the default. ComfyUI runs on the same

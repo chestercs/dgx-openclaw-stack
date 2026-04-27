@@ -725,7 +725,7 @@ Either lever opts out independently:
 
 Both are safe and reversible.
 
-### Known limit: no inline image render in the OpenClaw chat (v0.9.7)
+### Known limit: no inline image render in the OpenClaw chat (v0.9.7+)
 
 The OpenClaw chat surface (2026.4.22) **cannot** render the generated
 image inline in the agent reply. Verified empirically via Chrome
@@ -739,10 +739,37 @@ Neither layer is fixable from the bridge side.
 `comfyui_image__generate`, the tool-output bubble in the chat shows
 the response JSON. The `display_markdown` field contains the full
 HTTPS URL of the generated image. Copy the URL and open it in a new
-tab — direct navigation does prompt for / send Basic auth, so the
-image opens transparently. The vision/proxy host will cache your
-credentials per origin, so you only do the auth dialog once per
-browser session.
+tab — direct navigation opens the image transparently.
+
+### Token-auth proxy (v0.9.8 → v0.9.10) — recommended
+
+The recommended setup for the proxy in front of ComfyUI puts the
+secret only in the bridge container's `.env` (not in the proxy admin
+GUI). The bridge embeds `?token=<COMFYUI_VIEW_TOKEN>` in the URL it
+puts in `display_markdown`, and the proxy validates that token by
+calling the bridge's `/auth-validate` endpoint via NGINX's
+`auth_request` sub-request. Tokens rotate via
+`./rotate-secrets.sh COMFYUI_VIEW_TOKEN` + bridge recreate; **no
+proxy edit needed** at rotation time.
+
+Per-location split:
+
+| Path | Auth | Used by |
+|--|--|--|
+| `/` (HTML/JS/CSS/WS) | Basic auth | You, in the browser |
+| `/api/view?...` | Basic auth | The ComfyUI UI loading its assets |
+| `/view?...&token=...` | URL-param token (auth_request → bridge) | The bridge / chat-image direct-nav |
+
+NPM setup walkthrough is in
+`openclaw-image-comfyui/README.md` → "Token-protected proxy
+(alternative to Basic auth)". Three settings to get right:
+**`Satisfy Any` on the Access List Details tab**, **no `Allow all`
+IP rule on the Rules tab**, and **don't put `auth_basic off;`** in
+the custom location Advanced (NPM auto-emits `auth_basic` from the
+Access List; duplicate is `[emerg]`). Verify with the four-way
+curl recipe in `docs/reference/image-comfyui-bridge.md`.
+
+### Other future paths (not wired)
 
 If inline rendering is critical for your workflow, two not-wired
 future paths are sketched in

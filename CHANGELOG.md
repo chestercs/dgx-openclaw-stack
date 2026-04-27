@@ -5,6 +5,55 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.10] - 2026-04-27
+
+`auth_request` works end-to-end. Fixes the `?token=...` propagation
+gap that made every valid token return 401, plus documents the NPM
+custom-location gotchas that surfaced during deploy.
+
+### Fixed
+- **`/auth-validate` reads the token from `X-Original-URI` header**
+  as a fallback when the query string is empty. NGINX's
+  `auth_request /auth-validate;` directive uses a sub-request with a
+  static URI — the parent request's `?token=...` does NOT propagate
+  to the sub-request's `$args`, so the bridge was seeing an empty
+  token. The proxy already sets
+  `proxy_set_header X-Original-URI $request_uri;` (NPM default for
+  custom auth-validate locations), the fix is a 5-line urlsplit
+  parse on the bridge side. Constant-time compare preserved.
+
+### Documented
+- **`auth_basic` duplicate emission** during NPM custom-location
+  setup. NPM auto-emits `auth_basic "Authorization required";` from
+  the host-level Access List into every custom location; if the
+  operator also adds `auth_basic off;` in the location's Advanced,
+  NGINX `[emerg]` rejects the config (`"auth_basic" directive is
+  duplicate`). Solution: drop `auth_basic off;` from the location
+  Advanced — instead use `Satisfy Any` on the Access List Details
+  tab so the auth_request 200 result is enough on its own.
+- **`Satisfy Any` + `Allow all` IP rule = wide-open**. NPM's
+  Access List Rules tab `Allow all` means "every IP passes the
+  IP-allow check"; combined with `Satisfy Any` the IP-allow alone
+  satisfies the request, no auth needed. Drop the `Allow all` rule
+  to leave only the `deny all` fallback, then `Satisfy Any` falls
+  through to the auth checks (Basic OR auth_request → 200).
+
+### GB10 deploy + smoke (final, 2026-04-27 night)
+- `/view + valid token` → HTTP 200 ✅
+- `/view no token` → HTTP 401 ✅
+- `/view wrong token` → HTTP 401 ✅
+- `/api/view no creds` → HTTP 401 (Basic challenge) ✅
+- `/auth-validate direct external` → HTTP 404 (`internal;` blocks) ✅
+- `/` no creds → HTTP 401 (Basic challenge) ✅
+- ComfyUI UI in browser: Basic auth dialog once, cached, all UI
+  paths (HTML / `/api/view` / `/api/prompt` / WebSocket) work
+  transparently.
+
+The token now lives ONLY in the bridge container's `.env`. The NPM
+admin GUI contains zero secrets. Token rotation:
+`./rotate-secrets.sh COMFYUI_VIEW_TOKEN` → bridge recreate; no NPM
+edit required.
+
 ## [0.9.9] - 2026-04-27
 
 `auth_request` endpoint: keep the token in the bridge container's

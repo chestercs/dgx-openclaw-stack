@@ -624,6 +624,50 @@ pre-empts LLM token gen. Two mitigations:
 If the contention is unacceptable: move ComfyUI to a separate GPU/box
 and point `COMFYUI_URL` at the new endpoint.
 
+### NPM `[emerg] "auth_basic" directive is duplicate` after adding the /view custom location
+
+You added `auth_basic off;` to the `/view` custom-location Advanced
+to "make it token-only" — but NPM auto-emits
+`auth_basic "Authorization required";` for every location when the
+host has an Access List with Basic auth. Two `auth_basic` directives
+in the same location → NGINX `[emerg]` → save fails with "internal
+error". Drop the `auth_basic off;` line from the location Advanced.
+The right knob is **`Satisfy Any` on the Access List Details tab** —
+that lets the `auth_request` 200 result alone satisfy the request,
+no Basic creds needed when the token is valid. (See
+`openclaw-image-comfyui/README.md` → "Token-protected proxy".)
+
+### `/view` returns 200 even WITHOUT a token (every request lets through)
+
+Your Access List `Satisfy Any` is on, AND the Rules tab has an
+`Allow all` IP rule. With `Satisfy Any` the IP-allow alone passes,
+no auth needed → wide-open. **Drop the `Allow all` rule** from the
+Rules tab. Just leave the auto-fallback `deny all`. Then `Satisfy
+Any` falls through to Basic auth or auth_request — one of those
+must pass, but the IP check no longer auto-satisfies the request.
+
+### `/view + valid token` returns 401 even though `/auth-validate?token=...` works directly
+
+The NGINX `auth_request /auth-validate;` directive sends a
+sub-request with a STATIC URI — the parent request's `?token=...`
+does NOT propagate to the sub-request's `$args`. The bridge's
+`/auth-validate` sees an empty token query param and returns 401.
+
+Fixed in v0.9.10: the bridge now also reads the token from the
+`X-Original-URI` header that the proxy sets to `$request_uri` (NPM's
+default `proxy_set_header X-Original-URI $request_uri;` on the
+custom auth-validate location). If you're on an older bridge build,
+either upgrade or add to the proxy `/auth-validate` Advanced:
+
+```nginx
+proxy_pass http://<bridge-host>:9095/auth-validate?token=$arg_token;
+```
+
+But note the duplicate-`proxy_pass` trap — NPM auto-emits its own
+`proxy_pass` from the Forward Hostname/Port form fields, so an
+explicit `proxy_pass` in the Advanced is `[emerg]`. The
+`X-Original-URI` fallback in v0.9.10 sidesteps this entirely.
+
 ## Agent runs (multi-step tool calls)
 
 ### Agent run times out with `Request was aborted` even though vLLM is healthy
