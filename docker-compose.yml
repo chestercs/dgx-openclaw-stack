@@ -1063,6 +1063,13 @@ services:
       # lacks ffmpeg and the text-channel attachment pipeline crashes silently
       # with `[discord] final reply failed: Error: ffmpeg not found` otherwise.
       OPENCLAW_TTS_AUTO: ${OPENCLAW_TTS_AUTO:-always}
+      # Discord ackReactionScope (patcher step 20). Defends against upstream
+      # issue #46024 stale-queue reaction-cycle bug. Default 'off' kills the
+      # auto-emoji lifecycle entirely; agent can still emit explicit reactions
+      # via tool call when it actually means to. Override with 'group-mentions'
+      # / 'direct' / 'all' if you want the lifecycle feedback (and accept the
+      # cycling on guild mentions).
+      OPENCLAW_DISCORD_ACK_REACTION_SCOPE: ${OPENCLAW_DISCORD_ACK_REACTION_SCOPE:-off}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a

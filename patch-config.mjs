@@ -69,6 +69,11 @@
 //      url, connectionTimeoutMs, headers.Authorization). When unset, the
 //      entry is removed (and parent mcp objects cleaned up) so the gateway
 //      doesn't try to dial a parked bridge.
+//  20. Discord ackReactionScope override — defends against the upstream
+//      stale-queue reaction-cycle bug (openclaw issue #46024). Only writes
+//      when channels.discord is already configured (CLI created), and only
+//      if the user hasn't set the field themselves (user-managed protection,
+//      same posture as the rest of channels.discord.*).
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -992,6 +997,32 @@ if (IMAGE_GEN_TOKEN) {
   }
   if (config.mcp && Object.keys(config.mcp).length === 0) {
     delete config.mcp;
+  }
+}
+
+// ─── 20. Discord ackReactionScope hardening ──────────────────────────────────
+// Defends against openclaw issue #46024 (stale reaction-event queue replays
+// emoji ack-reactions on session resume — the bot rapidly cycles 👀🤔👍🔥
+// across the user's mention without the agent having any tool-call awareness
+// of doing it; not a Gemma reasoning loop, the LLM session log shows zero
+// `react` calls). Setting `ackReactionScope: "off"` disables the entire
+// auto-ack pipeline, so the queue has nothing to replay. The agent can still
+// emit `add_reaction` tool calls explicitly when it actually means to react.
+//
+// User-managed protection: only writes when `channels.discord` is configured
+// (the CLI's `openclaw channels add --channel discord` ran and created the
+// block) AND the user hasn't set `ackReactionScope` themselves to a different
+// value. If the user picks `group-mentions` / `direct` / etc. on purpose, we
+// don't clobber it. Default override value is `OPENCLAW_DISCORD_ACK_REACTION_SCOPE`
+// or `"off"` if unset. Voice-channel deploys typically want `off` too — the
+// stale-queue bug is channel-agnostic.
+const ackScopeOverride = process.env.OPENCLAW_DISCORD_ACK_REACTION_SCOPE?.trim() || 'off';
+if (config.channels?.discord?.enabled === true) {
+  config.channels.discord ??= {};
+  if (config.channels.discord.ackReactionScope === undefined) {
+    config.channels.discord.ackReactionScope = ackScopeOverride;
+    changed = true;
+    console.log(`[patch-config] channels.discord.ackReactionScope = ${JSON.stringify(ackScopeOverride)} (suppress upstream issue #46024 stale-queue cycle)`);
   }
 }
 
