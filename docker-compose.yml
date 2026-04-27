@@ -1057,6 +1057,12 @@ services:
       OPENCLAW_TTS_ROUTER_API_KEY: ${OPENCLAW_TTS_ROUTER_API_KEY:-}
       OPENCLAW_TTS_ROUTER_URL: ${OPENCLAW_TTS_ROUTER_URL:-http://openclaw-tts-router:8080/v1}
       OPENCLAW_TTS_DEFAULT_VOICE: ${OPENCLAW_TTS_DEFAULT_VOICE:-af_heart}
+      # Auto-attach mode for messages.tts (patcher step 11). Default 'always'
+      # speaks every final reply (voice channels, VoiceCall). Discord text-channel
+      # deploys must use 'tagged' — see .env.example notes; the gateway image
+      # lacks ffmpeg and the text-channel attachment pipeline crashes silently
+      # with `[discord] final reply failed: Error: ffmpeg not found` otherwise.
+      OPENCLAW_TTS_AUTO: ${OPENCLAW_TTS_AUTO:-always}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
