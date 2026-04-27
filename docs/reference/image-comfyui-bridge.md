@@ -164,7 +164,8 @@ broader surface × feature mátrix.
 
 - **Path A — Same-origin canvas via `[embed]` shortcode** (research-confirmed
   2026-04-28, **bridge POC shipped in v0.10.0 behind `IMAGE_GEN_CANVAS_DIR`
-  env-gate**, default OFF): emit `[embed url="/__openclaw__/canvas/<file>" /]`
+  env-gate**, default OFF, **end-to-end verified 2026-04-28 on GB10 against
+  openclaw `2026.4.22`**): emit `[embed url="/__openclaw__/canvas/<file>" /]`
   in the agent reply. The shortcode (added in `2026.4.11` PR #64104) is
   parsed by the chat normalizer into a structured iframe directive — it
   bypasses the DOMPurify `<img>` sanitizer entirely. The URL is whitelisted
@@ -172,7 +173,25 @@ broader surface × feature mátrix.
   same-origin only); arbitrary http(s) URLs are gated by the dangerous
   `gateway.controlUi.allowExternalEmbedUrls=true` flag (default `false` —
   leave it that way). Iframe sandbox controlled by `gateway.controlUi.embedSandbox`
-  (`"strict"` | `"scripts"` | `"trusted"`).
+  (`"strict"` | `"scripts"` | `"trusted"`; default value if unset is `"scripts"`
+  — verified live).
+  
+  **End-to-end mechanism (verified via Chrome DevTools 2026-04-28):**
+  
+  When the agent emits `[embed url="/__openclaw__/canvas/<file>" /]`,
+  the chat normalizer rewrites the iframe `src` to
+  `/__openclaw__/cap/<24-char-urlsafe-token>/__openclaw__/canvas/<file>`.
+  The `cap/<token>/` prefix is a one-shot capability token the gateway
+  issues per chat session — it gates the iframe's fetch without exposing
+  the chat session's bearer or cookies to the iframe's content origin.
+  No 401 on the iframe load: the token IS the auth.
+  
+  Both `.png` and `.html` files render through this path — verified
+  by writing both file types into the canvas dir and observing two
+  iframes in the chat DOM, both `visible: true`, `301×420 px`,
+  `sandbox="allow-scripts"`, `title="Canvas"`. The shortcode is
+  MIME-agnostic; the iframe loads whatever the gateway returns at
+  the path.
   
   **Bridge implementation (shipped v0.10.0):**
   - `app.py` reads `IMAGE_GEN_CANVAS_DIR` env. Empty (default) → legacy
@@ -186,18 +205,17 @@ broader surface × feature mátrix.
   - `_attachments` MCP block stays in place (zero cost, future-proofs
     for Path C).
   
-  **Activation gate — three read-only SSH probes** before the operator
-  uncomments the bind-mount and sets the env var:
+  **Live deploy state (GB10, 2026-04-28):**
   
-  1. Confirm the canvas dir host path on the live deploy
-     (likely `${OPENCLAW_CONFIG_DIR}/canvas` per `canvas-documents.ts`
-     upstream conventions, but unverified locally).
-  2. Confirm the gateway serves `image/*` MIME from
-     `/__openclaw__/canvas/<existing-file>` (route presence + auth
-     requirement on a real served file).
-  3. Read the current `gateway.controlUi.embedSandbox` value — `"strict"`
-     may sandbox the iframe enough that even image rendering breaks;
-     `"scripts"` or `"trusted"` should be fine.
+  - Canvas host path: `${OPENCLAW_CONFIG_DIR}/canvas` (matches gateway's
+    `~/.openclaw/canvas/` mount, owner UID 1000:1000).
+  - `embedSandbox` default in upstream `2026.4.22`: `"scripts"` (verified
+    via DOM iframe attribute on the live deploy).
+  - `[embed]` accepts `.png` URLs alongside `.html` — MIME-agnostic
+    (DOM probe: two iframes rendered with both file types).
+  - Capability-token rewrite `/__openclaw__/cap/<token>/...` is the
+    auth mechanism (chat session issues per-iframe token, gateway
+    accepts).
   
   Smoke-test recipe in `docs/reference/chat-surface-capability-matrix.md`
   → "`[embed url=...]` shortcode in web chat".

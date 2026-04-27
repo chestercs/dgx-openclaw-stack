@@ -25,8 +25,8 @@ Verdict legend: ✅ works · ❌ blocked · ⚠️ conditional (see verify cell)
 | Audio attachment (mp3/wav) | ❌ no fetch path | ⚠️ ffmpeg gap (`AUTO=tagged`) | ✅ voice channel stream | ✅ tool returns blob | ❓ verify |
 | External link click | ✅ direct nav (new tab) | ✅ Discord embed-card | n/a | n/a | ✅ |
 | Cross-origin Basic auth on `<img>` | ❌ browser strips creds | n/a | n/a | n/a | ❌ |
-| `[embed url="/__openclaw__/canvas/..."]` shortcode | ✅ structured iframe directive (PR #64104) | n/a | n/a | n/a | ✅ |
-| Same-origin static `/__openclaw__/canvas/<file>` | ✅ via `[embed]` shortcode (Path A) | n/a | n/a | n/a | ❓ verify |
+| `[embed url="/__openclaw__/canvas/..."]` shortcode | ✅ verified 2026-04-28 (renders .png + .html, capability-token auth) | n/a | n/a | n/a | ✅ |
+| Same-origin static `/__openclaw__/canvas/<file>` | ✅ via `[embed]` (auth = `/__openclaw__/cap/<token>/...` rewrite) | n/a | n/a | n/a | ❓ verify |
 | Speech synthesis (Read aloud) | ⚠️ browser default voice (poor for HU) | n/a | n/a | n/a | ❓ verify |
 
 ## Verify cells
@@ -114,7 +114,7 @@ docker logs openclaw-gateway 2>&1 | grep -E "final reply failed.*ffmpeg" | tail 
 # <img>). The image-comfyui bridge added COMFYUI_VIEW_TOKEN exactly for this in v0.9.8.
 ```
 
-### `[embed url=...]` shortcode in web chat — research-confirmed viable
+### `[embed url=...]` shortcode in web chat — verified 2026-04-28
 
 Upstream openclaw added `[embed ...]` in `2026.4.11` (PR #64104). The chat
 normalizer extracts the directive into structured iframe metadata BEFORE the
@@ -130,12 +130,24 @@ Absolute http(s) URLs are gated by `gateway.controlUi.allowExternalEmbedUrls`
 whole point of the same-origin path is dodging the cross-origin auth /
 sanitizer mess).
 
+**Auth = capability-token URL rewrite** (verified live on `2026.4.22`).
+The chat session normalizer rewrites the iframe `src` from
+`/__openclaw__/canvas/<file>` to
+`/__openclaw__/cap/<24-char-urlsafe-token>/__openclaw__/canvas/<file>`.
+The `cap/<token>/` prefix is a one-shot capability the gateway issues
+per chat session; the iframe doesn't carry cookies or bearers, the URL
+itself is the auth.
+
 Sandbox controlled by `gateway.controlUi.embedSandbox`:
 
 - `"strict"` — minimal sandbox
-- `"scripts"` — `allow-scripts`
+- `"scripts"` — `allow-scripts` (**default in `2026.4.22`** — verified)
 - `"trusted"` — `allow-scripts allow-same-origin` (lets the chat session's
-  bearer/cookie flow through to the iframe content fetch)
+  bearer/cookie flow through to the iframe content fetch — needed only if
+  the iframe content does cross-origin XHR)
+
+For inline image render (`.png` / `.jpg` / `.webp`), `"scripts"` is
+sufficient — no JS or same-origin fetch needed inside the iframe.
 
 Three-step verify (steps 1-2 read-only diagnostic, step 3 needs a one-time
 write authorization for the test PNG):
