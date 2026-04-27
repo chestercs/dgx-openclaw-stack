@@ -92,8 +92,24 @@ POLL_BACKOFF_MAX_S = float(os.environ.get("IMAGE_GEN_POLL_BACKOFF_MAX_S", "2.0")
 
 WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 
+# Path A: same-origin chat-side image rendering via the [embed] shortcode.
+# When set, the bridge mirrors each generated image into this directory
+# and emits `[embed url="/__openclaw__/canvas/<file>" /]` in
+# display_markdown — letting the OpenClaw web chat render inline via the
+# parser-validated same-origin canvas route. The chat normalizer extracts
+# the embed directive BEFORE DOMPurify runs, so the shortcode bypasses
+# the <img> sanitizer entirely.
+#
+# The path is the IN-CONTAINER path; bind it to the gateway's host-side
+# canvas dir (typically `${OPENCLAW_CONFIG_DIR}/canvas` — verify against
+# your deploy via the SSH probe in docs/reference/image-comfyui-bridge.md).
+# Leave empty to keep the legacy display_markdown emission (cross-origin
+# <img> markdown + autolinked plain URL — works on Discord and on direct
+# navigation with cached Basic auth, but not inline in webchat).
+IMAGE_GEN_CANVAS_DIR = os.environ.get("IMAGE_GEN_CANVAS_DIR", "").strip().rstrip("/")
+
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.1.0"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.0"}
 
 
 TOOLS = [
@@ -317,6 +333,29 @@ async def _tool_generate(args: dict) -> dict:
             )
             if COMFYUI_VIEW_TOKEN:
                 view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
+            # Path A: mirror bytes into the gateway's same-origin canvas
+            # dir so display_markdown can use the [embed] shortcode.
+            # Failure to write does NOT fail generation — fall through
+            # to the legacy URL path (the entry's canvas_url_path stays
+            # None and display_markdown emits the cross-origin form).
+            canvas_url_path: Optional[str] = None
+            if IMAGE_GEN_CANVAS_DIR:
+                # Prefix avoids collision with canvas-documents.ts files
+                # that the agent's canvas SKILL may emit. Short prompt-id
+                # suffix gives traceability across logs without a long
+                # filename.
+                canvas_filename = f"comfyui-{prompt_id[:8]}-{out['filename']}"
+                canvas_target = os.path.join(IMAGE_GEN_CANVAS_DIR, canvas_filename)
+                try:
+                    with open(canvas_target, "wb") as f:
+                        f.write(data)
+                    canvas_url_path = f"/__openclaw__/canvas/{canvas_filename}"
+                except OSError as e:
+                    log.warning(
+                        "[path-a] canvas dir write failed (target=%s): %s — "
+                        "falling back to legacy display_markdown emission",
+                        canvas_target, e,
+                    )
             entry = {
                 "format": fmt,
                 "filename": out["filename"],
@@ -327,6 +366,7 @@ async def _tool_generate(args: dict) -> dict:
                 "height": height,
                 "byte_size": len(data),
                 "fetch_url_path": f"/view?{view_qs}",
+                "canvas_url_path": canvas_url_path,
             }
             if include_base64:
                 entry["base64"] = b64
@@ -355,25 +395,31 @@ async def _tool_generate(args: dict) -> dict:
             for img in images:
                 img.pop("_b64_blob", None)
 
-        # `display_markdown` is the chat-side rendering hint. The
-        # OpenClaw chat surface (2026.4.22) sanitizer is aggressive —
-        # it drops both image syntax (`![alt](url)`) AND link syntax
-        # (`[text](url)`), surfacing only the plain text of the alt /
-        # link label. Verified end-to-end with vision.petyuspolisz.com
-        # behind a proper HTTPS proxy.
+        # `display_markdown` is the chat-side rendering hint. Two modes:
         #
-        # Workaround: emit a plain URL on its own line. Most chat
-        # surfaces autolink HTTPS URLs even when they reject markdown
-        # link syntax — the user gets a clickable link, the image
-        # opens in a new tab on the HTTPS-reachable origin (cached
-        # Basic auth credentials send transparently).
+        # 1. Path A (preferred, opt-in via IMAGE_GEN_CANVAS_DIR):
+        #    `[embed url="/__openclaw__/canvas/<file>" /]` shortcode —
+        #    same-origin, parser-whitelisted, bypasses DOMPurify, renders
+        #    inline in the OpenClaw web chat. Added in upstream 2026.4.11
+        #    (PR #64104). See docs/reference/image-comfyui-bridge.md.
         #
-        # We also keep the markdown image syntax on a preceding line
-        # in case a future renderer starts honoring it.
+        # 2. Legacy (default, when canvas dir unset OR write failed):
+        #    cross-origin `![](url)` markdown — works on Discord and other
+        #    surfaces that auto-embed; in webchat the <img> survives the
+        #    sanitizer (PR #15480) but cross-origin Basic auth strips
+        #    cached creds, so external HTTPS images render as broken
+        #    icons unless the operator has cached creds via direct nav.
+        #
+        # Either way, the autolinked plain URL on its own line is always
+        # included as a click-fallback (cached Basic auth applies on
+        # direct nav, opens in a new tab).
         display_lines = []
         for img in images:
             url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
-            display_lines.append(f"![{img['filename']}]({url})")
+            if img.get("canvas_url_path"):
+                display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
+            else:
+                display_lines.append(f"![{img['filename']}]({url})")
             display_lines.append(f"🖼️ {img['filename']}: {url}")
         display_markdown = "\n\n".join(display_lines)
 

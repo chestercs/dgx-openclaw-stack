@@ -25,45 +25,72 @@ as F5-TTS HU and the Python sandbox.
 
 ## What's in the box
 
-## Chat-side image rendering — known limit
+## Chat-side image rendering
 
-**The OpenClaw chat surface (2026.4.22) cannot inline-render generated
-images.** Two browser security layers conspire here:
+The bridge supports two emission modes, switched by the optional
+`IMAGE_GEN_CANVAS_DIR` env var.
 
-1. The chat's markdown sanitizer drops `![alt](url)` image syntax
-   entirely (verified in DOM: only the `alt` text becomes a `<p>`,
-   no `<img>` tag is emitted). Plain markdown links survive — but
-   only for trusted protocols like `mailto:`; arbitrary `https`
-   external URLs are dropped too.
-2. Even if you bypass the sanitizer (e.g. via a userscript that
-   injects `<img>` tags from the rendered text), the browser will
-   not send cached HTTP Basic auth credentials to a cross-origin
-   `<img>` request. Verified in-browser: `new Image().src =
-   'https://vision.example.com/...'` from the `claw.example.com`
-   origin fires `onerror` immediately — the cached creds aren't
-   exposed to image fetches across origins by design.
+### Mode A — `[embed]` shortcode (Path A, opt-in, **inline render in webchat**)
 
-**Recommended workflow:** the `display_markdown` field of the tool
-output JSON contains the full HTTPS URL. When the agent replies, the
-tool-output bubble in the chat shows the JSON; copy the URL from
-there and open it in a new tab. Your browser's cached vision-host
-Basic auth credentials apply on direct navigation, so the image
-opens transparently.
+When `IMAGE_GEN_CANVAS_DIR` is set, the bridge mirrors each generated
+image into the gateway's same-origin canvas directory and emits
+`[embed url="/__openclaw__/canvas/<file>" /]` in `display_markdown`.
 
-If you genuinely need inline-render (e.g. for a presentation), two
-non-trivial paths:
+Why it works: the OpenClaw chat normalizer (since `2026.4.11`,
+PR #64104) extracts `[embed]` directives into structured iframe metadata
+**before** the DOMPurify pass, so the shortcode bypasses the `<img>`
+sanitizer entirely. The URL whitelist is parser-validated to
+`/__openclaw__/canvas/...` and `/__openclaw__/a2ui/...` only, so
+arbitrary external URLs cannot be embedded — but the bridge's
+canvas-dir copy is exactly the same-origin path the whitelist permits.
 
-- **Same-origin proxy**: serve the image off the same origin as the
-  chat (e.g. via the openclaw gateway's `/__openclaw__/canvas/`
-  endpoint or a custom reverse-proxy mount) so the chat's session
-  cookie does the auth instead of Basic auth.
-- **Workspace bind + agent `read` tool**: have the bridge save to
-  `${OPENCLAW_WORKSPACE_DIR}` and use the agent's built-in `read`
-  tool to surface the file as an attachment (depends on whether the
-  chat surface renders attachments inline — verify before relying).
+**Activation recipe** (do the SSH probe first — see
+`docs/reference/image-comfyui-bridge.md` "Path A"):
 
-Neither path is wired in v0.9.x. Track upstream openclaw releases
-for a native chat-side image-render mechanism.
+1. In the **main stack `.env`**, set
+   `IMAGE_GEN_CANVAS_DIR=/canvas` (the IN-CONTAINER path; the bridge
+   reads this env var to enable the emission).
+2. In `openclaw-image-comfyui/docker-compose.yml`, **uncomment** the
+   commented `${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw` volume mount
+   (the line is in the `volumes:` block, marked `# Path A bind-mount`).
+3. Rebuild and restart the bridge:
+   ```bash
+   docker compose -f openclaw-image-comfyui/docker-compose.yml \
+     --env-file ../.env --profile image-gen up -d --build
+   ```
+4. Generate a test image. The agent's `display_markdown` now contains
+   `[embed url="/__openclaw__/canvas/comfyui-<id>-<file>" /]` instead
+   of the cross-origin `![](url)`. The chat renders it inline.
+
+**Operator note** — the gateway's `controlUi.embedSandbox` config
+controls iframe isolation. `"trusted"` (= `allow-scripts allow-same-origin`)
+lets the chat's auth flow through. The patcher does not write a
+default; if your config has `"strict"` or unset, the iframe may
+render but with locked-down JS. Plain image URLs work in either
+mode (no JS needed for `<img>`-as-iframe-content rendering).
+
+### Mode B — Legacy cross-origin URL (default)
+
+When `IMAGE_GEN_CANVAS_DIR` is unset, `display_markdown` contains
+the historical cross-origin form: `![filename](https://vision.example.com/...)`
+plus an autolinked plain URL on its own line.
+
+What renders where:
+
+- **Webchat**: the `<img>` tag survives the DOMPurify sanitizer
+  (PR #15480 added `<img>` to the allowlist long ago). It will NOT
+  render if your deploy uses cross-origin Basic auth — browsers
+  refuse to attach cached creds to `<img>` fetches across origins.
+  The autolinked plain URL is the click-fallback: opens in a new
+  tab where direct navigation does send Basic auth.
+- **Discord text channel**: auto-embeds the URL (Discord's own
+  fetcher; not subject to browser cross-origin auth rules).
+- **Direct nav from the JSON tool-output bubble**: copy the URL
+  → new tab → cached Basic auth applies.
+
+For deploys that already use the `?token=` URL-param style (see
+"Token-protected proxy" below), Mode B's plain URL works on
+cross-origin `<img>` too, since query strings are always sent.
 
 ## Token-protected proxy (alternative to Basic auth)
 

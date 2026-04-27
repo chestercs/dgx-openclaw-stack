@@ -32,7 +32,7 @@ services:
   openclaw-image-comfyui:
     build:
       context: ./server
-    image: openclaw-image-comfyui:0.1.0
+    image: openclaw-image-comfyui:0.10.0
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
     hostname: openclaw-image-comfyui
     # `image-gen` profile gates this service so an absent --profile flag
@@ -78,12 +78,29 @@ services:
       IMAGE_GEN_MAX_OUTPUT_BYTES: ${IMAGE_GEN_MAX_OUTPUT_BYTES:-52428800}
       IMAGE_GEN_POLL_INTERVAL_S: ${IMAGE_GEN_POLL_INTERVAL_S:-0.5}
       IMAGE_GEN_POLL_BACKOFF_MAX_S: ${IMAGE_GEN_POLL_BACKOFF_MAX_S:-2.0}
+      # Path A (chat-side inline image render via [embed] shortcode):
+      # set to /canvas to opt in. Pair with the volume mount below
+      # (currently commented — uncomment to activate). See
+      # docs/reference/image-comfyui-bridge.md "Path A" for the SSH probe
+      # the operator should run before opting in. Default empty =
+      # legacy display_markdown emission (cross-origin URL only).
+      IMAGE_GEN_CANVAS_DIR: ${IMAGE_GEN_CANVAS_DIR:-}
     volumes:
       # workflows/ is COPYed into the image AND bind-mounted ro so
       # operators can drop new templates without rebuilding. The bridge
       # parses the directory at startup; restart the container to pick
       # up new files.
       - ./server/workflows:/app/workflows:ro
+      # Path A bind-mount — uncomment to activate inline chat rendering.
+      # The host path must be the gateway's canvas dir (typically
+      # ${OPENCLAW_CONFIG_DIR}/canvas). The bridge runs as 1000:1000
+      # which matches the gateway's UID — the gateway's canvas-documents
+      # lifecycle and the bridge's PNG drops coexist without permission
+      # issues. Don't activate without first running the SSH probe in
+      # docs/reference/image-comfyui-bridge.md → "Path A" (verify the
+      # canvas dir host path on your deploy + that [embed] accepts .png
+      # MIME on your openclaw version).
+      # - ${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw
     cap_drop: [ALL]
     security_opt:
       - "no-new-privileges:true"

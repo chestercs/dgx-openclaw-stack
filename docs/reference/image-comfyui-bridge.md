@@ -163,7 +163,8 @@ that date). See `docs/reference/chat-surface-capability-matrix.md` for the
 broader surface × feature mátrix.
 
 - **Path A — Same-origin canvas via `[embed]` shortcode** (research-confirmed
-  2026-04-28, viable, ~30 LOC bridge edit): emit `[embed url="/__openclaw__/canvas/<id>.png" /]`
+  2026-04-28, **bridge POC shipped in v0.10.0 behind `IMAGE_GEN_CANVAS_DIR`
+  env-gate**, default OFF): emit `[embed url="/__openclaw__/canvas/<file>" /]`
   in the agent reply. The shortcode (added in `2026.4.11` PR #64104) is
   parsed by the chat normalizer into a structured iframe directive — it
   bypasses the DOMPurify `<img>` sanitizer entirely. The URL is whitelisted
@@ -173,27 +174,33 @@ broader surface × feature mátrix.
   leave it that way). Iframe sandbox controlled by `gateway.controlUi.embedSandbox`
   (`"strict"` | `"scripts"` | `"trusted"`).
   
-  **Bridge implementation sketch:**
-  1. Bind-mount `${OPENCLAW_CONFIG_DIR}/canvas/` into the bridge container.
-  2. After ComfyUI returns the image, copy `<id>.png` to that bind dir
-     (parallel to the existing `/data/` write — keeps the operator-fetch
-     path intact for non-chat surfaces).
-  3. In the JSON response, set `display_markdown` to
-     `[embed url="/__openclaw__/canvas/<id>.png" /]` instead of the
-     current `[link](https://vision.example.com/view?...)` form.
-  4. Keep the existing `_attachments` MCP block (zero cost, future-proofs
-     for Path C).
+  **Bridge implementation (shipped v0.10.0):**
+  - `app.py` reads `IMAGE_GEN_CANVAS_DIR` env. Empty (default) → legacy
+    cross-origin emission. Set → mirrors PNG bytes to that dir AND
+    emits the `[embed]` shortcode in `display_markdown`. Write failures
+    fall through to the legacy form gracefully (the bridge does not
+    fail generation on a canvas-dir write error).
+  - `docker-compose.yml` has the env passthrough wired and a commented
+    bind-mount line `${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw` —
+    operator uncomments to activate.
+  - `_attachments` MCP block stays in place (zero cost, future-proofs
+    for Path C).
   
-  **Open verification questions** (need a one-shot SSH probe on the live
-  gateway):
-  - Does `[embed]` accept a `.png` URL, or only `.html`? (the canvas SKILL
-    is HTML-oriented; image-as-iframe-src is browser-native but the
-    embed parser may MIME-validate).
-  - What's the host filesystem path the gateway serves at
-    `/__openclaw__/canvas/`? (`canvas-documents.ts` lifecycle — likely
-    `${OPENCLAW_CONFIG_DIR}/canvas/` but unverified on our deploy).
-  - Current value of `gateway.controlUi.embedSandbox` in our config (likely
-    unset → upstream default).
+  **Activation gate — three read-only SSH probes** before the operator
+  uncomments the bind-mount and sets the env var:
+  
+  1. Confirm the canvas dir host path on the live deploy
+     (likely `${OPENCLAW_CONFIG_DIR}/canvas` per `canvas-documents.ts`
+     upstream conventions, but unverified locally).
+  2. Confirm the gateway serves `image/*` MIME from
+     `/__openclaw__/canvas/<existing-file>` (route presence + auth
+     requirement on a real served file).
+  3. Read the current `gateway.controlUi.embedSandbox` value — `"strict"`
+     may sandbox the iframe enough that even image rendering breaks;
+     `"scripts"` or `"trusted"` should be fine.
+  
+  Smoke-test recipe in `docs/reference/chat-surface-capability-matrix.md`
+  → "`[embed url=...]` shortcode in web chat".
 
 - **Path C — Native MCP image-content rendering**: the bridge already emits
   `_attachments` MCP `{type: "image", data: <base64>, mimeType: "image/png"}`
