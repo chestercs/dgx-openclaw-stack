@@ -109,7 +109,7 @@ WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 IMAGE_GEN_CANVAS_DIR = os.environ.get("IMAGE_GEN_CANVAS_DIR", "").strip().rstrip("/")
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.1"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.2"}
 
 
 TOOLS = [
@@ -126,15 +126,18 @@ TOOLS = [
             "Returns metadata (prompt_id, workflow, seed, elapsed_s, per-image "
             "filename + size + width/height) PLUS a `display_markdown` field "
             "containing the chat-renderable image markup.\n\n"
-            "MANDATORY OUTPUT CONTRACT — the FIRST line of your reply MUST be "
-            "the EXACT verbatim contents of `display_markdown` from the tool "
-            "result. Copy it character-for-character: do not edit, do not "
-            "rewrap, do not wrap in code fences, do not translate. Add your "
-            "Hungarian or English commentary AFTER it on a new line. If you "
-            "skip this paste the chat surface shows ZERO image to the user — "
-            "only your text description, which is visually useless. Describing "
-            "the image in your own words is NOT a substitute for the paste; "
-            "the user already asked for an IMAGE."
+            "MANDATORY OUTPUT CONTRACT — your reply MUST start with the EXACT "
+            "verbatim contents of the `display_markdown` field, INCLUDING ALL "
+            "LINES of it (it usually contains a public image URL line AND a "
+            "[embed] shortcode line — paste BOTH, separated by the blank line "
+            "as in the field value). Copy character-for-character: do not "
+            "edit, do not rewrap, do not wrap in code fences, do not translate, "
+            "do not summarize, do not skip lines. Add your Hungarian or English "
+            "commentary AFTER the entire paste on a new line. If you skip any "
+            "part of the paste the user will see ZERO image on at least one "
+            "surface (Discord needs the URL line, web-chat needs the [embed] "
+            "line). Describing the image in your own words is NOT a "
+            "substitute for the paste; the user already asked for an IMAGE."
             "\n\n"
             "The PNG bytes themselves are NOT in the response by default — "
             "embedding ~200 KB of base64 per image would balloon the agent's "
@@ -431,32 +434,34 @@ async def _tool_generate(args: dict) -> dict:
             for img in images:
                 img.pop("_b64_blob", None)
 
-        # `display_markdown` is the chat-side rendering hint. Two modes:
+        # `display_markdown` is the chat-side rendering hint. Two surface
+        # patterns are supported simultaneously when canvas dir is set:
         #
-        # 1. Path A (preferred, opt-in via IMAGE_GEN_CANVAS_DIR):
-        #    `[embed url="/__openclaw__/canvas/<file>" /]` shortcode —
-        #    same-origin, parser-whitelisted, bypasses DOMPurify, renders
-        #    inline in the OpenClaw web chat. Added in upstream 2026.4.11
+        # 1. The public external URL on its own line — Discord and other
+        #    surfaces auto-embed standalone HTTPS image URLs. The token is
+        #    in the URL query string so cross-origin <img> fetches work
+        #    (Basic auth headers don't survive cross-origin <img> loads
+        #    but query strings always do).
+        # 2. The `[embed url="/__openclaw__/canvas/<file>" /]` shortcode —
+        #    OpenClaw web chat normalizer extracts this BEFORE DOMPurify
+        #    and renders an inline iframe (same-origin, capability-token
+        #    auth, parser-whitelisted). Added in upstream 2026.4.11
         #    (PR #64104). See docs/reference/image-comfyui-bridge.md.
         #
-        # 2. Legacy (default, when canvas dir unset OR write failed):
-        #    cross-origin `![](url)` markdown — works on Discord and other
-        #    surfaces that auto-embed; in webchat the <img> survives the
-        #    sanitizer (PR #15480) but cross-origin Basic auth strips
-        #    cached creds, so external HTTPS images render as broken
-        #    icons unless the operator has cached creds via direct nav.
+        # ORDER MATTERS: the URL goes FIRST so that even if the agent
+        # cherrypicks only the first line, Discord still auto-embeds the
+        # image. The [embed] shortcode comes second, additive on chat.
         #
-        # Either way, the autolinked plain URL on its own line is always
-        # included as a click-fallback (cached Basic auth applies on
-        # direct nav, opens in a new tab).
+        # Legacy (no canvas dir): only the URL line — chat surfaces that
+        # support markdown image syntax get `![](url)` for backward compat.
         display_lines = []
         for img in images:
             url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
+            display_lines.append(f"🖼️ {img['filename']}: {url}")
             if img.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
             else:
                 display_lines.append(f"![{img['filename']}]({url})")
-            display_lines.append(f"🖼️ {img['filename']}: {url}")
         display_markdown = "\n\n".join(display_lines)
 
         return {
