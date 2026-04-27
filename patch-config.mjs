@@ -74,6 +74,17 @@
 //      when channels.discord is already configured (CLI created), and only
 //      if the user hasn't set the field themselves (user-managed protection,
 //      same posture as the rest of channels.discord.*).
+//  21. Discord actions.reactions disable — defends against vLLM Gemma4
+//      tool-parser regex `[\w\-\.]` rejecting colon namespaces (the Discord
+//      plugin's `discord:add_reaction` tool name). Without this disable,
+//      Gemma 4 NVFP4 emits `<|tool_call>call:discord:add_reaction{...}<tool_call|>`
+//      which vLLM parser drops (regex doesn't capture past first colon),
+//      and the literal envelope leaks into Discord channel as garbage text.
+//      Other tools (web_search, memory_*, python_sandbox__*, comfyui_image__*)
+//      use `__` separators which `\w` accepts; only the Discord plugin uses
+//      colon namespacing, so this disable is targeted. Env override:
+//      OPENCLAW_DISCORD_ACTIONS_REACTIONS=true to re-enable on non-Gemma
+//      backends (Claude, GPT-4 etc.) whose tool-parsers tolerate colons.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -1007,7 +1018,8 @@ if (IMAGE_GEN_TOKEN) {
 // of doing it; not a Gemma reasoning loop, the LLM session log shows zero
 // `react` calls). Setting `ackReactionScope: "off"` disables the entire
 // auto-ack pipeline, so the queue has nothing to replay. The agent can still
-// emit `add_reaction` tool calls explicitly when it actually means to react.
+// emit `add_reaction` tool calls explicitly when it actually means to react
+// (well — except for the Gemma4 colon-namespace parser bug, see step 21).
 //
 // User-managed protection: only writes when `channels.discord` is configured
 // (the CLI's `openclaw channels add --channel discord` ran and created the
@@ -1023,6 +1035,46 @@ if (config.channels?.discord?.enabled === true) {
     config.channels.discord.ackReactionScope = ackScopeOverride;
     changed = true;
     console.log(`[patch-config] channels.discord.ackReactionScope = ${JSON.stringify(ackScopeOverride)} (suppress upstream issue #46024 stale-queue cycle)`);
+  }
+}
+
+// ─── 21. Discord actions.reactions disable on Gemma backends ─────────────────
+// The vLLM Gemma4 tool-call parser regex is `<\|tool_call>call:([\w\-\.]+)\{...`
+// — character class `[\w\-\.]` matches word chars, hyphens, dots, but NOT
+// colons. The Discord plugin in OpenClaw 2026.4.22 publishes its agent-facing
+// reaction tool as `discord:add_reaction` (with a colon namespace), unlike
+// every other plugin which uses `__` (e.g. `python_sandbox__python_exec`,
+// `comfyui_image__generate`). When Gemma 4 NVFP4 calls `discord:add_reaction`,
+// the model dutifully emits `<|tool_call>call:discord:add_reaction{...}<tool_call|>`
+// — but vLLM's parser regex stops capturing at the second colon, fails to
+// extract the call, and the literal envelope string leaks into the model's
+// content field. OpenClaw then forwards that as Discord chat content, so the
+// user sees garbage like `<|tool_call>call:discord:add_reaction{emoji:<|"|>🎉<|"|>...}<tool_call|>`
+// instead of an actual reaction.
+//
+// Setting `channels.discord.actions.reactions = false` removes the reaction
+// tool from the agent-facing tool list entirely. Gemma 4 doesn't see it, can't
+// call it, no garbage. The agent can still post emoji as text in its reply
+// (e.g. "Hurrá! 🎉") — that path goes through the message API, not the
+// reaction API, and isn't affected by the parser bug.
+//
+// Verified 2026-04-27 with bot @ImbulClaw on GB10: with actions.reactions
+// unset (default true), `@ImbulClaw reagálj egy 🎉-vel` → garbage tool-call
+// envelope leaks; with actions.reactions=false, model writes "🎉 Hurrá!" as
+// text reply, no envelope leak.
+//
+// Env override: OPENCLAW_DISCORD_ACTIONS_REACTIONS=true to re-enable on
+// non-Gemma backends. Claude/GPT-4/Llama-instruct family parsers tolerate
+// colons in tool names; this fix is Gemma-specific. If you swap the LLM via
+// LLM_BASE_URL to a cloud endpoint, set this to true in .env.
+const reactionsOverride = (process.env.OPENCLAW_DISCORD_ACTIONS_REACTIONS?.trim() || 'false').toLowerCase() === 'true';
+if (config.channels?.discord?.enabled === true) {
+  config.channels.discord ??= {};
+  config.channels.discord.actions ??= {};
+  if (config.channels.discord.actions.reactions !== reactionsOverride) {
+    config.channels.discord.actions.reactions = reactionsOverride;
+    changed = true;
+    console.log(`[patch-config] channels.discord.actions.reactions = ${reactionsOverride} (Gemma4 colon-namespace tool-parser workaround; set OPENCLAW_DISCORD_ACTIONS_REACTIONS=true on non-Gemma backends)`);
   }
 }
 

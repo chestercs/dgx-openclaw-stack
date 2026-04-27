@@ -1070,6 +1070,13 @@ services:
       # / 'direct' / 'all' if you want the lifecycle feedback (and accept the
       # cycling on guild mentions).
       OPENCLAW_DISCORD_ACK_REACTION_SCOPE: ${OPENCLAW_DISCORD_ACK_REACTION_SCOPE:-off}
+      # Discord actions.reactions (patcher step 21). Default 'false' removes
+      # the agent-facing `discord:add_reaction` tool from the tool list because
+      # vLLM's Gemma4 tool-parser regex doesn't tolerate the colon namespace
+      # (the literal envelope leaks as garbage text). Set 'true' on non-Gemma
+      # backends (Claude / GPT-4 / Llama-instruct) whose tool-parsers handle
+      # colons fine.
+      OPENCLAW_DISCORD_ACTIONS_REACTIONS: ${OPENCLAW_DISCORD_ACTIONS_REACTIONS:-false}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
