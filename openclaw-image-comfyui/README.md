@@ -25,6 +25,37 @@ as F5-TTS HU and the Python sandbox.
 
 ## What's in the box
 
+## Chat-side image rendering
+
+The bridge returns a `display_markdown` field in every `generate`
+response: a markdown image link pointing at `COMFYUI_EXTERNAL_URL`. The
+agent description tells the LLM to paste this verbatim into its reply
+so the chat surface renders the image inline.
+
+**`COMFYUI_EXTERNAL_URL` must match the chat UI's protocol.** A common
+trap: the OpenClaw chat is served over HTTPS (Cloudflare tunnel /
+reverse-proxy domain) but the env var defaults to the bridge-internal
+HTTP URL — the browser then silently drops the `<img>` as "mixed
+content" and the user only sees the markdown text, no picture.
+
+The clean fix is an HTTPS reverse-proxy in front of ComfyUI:
+
+1. In Nginx Proxy Manager (or your existing reverse-proxy stack) add a
+   proxy host like `comfy.your-domain.com` → `http://192.168.x.x:13036`.
+2. Add HTTP Basic auth on that proxy host (ComfyUI ships without auth).
+3. Get a cert for it (Let's Encrypt via NPM is one click).
+4. Set `COMFYUI_EXTERNAL_URL=https://comfy.your-domain.com` and recreate
+   the bridge.
+5. **First time** the chat tries to load an image, the browser pops up
+   the Basic auth dialog — log in once. The browser caches the
+   credentials per origin, so every subsequent `<img>` request sends
+   the header automatically.
+
+This pattern was verified end-to-end on GB10 with
+`vision.petyuspolisz.com` fronting `192.168.111.100:13036`.
+
+## Tools
+
 - **Three MCP tools** surfaced through OpenClaw's tool catalog:
   - `comfyui_image__generate(prompt, workflow, ..., include_base64=false)` —
     submit a workflow, poll, return image **metadata** (filename,

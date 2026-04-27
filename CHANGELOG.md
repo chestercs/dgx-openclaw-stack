@@ -42,9 +42,24 @@ renders markdown inside agent text replies just fine.
   want to construct their own URLs have both.
 
 ### Migration
-- Set `COMFYUI_EXTERNAL_URL` in `.env` (host LAN IP recommended).
+- Set `COMFYUI_EXTERNAL_URL` in `.env`.
 - Bridge image rebuild + recreate.
 - No patcher / compose-services / network changes.
+
+### Documented (deploy follow-up, same day)
+- **HTTPS-proxy + browser-cached HTTP Basic auth pattern** is the
+  recommended setup for `COMFYUI_EXTERNAL_URL` when the chat UI is
+  served over HTTPS (Cloudflare tunnel / reverse-proxy domain). Mixed
+  content blocking silently drops HTTP `<img>` requests on HTTPS pages
+  — host-LAN-IP only works when the chat itself is also HTTP.
+  Verified end-to-end on GB10 with `vision.petyuspolisz.com` fronting
+  `192.168.111.100:13036`: NPM Basic auth + browser per-origin
+  credential cache, the chat surface renders the image after a one-time
+  login dialog.
+- **`.env.example` `COMFYUI_EXTERNAL_URL` block** rewritten with the
+  3-setup decision matrix (HTTPS reverse-proxy / HTTP LAN IP / blank).
+- **`openclaw-image-comfyui/README.md`** new "Chat-side image
+  rendering" section with the NPM walkthrough.
 
 ## [0.9.4] - 2026-04-27
 
