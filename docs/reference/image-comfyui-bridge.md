@@ -162,6 +162,39 @@ Status verified 2026-04-28 against openclaw `2026.4.25` (latest release at
 that date). See `docs/reference/chat-surface-capability-matrix.md` for the
 broader surface × feature mátrix.
 
+- **Path A — Same-origin canvas via `[embed]` shortcode** (research-confirmed
+  2026-04-28, viable, ~30 LOC bridge edit): emit `[embed url="/__openclaw__/canvas/<id>.png" /]`
+  in the agent reply. The shortcode (added in `2026.4.11` PR #64104) is
+  parsed by the chat normalizer into a structured iframe directive — it
+  bypasses the DOMPurify `<img>` sanitizer entirely. The URL is whitelisted
+  to `/__openclaw__/canvas/...` and `/__openclaw__/a2ui/...` (parser-validated
+  same-origin only); arbitrary http(s) URLs are gated by the dangerous
+  `gateway.controlUi.allowExternalEmbedUrls=true` flag (default `false` —
+  leave it that way). Iframe sandbox controlled by `gateway.controlUi.embedSandbox`
+  (`"strict"` | `"scripts"` | `"trusted"`).
+  
+  **Bridge implementation sketch:**
+  1. Bind-mount `${OPENCLAW_CONFIG_DIR}/canvas/` into the bridge container.
+  2. After ComfyUI returns the image, copy `<id>.png` to that bind dir
+     (parallel to the existing `/data/` write — keeps the operator-fetch
+     path intact for non-chat surfaces).
+  3. In the JSON response, set `display_markdown` to
+     `[embed url="/__openclaw__/canvas/<id>.png" /]` instead of the
+     current `[link](https://vision.example.com/view?...)` form.
+  4. Keep the existing `_attachments` MCP block (zero cost, future-proofs
+     for Path C).
+  
+  **Open verification questions** (need a one-shot SSH probe on the live
+  gateway):
+  - Does `[embed]` accept a `.png` URL, or only `.html`? (the canvas SKILL
+    is HTML-oriented; image-as-iframe-src is browser-native but the
+    embed parser may MIME-validate).
+  - What's the host filesystem path the gateway serves at
+    `/__openclaw__/canvas/`? (`canvas-documents.ts` lifecycle — likely
+    `${OPENCLAW_CONFIG_DIR}/canvas/` but unverified on our deploy).
+  - Current value of `gateway.controlUi.embedSandbox` in our config (likely
+    unset → upstream default).
+
 - **Path C — Native MCP image-content rendering**: the bridge already emits
   `_attachments` MCP `{type: "image", data: <base64>, mimeType: "image/png"}`
   blocks per `app.py:343-353, 480-488`. **Verified 2026-04-28: chat web UI
@@ -172,29 +205,21 @@ broader surface × feature mátrix.
   bridge→gateway payload channel, NOT for chat-side render). When upstream
   ships, this path lights up with zero bridge code change.
 
-- **Path A — Same-origin gateway canvas proxy**: save to
-  `${OPENCLAW_CONFIG_DIR}/canvas/` (host-bound) and serve via
-  `/__openclaw__/canvas/<name>` on the openclaw gateway. The chat's
-  session cookie auths the request, no Basic auth issue. The
-  endpoint exists (returns 401 unauthenticated as of 2026-04-27);
-  nailing down the auth flow is the work — see the verify cell in
-  `chat-surface-capability-matrix.md` for the auth-strategy probe.
-
 - **Path B — Workspace bind + agent `read` tool**: save to
   `${OPENCLAW_WORKSPACE_DIR}/comfyui-bridge/<id>.png` and have the
   agent issue a follow-up `read` call. The `read` tool returns MCP
   content blocks — IF it recognizes PNG mime type and emits an image
   block (verify before relying), AND if the chat surface renders MCP
-  image content (Path C). This is a fallback if Path A doesn't work
-  out and Path C still hasn't shipped.
+  image content (Path C). Path A is now strictly preferable, so Path B
+  drops to fallback-of-fallback.
 
 - **Full base64 inline** (`include_base64=true`): the response
   carries the bytes; the LLM prefill for the next call still chews
   through 50K+ tokens, so this is impractical for routine use.
 
-Recommended priority for new POC sprints: verify Path C first (10 minutes —
-just check the latest release-notes), then Path A (30 minutes — auth-strategy
-probe), then Path B (50-LOC bridge edit) only if both prior paths block.
+Recommended priority for new POC sprints: Path A (verified viable, blocked
+only on a single SSH probe to confirm `.png` MIME acceptance + canvas dir
+location). Path B as fallback if `[embed]` rejects non-HTML.
 
 ## Token-auth via `auth_request` (v0.9.8–v0.9.10, what actually shipped)
 

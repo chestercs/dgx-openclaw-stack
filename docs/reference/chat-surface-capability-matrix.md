@@ -18,30 +18,47 @@ Verdict legend: ✅ works · ❌ blocked · ⚠️ conditional (see verify cell)
 
 | Feature | Web chat | Discord text | Discord voice | Agent skill API | Control UI |
 |---|:---:|:---:|:---:|:---:|:---:|
-| Image markdown `![](url)` | ❌ sanitizer drop | ✅ Discord auto-embed | n/a | ✅ raw JSON passthrough | ❓ verify |
+| Image markdown `![](url)` | ❌ sanitizer + cross-origin block (see notes) | ✅ Discord auto-embed | n/a | ✅ raw JSON passthrough | ❓ verify |
 | Image markdown `[txt](url)` | ❌ sanitizer drop external | ✅ Discord embed-card | n/a | ✅ raw JSON | ❓ verify |
 | MCP image-content block | ❌ 2026.4.25 still ignored | ❌ not surfaced | n/a | ✅ in tool result `content[]` | ❓ verify |
 | Audio `<audio src=...>` HTML | ❌ sanitizer drop | ❌ no inline audio HTML | n/a | n/a | ❓ verify |
 | Audio attachment (mp3/wav) | ❌ no fetch path | ⚠️ ffmpeg gap (`AUTO=tagged`) | ✅ voice channel stream | ✅ tool returns blob | ❓ verify |
 | External link click | ✅ direct nav (new tab) | ✅ Discord embed-card | n/a | n/a | ✅ |
 | Cross-origin Basic auth on `<img>` | ❌ browser strips creds | n/a | n/a | n/a | ❌ |
-| Same-origin static (gateway canvas) | ❓ Path A research pending | n/a | n/a | n/a | ❓ verify |
+| `[embed url="/__openclaw__/canvas/..."]` shortcode | ✅ structured iframe directive (PR #64104) | n/a | n/a | n/a | ✅ |
+| Same-origin static `/__openclaw__/canvas/<file>` | ✅ via `[embed]` shortcode (Path A) | n/a | n/a | n/a | ❓ verify |
 | Speech synthesis (Read aloud) | ⚠️ browser default voice (poor for HU) | n/a | n/a | n/a | ❓ verify |
 
 ## Verify cells
 
 Every `❌` / `⚠️` / `❓` here is reproducible. Run the snippet and the verdict either matches the cell (good — your deploy is consistent) or differs (worth investigating — upstream may have moved).
 
-### Image markdown `![](url)` in web chat — sanitizer drop
+### Image markdown `![](url)` in web chat — sanitizer + cross-origin block
+
+`![alt](url)` survives the DOMPurify allowlist as of upstream PR #15480
+(`<img>`, `src`, `alt`, `ADD_DATA_URI_TAGS: ["img"]` permitted). What
+actually blocks rendering on our deploy:
+
+1. **Cross-origin Basic auth strip** — `<img src="https://vision.example.com/...">`
+   triggers a fetch that browsers refuse to attach the cached Basic
+   credential to (different origin from the chat tab). Result: 401, broken
+   image icon, no inline render.
+2. **Cross-origin CSP / referrer policy** — the chat host's CSP may
+   `img-src 'self'` only, dropping any external host.
+
+For same-origin images, see the `[embed]` shortcode row — that's the
+working path on our deploy.
 
 ```bash
 # Send a message containing only `![alt](https://placekitten.com/200/200)` to the agent
-# from a browser tab; observe the rendered DOM.
-# Expected: only "alt" text remains, the <img> is stripped.
+# and observe the rendered DOM:
 ssh -i KEY -l user host 'docker exec openclaw-cli openclaw agent --agent main \
   --message "Reply with literally `![cat](https://placekitten.com/200/200)` and nothing else." \
   --thinking off --json --timeout 60 2>&1 | jq -r ".result.payloads[0].text"'
-# Then open the chat tab, find the bubble, devtools-inspect: should show <p>cat</p>, not <img>.
+# In the chat tab DevTools, the <img> tag IS in the DOM. Whether it renders
+# depends on whether placekitten.com is reachable cross-origin from the
+# chat origin (no auth here, so should — useful for isolating sanitizer
+# vs auth as the cause when debugging a real broken image).
 ```
 
 ### Image markdown `[text](url)` in web chat — sanitizer drop external
@@ -97,17 +114,60 @@ docker logs openclaw-gateway 2>&1 | grep -E "final reply failed.*ffmpeg" | tail 
 # <img>). The image-comfyui bridge added COMFYUI_VIEW_TOKEN exactly for this in v0.9.8.
 ```
 
-### Same-origin static (gateway canvas) — UNVERIFIED, research pending
+### `[embed url=...]` shortcode in web chat — research-confirmed viable
+
+Upstream openclaw added `[embed ...]` in `2026.4.11` (PR #64104). The chat
+normalizer extracts the directive into structured iframe metadata BEFORE the
+DOMPurify pass, so the shortcode bypasses the `<img>` sanitizer.
+
+URL whitelist (parser-validated, same-origin only):
+
+- `/__openclaw__/canvas/...`
+- `/__openclaw__/a2ui/...`
+
+Absolute http(s) URLs are gated by `gateway.controlUi.allowExternalEmbedUrls`
+(default `false`, marked **dangerous** in the schema — leave it off; the
+whole point of the same-origin path is dodging the cross-origin auth /
+sanitizer mess).
+
+Sandbox controlled by `gateway.controlUi.embedSandbox`:
+
+- `"strict"` — minimal sandbox
+- `"scripts"` — `allow-scripts`
+- `"trusted"` — `allow-scripts allow-same-origin` (lets the chat session's
+  bearer/cookie flow through to the iframe content fetch)
+
+Three-step verify (steps 1-2 read-only diagnostic, step 3 needs a one-time
+write authorization for the test PNG):
 
 ```bash
-# The gateway mounts /__openclaw__/canvas/ → /home/node/.openclaw/canvas/.
-# Auth scheme unknown; sanitizer behavior on /__openclaw__/* paths unverified.
-# Probes (run from a chat-tab DevTools console for cookie auth path):
-ssh ... 'docker exec openclaw-gateway sh -c "curl -sS -o /dev/null -w \"naked %{http_code}\n\" http://127.0.0.1:18789/__openclaw__/canvas/test.png"'
-ssh ... 'docker exec openclaw-gateway sh -c "curl -sS -o /dev/null -w \"bearer %{http_code}\n\" -H \"Authorization: Bearer \$OPENCLAW_GATEWAY_TOKEN\" http://127.0.0.1:18789/__openclaw__/canvas/test.png"'
-# DOM-side: in the chat tab DevTools console:
-# fetch("/__openclaw__/canvas/test.png", {credentials:"include"}).then(r => r.status)
-# Status 200/401/403 dictates which auth strategy works.
+# 1. Read-only: find the host filesystem path the gateway serves at
+#    /__openclaw__/canvas/ and the current embedSandbox config.
+ssh -i KEY -l user host 'docker exec openclaw-gateway sh -c "
+  ls -la /home/node/.openclaw/ 2>/dev/null;
+  echo ---;
+  for d in canvas attachments media a2ui; do
+    test -d /home/node/.openclaw/\$d && {
+      echo \"~/.openclaw/\$d/:\";
+      ls -la /home/node/.openclaw/\$d/ 2>/dev/null | head -10;
+    };
+  done"'
+
+# 2. Read-only: probe the gateway's /__openclaw__/canvas/ route (route
+#    presence + auth requirement on a file that exists from step 1).
+ssh -i KEY -l user host 'docker exec openclaw-gateway sh -c "
+  curl -sS -o /dev/null -w \"%{http_code} %{content_type}\n\" \
+    http://127.0.0.1:18789/__openclaw__/canvas/<file-from-step-1>"'
+
+# 3. Write (one-time, pre-authorized by the operator): drop a real 1×1
+#    PNG into the canvas dir, send an embed-shortcode reply, observe
+#    chat render.
+docker exec openclaw-gateway sh -c \
+  'printf "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x78\x9c\x62\x00\x01\x00\x00\x05\x00\x01\x0d\x0a\x2d\xb4\x00\x00\x00\x00IEND\xaeB\x60\x82" > /home/node/.openclaw/canvas/embed-probe.png'
+docker exec openclaw-cli openclaw agent --agent main \
+  --message 'Reply with literally [embed url="/__openclaw__/canvas/embed-probe.png" /] and nothing else.' \
+  --thinking off --json --timeout 90
+# Then in the chat tab: confirm a 1×1 image bubble renders (not the literal markup).
 ```
 
 ### Speech synthesis (Read aloud) in web chat — browser-default voice

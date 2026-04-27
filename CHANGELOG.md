@@ -5,6 +5,54 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-04-28
+
+Path A research locked. Chat-side image rendering has a clear
+implementation path via the `[embed ...]` shortcode that landed in
+upstream `2026.4.11` (PR #64104). The 4 hours of debugging that
+preceded the previous "user copies the URL" workaround was the right
+holding pattern, but the actual fix is a ~30 LOC bridge edit.
+
+### Documented
+- **`[embed url="/__openclaw__/canvas/<file>" /]` is the chat-side
+  inline render path.** The shortcode is parsed by the chat
+  normalizer into structured iframe metadata BEFORE DOMPurify, so
+  it bypasses the `<img>` sanitizer entirely. URL whitelist is
+  parser-validated to `/__openclaw__/canvas/...` and
+  `/__openclaw__/a2ui/...` only — absolute http(s) URLs are gated
+  by the dangerous `gateway.controlUi.allowExternalEmbedUrls` flag
+  (default `false`, leave it that way). Iframe sandbox controlled
+  by `gateway.controlUi.embedSandbox` (`"strict"`/`"scripts"`/`"trusted"`).
+- **Image markdown sanitizer is NOT the actual blocker** for `![](url)`
+  in webchat. Upstream PR #15480 added `<img>` to the DOMPurify
+  allowlist long ago. What blocks rendering on cross-origin Basic
+  auth deploys (e.g. `vision.example.com` behind NPM Basic) is the
+  browser refusing to attach cached creds to cross-origin `<img>`
+  fetches. Fixed `chat-surface-capability-matrix.md` accordingly.
+- **`[embed]` shortcode + same-origin canvas** is the architectural
+  answer for image-comfyui bridge chat-side rendering. The bridge
+  saves to `${OPENCLAW_CONFIG_DIR}/canvas/<id>.png` (host-bound,
+  inside the gateway's serving root) and emits the embed shortcode
+  in `display_markdown`. Net: zero auth setup, zero CORS, zero
+  sanitizer bypass — the chat session is already same-origin with
+  the canvas dir, so the existing auth surface applies.
+
+### Files updated
+- `docs/reference/image-comfyui-bridge.md` — Path A research-confirmed
+  with implementation sketch; Path B demoted to fallback-of-fallback.
+- `docs/reference/chat-surface-capability-matrix.md` — added `[embed]`
+  shortcode row (✅ in webchat, n/a elsewhere); corrected `![](url)`
+  failure mode from "sanitizer drop" to "cross-origin Basic auth strip".
+
+### Pending (one-shot SSH probe blocks implementation)
+Three read-only verification commands needed before the bridge edit:
+- `gateway.controlUi.embedSandbox` current value in `openclaw.json`
+- Host filesystem path backing `/__openclaw__/canvas/`
+- Live response of the gateway when serving a test PNG from that dir
+
+Once those clear, the bridge POC is ~30 LOC + a `display_markdown`
+template change. Tracked as task #28 (probe) → #29 (POC).
+
 ## [0.9.10] - 2026-04-27
 
 `auth_request` works end-to-end. Fixes the `?token=...` propagation
