@@ -66,6 +66,13 @@ services:
       # (or Cloudflare-tunnel-mapped subdomain) for chat-side rendering
       # to work. Defaults to COMFYUI_URL — set explicitly for chat use.
       COMFYUI_EXTERNAL_URL: ${COMFYUI_EXTERNAL_URL:-${COMFYUI_URL:-http://host.docker.internal:13036}}
+      # When set, the bridge appends `?token=<value>` to the URL it embeds in
+      # `display_markdown`. Pair with a reverse-proxy token-validation block
+      # (NGINX `if ($arg_token != "...")`) and drop the Basic auth on that
+      # proxy host — the URL-param form works on direct nav AND on
+      # cross-origin <img> tags (Basic auth headers don't survive cross-origin
+      # image fetches). See bridge README for the exact NGINX recipe.
+      COMFYUI_VIEW_TOKEN: ${COMFYUI_VIEW_TOKEN:-}
       IMAGE_GEN_TIMEOUT_S: ${IMAGE_GEN_TIMEOUT_S:-600}
       IMAGE_GEN_MAX_CONCURRENCY: ${IMAGE_GEN_MAX_CONCURRENCY:-1}
       IMAGE_GEN_MAX_OUTPUT_BYTES: ${IMAGE_GEN_MAX_OUTPUT_BYTES:-52428800}

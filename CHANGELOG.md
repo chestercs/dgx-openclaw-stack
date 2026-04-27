@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-04-27
+
+URL-param token auth as an alternative to HTTP Basic auth on the
+ComfyUI proxy host. Lets the operator drop Basic auth on
+`vision.example.com` (or whatever proxy front their ComfyUI) — the
+`?token=<value>` query parameter survives cross-origin `<img>` tag
+fetches that Basic auth headers can't.
+
+### Added
+- **`COMFYUI_VIEW_TOKEN` env**. When set, the bridge appends
+  `?token=<urlencoded value>` to every fetch URL it embeds in
+  `display_markdown` and to each `images[].fetch_url_path`. Filename /
+  type / subfolder are now also URL-encoded (they weren't before; was
+  a latent bug for filenames with spaces or special chars).
+- **`openclaw-image-comfyui/README.md` "Token-protected proxy"
+  section** with the exact NGINX `if ($arg_token != $required_token)
+  { return 401; }` block to paste into NPM's Advanced tab. Notes the
+  trade-off (token visible in tool-output JSON, view-and-generate
+  scope unless you split per-location), and a per-location sketch
+  for stricter scoping (token-only on `/view`, Basic auth on
+  `/prompt`).
+- **`.env.example` `COMFYUI_VIEW_TOKEN` block** with the
+  `openssl rand -base64 48` mint command.
+- **`docker-compose.yml` (bridge compose) env passthrough**
+  `COMFYUI_VIEW_TOKEN: ${COMFYUI_VIEW_TOKEN:-}`.
+
+### Migration
+- Generate a token: `openssl rand -base64 48 | tr -d '\n'`.
+- Set `COMFYUI_VIEW_TOKEN=<value>` in main `.env`.
+- Recreate the bridge (`docker compose -f
+  openclaw-image-comfyui/docker-compose.yml up -d --force-recreate
+  openclaw-image-comfyui`).
+- On the NPM proxy host (`vision.example.com`): paste the NGINX
+  validation block into Advanced, drop the Basic auth.
+- Verify: open a generated URL in a browser tab. Should load
+  immediately with no auth dialog. Without `?token=...` in the URL,
+  the host returns 401.
+
+### Compatibility
+- `COMFYUI_VIEW_TOKEN` is optional. Empty (default) → bridge behaves
+  exactly as v0.9.7 (no token in URLs, Basic auth on the proxy
+  remains the auth surface).
+
 ## [0.9.7] - 2026-04-27
 
 Empirical chat-render diagnosis. After v0.9.4-v0.9.6 attempts to

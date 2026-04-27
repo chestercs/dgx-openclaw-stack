@@ -75,6 +75,15 @@ COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://host.docker.internal:13036")
 # means the markdown will only work from inside the docker bridge — set
 # the env var explicitly for chat rendering to work.
 COMFYUI_EXTERNAL_URL = os.environ.get("COMFYUI_EXTERNAL_URL", COMFYUI_URL).rstrip("/")
+# COMFYUI_VIEW_TOKEN — when set, the bridge appends `?token=<value>` to the
+# fetch URL it embeds in `display_markdown`. Pair with a token-validation
+# block on your reverse-proxy (NGINX `if ($arg_token != "...")`) and you can
+# drop HTTP Basic auth there: the `?token=` URL param works on direct
+# navigation AND on cross-origin `<img>` tags (browsers always send query
+# strings; HTTP Basic auth headers don't survive cross-origin <img> fetches).
+# See the bridge README "Token-protected proxy (alternative to Basic auth)"
+# section for the exact NGINX config.
+COMFYUI_VIEW_TOKEN = os.environ.get("COMFYUI_VIEW_TOKEN", "").strip()
 DEFAULT_TIMEOUT_S = float(os.environ.get("IMAGE_GEN_TIMEOUT_S", "600"))
 MAX_OUTPUT_BYTES = int(os.environ.get("IMAGE_GEN_MAX_OUTPUT_BYTES", str(50 * 1024 * 1024)))
 MAX_CONCURRENCY = int(os.environ.get("IMAGE_GEN_MAX_CONCURRENCY", "1"))
@@ -300,6 +309,14 @@ async def _tool_generate(args: dict) -> dict:
                 # Don't fail generation on a metadata read; fall back to defaults.
                 width, height, fmt = 0, 0, "png"
             b64 = base64.b64encode(data).decode("ascii")
+            from urllib.parse import quote
+            view_qs = (
+                f"filename={quote(out['filename'], safe='')}"
+                f"&type={quote(out['type'], safe='')}"
+                f"&subfolder={quote(out['subfolder'], safe='')}"
+            )
+            if COMFYUI_VIEW_TOKEN:
+                view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
             entry = {
                 "format": fmt,
                 "filename": out["filename"],
@@ -309,10 +326,7 @@ async def _tool_generate(args: dict) -> dict:
                 "width": width,
                 "height": height,
                 "byte_size": len(data),
-                "fetch_url_path": (
-                    f"/view?filename={out['filename']}"
-                    f"&type={out['type']}&subfolder={out['subfolder']}"
-                ),
+                "fetch_url_path": f"/view?{view_qs}",
             }
             if include_base64:
                 entry["base64"] = b64

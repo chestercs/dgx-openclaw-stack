@@ -65,6 +65,60 @@ non-trivial paths:
 Neither path is wired in v0.9.x. Track upstream openclaw releases
 for a native chat-side image-render mechanism.
 
+## Token-protected proxy (alternative to Basic auth)
+
+Set `COMFYUI_VIEW_TOKEN=<long-random-string>` in `.env`. The bridge then
+appends `?token=<value>` to every URL it puts in `display_markdown`, e.g.
+`https://vision.example.com/view?filename=...&type=output&subfolder=openclaw-bridge&token=<value>`.
+
+On your reverse-proxy host (Nginx Proxy Manager `vision.example.com`),
+in the **Advanced** tab paste this custom NGINX config and **drop the
+Basic auth** on the same host:
+
+```nginx
+# Token-validate every request — drop the proxy's Basic auth in favor
+# of this. Token must match COMFYUI_VIEW_TOKEN in the bridge's .env.
+set $required_token "PASTE-COMFYUI_VIEW_TOKEN-HERE";
+if ($arg_token != $required_token) {
+    return 401;
+}
+```
+
+Generate the token once with `openssl rand -base64 48 | tr -d '\n'`,
+paste the same value into both `.env` and the NGINX `$required_token`
+line.
+
+### Why this is better than Basic auth for chat use
+
+- **No browser auth dialog** — the token rides in the URL itself, no
+  per-origin credential cache needed.
+- **Cross-origin `<img>` fetches work** (Basic auth headers don't
+  survive cross-origin image requests). If a future chat surface
+  bypasses the markdown sanitizer with a userscript, the
+  `<img src="...&token=xyz">` tag will load the image transparently.
+- **Direct navigation works** — clicking the URL out of the
+  tool-output JSON opens the image in a new tab without a login
+  dialog.
+
+### Trade-offs to know
+
+- The token is visible in the chat tool-output JSON (and in browser
+  history). It's a view-only credential for `vision.example.com`,
+  but anyone with the token can also hit `/prompt` and submit
+  generation jobs to your ComfyUI. Treat it like a Bearer secret;
+  rotate via `./rotate-secrets.sh`-style flow if it leaks (manual
+  for now: edit `.env`, edit NPM custom config, recreate bridge).
+- If you want stricter scoping (token only for `/view`, Basic auth
+  for `/prompt`), use NPM's per-location custom config — the
+  Advanced tab supports `location /view { ... }` blocks. Sketch:
+  ```nginx
+  location /view {
+      if ($arg_token != "VIEW-TOKEN") { return 401; }
+      proxy_pass http://192.168.x.x:13036;
+  }
+  ```
+  Leave the default Basic auth on the rest of the proxy host.
+
 ## Setting `COMFYUI_EXTERNAL_URL`
 
 The bridge embeds `COMFYUI_EXTERNAL_URL + fetch_url_path` into the
