@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7] - 2026-04-27
+
+Empirical chat-render diagnosis. After v0.9.4-v0.9.6 attempts to
+get the generated PNG inline-rendered in the OpenClaw chat surface,
+verified end-to-end via Chrome devtools + DOM inspection that the
+chat surface (openclaw 2026.4.22) cannot inline-render the image,
+and that the limit is at the **browser security layer**, not in
+anything the bridge can fix from its side:
+
+1. The chat's markdown sanitizer drops `![alt](url)` image syntax
+   AND drops `[text](https://...)` external-origin link syntax.
+   Only `mailto:` and trusted-protocol links survive. The DOM
+   shows only the `alt` text in a `<p>`, no `<img>` tag is
+   produced.
+2. Cross-origin Basic auth credentials are not sent on `<img>`
+   fetches, even when the user has cached the credentials by
+   logging in to the host directly. Verified: `new Image().src =
+   'https://vision.example.com/...'` from `claw.example.com` fires
+   `onerror` immediately; `fetch` with `credentials: 'include'`
+   returns `Failed to fetch`.
+
+### Documented (no code change in this release)
+- **`openclaw-image-comfyui/README.md` "Chat-side image rendering —
+  known limit" section** with the empirical findings and the
+  recommended copy-URL-from-tool-output workflow.
+- **`docs/reference/image-comfyui-bridge.md` new "Chat-side image
+  rendering: known browser-security limit" section** with the same
+  diagnostic trail plus three not-wired future paths
+  (same-origin canvas proxy, workspace + read tool, base64 inline).
+- **`CLAUDE.md` (root) Image-gen bridge nugget gets a 5th point**
+  warning future contributors not to chase markdown-syntax
+  workarounds — only same-origin paths or upstream openclaw native
+  support will move the needle.
+
+### Bridge response shape (preserved from v0.9.5/0.9.6)
+- `display_markdown` still emits `![<filename>](<url>)` followed by
+  `🖼️ <filename>: <url>` so a future renderer that supports either
+  shape gets the data, but the user's primary path is to copy the
+  URL out of the tool-output JSON.
+
 ## [0.9.6] - 2026-04-27
 
 Chat-side image rendering, take 2. The v0.9.5 `display_markdown` field

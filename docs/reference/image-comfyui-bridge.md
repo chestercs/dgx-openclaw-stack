@@ -122,6 +122,60 @@ specialty chat surface that consumes data URIs from tool results).
 The bridge itself doesn't change — `IMAGE_GEN_MAX_OUTPUT_BYTES` still
 caps the total base64 payload when it IS requested.
 
+## Chat-side image rendering: known browser-security limit
+
+**As of OpenClaw 2026.4.22 + Chrome/Firefox 2026.04, the chat surface
+cannot inline-render generated images.** Two independent browser
+security layers block it, verified empirically against
+`vision.petyuspolisz.com` end-to-end on 2026-04-27:
+
+1. **Markdown sanitizer.** The chat's renderer keeps `mailto:` links
+   and bold/italic/code/list, but drops `![alt](url)` image syntax
+   entirely (only the `alt` becomes a `<p>` in the DOM, no `<img>`)
+   and drops `[text](https://...)` link syntax to arbitrary external
+   origins (only the link text remains). This is internal to
+   openclaw and not configurable from the bridge side.
+2. **Cross-origin Basic auth.** Even if you bypass the sanitizer
+   (e.g. with a Tampermonkey userscript that re-injects `<img>` tags
+   from the rendered text), the browser refuses to send cached HTTP
+   Basic auth credentials on a cross-origin `<img>` fetch. Verified:
+   `new Image().src = 'https://vision.example.com/...'` from the
+   `claw.example.com` origin fires `onerror` immediately. Same with
+   `fetch(url, {credentials: 'include'})` → `Failed to fetch`.
+
+The `display_markdown` field is therefore best-effort: useful for a
+future chat surface that adds image-content support, and useful as a
+literal "copy this URL" payload that lands in the tool-output JSON.
+
+### Recommended workflow
+
+When the agent calls `comfyui_image__generate`, the tool-output
+bubble shows the response JSON in the chat. The user copies the
+`display_markdown` URL (or `comfyui_external_url + fetch_url_path`)
+from there and opens it in a new tab. The vision-host's Basic auth
+credentials cache applies on direct navigation, so the image opens
+transparently.
+
+### Future paths (not wired in v0.9.x)
+
+- **Same-origin proxy via gateway canvas**: save to
+  `${OPENCLAW_CONFIG_DIR}/canvas/` (host-bound) and serve via
+  `/__openclaw__/canvas/<name>` on the openclaw gateway. The chat's
+  session cookie auths the request, no Basic auth issue. The
+  endpoint exists (returns 401 unauthenticated as of 2026-04-27);
+  nailing down the auth flow is the work.
+- **Workspace bind + agent `read` tool**: save to
+  `${OPENCLAW_WORKSPACE_DIR}/comfyui-bridge/<id>.png` and have the
+  agent issue a follow-up `read` call. If the chat surface renders
+  the resulting attachment inline (verify before relying), this
+  works without bridge code changes.
+- **Full base64 inline** (`include_base64=true`): the response
+  carries the bytes; the LLM prefill for the next call still chews
+  through 50K+ tokens, so this is impractical for routine use.
+
+Track upstream openclaw releases for native MCP image-content
+rendering or a server-side proxy.
+
 ## Concurrency: single-flight by default
 
 `IMAGE_GEN_MAX_CONCURRENCY=1` is the default. ComfyUI runs on the same

@@ -725,6 +725,32 @@ Either lever opts out independently:
 
 Both are safe and reversible.
 
+### Known limit: no inline image render in the OpenClaw chat (v0.9.7)
+
+The OpenClaw chat surface (2026.4.22) **cannot** render the generated
+image inline in the agent reply. Verified empirically via Chrome
+devtools on 2026-04-27: the chat's markdown sanitizer drops
+`![alt](url)` image syntax (only the `alt` text survives as a `<p>`
+in the DOM), AND the browser refuses to send cached HTTP Basic auth
+credentials on cross-origin `<img>` fetches (silent `onerror`).
+Neither layer is fixable from the bridge side.
+
+**Recommended workflow:** when the agent calls
+`comfyui_image__generate`, the tool-output bubble in the chat shows
+the response JSON. The `display_markdown` field contains the full
+HTTPS URL of the generated image. Copy the URL and open it in a new
+tab — direct navigation does prompt for / send Basic auth, so the
+image opens transparently. The vision/proxy host will cache your
+credentials per origin, so you only do the auth dialog once per
+browser session.
+
+If inline rendering is critical for your workflow, two not-wired
+future paths are sketched in
+`docs/reference/image-comfyui-bridge.md` → "Chat-side image
+rendering": (a) same-origin proxy via `/__openclaw__/canvas/`,
+(b) workspace bind + agent `read` tool. Track upstream openclaw
+releases for native chat image-content support.
+
 ## Voice-controlled agent over Discord
 
 Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by voice: speak a request → the bundled Whisper STT transcribes → the agent plans + executes → the bundled TTS speaks the reply into the channel. End-to-end round trip is ~3-5 s on GB10 for a simple tool call.

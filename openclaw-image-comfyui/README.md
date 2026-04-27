@@ -25,34 +25,81 @@ as F5-TTS HU and the Python sandbox.
 
 ## What's in the box
 
-## Chat-side image rendering
+## Chat-side image rendering — known limit
 
-The bridge returns a `display_markdown` field in every `generate`
-response: a markdown image link pointing at `COMFYUI_EXTERNAL_URL`. The
-agent description tells the LLM to paste this verbatim into its reply
-so the chat surface renders the image inline.
+**The OpenClaw chat surface (2026.4.22) cannot inline-render generated
+images.** Two browser security layers conspire here:
 
-**`COMFYUI_EXTERNAL_URL` must match the chat UI's protocol.** A common
-trap: the OpenClaw chat is served over HTTPS (Cloudflare tunnel /
-reverse-proxy domain) but the env var defaults to the bridge-internal
-HTTP URL — the browser then silently drops the `<img>` as "mixed
-content" and the user only sees the markdown text, no picture.
+1. The chat's markdown sanitizer drops `![alt](url)` image syntax
+   entirely (verified in DOM: only the `alt` text becomes a `<p>`,
+   no `<img>` tag is emitted). Plain markdown links survive — but
+   only for trusted protocols like `mailto:`; arbitrary `https`
+   external URLs are dropped too.
+2. Even if you bypass the sanitizer (e.g. via a userscript that
+   injects `<img>` tags from the rendered text), the browser will
+   not send cached HTTP Basic auth credentials to a cross-origin
+   `<img>` request. Verified in-browser: `new Image().src =
+   'https://vision.example.com/...'` from the `claw.example.com`
+   origin fires `onerror` immediately — the cached creds aren't
+   exposed to image fetches across origins by design.
 
-The clean fix is an HTTPS reverse-proxy in front of ComfyUI:
+**Recommended workflow:** the `display_markdown` field of the tool
+output JSON contains the full HTTPS URL. When the agent replies, the
+tool-output bubble in the chat shows the JSON; copy the URL from
+there and open it in a new tab. Your browser's cached vision-host
+Basic auth credentials apply on direct navigation, so the image
+opens transparently.
 
-1. In Nginx Proxy Manager (or your existing reverse-proxy stack) add a
-   proxy host like `comfy.your-domain.com` → `http://192.168.x.x:13036`.
-2. Add HTTP Basic auth on that proxy host (ComfyUI ships without auth).
+If you genuinely need inline-render (e.g. for a presentation), two
+non-trivial paths:
+
+- **Same-origin proxy**: serve the image off the same origin as the
+  chat (e.g. via the openclaw gateway's `/__openclaw__/canvas/`
+  endpoint or a custom reverse-proxy mount) so the chat's session
+  cookie does the auth instead of Basic auth.
+- **Workspace bind + agent `read` tool**: have the bridge save to
+  `${OPENCLAW_WORKSPACE_DIR}` and use the agent's built-in `read`
+  tool to surface the file as an attachment (depends on whether the
+  chat surface renders attachments inline — verify before relying).
+
+Neither path is wired in v0.9.x. Track upstream openclaw releases
+for a native chat-side image-render mechanism.
+
+## Setting `COMFYUI_EXTERNAL_URL`
+
+The bridge embeds `COMFYUI_EXTERNAL_URL + fetch_url_path` into the
+`display_markdown` field of every `generate` response. Whatever URL
+sits in this env var is the URL the user will copy out of the
+tool-output JSON to view the image in a new tab — so it MUST be a
+URL that's reachable from the operator's browser.
+
+Recommended: an HTTPS reverse-proxy in front of ComfyUI. Setup
+sketch:
+
+1. In your reverse-proxy stack (Nginx Proxy Manager, Cloudflare
+   tunnel, etc.) add a proxy host like `comfy.your-domain.com` →
+   `http://<host-lan-ip>:13036`.
+2. Add HTTP Basic auth on that proxy host (ComfyUI ships without
+   auth) so the URL isn't an unauthenticated public ComfyUI API.
 3. Get a cert for it (Let's Encrypt via NPM is one click).
-4. Set `COMFYUI_EXTERNAL_URL=https://comfy.your-domain.com` and recreate
-   the bridge.
-5. **First time** the chat tries to load an image, the browser pops up
-   the Basic auth dialog — log in once. The browser caches the
-   credentials per origin, so every subsequent `<img>` request sends
-   the header automatically.
+4. Set `COMFYUI_EXTERNAL_URL=https://comfy.your-domain.com` in the
+   main `.env` and recreate the bridge.
+5. The first time you click a generated image URL out of the chat,
+   the browser pops up the Basic auth dialog — log in once. The
+   browser caches the credentials per origin, so every subsequent
+   click on a URL from the same origin opens the image
+   transparently.
 
-This pattern was verified end-to-end on GB10 with
-`vision.petyuspolisz.com` fronting `192.168.111.100:13036`.
+LAN-only setup (no HTTPS / no proxy): set
+`COMFYUI_EXTERNAL_URL=http://<host-lan-ip>:13036`. Works only when
+the chat UI is also served over HTTP on the same LAN — HTTPS chat
++ HTTP image URL = mixed-content silently dropped (and even at the
+direct-navigation level, modern Chrome/Firefox flag the HTTP URL).
+
+> Note: see "Chat-side image rendering — known limit" above. Even
+> with a perfectly configured HTTPS proxy, the URL still has to be
+> opened in a new tab — the chat surface itself does not render
+> the image inline. Verified empirically on 2026-04-27.
 
 ## Tools
 
