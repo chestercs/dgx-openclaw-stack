@@ -146,7 +146,27 @@ services:
   #    --enforce-eager                 : CUDA graphs off (more stable on GB10 unified mem).
   ######################
   vllm-llm:
-    image: vllm/vllm-openai:gemma4-cu130
+    # Custom image with a 1-line patch to the Gemma4 tool-call parser regex
+    # (gemma4_tool_parser.py:338) so it accepts colon namespaces in tool
+    # names. Upstream regex `[\w\-\.]` rejects colons; the OpenClaw Discord
+    # plugin uses `discord:add_reaction` (colon-namespaced), unlike every
+    # other plugin which uses `__`. Without this patch, Gemma 4 NVFP4 emits
+    # `<|tool_call>call:discord:add_reaction{...}<tool_call|>` correctly, but
+    # vLLM's parser drops it (regex stops at the second colon) and the
+    # literal envelope leaks into Discord chat as garbage text. Adding ':'
+    # to the char class fixes it transparently.
+    #
+    # Build context (./vllm-llm/) ships a 1-file Dockerfile + patch_parser.py.
+    # `image:` names the resulting local layer so `docker compose build`
+    # caches and `up -d` always uses the patched image. To revert to the
+    # unpatched upstream image (e.g. when this stack switches to a non-Gemma
+    # backend whose parser already handles colons): comment out the `build:`
+    # line and `docker compose pull vllm-llm` will fetch the upstream tag.
+    build:
+      context: ./vllm-llm
+      args:
+        VLLM_BASE_IMAGE: vllm/vllm-openai:gemma4-cu130
+    image: ${CONTAINER_NAME_PREFIX:-dgx-openclaw-}vllm-llm:gemma4-cu130-colonfix
     container_name: ${CONTAINER_NAME_PREFIX:-}vllm-llm
     hostname: vllm-llm
     restart: unless-stopped
@@ -1070,13 +1090,13 @@ services:
       # / 'direct' / 'all' if you want the lifecycle feedback (and accept the
       # cycling on guild mentions).
       OPENCLAW_DISCORD_ACK_REACTION_SCOPE: ${OPENCLAW_DISCORD_ACK_REACTION_SCOPE:-off}
-      # Discord actions.reactions (patcher step 21). Default 'false' removes
-      # the agent-facing `discord:add_reaction` tool from the tool list because
-      # vLLM's Gemma4 tool-parser regex doesn't tolerate the colon namespace
-      # (the literal envelope leaks as garbage text). Set 'true' on non-Gemma
-      # backends (Claude / GPT-4 / Llama-instruct) whose tool-parsers handle
-      # colons fine.
-      OPENCLAW_DISCORD_ACTIONS_REACTIONS: ${OPENCLAW_DISCORD_ACTIONS_REACTIONS:-false}
+      # Discord actions.reactions (patcher step 21). Default 'true' (enabled).
+      # This stack ships a custom vllm-llm image (./vllm-llm/) with a patch to
+      # the Gemma4 tool-call parser so colon-namespace tools like
+      # `discord:add_reaction` work. Set 'false' if running an unpatched
+      # upstream vllm/vllm-openai image, or to strip reaction permissions
+      # entirely for guild-rule reasons.
+      OPENCLAW_DISCORD_ACTIONS_REACTIONS: ${OPENCLAW_DISCORD_ACTIONS_REACTIONS:-true}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
