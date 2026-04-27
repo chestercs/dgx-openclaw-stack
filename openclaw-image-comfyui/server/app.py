@@ -109,7 +109,7 @@ WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 IMAGE_GEN_CANVAS_DIR = os.environ.get("IMAGE_GEN_CANVAS_DIR", "").strip().rstrip("/")
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.3"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.4"}
 
 
 TOOLS = [
@@ -437,31 +437,34 @@ async def _tool_generate(args: dict) -> dict:
         # `display_markdown` is the chat-side rendering hint. Two surface
         # patterns are supported simultaneously when canvas dir is set:
         #
-        # 1. The public external URL on its own line — Discord and other
-        #    surfaces auto-embed standalone HTTPS image URLs. The token is
-        #    in the URL query string so cross-origin <img> fetches work
-        #    (Basic auth headers don't survive cross-origin <img> loads
-        #    but query strings always do).
+        # 1. A masked markdown link `[🖼️ kép megnyitása](URL)` — Discord
+        #    auto-embeds the URL preview AND the link text is the only
+        #    visible chrome (no long token-URL exposed in the message).
+        #    Other surfaces that honor markdown links get a clickable
+        #    "open image" affordance.
         # 2. The `[embed url="/__openclaw__/canvas/<file>" /]` shortcode —
         #    OpenClaw web chat normalizer extracts this BEFORE DOMPurify
         #    and renders an inline iframe (same-origin, capability-token
         #    auth, parser-whitelisted). Added in upstream 2026.4.11
         #    (PR #64104). See docs/reference/image-comfyui-bridge.md.
         #
-        # ORDER MATTERS: the URL goes FIRST so that even if the agent
-        # cherrypicks only the first line, Discord still auto-embeds the
-        # image. The [embed] shortcode comes second, additive on chat.
+        # ORDER MATTERS: the masked link goes FIRST so that even if the
+        # agent cherrypicks only the first line, Discord still auto-embeds
+        # the image. The [embed] shortcode comes second, additive on chat.
         #
-        # Legacy (no canvas dir): only the URL line — chat surfaces that
-        # support markdown image syntax get `![](url)` for backward compat.
+        # Per-agent preference: AGENTS.md in each workspace can instruct
+        # the agent to paste only the relevant subset (e.g. discord-friend
+        # may skip [embed] since it renders as text noise on Discord;
+        # main:main pastes both for chat-side iframe inline render).
+        #
+        # Legacy (no canvas dir): only the masked link — chat surfaces
+        # that support markdown links get clickable text.
         display_lines = []
         for img in images:
             url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
-            display_lines.append(f"🖼️ {img['filename']}: {url}")
+            display_lines.append(f"[🖼️ kép megnyitása]({url})")
             if img.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
-            else:
-                display_lines.append(f"![{img['filename']}]({url})")
         display_markdown = "\n\n".join(display_lines)
 
         return {
@@ -475,19 +478,19 @@ async def _tool_generate(args: dict) -> dict:
             "comfyui_external_url": COMFYUI_EXTERNAL_URL,
             "display_markdown": display_markdown,
             "agent_hint": (
-                "MANDATORY: your reply MUST start with the COMPLETE verbatim "
-                "contents of `display_markdown` above — every line of it. "
-                "It contains TWO chunks separated by a blank line: a public "
-                "image URL line (needed so Discord and other surfaces auto-embed "
-                "the image) AND a `[embed url=...]` shortcode line (needed so "
-                "the OpenClaw web chat renders the image inline). Paste BOTH "
-                "lines, in the same order, separated by the blank line. Do not "
-                "edit, summarize, translate, wrap in code fences, or skip any "
-                "line. Add your commentary AFTER the entire paste, on a new "
-                "line. If you skip the URL line the user sees no image on "
-                "Discord; if you skip the [embed] line the user sees no inline "
-                "image on web chat. Describing the image in prose is NOT a "
-                "substitute — the user already asked for an IMAGE."
+                "MANDATORY: your reply MUST include the EXACT verbatim "
+                "`display_markdown` value above. It contains TWO chunks "
+                "separated by a blank line: a masked markdown link "
+                "`[🖼️ kép megnyitása](URL)` (Discord auto-embeds the URL "
+                "preview, web-chat shows clickable text) AND a "
+                "`[embed url=...]` shortcode (web-chat extracts as inline "
+                "iframe; Discord renders it as text noise — strip on Discord "
+                "if your AGENTS.md says so). Default: paste BOTH lines verbatim "
+                "at the START of your reply, separated by the blank line, then "
+                "add your commentary AFTER. Per-agent override: your workspace "
+                "AGENTS.md may instruct you to skip the [embed] line on certain "
+                "surfaces — follow that. Describing the image in prose is NOT "
+                "a substitute for the link/embed paste."
             ),
             "images": images,
             "_attachments": attachments,
