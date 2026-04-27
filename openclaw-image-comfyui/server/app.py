@@ -109,7 +109,7 @@ WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 IMAGE_GEN_CANVAS_DIR = os.environ.get("IMAGE_GEN_CANVAS_DIR", "").strip().rstrip("/")
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.2"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.3"}
 
 
 TOOLS = [
@@ -475,9 +475,19 @@ async def _tool_generate(args: dict) -> dict:
             "comfyui_external_url": COMFYUI_EXTERNAL_URL,
             "display_markdown": display_markdown,
             "agent_hint": (
-                "Paste the `display_markdown` value verbatim into your "
-                "reply so the chat surface renders the generated "
-                "image(s). Wrap your own commentary around it."
+                "MANDATORY: your reply MUST start with the COMPLETE verbatim "
+                "contents of `display_markdown` above — every line of it. "
+                "It contains TWO chunks separated by a blank line: a public "
+                "image URL line (needed so Discord and other surfaces auto-embed "
+                "the image) AND a `[embed url=...]` shortcode line (needed so "
+                "the OpenClaw web chat renders the image inline). Paste BOTH "
+                "lines, in the same order, separated by the blank line. Do not "
+                "edit, summarize, translate, wrap in code fences, or skip any "
+                "line. Add your commentary AFTER the entire paste, on a new "
+                "line. If you skip the URL line the user sees no image on "
+                "Discord; if you skip the [embed] line the user sees no inline "
+                "image on web chat. Describing the image in prose is NOT a "
+                "substitute — the user already asked for an IMAGE."
             ),
             "images": images,
             "_attachments": attachments,
