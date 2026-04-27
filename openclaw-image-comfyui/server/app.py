@@ -531,7 +531,24 @@ async def auth_validate(request: Request) -> PlainTextResponse:
     """
     if not COMFYUI_VIEW_TOKEN:
         return PlainTextResponse("auth-validate disabled: COMFYUI_VIEW_TOKEN unset", status_code=401)
+    # Primary: query string on this request. Works when the proxy uses
+    # `proxy_pass http://.../auth-validate?token=$arg_token` style and
+    # forwards the parent's args.
     supplied = request.query_params.get("token", "")
+    # Fallback: NGINX `auth_request /auth-validate;` is a sub-request
+    # with a STATIC URI — the parent request's `?token=...` query
+    # string does NOT propagate to the sub-request's $args, so the
+    # bridge sees no `token=` query param. Recover it from the
+    # `X-Original-URI` header that the proxy sets to `$request_uri`
+    # (the parent request URI, including query string). NPM's default
+    # /auth-validate custom-location Advanced includes
+    # `proxy_set_header X-Original-URI $request_uri;` for exactly this.
+    if not supplied:
+        from urllib.parse import urlsplit, parse_qs
+        original_uri = request.headers.get("X-Original-URI", "")
+        if "?" in original_uri:
+            qs = parse_qs(urlsplit(original_uri).query)
+            supplied = (qs.get("token") or [""])[0]
     # Constant-time compare to avoid timing-side-channel leakage of the
     # secret prefix. secrets.compare_digest needs equal-length bytes.
     if len(supplied) == len(COMFYUI_VIEW_TOKEN) and secrets.compare_digest(supplied, COMFYUI_VIEW_TOKEN):
