@@ -342,21 +342,25 @@ async def _tool_generate(args: dict) -> dict:
                 img.pop("_b64_blob", None)
 
         # `display_markdown` is the chat-side rendering hint. The
-        # OpenClaw chat surface (2026.4.22) renders a restricted subset
-        # of markdown — image syntax (`![alt](url)`) is silently
-        # dropped (verified end-to-end with vision.petyuspolisz.com),
-        # but plain markdown links (`[text](url)`) render as
-        # clickable. So we emit BOTH per image:
-        #   1. The image syntax in case a future chat surface renders it
-        #   2. A clickable markdown link as the always-works fallback —
-        #      the user clicks, the image opens in a new tab.
-        # The agent description tells the LLM to paste the entire block
-        # verbatim into its reply.
+        # OpenClaw chat surface (2026.4.22) sanitizer is aggressive —
+        # it drops both image syntax (`![alt](url)`) AND link syntax
+        # (`[text](url)`), surfacing only the plain text of the alt /
+        # link label. Verified end-to-end with vision.petyuspolisz.com
+        # behind a proper HTTPS proxy.
+        #
+        # Workaround: emit a plain URL on its own line. Most chat
+        # surfaces autolink HTTPS URLs even when they reject markdown
+        # link syntax — the user gets a clickable link, the image
+        # opens in a new tab on the HTTPS-reachable origin (cached
+        # Basic auth credentials send transparently).
+        #
+        # We also keep the markdown image syntax on a preceding line
+        # in case a future renderer starts honoring it.
         display_lines = []
         for img in images:
             url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
             display_lines.append(f"![{img['filename']}]({url})")
-            display_lines.append(f"[🖼️ Open: {img['filename']}]({url})")
+            display_lines.append(f"🖼️ {img['filename']}: {url}")
         display_markdown = "\n\n".join(display_lines)
 
         return {
