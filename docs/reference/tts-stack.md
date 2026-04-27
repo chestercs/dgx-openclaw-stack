@@ -51,6 +51,19 @@ Patcher location: `patch-config.mjs` step 11, `desiredTopLevel` object literal.
 
 Fix commit: public `chestercs/dgx-openclaw-stack` `81f1fa4` (2026-04-22).
 
+### `OPENCLAW_TTS_AUTO` env knob
+
+`auto` is env-tunable via `OPENCLAW_TTS_AUTO` (default `always`). Set it in `.env` per deploy:
+
+| Surface | Recommended value | Why |
+|---|---|---|
+| Voice channel agent (Discord `/vc join`, VoiceCall) | `always` (default) | Speaks every final reply into the voice stream as designed |
+| Discord **text-channel** agent | `tagged` | The Discord plugin attempts a TTS audio attachment on every final reply when `auto=always`, shelling out to ffmpeg for waveform/Opus transcoding. The `ghcr.io/openclaw/openclaw` gateway image ships **without** ffmpeg (the bundled ffmpeg lives only in `openclaw-tts-router`), so the attachment pipeline crashes with `[discord] final reply failed: Error: ffmpeg not found in trusted system directories` and the bot's text payload silently never lands. With `tagged`, TTS only fires on `[tts]`-marked replies, leaving normal text replies to flow through Discord's REST message API. Verified 2026-04-27 with `@ImbulClaw` on a GB10 host. |
+| Heartbeat-only agents | `tagged` or `off` | Heartbeat journal entries don't need to be spoken; saves TTS-router cycles |
+| Web chat UI | (any) | UI is hardwired to browser `speechSynthesis`, see below — config-level value is ignored |
+
+Long-term upstream fix: bundle ffmpeg in the gateway image (or split the attachment pipeline so it goes through the router which already has ffmpeg). Until then, `OPENCLAW_TTS_AUTO=tagged` is the operator-side workaround.
+
 ## Patcher step 11 writes three things
 
 When `OPENCLAW_TTS_ROUTER_API_KEY` is set:

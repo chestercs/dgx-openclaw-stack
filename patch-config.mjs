@@ -479,9 +479,23 @@ if (ttsRouterKey) {
   // An earlier draft wrote `auto: true` / `mode: 'auto'`, which the gateway
   // rejects with `Invalid option` and crash-loops on startup. `always` +
   // `final` reproduces the intended "speak every final agent message" posture.
+  //
+  // `auto` is env-tunable via OPENCLAW_TTS_AUTO. The default `always` keeps
+  // backward-compat for chat-UI / voice-channel / VoiceCall surfaces. Discord
+  // text-channel deploys must set OPENCLAW_TTS_AUTO=tagged: with `always`,
+  // the Discord plugin tries to attach a TTS audio file to every final reply
+  // and shells out to ffmpeg for waveform/Opus transcoding — but the
+  // `ghcr.io/openclaw/openclaw` gateway image ships without ffmpeg (the
+  // bundled ffmpeg lives only inside the openclaw-tts-router image), so the
+  // attachment pipeline fails silently with `[discord] final reply failed:
+  // Error: ffmpeg not found in trusted system directories` and the bot's
+  // text payload never lands on the channel (typing indicator + emoji
+  // reactions still fire because they don't touch ffmpeg). With `tagged`,
+  // TTS only fires when the LLM explicitly tags a reply for it — text replies
+  // flow through the REST message API uncluttered.
   const desiredTopLevel = {
     enabled: true,
-    auto: 'always',
+    auto: process.env.OPENCLAW_TTS_AUTO || 'always',
     mode: 'final',
   };
   for (const [k, v] of Object.entries(desiredTopLevel)) {

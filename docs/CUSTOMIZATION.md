@@ -765,6 +765,8 @@ Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by
 - A Discord account with a server (guild) you administer.
 - OpenClaw gateway image dated **2026.4.15 or newer** — older images don't speak the `/vc` slash-command protocol. Check with `docker image inspect ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest} --format '{{.Created}}'`; upgrade first via the runbook below if you're behind.
 
+> **Text-channel agents only**: set `OPENCLAW_TTS_AUTO=tagged` in `.env` before bringing the channel online. The default (`always`, set by patcher step 11 when `OPENCLAW_TTS_ROUTER_API_KEY` is configured) makes the Discord plugin attempt a TTS audio attachment on every final reply, which crashes silently with `[discord] final reply failed: Error: ffmpeg not found` because the gateway image lacks ffmpeg (the bundled ffmpeg lives only inside `openclaw-tts-router`). Symptom: the bot's typing indicator + emoji reactions fire, but the text payload never lands. With `tagged`, TTS only fires when the LLM explicitly marks a reply for speech — text replies flow through the Discord REST API uncluttered. Voice-channel agents (`/vc join`-driven) and VoiceCall stay on the default `always`. See [`docs/reference/tts-stack.md`](./reference/tts-stack.md) for the full enum.
+
 ### 1. Create the Discord application + bot
 
 1. Go to <https://discord.com/developers/applications> → **New Application**. Name it something identifiable (e.g. `openclaw-gb10`).
