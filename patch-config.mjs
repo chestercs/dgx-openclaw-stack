@@ -21,7 +21,7 @@
 //   5. Ensure heartbeat (30m periodic, reasoning, isolated, activeHours).
 //   6. Ensure/cleanup dreaming — env-gated by OPENCLAW_ENABLE_DREAMING.
 //   7. Ensure gateway.trustedProxies — loopback + bridge + optional LAN CIDR.
-//   8. Ensure agents.defaults.llm.idleTimeoutSeconds = 300.
+//   8. Ensure agents.defaults.llm.idleTimeoutSeconds (default 600, env-tunable).
 //   9. Ensure memorySearch hybrid (BM25 + vector) retrieval with MMR re-rank.
 //  10. Ensure webSearch provider = searxng + enable the bundled searxng plugin.
 //  11. Ensure messages.tts wiring — env-gated by OPENCLAW_TTS_ROUTER_API_KEY.
@@ -354,11 +354,21 @@ if (needsProxyUpdate) {
   console.log(`[patch-config] gateway.trustedProxies = ${JSON.stringify(desiredTrustedProxies)}`);
 }
 
-// (8) Ensure agents.defaults.llm.idleTimeoutSeconds = 300.
+// (8) Ensure agents.defaults.llm.idleTimeoutSeconds.
 //     The schema default is 120s — too tight for 31B + reasoning + vision prefill
-//     + multi-step tool calling. 300s is a comfortable margin that still catches
-//     real hangs (OOM, CUDA stuck) in reasonable time.
-const desiredIdleTimeoutSeconds = 300;
+//     + multi-step tool calling. We default 600s now (bumped from 300s on
+//     2026-04-28) because slower image-gen workloads (FLUX Dev, 1024×1024 SDXL
+//     fine-tunes — Pony XL / Illustrious XL / RealVisXL) can keep the LLM idle
+//     for >5 min while ComfyUI runs on the same GB10 GPU. The 300s ceiling worked
+//     for SDXL 512×512 (~40s GPU work), but raising the floor preempts surprise
+//     watchdog trips when operators experiment with bigger workflows. Catches
+//     real hangs (OOM, CUDA stuck) within 10 minutes — still reasonable.
+//     Env-tunable via OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS in case an operator
+//     wants tighter latency feedback (single-tool, fast-model deploys).
+const desiredIdleTimeoutSeconds = parseInt(
+  process.env.OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS?.trim() || '600',
+  10,
+);
 config.agents ??= {};
 config.agents.defaults ??= {};
 config.agents.defaults.llm ??= {};

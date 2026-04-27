@@ -92,6 +92,28 @@ The web chat (`/chat?session=...`) bundle (`index-Dba6JFRP.js`, ~700 KB) is **ha
 - Never promise the user that `messages.tts.auto=always` will make the web chat UI speak on its own — it won't.
 - If the bundle filename changes (hash rename), re-run the zero-hit check.
 
+### Web chat workaround — userscript path
+
+For deploys where the web chat needs HU TTS (Kokoro EN voices are passable for English-only deploys; HU operators want the F5-TTS HU voice), the canonical workaround is a Tampermonkey/Greasemonkey userscript:
+
+1. **Hook `window.speechSynthesis.speak()`** before the `chat-tts-btn` click handler runs.
+2. **Detect HU diacritics** (`/[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/`) in the utterance text → route to `default_hu`; else → `af_heart` (Kokoro EN).
+3. **Fetch from the TTS router** — needs same-origin reachability (see "Architecture choice" below).
+4. **Play the returned blob** via `new Audio(URL.createObjectURL(blob))`.
+5. **Fallback to the original `speechSynthesis.speak()`** on fetch failure so the OS voice still kicks in.
+
+A reference public-deploy variant lives at `templates/userscripts/openclaw-chat-hu-tts.user.js` (token-in-userscript model: operator pastes their `OPENCLAW_TTS_ROUTER_API_KEY` once via Tampermonkey menu). For a private deploy where the `claw.<your-host>` reverse proxy can re-inject the Bearer header server-side, the userscript can drop the auth header entirely.
+
+### Architecture choice — direct router URL vs gateway-proxy route
+
+Two ways to make the router reachable from the chat-tab origin:
+
+- **Direct router URL** (simpler — no reverse-proxy edits): expose the router on a separate hostname like `tts.<your-host>` via your existing reverse proxy. The userscript hits that URL directly, includes the Bearer token. Cross-origin → CORS preflight → router must respond `Access-Control-Allow-Origin: <your-chat-host>`. Token sits in the userscript's GM_getValue store (operator-side). Established pattern; works today.
+
+- **Same-origin gateway-proxy route** (cleaner — eliminates external service dep): add a `location /v1/audio/speech { proxy_pass http://openclaw-tts-router:8080/v1/audio/speech; proxy_set_header Authorization "Bearer ${OPENCLAW_TTS_ROUTER_API_KEY}"; }` block in the reverse-proxy config that fronts the chat host. The userscript fetches the chat-origin path with no auth header (server-side injects). Token never leaves the host — easier rotation, easier multi-user setups. Requires reverse-proxy access (Nginx Proxy Manager / Caddy / Cloudflare Worker) — out-of-scope for the public stack repo, but documented here as the recommended pattern for production deploys.
+
+If the deploy is ephemeral / single-operator, direct URL is fine. If it's permanent / multi-user / public-facing, gateway-proxy is the right path.
+
 ### Debugging fingerprint
 
 - Router log: exactly one `POST /v1/audio/speech 200 OK` per assistant reply, then silence.

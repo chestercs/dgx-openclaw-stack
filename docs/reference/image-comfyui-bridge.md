@@ -158,23 +158,43 @@ transparently.
 
 ### Future paths (not wired in v0.9.x)
 
-- **Same-origin proxy via gateway canvas**: save to
+Status verified 2026-04-28 against openclaw `2026.4.25` (latest release at
+that date). See `docs/reference/chat-surface-capability-matrix.md` for the
+broader surface × feature mátrix.
+
+- **Path C — Native MCP image-content rendering**: the bridge already emits
+  `_attachments` MCP `{type: "image", data: <base64>, mimeType: "image/png"}`
+  blocks per `app.py:343-353, 480-488`. **Verified 2026-04-28: chat web UI
+  still ignores these blocks** through `2026.4.25`. The 2026.4.23-25 release
+  notes mention only `--background` flag for the CLI image-gen subcommand —
+  no chat-side image renderer changelog. Track upstream releases (the bundle
+  has `attachments` keyword in `dispatch-acp-*.js` / `protocol-*.js` for the
+  bridge→gateway payload channel, NOT for chat-side render). When upstream
+  ships, this path lights up with zero bridge code change.
+
+- **Path A — Same-origin gateway canvas proxy**: save to
   `${OPENCLAW_CONFIG_DIR}/canvas/` (host-bound) and serve via
   `/__openclaw__/canvas/<name>` on the openclaw gateway. The chat's
   session cookie auths the request, no Basic auth issue. The
   endpoint exists (returns 401 unauthenticated as of 2026-04-27);
-  nailing down the auth flow is the work.
-- **Workspace bind + agent `read` tool**: save to
+  nailing down the auth flow is the work — see the verify cell in
+  `chat-surface-capability-matrix.md` for the auth-strategy probe.
+
+- **Path B — Workspace bind + agent `read` tool**: save to
   `${OPENCLAW_WORKSPACE_DIR}/comfyui-bridge/<id>.png` and have the
-  agent issue a follow-up `read` call. If the chat surface renders
-  the resulting attachment inline (verify before relying), this
-  works without bridge code changes.
+  agent issue a follow-up `read` call. The `read` tool returns MCP
+  content blocks — IF it recognizes PNG mime type and emits an image
+  block (verify before relying), AND if the chat surface renders MCP
+  image content (Path C). This is a fallback if Path A doesn't work
+  out and Path C still hasn't shipped.
+
 - **Full base64 inline** (`include_base64=true`): the response
   carries the bytes; the LLM prefill for the next call still chews
   through 50K+ tokens, so this is impractical for routine use.
 
-Track upstream openclaw releases for native MCP image-content
-rendering or a server-side proxy.
+Recommended priority for new POC sprints: verify Path C first (10 minutes —
+just check the latest release-notes), then Path A (30 minutes — auth-strategy
+probe), then Path B (50-LOC bridge edit) only if both prior paths block.
 
 ## Token-auth via `auth_request` (v0.9.8–v0.9.10, what actually shipped)
 

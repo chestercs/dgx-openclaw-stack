@@ -82,6 +82,24 @@ The shipped defaults assume ~2 concurrent users on a 128 GB GB10. If that's wron
 - **3–4 users**: Not recommended on GB10 at 256K context. Either drop to a 12B model, or cap `LLM_MAX_MODEL_LEN=131072` (128K) and raise `LLM_MAX_NUM_SEQS=4`. Each user gets stable ~50K.
 - **Batch throughput workload** (no humans, script-driven): raise `LLM_MAX_NUM_SEQS=8+`, drop `LLM_MAX_MODEL_LEN` to the shortest prompt size you'll actually hit, and accept longer per-request TTFT.
 
+### Idle-timeout headroom
+
+`agents.defaults.llm.idleTimeoutSeconds` (patcher step 8) is the watchdog that catches a stuck LLM connection — OOM, CUDA hang, or a tool-call that's burning GPU forever without sending a response. Default is **600s** (bumped from 300s on 2026-04-28 to give image-gen workloads more headroom) and is env-tunable via `OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS`.
+
+When to drop to 300s:
+- Fast-model-only deploys (Gemma 4 12B, no image-gen, no python sandbox slow paths). Tighter feedback when something genuinely hangs.
+
+When to raise above 600s:
+- FLUX Dev / Pony XL / Illustrious XL workflows on contended GPU (the LLM stays idle while ComfyUI runs on the same hardware; can blow past 600s on big resolution or high step counts).
+- Multi-tool-call agent runs that involve image-gen + browser automation + python sandbox in sequence — each tool can independently hold the LLM idle.
+
+Raise via `.env`:
+```
+OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS=900   # 15 min, conservative for slow workflows
+```
+
+Recreate the patcher to apply: `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`. Verify: `docker exec openclaw-cli python3 -c "import json; d=json.load(open('/home/node/.openclaw/openclaw.json')); print(d['agents']['defaults']['llm']['idleTimeoutSeconds'])"` should print the new value.
+
 ## Add your own agents
 
 OpenClaw configures agents under `agents.list[]` in `openclaw.json`. The shipped patcher only manages `agents.defaults.*`; it leaves individual agents alone. If you want a second agent deterministically declared (not just created by the onboarding UI), add a step to `patch-config.mjs`:

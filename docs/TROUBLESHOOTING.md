@@ -2,6 +2,34 @@
 
 Common failure modes and their fixes, grouped by the service you're most likely inspecting when you hit them. The two most frequent first-boot issues — the gateway crash-loop before onboarding and the vllm-llm weights download — live at the top of their respective sections.
 
+For a structured map of which media features render on which surfaces (web chat / Discord text / agent skill API / control UI), see `docs/reference/chat-surface-capability-matrix.md`. For pre-flight verification before merging a new media-bridge, see `docs/reference/media-bridge-checklist.md`.
+
+## Media surfaces — first-glance fixes
+
+These are the symptoms operators hit first when integrating image-gen, TTS, or any new media feature. Each links to the deeper reference for context.
+
+### "I generated an image but it doesn't show up in the web chat"
+
+The OpenClaw chat web UI's markdown sanitizer drops both `![alt](url)` image syntax and `[text](url)` external-origin links. Only `mailto:` links and plain auto-linkified URLs survive (clickable, opens new tab). This is a verified upstream limitation through `2026.4.25` — see `docs/reference/image-comfyui-bridge.md` "Future paths" for the three candidate fix paths.
+
+**Quick workaround:** the agent's reply contains a `display_markdown` URL (something like `https://vision.<your-host>/view?token=...`); copy it from the tool-output JSON bubble and open in a new tab. Direct navigation sends Basic auth correctly.
+
+**On Discord text channels:** images attached as files via the bot API render inline natively. The chat UI is the only surface with this gap.
+
+### "Discord bot acts like it's typing but never sends text"
+
+Almost always the Discord text-channel TTS-attachment path crashing on the missing ffmpeg in the gateway image. Check:
+
+```bash
+docker logs ${PROJ}openclaw-gateway 2>&1 | grep -E "final reply failed.*ffmpeg" | tail -3
+```
+
+If you see `ffmpeg not found in trusted system directories`, set `OPENCLAW_TTS_AUTO=tagged` in `.env` and `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`. Patcher step 11 honors the override; the agent then only TTS-tags replies when the LLM explicitly marks them, leaving normal text flow uncluttered. See `docs/reference/tts-stack.md` for the full enum.
+
+### "Web chat 'Read aloud' button speaks bad Hungarian"
+
+The chat bundle is hard-wired to the browser's `speechSynthesis` API. The OS default Hungarian voice is poor on most platforms. Mitigation: a Tampermonkey userscript that monkey-patches `speechSynthesis.speak()` to fetch from the openclaw-tts-router instead (HU autoroute via diacritic detection, plays via `new Audio(blob)`). See `docs/reference/tts-stack.md` "Web chat workaround" and `templates/userscripts/openclaw-chat-hu-tts.user.js`.
+
 If something here doesn't match your symptom, the most productive next step is:
 
 ```bash
