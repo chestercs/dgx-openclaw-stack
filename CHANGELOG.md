@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6] - 2026-04-27
+
+Chat-side image rendering, take 2. The v0.9.5 `display_markdown` field
+used markdown image syntax (`![alt](url)`); on the OpenClaw chat UI
+(2026.4.22) this renders as **plain text** of the alt name with no
+clickable link and no image — image syntax is silently dropped by the
+chat's markdown sanitizer. Plain markdown links (`[text](url)`) DO
+render as clickable links, so we now emit BOTH per image:
+
+```
+![<filename>](<url>)
+[🖼️ Open: <filename>](<url>)
+```
+
+The user clicks the link, the image opens in a new tab on the
+HTTPS-reachable URL (already-cached Basic auth credentials send
+automatically). If a future chat surface starts honoring image syntax,
+the inline render kicks in transparently.
+
+### Changed
+- **`comfyui_image__generate` `display_markdown` field** now contains
+  both the image syntax and a clickable markdown link per generated
+  PNG, separated by a blank line.
+
+### Migration
+- Bridge image rebuild + recreate.
+- No env / patcher / compose-services / network changes.
+
 ## [0.9.5] - 2026-04-27
 
 Chat-side image rendering. The OpenClaw web/control UI (2026.4.22)
