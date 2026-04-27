@@ -67,31 +67,63 @@ for a native chat-side image-render mechanism.
 
 ## Token-protected proxy (alternative to Basic auth)
 
-Set `COMFYUI_VIEW_TOKEN=<long-random-string>` in `.env`. The bridge then
-appends `?token=<value>` to every URL it puts in `display_markdown`, e.g.
-`https://vision.example.com/view?filename=...&type=output&subfolder=openclaw-bridge&token=<value>`.
+Set `COMFYUI_VIEW_TOKEN=<long-random-string>` in `.env`. The bridge
+then appends `?token=<value>` to every URL it puts in `display_markdown`
+(e.g. `https://vision.example.com/view?filename=...&token=<value>`),
+AND exposes a `GET /auth-validate?token=...` endpoint your reverse-proxy
+can call from `auth_request` to validate the token without ever holding
+the secret itself.
 
-On your reverse-proxy host (Nginx Proxy Manager `vision.example.com`),
-in the **Advanced** tab paste this custom NGINX config and **drop the
-Basic auth** on the same host:
+The recommended setup is **per-location split** on your proxy host —
+the ComfyUI UI keeps Basic auth (you log into it from a browser), and
+only `/view` (chat-image fetches) is token-validated:
 
-```nginx
-# Token-validate every request — drop the proxy's Basic auth in favor
-# of this. Token must match COMFYUI_VIEW_TOKEN in the bridge's .env.
-set $required_token "PASTE-COMFYUI_VIEW_TOKEN-HERE";
-if ($arg_token != $required_token) {
-    return 401;
-}
-```
+| Path | Auth | Used by |
+|--|--|--|
+| `/` (UI HTML/JS/CSS/WS) | Basic auth | You, in the browser |
+| `/api/view?...` | Basic auth | The ComfyUI UI loading its own assets |
+| `/view?...&token=...` | URL-param token | The bridge / chat-image direct-nav |
 
-Generate the token once with `openssl rand -base64 48 | tr -d '\n'`,
-paste the same value into both `.env` and the NGINX `$required_token`
-line.
+### NPM setup
 
-### Why this is better than Basic auth for chat use
+1. **`.env`**: set `COMFYUI_VIEW_TOKEN=<openssl rand -base64 48>` and
+   `IMAGE_GEN_BIND=0.0.0.0` so the bridge's `/auth-validate` is
+   reachable from the NPM container's network namespace via the
+   host LAN IP. The MCP endpoint (`POST /mcp`) stays Bearer-protected;
+   `/auth-validate` uses a constant-time compare against the env var.
+2. **NPM admin** → your ComfyUI proxy host → **Custom locations**:
+   - **Add location** `/auth-validate`:
+     - Scheme `http`, hostname `<your-host-LAN-IP>`, port `9095`
+     - Save → Edit → "Edit Custom location" → **Advanced**:
+       ```nginx
+       internal;
+       proxy_pass_request_body off;
+       proxy_set_header Content-Length "";
+       proxy_set_header X-Original-URI $request_uri;
+       ```
+       (the `internal;` directive prevents external clients from
+       hitting `/auth-validate` directly — only NGINX's own
+       `auth_request` sub-request can.)
+   - **Add location** `/view`:
+     - Scheme `http`, hostname `<your-comfyui-LAN-IP>`, port `13036`
+     - Save → Edit → **Advanced**:
+       ```nginx
+       auth_request /auth-validate;
+       auth_basic off;
+       ```
+3. **Access** tab — keep the Basic auth on the parent proxy host (it
+   covers everything except the two custom locations).
+4. **Save**.
 
-- **No browser auth dialog** — the token rides in the URL itself, no
-  per-origin credential cache needed.
+The proxy admin GUI now contains zero secrets — only the bridge
+container's `.env` has `COMFYUI_VIEW_TOKEN`. Rotate the token via
+`./rotate-secrets.sh COMFYUI_VIEW_TOKEN` and recreate the bridge;
+no NPM edit needed.
+
+### Why this is better than Basic auth for chat-image fetches
+
+- **No browser auth dialog** when clicking a chat-image URL — the
+  token rides in the URL itself.
 - **Cross-origin `<img>` fetches work** (Basic auth headers don't
   survive cross-origin image requests). If a future chat surface
   bypasses the markdown sanitizer with a userscript, the
@@ -99,25 +131,22 @@ line.
 - **Direct navigation works** — clicking the URL out of the
   tool-output JSON opens the image in a new tab without a login
   dialog.
+- **Token never appears in the proxy admin GUI** — the
+  `auth_request` chain delegates validation to the bridge, which
+  reads the secret from its container env. The proxy admin can be
+  read-shared with operators who don't need the secret.
 
 ### Trade-offs to know
 
 - The token is visible in the chat tool-output JSON (and in browser
-  history). It's a view-only credential for `vision.example.com`,
-  but anyone with the token can also hit `/prompt` and submit
-  generation jobs to your ComfyUI. Treat it like a Bearer secret;
-  rotate via `./rotate-secrets.sh`-style flow if it leaks (manual
-  for now: edit `.env`, edit NPM custom config, recreate bridge).
-- If you want stricter scoping (token only for `/view`, Basic auth
-  for `/prompt`), use NPM's per-location custom config — the
-  Advanced tab supports `location /view { ... }` blocks. Sketch:
-  ```nginx
-  location /view {
-      if ($arg_token != "VIEW-TOKEN") { return 401; }
-      proxy_pass http://192.168.x.x:13036;
-  }
-  ```
-  Leave the default Basic auth on the rest of the proxy host.
+  history when you copy a URL). It's a view-only credential for
+  `/view`; the rest of the proxy host (incl. `/prompt`) is still
+  Basic-auth-gated.
+- The bridge's port must be reachable from the proxy container.
+  When NPM and the bridge are in separate Docker compose projects
+  (typical), bind the bridge to `0.0.0.0` and have NPM hit the host
+  LAN IP. Loopback-only (`127.0.0.1`) only works if NPM and the
+  bridge share a network namespace (uncommon).
 
 ## Setting `COMFYUI_EXTERNAL_URL`
 

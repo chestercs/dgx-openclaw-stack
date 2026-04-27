@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-04-27
+
+`auth_request` endpoint: keep the token in the bridge container's
+`.env` only. The reverse-proxy admin GUI no longer needs to hold the
+secret in plain text; it just calls `/auth-validate` on the bridge
+via NGINX's `auth_request` sub-request mechanism.
+
+### Added
+- **`GET /auth-validate?token=...` endpoint** on the bridge.
+  Constant-time compare (`secrets.compare_digest`) against
+  `COMFYUI_VIEW_TOKEN`. Returns 200 on match, 401 otherwise.
+  Fail-closed: 401 if `COMFYUI_VIEW_TOKEN` is empty. No body —
+  `auth_request` only inspects the status code. Unauth'd in the
+  HTTP sense (no Bearer required to reach `/auth-validate`); the
+  token-validation IS the auth.
+- **`README.md` "Token-protected proxy" section rewritten** around
+  the per-location split + `auth_request` chain. New three-row
+  routing table (`/` Basic auth, `/api/view` Basic auth, `/view`
+  token via `auth_request`). NPM Custom locations walkthrough,
+  including the `internal;` directive on `/auth-validate` so
+  external clients can't hit it directly — only the `auth_request`
+  sub-request can.
+- **`.env.example` `IMAGE_GEN_BIND` doc** notes the
+  `IMAGE_GEN_BIND=0.0.0.0` requirement when the proxy lives in a
+  separate compose project (typical for NPM + this stack).
+
+### Changed
+- **Reverse-proxy config no longer stores `COMFYUI_VIEW_TOKEN`** in
+  plain text. The proxy admin GUI is now safe to share with
+  operators who shouldn't see the secret.
+
+### Migration
+- Bridge image rebuild + recreate (new endpoint).
+- Set `IMAGE_GEN_BIND=0.0.0.0` in `.env` if NPM and the bridge are
+  in separate compose projects.
+- In NPM: switch from "Advanced" `if ($arg_token != ...)` to two
+  Custom locations (`/auth-validate` + `/view` with `auth_request`).
+  See `openclaw-image-comfyui/README.md` for the exact recipe.
+- Token stays in the bridge `.env`; no token edits on NPM after
+  rotation — just `./rotate-secrets.sh COMFYUI_VIEW_TOKEN` +
+  recreate the bridge.
+
 ## [0.9.8] - 2026-04-27
 
 URL-param token auth as an alternative to HTTP Basic auth on the

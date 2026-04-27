@@ -503,6 +503,42 @@ async def healthz() -> PlainTextResponse:
     return PlainTextResponse(f"ok workflows={len(loader.list())}\n")
 
 
+@app.get("/auth-validate")
+async def auth_validate(request: Request) -> PlainTextResponse:
+    """Token-validation endpoint for NGINX `auth_request`.
+
+    Compares `?token=...` against `COMFYUI_VIEW_TOKEN`. Returns 200
+    on match, 401 otherwise. No body — `auth_request` only inspects
+    the status code. Designed to be called by an NGINX reverse-proxy
+    (typically Nginx Proxy Manager) that fronts ComfyUI:
+
+        location = /auth-validate {
+            internal;
+            proxy_pass http://<host>:9095/auth-validate$is_args$args;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+        }
+        location /view {
+            auth_request /auth-validate;
+            auth_basic off;
+            proxy_pass http://<host>:13036;
+        }
+
+    The token stays in this service's `.env` (COMFYUI_VIEW_TOKEN);
+    the proxy admin GUI no longer needs to hold the secret. If
+    COMFYUI_VIEW_TOKEN is empty, the endpoint refuses everything
+    (401) — fail-closed.
+    """
+    if not COMFYUI_VIEW_TOKEN:
+        return PlainTextResponse("auth-validate disabled: COMFYUI_VIEW_TOKEN unset", status_code=401)
+    supplied = request.query_params.get("token", "")
+    # Constant-time compare to avoid timing-side-channel leakage of the
+    # secret prefix. secrets.compare_digest needs equal-length bytes.
+    if len(supplied) == len(COMFYUI_VIEW_TOKEN) and secrets.compare_digest(supplied, COMFYUI_VIEW_TOKEN):
+        return PlainTextResponse("ok", status_code=200)
+    return PlainTextResponse("invalid token", status_code=401)
+
+
 def _resolve_session_header(request: Request, payload: Any) -> Optional[str]:
     """Echo or mint Mcp-Session-Id (mirrors python-sandbox)."""
     incoming = request.headers.get("Mcp-Session-Id")
