@@ -109,7 +109,7 @@ WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 IMAGE_GEN_CANVAS_DIR = os.environ.get("IMAGE_GEN_CANVAS_DIR", "").strip().rstrip("/")
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.0"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.1"}
 
 
 TOOLS = [
@@ -125,11 +125,16 @@ TOOLS = [
             "Generate one or more images via the operator's ComfyUI install. "
             "Returns metadata (prompt_id, workflow, seed, elapsed_s, per-image "
             "filename + size + width/height) PLUS a `display_markdown` field "
-            "containing markdown image syntax with the host-browser-reachable "
-            "URL. ALWAYS paste the `display_markdown` value verbatim into "
-            "your final reply (wrap your own commentary around it) so the "
-            "chat surface renders the image inline. Without that paste the "
-            "user only sees the JSON metadata and not the actual image."
+            "containing the chat-renderable image markup.\n\n"
+            "MANDATORY OUTPUT CONTRACT — the FIRST line of your reply MUST be "
+            "the EXACT verbatim contents of `display_markdown` from the tool "
+            "result. Copy it character-for-character: do not edit, do not "
+            "rewrap, do not wrap in code fences, do not translate. Add your "
+            "Hungarian or English commentary AFTER it on a new line. If you "
+            "skip this paste the chat surface shows ZERO image to the user — "
+            "only your text description, which is visually useless. Describing "
+            "the image in your own words is NOT a substitute for the paste; "
+            "the user already asked for an IMAGE."
             "\n\n"
             "The PNG bytes themselves are NOT in the response by default — "
             "embedding ~200 KB of base64 per image would balloon the agent's "
@@ -335,6 +340,15 @@ async def _tool_generate(args: dict) -> dict:
                 view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
             # Path A: mirror bytes into the gateway's same-origin canvas
             # dir so display_markdown can use the [embed] shortcode.
+            # We write TWO files — the PNG itself plus a thin HTML wrapper.
+            # Why: the chat-tool-card CSS gives the embed iframe a fixed
+            # size (~301-371 × 420 px) and an iframe loading a raw PNG
+            # renders the image at native size, so a 1024×1024 generation
+            # gets cropped inside the small frame. The HTML wrapper uses
+            # `object-fit: contain` so the PNG always fits the iframe
+            # whatever the iframe's dimensions are, with letterbox bars
+            # instead of cropping.
+            #
             # Failure to write does NOT fail generation — fall through
             # to the legacy URL path (the entry's canvas_url_path stays
             # None and display_markdown emits the cross-origin form).
@@ -344,17 +358,39 @@ async def _tool_generate(args: dict) -> dict:
                 # that the agent's canvas SKILL may emit. Short prompt-id
                 # suffix gives traceability across logs without a long
                 # filename.
-                canvas_filename = f"comfyui-{prompt_id[:8]}-{out['filename']}"
-                canvas_target = os.path.join(IMAGE_GEN_CANVAS_DIR, canvas_filename)
+                base_name = f"comfyui-{prompt_id[:8]}-{out['filename']}"
+                png_target = os.path.join(IMAGE_GEN_CANVAS_DIR, base_name)
+                # Strip the .png extension before appending .html so we
+                # don't double up: foo.png → foo.html (not foo.png.html).
+                html_basename = (
+                    base_name[:-4] + ".html"
+                    if base_name.lower().endswith((".png", ".jpg", ".webp"))
+                    else base_name + ".html"
+                )
+                html_target = os.path.join(IMAGE_GEN_CANVAS_DIR, html_basename)
+                # Same-dir relative URL — the iframe fetches the PNG via
+                # the same `cap/<token>/` capability path the chat session
+                # issued for the HTML, so no extra auth dance.
+                wrapper_html = (
+                    "<!DOCTYPE html><meta charset=\"utf-8\">"
+                    "<style>"
+                    "html,body{margin:0;height:100%;background:#0a0a0a;}"
+                    "body{display:flex;align-items:center;justify-content:center;}"
+                    "img{max-width:100%;max-height:100%;object-fit:contain;display:block;}"
+                    "</style>"
+                    f"<img src=\"{base_name}\" alt=\"generated image\">"
+                )
                 try:
-                    with open(canvas_target, "wb") as f:
+                    with open(png_target, "wb") as f:
                         f.write(data)
-                    canvas_url_path = f"/__openclaw__/canvas/{canvas_filename}"
+                    with open(html_target, "w", encoding="utf-8") as f:
+                        f.write(wrapper_html)
+                    canvas_url_path = f"/__openclaw__/canvas/{html_basename}"
                 except OSError as e:
                     log.warning(
-                        "[path-a] canvas dir write failed (target=%s): %s — "
+                        "[path-a] canvas dir write failed (png=%s html=%s): %s — "
                         "falling back to legacy display_markdown emission",
-                        canvas_target, e,
+                        png_target, html_target, e,
                     )
             entry = {
                 "format": fmt,
