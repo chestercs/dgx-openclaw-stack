@@ -1047,7 +1047,17 @@ services:
   #  gateway starts anyway and the onboarding wizard can run interactively.
   ######################
   openclaw-config-init:
-    image: ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}
+    # Local extension of the upstream image with ffmpeg installed, so the
+    # gateway's Discord text-channel TTS-attachment path
+    # (messages.tts.auto = always) doesn't crash on a missing binary.
+    # The build runs once on this service; openclaw-gateway and openclaw-cli
+    # below reference the same tag and reuse the cached image. See
+    # openclaw-base-ext/Dockerfile for the rationale.
+    image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}
+    build:
+      context: ./openclaw-base-ext
+      args:
+        OPENCLAW_BASE: ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-config-init
     user: "1000:1000"
     restart: "no"
@@ -1167,7 +1177,13 @@ services:
   #  vllm-llm.
   ######################
   openclaw-gateway:
-    image: ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}
+    # Reuses the openclaw-base-ext image built above (config-init service
+    # owns the build context). If you bumped OPENCLAW_IMAGE_REF in .env to
+    # pull a newer upstream openclaw release, run
+    # `docker compose build --no-cache openclaw-config-init` to rebuild
+    # the local extension on top of the new base — gateway and cli pick
+    # up the new tag automatically on the next `up -d --force-recreate`.
+    image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-gateway
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
@@ -1213,7 +1229,9 @@ services:
   #  their compose DNS names (vllm-llm, vllm-embedding) with zero extra config.
   ######################
   openclaw-cli:
-    image: ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}
+    # Same as openclaw-gateway above — reuses the openclaw-base-ext image
+    # built by config-init, no separate build context here.
+    image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-cli
     network_mode: "service:openclaw-gateway"
     cap_drop:
