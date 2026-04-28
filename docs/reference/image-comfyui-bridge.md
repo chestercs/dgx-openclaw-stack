@@ -246,6 +246,40 @@ Recommended priority for new POC sprints: Path A (verified viable, blocked
 only on a single SSH probe to confirm `.png` MIME acceptance + canvas dir
 location). Path B as fallback if `[embed]` rejects non-HTML.
 
+### Canvas dir housekeeping
+
+The bridge writes one PNG + one HTML wrapper per generation into
+`${OPENCLAW_CONFIG_DIR}/canvas/`. **No automatic cleanup is implemented**
+in the v0.10.5 bridge — files accumulate forever. Each generation is
+~50-200 KB (PNG) + ~300 B (HTML wrapper). Sustained image-gen by an
+active friend group could reach ~1 GB after a few thousand calls.
+
+**Operator cleanup options:**
+
+```bash
+# One-shot: delete files older than 7 days from the canvas dir
+ssh -i KEY -l user host \
+  'docker exec openclaw-gateway find /home/node/.openclaw/canvas \
+     -name "comfyui-*" -type f -mtime +7 -delete'
+
+# As an opt-in cron on the host:
+sudo tee /etc/cron.daily/openclaw-canvas-prune <<'EOF'
+#!/bin/sh
+# Daily prune of bridge-emitted canvas files older than 7 days.
+docker exec openclaw-gateway find /home/node/.openclaw/canvas \
+  -name "comfyui-*" -type f -mtime +7 -delete 2>/dev/null
+EOF
+sudo chmod +x /etc/cron.daily/openclaw-canvas-prune
+```
+
+The `comfyui-*` filename prefix scope-isolates the bridge-written files
+from any operator-managed canvas content (canvas SKILL drops, A2UI
+documents, etc.) — never delete by glob without that prefix.
+
+Future bridge improvement: an `IMAGE_GEN_CANVAS_MAX_AGE_DAYS` env knob
+would prune on each generate. Not implemented yet (deletion of files
+is a destructive operation; the bridge defers to operator cron).
+
 ## Token-auth via `auth_request` (v0.9.8–v0.9.10, what actually shipped)
 
 Default for v0.9.8+: the bridge's `/view` URL is gated by an NGINX
