@@ -108,8 +108,17 @@ WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 # navigation with cached Basic auth, but not inline in webchat).
 IMAGE_GEN_CANVAS_DIR = os.environ.get("IMAGE_GEN_CANVAS_DIR", "").strip().rstrip("/")
 
+# Sensible-defaults env knobs (v0.10.5) — let the agent succeed with just
+# `comfyui_image__generate(prompt="...")` instead of having to remember
+# the workflow + checkpoint name on every call. When the caller omits one
+# of these args, the bridge falls back to these env values; if the env
+# value is also empty, the bridge surfaces the original parameter-required
+# error so the operator sees what's missing.
+IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").strip()
+IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
+
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.4"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.10.5"}
 
 
 TOOLS = [
@@ -249,7 +258,15 @@ async def _tool_cancel(args: dict) -> dict:
 
 
 async def _tool_generate(args: dict) -> dict:
-    workflow_name = args.get("workflow") or "flux-schnell"
+    # Default-cascade order for the workflow:
+    #   1. explicit `workflow=` arg from the caller
+    #   2. operator's IMAGE_GEN_DEFAULT_WORKFLOW env var
+    #   3. hardcoded "flux-schnell" historical fallback
+    workflow_name = (
+        args.get("workflow")
+        or IMAGE_GEN_DEFAULT_WORKFLOW
+        or "flux-schnell"
+    )
     try:
         workflow = loader.get(workflow_name)
     except WorkflowError as e:
@@ -267,7 +284,17 @@ async def _tool_generate(args: dict) -> dict:
     bind_args = {
         "prompt":     args.get("prompt"),
         "negative":   args.get("negative") or workflow.defaults.get("negative"),
-        "checkpoint": args.get("checkpoint") or workflow.defaults.get("checkpoint"),
+        # Default-cascade for checkpoint:
+        #   1. explicit `checkpoint=` arg from the caller
+        #   2. workflow's own `defaults.checkpoint` (per-template default)
+        #   3. operator's IMAGE_GEN_DEFAULT_CHECKPOINT env var (global default)
+        # Without #3 the agent would have to remember a checkpoint name on
+        # every call when the workflow uses the REPLACE_ME placeholder.
+        "checkpoint": (
+            args.get("checkpoint")
+            or workflow.defaults.get("checkpoint")
+            or (IMAGE_GEN_DEFAULT_CHECKPOINT or None)
+        ),
         "width":      args.get("width") or workflow.defaults.get("width") or 1024,
         "height":     args.get("height") or workflow.defaults.get("height") or 1024,
         "batch_size": args.get("batch_size") or workflow.defaults.get("batch_size") or 1,
@@ -437,18 +464,18 @@ async def _tool_generate(args: dict) -> dict:
         # `display_markdown` is the chat-side rendering hint. Two surface
         # patterns are supported simultaneously when canvas dir is set:
         #
-        # 1. A masked markdown link `[🖼️ kép megnyitása](URL)` — Discord
-        #    auto-embeds the URL preview AND the link text is the only
-        #    visible chrome (no long token-URL exposed in the message).
-        #    Other surfaces that honor markdown links get a clickable
-        #    "open image" affordance.
+        # 1. A naked image URL on its own line — Discord auto-embeds the
+        #    URL preview as a chat-attached image. Discord's regular text
+        #    messages do NOT render `[text](URL)` masked-link markdown
+        #    (only embed objects do), so a plain URL is the cleanest
+        #    presentation Discord supports.
         # 2. The `[embed url="/__openclaw__/canvas/<file>" /]` shortcode —
         #    OpenClaw web chat normalizer extracts this BEFORE DOMPurify
         #    and renders an inline iframe (same-origin, capability-token
         #    auth, parser-whitelisted). Added in upstream 2026.4.11
         #    (PR #64104). See docs/reference/image-comfyui-bridge.md.
         #
-        # ORDER MATTERS: the masked link goes FIRST so that even if the
+        # ORDER MATTERS: the naked URL goes FIRST so that even if the
         # agent cherrypicks only the first line, Discord still auto-embeds
         # the image. The [embed] shortcode comes second, additive on chat.
         #
@@ -457,12 +484,12 @@ async def _tool_generate(args: dict) -> dict:
         # may skip [embed] since it renders as text noise on Discord;
         # main:main pastes both for chat-side iframe inline render).
         #
-        # Legacy (no canvas dir): only the masked link — chat surfaces
-        # that support markdown links get clickable text.
+        # Legacy (no canvas dir): only the naked URL — Discord auto-embed
+        # works without canvas dir setup.
         display_lines = []
         for img in images:
             url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
-            display_lines.append(f"[🖼️ kép megnyitása]({url})")
+            display_lines.append(url)
             if img.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
         display_markdown = "\n\n".join(display_lines)
@@ -478,19 +505,17 @@ async def _tool_generate(args: dict) -> dict:
             "comfyui_external_url": COMFYUI_EXTERNAL_URL,
             "display_markdown": display_markdown,
             "agent_hint": (
-                "MANDATORY: your reply MUST include the EXACT verbatim "
-                "`display_markdown` value above. It contains TWO chunks "
-                "separated by a blank line: a masked markdown link "
-                "`[🖼️ kép megnyitása](URL)` (Discord auto-embeds the URL "
-                "preview, web-chat shows clickable text) AND a "
-                "`[embed url=...]` shortcode (web-chat extracts as inline "
-                "iframe; Discord renders it as text noise — strip on Discord "
-                "if your AGENTS.md says so). Default: paste BOTH lines verbatim "
-                "at the START of your reply, separated by the blank line, then "
-                "add your commentary AFTER. Per-agent override: your workspace "
-                "AGENTS.md may instruct you to skip the [embed] line on certain "
-                "surfaces — follow that. Describing the image in prose is NOT "
-                "a substitute for the link/embed paste."
+                "MANDATORY: include the EXACT `display_markdown` value at "
+                "the START of your reply. It contains a public image URL line "
+                "(Discord auto-embeds it as inline image preview; web-chat "
+                "autolinks it) AND optionally a `[embed url=...]` shortcode "
+                "line (web-chat extracts as inline iframe; Discord renders "
+                "as text noise so AGENTS.md may instruct you to skip it). "
+                "Default: paste both lines verbatim, separated by the blank "
+                "line. Per-agent override: your workspace AGENTS.md may say "
+                "skip the [embed] on Discord — follow that. Add your own "
+                "commentary AFTER the paste. Describing the image in prose "
+                "is NOT a substitute."
             ),
             "images": images,
             "_attachments": attachments,
