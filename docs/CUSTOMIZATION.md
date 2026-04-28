@@ -329,6 +329,42 @@ TTS_F5HUN_BIND=0.0.0.0     # exposes openclaw-tts-f5hun (HU backend, profile=hu 
 
 All three are Bearer-token-protected via the existing TTS tokens (`OPENCLAW_TTS_ROUTER_API_KEY`, `TTS_API_TOKEN`, `F5HUN_API_TOKEN`), but a leaked token is still a leaked token — keep loopback unless you have a reason to expose. Sibling containers continue to use bridge DNS regardless of the binding.
 
+## TTS auto-attach mode (`OPENCLAW_TTS_AUTO`)
+
+The patcher (step 11) writes `messages.tts.auto` from the env knob,
+and the value drives how aggressively the gateway attaches a TTS
+audio file to assistant replies. Quick decision tree:
+
+| Symptom | Surface mix | Set `OPENCLAW_TTS_AUTO` to |
+|--|--|--|
+| "I want every reply spoken — voice channels and Discord text" | Voice + Discord text + agent skill API | `always` (default, v0.11.0+) |
+| "I only want spoken replies on voice channels; Discord text should stay text-only" | Voice + Discord text where text channel agents shouldn't auto-attach mp3 | `tagged` |
+| "I'm on a pre-v0.11.0 deploy and Discord text channel is ghosting" | Pre-v0.11.0 (no ffmpeg in gateway image) | `tagged` (until you can rebuild — see TROUBLESHOOTING.md → "Discord bot acts like it's typing but never sends text") |
+| "Heartbeat / cron-driven agents shouldn't make audio" | Heartbeat-only or scripted | `tagged` or `off` |
+| "I want LLM-controlled TTS attach-or-not on every reply" | Mixed surfaces, agent decides per-reply | `tagged` (LLM marks `[tts]` to opt-in) |
+| "Disable TTS attach completely (still allow `tts` agent skill explicitly)" | Anything | `off` |
+| "Only attach when the user spoke the prompt (voice in → voice out)" | Voice channel two-way | `inbound` |
+
+Apply with:
+
+```bash
+# In the main .env:
+OPENCLAW_TTS_AUTO=tagged   # or always / off / inbound
+
+# Then re-run the patcher to apply:
+docker compose up -d --force-recreate \
+    openclaw-config-init openclaw-gateway openclaw-cli
+
+# Verify:
+docker exec ${PROJ}openclaw-cli node -e \
+    "const j=require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8'); \
+     console.log('messages.tts.auto =', JSON.parse(j).messages.tts.auto)"
+```
+
+See [`docs/reference/tts-stack.md`](./reference/tts-stack.md) →
+"`OPENCLAW_TTS_AUTO` env knob" for the full enum (`always`, `tagged`,
+`inbound`, `off`) and surface-by-surface behavior.
+
 ## Disable TTS entirely
 
 Two-step opt-out:

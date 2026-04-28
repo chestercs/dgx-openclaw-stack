@@ -110,6 +110,40 @@ For deploys where the web chat needs HU TTS (Kokoro EN voices are passable for E
 
 A reference public-deploy variant lives at `templates/userscripts/openclaw-chat-hu-tts.user.js` (token-in-userscript model: operator pastes their `OPENCLAW_TTS_ROUTER_API_KEY` once via Tampermonkey menu). For a private deploy where the `claw.<your-host>` reverse proxy can re-inject the Bearer header server-side, the userscript can drop the auth header entirely.
 
+#### Tampermonkey install recipe (5 minutes)
+
+For the typical "I want HU TTS in my browser chat right now" path:
+
+1. Install **Tampermonkey** in your browser
+   ([Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
+   / [Firefox](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/) /
+   [Edge](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)).
+2. Copy `templates/userscripts/openclaw-chat-hu-tts.user.js` from this repo
+   (raw file: open it in GitHub, click Raw, copy URL).
+3. Tampermonkey dashboard → **Create a new script** → paste the contents
+   → adjust the `@match` line if your chat origin isn't `https://claw.<your-host>/*`.
+4. **Save** (Ctrl+S in the editor). The script appears in Tampermonkey's
+   "Installed scripts" list, enabled by default.
+5. First load on the chat: open Tampermonkey's toolbar icon → click the
+   script's name → menu item "Set TTS router URL + token". Paste:
+   - **Router URL**: `https://tts.<your-host>/v1/audio/speech` (or the
+     same-origin path if you went the gateway-proxy route — see
+     "Architecture choice" below).
+   - **Token**: the `OPENCLAW_TTS_ROUTER_API_KEY` value from your
+     stack's `.env` (one-time paste; stored in Tampermonkey's `GM_setValue`
+     keystore, scoped to this script).
+6. Reload the chat tab. Click "Read aloud" on any agent message. Watch
+   the router logs (`docker logs ${PROJ}openclaw-tts-router --tail 5`) —
+   you should see exactly one `POST /v1/audio/speech 200 OK` per click,
+   and your browser's audio output is now Kokoro / F5-TTS HU instead of
+   the OS default.
+
+If "Read aloud" is silent and the router log shows zero hits, the
+userscript isn't injecting — check Tampermonkey toolbar (badge should
+show "1" when the script is active on the page) and the browser
+console (the script logs `[openclaw-tts] hooked speechSynthesis.speak`
+on first load).
+
 ### Architecture choice — direct router URL vs gateway-proxy route
 
 Two ways to make the router reachable from the chat-tab origin:
