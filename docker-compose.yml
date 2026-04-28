@@ -960,7 +960,7 @@ services:
   ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
   #
   #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 19 steps:
+  #  the onboarding wizard's choices or previous manual edits. 23 steps:
   #
   #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
   #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
@@ -1042,6 +1042,22 @@ services:
   #       via external-network reference. Env-gated: when IMAGE_GEN_API_TOKEN
   #       is unset, the entry is REMOVED from openclaw.json so the gateway
   #       doesn't try to dial a parked service. v0.9.0+.
+  #   20. Discord ackReactionScope=off — defends openclaw issue #46024
+  #       stale-queue reaction-cycle bug. Only writes when channels.discord
+  #       is configured AND user hasn't set the field themselves. v0.11.0+.
+  #   21. Discord actions.reactions toggle — default `true`; works with the
+  #       bundled vllm-llm gemma4 colon-namespace parser patch. Env override:
+  #       OPENCLAW_DISCORD_ACTIONS_REACTIONS=false. v0.11.0+.
+  #   22. Discord-routed agent tools.alsoAllow += `group:messaging` so the
+  #       `message` tool isn't catalog-filtered out under the default
+  #       `coding` profile. Walks agents.routes[] for the channel=discord
+  #       agentId, preserves operator-added entries. v0.11.0+.
+  #   23. Ensure ${OPENCLAW_CONFIG_DIR}/canvas exists for Path A image-gen
+  #       inline rendering. The bridge mirrors generated PNGs there and
+  #       emits `[embed url="/__openclaw__/canvas/<file>"]` shortcodes the
+  #       gateway serves under /__openclaw__/canvas/. Idempotent mkdir,
+  #       not env-gated (an empty dir is harmless when Path A is off).
+  #       v0.11.0+ (was a manual mkdir step before).
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.

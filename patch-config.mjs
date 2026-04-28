@@ -9,7 +9,7 @@
 // 31B + reasoning + vision prefill + multi-step tool calling.
 //
 // This script makes the desired state deterministic — every `docker compose up`
-// re-applies the 19 steps below in a deep-merge style. Safe to re-run; exits
+// re-applies the 23 steps below in a deep-merge style. Safe to re-run; exits
 // early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
 // (pre-onboarding fresh install) so the gateway container can still boot.
 //
@@ -94,12 +94,23 @@
 //      ✅ reactions because the catalog filter dropped it. Env override:
 //      OPENCLAW_DISCORD_AGENT_ALSO_ALLOW (comma-separated, default
 //      `group:messaging`); set to empty string to disable the patcher step.
+//  23. Ensure ${OPENCLAW_CONFIG_DIR}/canvas exists for Path A image-gen
+//      inline rendering. The bridge mirrors generated PNGs into this
+//      directory and emits `[embed url="/__openclaw__/canvas/<file>" /]`
+//      shortcodes; the gateway serves the dir under
+//      `/__openclaw__/canvas/`. Without it, the bridge fails on first
+//      generate when Path A is enabled (`IMAGE_GEN_CANVAS_DIR=/canvas`)
+//      and the operator has to mkdir manually. Idempotent (recursive
+//      mkdir is safe to re-run); created with 0755 perms. Doesn't
+//      flip the `changed` flag — it's a sibling filesystem
+//      preparation, not an openclaw.json mutation.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
 // log a `[patch-config]` line for every field you change.
 
 import fs from 'node:fs';
+import path from 'node:path';
 
 const CONFIG_PATH = '/home/node/.openclaw/openclaw.json';
 
@@ -1145,6 +1156,31 @@ if (alsoAllowEntries.length > 0) {
         `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW="" to disable this step)`,
       );
     }
+  }
+}
+
+// (23) Ensure ${OPENCLAW_CONFIG_DIR}/canvas exists for Path A image-gen
+// inline rendering. The gateway serves whatever lives in this directory
+// under /__openclaw__/canvas/, and the openclaw-image-comfyui bridge
+// (when IMAGE_GEN_CANVAS_DIR=/canvas in .env + the bridge compose has
+// the matching bind-mount uncommented) mirrors generated PNGs in here.
+// Without the directory, the bridge fails its first save with ENOENT.
+//
+// Created unconditionally (not env-gated): even if Path A is off, an
+// empty canvas dir is harmless. UID/GID matches the gateway's `node`
+// user (1000:1000) because the patcher runs as that user too — the
+// bridge runs as 1000:1000 as well, so PNG drops + gateway serving
+// share permissions cleanly.
+const canvasDir = path.join(path.dirname(CONFIG_PATH), 'canvas');
+if (!fs.existsSync(canvasDir)) {
+  try {
+    fs.mkdirSync(canvasDir, { recursive: true, mode: 0o755 });
+    console.log(`[patch-config] created ${canvasDir} (Path A image-gen serving root)`);
+  } catch (err) {
+    // Non-fatal: log and continue. Bridge will surface the real error
+    // on first generate if Path A is enabled and the dir didn't get
+    // created (e.g. host-bind permission mismatch).
+    console.warn(`[patch-config] could not create ${canvasDir}: ${err.message}`);
   }
 }
 
