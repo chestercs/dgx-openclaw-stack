@@ -4,6 +4,8 @@ Reference for deploying an OpenClaw agent in a Discord guild text channel. Sibli
 
 Most of the gotchas in this doc come from a real friend-group deployment on 2026-04-27 / 2026-04-28. The patcher steps that defend against each of them ship as a numbered list in `patch-config.mjs`'s top docblock — search for `// 20.`, `// 21.`, `// 22.` to find their inline rationale.
 
+**Operator quick-start:** copy [`templates/discord-text-agent/AGENTS.md.example`](../../templates/discord-text-agent/AGENTS.md.example) to your `<workspace-discord>/AGENTS.md` (typically `~/.openclaw/workspace-discord/AGENTS.md` on the gateway host). The template contains the validated patterns: ack-react-then-text response form, image-gen prompt-only contract, `message`-tool reactions, web-search source-link convention.
+
 ## Flow
 
 ```
