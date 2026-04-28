@@ -34,8 +34,14 @@ VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
 
 # Source key env vars (avoid `source` to keep the script's namespace clean)
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' "$ENV_FILE" | cut -d= -f2- | head -1)
-PROJ=${PROJ:-dgx-}
+# Explicit empty is honored: if `CONTAINER_NAME_PREFIX=` (no value) is in
+# .env the user has chosen bare container names; default `dgx-` only kicks
+# in when the key is genuinely absent.
+if grep -q '^CONTAINER_NAME_PREFIX=' "$ENV_FILE"; then
+    PROJ=$(grep '^CONTAINER_NAME_PREFIX=' "$ENV_FILE" | cut -d= -f2- | head -1)
+else
+    PROJ=dgx-
+fi
 TTS_AUTO_ENV=$(grep '^OPENCLAW_TTS_AUTO=' "$ENV_FILE" | cut -d= -f2- | head -1)
 TTS_AUTO_ENV=${TTS_AUTO_ENV:-always}
 IMAGE_GEN_TOKEN=$(grep '^IMAGE_GEN_API_TOKEN=' "$ENV_FILE" | cut -d= -f2- | head -1)
@@ -238,6 +244,9 @@ section "/auth-validate (token-protected proxy, NPM auth_request)"
 if [[ -z "$COMFYUI_VIEW_TOKEN" ]]; then
     skip "COMFYUI_VIEW_TOKEN unset (Basic-auth-only proxy or no proxy)" \
          "set COMFYUI_VIEW_TOKEN if using the per-location split (see openclaw-image-comfyui/README.md)"
+elif ! docker ps --filter "name=^${PROJ}openclaw-image-comfyui$" --format '{{.Names}}' | grep -q .; then
+    skip "openclaw-image-comfyui not running — can't probe /auth-validate" \
+         "docker compose -f openclaw-image-comfyui/docker-compose.yml --profile image-gen up -d"
 else
     AUTH_OK=$(docker exec "${PROJ}openclaw-image-comfyui" curl -sS -o /dev/null -w "%{http_code}" \
         "http://127.0.0.1:9095/auth-validate?token=$COMFYUI_VIEW_TOKEN" 2>&1)
