@@ -5,53 +5,157 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-04-28
+## [0.11.0] - 2026-04-28
 
-Path A research locked. Chat-side image rendering has a clear
-implementation path via the `[embed ...]` shortcode that landed in
-upstream `2026.4.11` (PR #64104). The 4 hours of debugging that
-preceded the previous "user copies the URL" workaround was the right
-holding pattern, but the actual fix is a ~30 LOC bridge edit.
+Big release that batches every accumulated commit since v0.9.10 — the
+v0.10.x image-gen polish series, the chat-side `[embed]` shortcode
+(Path A) verified end-to-end, the Discord text-channel ack/parser
+patches, the Gemma 4 colon-namespace vLLM patch, and finally an
+ffmpeg-augmented gateway image so `messages.tts.auto=always` works
+on every voice surface (including Discord text channels) with no
+operator workarounds.
 
-### Documented
-- **`[embed url="/__openclaw__/canvas/<file>" /]` is the chat-side
-  inline render path.** The shortcode is parsed by the chat
-  normalizer into structured iframe metadata BEFORE DOMPurify, so
-  it bypasses the `<img>` sanitizer entirely. URL whitelist is
-  parser-validated to `/__openclaw__/canvas/...` and
-  `/__openclaw__/a2ui/...` only — absolute http(s) URLs are gated
-  by the dangerous `gateway.controlUi.allowExternalEmbedUrls` flag
-  (default `false`, leave it that way). Iframe sandbox controlled
-  by `gateway.controlUi.embedSandbox` (`"strict"`/`"scripts"`/`"trusted"`).
-- **Image markdown sanitizer is NOT the actual blocker** for `![](url)`
-  in webchat. Upstream PR #15480 added `<img>` to the DOMPurify
-  allowlist long ago. What blocks rendering on cross-origin Basic
-  auth deploys (e.g. `vision.example.com` behind NPM Basic) is the
-  browser refusing to attach cached creds to cross-origin `<img>`
-  fetches. Fixed `chat-surface-capability-matrix.md` accordingly.
-- **`[embed]` shortcode + same-origin canvas** is the architectural
-  answer for image-comfyui bridge chat-side rendering. The bridge
-  saves to `${OPENCLAW_CONFIG_DIR}/canvas/<id>.png` (host-bound,
-  inside the gateway's serving root) and emits the embed shortcode
-  in `display_markdown`. Net: zero auth setup, zero CORS, zero
-  sanitizer bypass — the chat session is already same-origin with
-  the canvas dir, so the existing auth surface applies.
+### Added — Path A: chat-side inline image render
+- **`[embed url="/__openclaw__/canvas/<file>"]` shortcode emission**
+  (v0.10.0, commit `257f73f`). The bridge mirrors each generated
+  PNG into `${OPENCLAW_CONFIG_DIR}/canvas/comfyui-<id>.png` and
+  emits the embed shortcode in `display_markdown`. The chat
+  normalizer extracts `[embed]` directives into structured iframe
+  metadata BEFORE DOMPurify runs, bypassing the `<img>` sanitizer
+  that drops cross-origin image markdown. Verified end-to-end on
+  GB10 (commit `82b7f17`): renders inline in webchat with the
+  `cap/<token>/` rewrite + `sandbox="scripts"` default.
+- **`IMAGE_GEN_CANVAS_DIR` env opt-in** + corresponding compose
+  bind-mount (`${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw`,
+  commented by default). Set to `/canvas` and uncomment the volume
+  to flip from legacy cross-origin URL to inline shortcode.
+- **HTML wrapper `<openclaw-embed>` with sandbox="scripts"** for
+  fit-to-iframe rendering (v0.10.1). Iframe gets the chat's auth
+  via the cap-token rewrite, no Basic auth dialog, no mixed
+  content, no markdown sanitizer to negotiate.
+- **Documented in `docs/reference/image-comfyui-bridge.md`** —
+  Path A is the architectural answer; Path B (cross-origin URL +
+  Basic auth) demoted to fallback-of-fallback. The chat-render
+  story is finally clean.
 
-### Files updated
-- `docs/reference/image-comfyui-bridge.md` — Path A research-confirmed
-  with implementation sketch; Path B demoted to fallback-of-fallback.
-- `docs/reference/chat-surface-capability-matrix.md` — added `[embed]`
-  shortcode row (✅ in webchat, n/a elsewhere); corrected `![](url)`
-  failure mode from "sanitizer drop" to "cross-origin Basic auth strip".
+### Added — Image-gen polish (v0.10.0 → v0.10.5)
+- **URL-first ordering + emphatic agent_hint** (v0.10.2-v0.10.4).
+  The `display_markdown` block now leads with the public image URL
+  (Discord auto-embeds it), followed by `[embed]` shortcode (web
+  chat renders inline), with explicit "MUST paste verbatim, every
+  line" instruction in both the tool description AND a structured
+  `agent_hint` field so the LLM doesn't summarize the URL away.
+- **Sensible-defaults env knobs** (v0.10.5):
+  `IMAGE_GEN_DEFAULT_WORKFLOW`, `IMAGE_GEN_DEFAULT_CHECKPOINT`.
+  Lets `comfyui_image__generate(prompt="...")` succeed without the
+  caller remembering the workflow + checkpoint name on every call.
+  Empty default falls back to the original parameter-required
+  error so misconfiguration is loud.
+- **Masked markdown link instead of bare URL** (v0.10.4) — the
+  emitted markdown link uses `[<filename>](<url>)` so the chat
+  surface renders it as a clickable link with the filename as
+  display text instead of a long ugly URL.
 
-### Pending (one-shot SSH probe blocks implementation)
-Three read-only verification commands needed before the bridge edit:
-- `gateway.controlUi.embedSandbox` current value in `openclaw.json`
-- Host filesystem path backing `/__openclaw__/canvas/`
-- Live response of the gateway when serving a test PNG from that dir
+### Added — Discord text-channel ack/reaction support
+- **Patcher step 20** (commit `1d7f093`): `ackReactionScope=off`
+  defends against OpenClaw issue #46024 (stale reaction-event queue
+  replays emoji ack-reactions on session resume; bot rapidly cycles
+  👀🤔👍🔥 without agent awareness). Env-tunable via
+  `OPENCLAW_DISCORD_ACK_REACTION_SCOPE` (default `off`). Only
+  written when `channels.discord` is already configured AND the
+  user hasn't set `ackReactionScope` themselves — preserves
+  user-managed values.
+- **Patcher step 21** (commit `b1b329e`): `actions.reactions=true`
+  enables `discord:add_reaction` for agents. Default `true` because
+  the bundled vllm-llm image now ships the gemma4 parser patch (see
+  next entry). Env-tunable via `OPENCLAW_DISCORD_ACTIONS_REACTIONS`.
+- **Patcher step 22** (commit `4d9bd14`): `tools.alsoAllow +=
+  group:messaging` on Discord-routed agents. The default
+  `tools.profile: "coding"` (set in step 8) does NOT include
+  `group:messaging`, so the `message` tool was catalog-filtered out
+  even though `actions.reactions=true`. Symptom: discord-friend
+  agent responding with "I can't use the tool 'message' here
+  because it isn't available." Step 22 walks `agents.routes[]`,
+  finds Discord-routed agents (`match.channel === "discord"`), and
+  appends the missing entries to their `alsoAllow` array
+  (preserving any operator-added entries). Env-tunable via
+  `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW` (default `group:messaging`).
 
-Once those clear, the bridge POC is ~30 LOC + a `display_markdown`
-template change. Tracked as task #28 (probe) → #29 (POC).
+### Added — vLLM gemma4 colon-namespace tool-call parser patch
+- **`vllm-llm/Dockerfile` + `patch_parser.py`** (commit `2c7e9e4`)
+  extends the upstream gemma4 parser regex from `[\w\-\.]+` to
+  `[\w\-\.:]+`, accepting colons in tool names. Gemma 4 NVFP4 calls
+  `discord:add_reaction` correctly, but unpatched vLLM dropped the
+  call (regex stops at the second colon) — the literal envelope
+  leaked into Discord chat as garbage text. Now built into the
+  bundled image; works transparently with patcher step 21.
+
+### Added — Media-stack reference docs
+- **`docs/reference/chat-surface-capability-matrix.md`** —
+  systematic matrix of which media features render on which surface
+  (web chat / Discord text / Discord voice / agent skill API /
+  control UI), with reproducible verify cells per cell.
+- **`docs/reference/media-bridge-checklist.md`** — 8-point
+  pre-flight checklist for any new media-MCP-bridge (image / audio
+  / video / file). Surface verification, auth boundary crossing,
+  sanitizer pass, content-size limits, error surface, workflow
+  selection, MIME types, idempotency.
+- **`docs/reference/discord-text-agent.md`** — Discord text-channel
+  agent specifics: mention pill, tools.profile gating, message
+  tool, ackReactionScope cycle bug + agent-driven workaround,
+  verify checklist.
+
+### Added — ffmpeg-augmented gateway image (this release)
+- **`openclaw-base-ext/Dockerfile`** wraps
+  `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_REF}` and apt-installs
+  ffmpeg. The upstream image does NOT ship ffmpeg, so the gateway's
+  Discord text-channel TTS-attachment path (`messages.tts.auto =
+  always` shells out to ffmpeg) crashed with `ffmpeg not found in
+  trusted system directories`. The workaround so far has been
+  `OPENCLAW_TTS_AUTO=tagged` (only TTS-attach when the LLM
+  explicitly tags a reply) — that's a real feature regression. The
+  ffmpeg-bundled image fixes it cleanly; `OPENCLAW_TTS_AUTO=always`
+  now works on every surface.
+- **`docker-compose.yml` switch**: the three openclaw services
+  (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`)
+  reference `openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}`
+  instead of the upstream image directly. `openclaw-config-init`
+  owns the build context (`./openclaw-base-ext`); the other two
+  reuse the cached image. Build trigger: `docker compose build
+  openclaw-config-init` (or `up -d --build` on first deploy).
+
+### Migration
+- `git pull && docker compose build openclaw-config-init`
+  (rebuilds the local extension on top of the upstream image
+  the `OPENCLAW_IMAGE_REF` env points at).
+- `docker compose up -d --force-recreate openclaw-config-init
+  openclaw-gateway openclaw-cli` (rolls all three onto the new
+  image, picks up patcher steps 20-22 if not already applied).
+- Operators who set `OPENCLAW_TTS_AUTO=tagged` as a workaround can
+  flip it back to `always` (or unset; `always` is the patcher
+  default again). Force-recreate the same three services to apply.
+- Verify: `docker exec openclaw-gateway ffmpeg -version` should
+  print `ffmpeg version 5.1.8-...` (Debian 12's package).
+
+### GB10 deploy + smoke (final, 2026-04-28 night)
+- Build: `openclaw-base-ext:0.11.0` produced in ~15s (slim apt
+  layer, no node rebuild).
+- `openclaw-gateway` post-recreate: ffmpeg present
+  (`ffmpeg version 5.1.8-0+deb12u1`).
+- `openclaw.json` post-recreate: `messages.tts.auto = always` (no
+  workaround needed).
+- Patcher steps 20-22: `[patch-config] no-op` on second run
+  (idempotent, openclaw.json already in desired state).
+- Image-gen Path A: `[embed]` shortcode renders inline (verified
+  separately on 2026-04-28, commit `82b7f17`).
+- Discord text-channel TTS-attach: end-to-end smoke deferred to
+  operator (requires sending an `@mention` message in the bound
+  guild; the ffmpeg presence is the structural unblock and was the
+  only missing piece).
+
+## [Unreleased]
+
+(empty — slot reserved for upcoming v0.11.x patches)
 
 ## [0.9.10] - 2026-04-27
 

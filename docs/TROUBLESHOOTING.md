@@ -22,9 +22,14 @@ Almost always the Discord text-channel TTS-attachment path crashing on the missi
 
 ```bash
 docker logs ${PROJ}openclaw-gateway 2>&1 | grep -E "final reply failed.*ffmpeg" | tail -3
+docker exec ${PROJ}openclaw-gateway ffmpeg -version | head -1
 ```
 
-If you see `ffmpeg not found in trusted system directories`, set `OPENCLAW_TTS_AUTO=tagged` in `.env` and `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`. Patcher step 11 honors the override; the agent then only TTS-tags replies when the LLM explicitly marks them, leaving normal text flow uncluttered. See `docs/reference/tts-stack.md` for the full enum.
+If `ffmpeg -version` reports `command not found`, you're on a pre-v0.11.0 deploy without the ffmpeg-augmented gateway image. Two paths:
+
+- **Recommended (upgrade)**: `git pull && docker compose build openclaw-config-init && docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`. The v0.11.0 release ships `openclaw-base-ext/Dockerfile` that wraps the upstream gateway image and apt-installs ffmpeg. After recreate, `ffmpeg -version` should print `ffmpeg version 5.1.x-...`.
+
+- **Workaround (stay on the old image)**: set `OPENCLAW_TTS_AUTO=tagged` in `.env` and force-recreate the same three services. Patcher step 11 honors the override; the agent then only TTS-tags replies when the LLM explicitly marks them, leaving normal text flow uncluttered. See `docs/reference/tts-stack.md` for the full enum.
 
 ### "Web chat 'Read aloud' button speaks bad Hungarian"
 

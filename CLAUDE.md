@@ -303,6 +303,14 @@ The default `openclaw agent --timeout` of 60s was repeatedly tripping during v0.
 
 When a tool-using prompt is documented anywhere in this repo (CLAUDE.md, CUSTOMIZATION.md, README.md, docs/reference/, …) it must use `--timeout 600`. Don't drop it to 60-180s for "looks cleaner" — the next person to copy-paste it will hit the timeout and waste an hour debugging.
 
+### `openclaw-base-ext` is the local image extension layer
+
+Three openclaw services (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) all reference `openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}`, NOT the upstream `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_REF}` image directly. The local image is built by the `build:` block on `openclaw-config-init`, with `./openclaw-base-ext/` as context — a tiny Dockerfile that wraps the upstream tag and adds whatever the stack needs but the upstream image lacks. As of v0.11.0 that's just `apt-get install ffmpeg`, but the layer exists so future patches (custom node deps, system libs, locale fixes) have a clean home that doesn't fork the upstream image.
+
+When you bump `OPENCLAW_IMAGE_REF` in `.env` (typically pin a new sha256 digest after upstream releases), run `docker compose build --no-cache openclaw-config-init` to rebuild the local extension on top of the new base. The other two services pick up the rebuilt tag on the next `up -d --force-recreate`. Don't put `build:` blocks on `openclaw-gateway` or `openclaw-cli` — that triggers redundant builds.
+
+The reason this layer exists rather than upstream-style "use the official image": the gateway's Discord text-channel TTS-attachment path shells out to `ffmpeg` to transcode wav into Opus/mp3 for the Discord upload API. The upstream image doesn't ship ffmpeg — historically operators had to set `OPENCLAW_TTS_AUTO=tagged` to avoid the silent crash. With the local extension, `OPENCLAW_TTS_AUTO=always` works on every surface (default since the patcher's step-11 default).
+
 ## Verification recipes (copy-paste ready)
 
 These cover the cases that have actually broken in practice. When making non-trivial changes, run the relevant ones before declaring done.

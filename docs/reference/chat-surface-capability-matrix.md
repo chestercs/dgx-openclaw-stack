@@ -86,14 +86,26 @@ ssh -i KEY -l user host 'docker exec openclaw-cli openclaw agent --agent main \
 # on 2026.4.25: no image-content rendering changelog entry. Path C still pending.
 ```
 
-### Audio attachment in Discord text — ffmpeg gap
+### Audio attachment in Discord text — gap closed in v0.11.0
 
 ```bash
-# Default messages.tts.auto=always triggers TTS-attachment on every Discord text reply.
-# With the gateway image lacking ffmpeg, this crashes silently:
-docker logs openclaw-gateway 2>&1 | grep -E "final reply failed.*ffmpeg" | tail -3
-# Workaround: OPENCLAW_TTS_AUTO=tagged in .env; patcher step 11 honors the override.
-# See docs/reference/tts-stack.md.
+# Pre-v0.11.0 (the upstream openclaw image shipped without ffmpeg):
+# default messages.tts.auto=always triggered TTS-attachment on every
+# Discord text reply, and the attachment pipeline crashed silently
+# with `final reply failed: Error: ffmpeg not found in trusted system
+# directories` — the bot's text payload never lands. Workaround:
+# OPENCLAW_TTS_AUTO=tagged in .env; patcher step 11 honors the override.
+#
+# v0.11.0+ ships openclaw-base-ext/Dockerfile that wraps the upstream
+# image and apt-installs ffmpeg, so auto=always works end-to-end.
+# Verify on a current deploy:
+docker exec ${PROJ}openclaw-gateway ffmpeg -version | head -1
+# Expected: `ffmpeg version 5.1.x-...`. If `command not found`, the
+# operator hasn't rebuilt the openclaw-base-ext image yet — see
+# CHANGELOG [0.11.0] migration.
+docker logs ${PROJ}openclaw-gateway --since 5m 2>&1 \
+  | grep -E "final reply failed.*ffmpeg" | tail -3
+# Expected: no hits after v0.11.0 deploy.
 ```
 
 ### External link in web chat — direct nav works
