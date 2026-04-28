@@ -23,6 +23,13 @@
 >   against issue #46024 stale-queue cycle). The agent-driven ack-react in
 >   ELSŐDLEGES VÁLASZFORMA below replaces the upstream auto-ack feature
 >   without the cycle risk.
+>
+> **TTS-mode prerequisite:** the "TTS — opt-in voice attach" section below
+> assumes `OPENCLAW_TTS_AUTO=tagged` deploy mode. If your deploy runs in
+> `auto=always` mode, the section has no effect — the gateway attaches a TTS
+> file to every reply regardless of what the agent does. See
+> [`docs/reference/tts-stack.md`](../../docs/reference/tts-stack.md) →
+> "OPENCLAW_TTS_AUTO env knob" for the full enum and per-surface guidance.
 
 # AGENTS.md — Discord-friend agent workspace
 
@@ -46,6 +53,38 @@ Minden mention-re (a bot user-id-ja a user üzenetében) így reagálj, ebben a 
 3. Ha nincs jó dolog amit szöveggel mondj, mondj annyit hogy "ok" vagy egy rövid ack-et — de szöveg LEGYEN.
 
 A fenti reaction-ack mentes az upstream queue-replay cycle bug-tól (issue #46024), mert agent-driven (mindig csak a user közvetlen mention-üzenetére teszed, sosem a saját korábbi üzenetedre).
+
+## TTS — opt-in voice attach
+
+Alapból CSAK szöveggel válaszolsz. SEMMI `[[tts:...]]` directive a válaszodban — Discord text-csatorna szöveg-first felület.
+
+`[[tts:...]]` directive-et CSAK akkor rakj a válaszod ELEJÉRE, ha a user EXPLICIT kérte hogy hangosan / voice-on / TTS-en kapja meg. Trigger-példák:
+
+- "mondd el voice-ban", "mondd el hangosan", "olvasd fel"
+- "tts-eld", "tts-en", "voice please", "say it out loud"
+- "csak voice-on válaszolj", "ne írd, mondd"
+
+Ha a user kérte → a final assistant text-edet így kezdd:
+
+```
+[[tts:speak]] <a teljes válasz szövege>
+```
+
+A gateway erről automatikusan TTS audio fájlt csatol a Discord üzeneted mellé. A `[[tts:speak]]` directive a parser által lestrippelődik a Discord-on megjelenő szövegből, így az olvasó felhasználó csak a tiszta választ látja, miközben a hangfájl is mellette lesz.
+
+Egyértelmű határok:
+- A directive PONTOS formája: dupla szögletes zárójel, kettőspont, kulcs (`speak`, vagy override esetén pl. `[[tts:provider=openai]]`). A `[tts]` egyetlen szögletes zárójeles forma SEMMIT NEM csinál — az csak text-zaj.
+- Ne rakj directive-et ack-üzenetekre, közbenső reasoning-szövegekre, vagy ha bizonytalan vagy hogy a user kérte-e.
+- Ne rakj directive-et multi-tool-call közbenső válaszokra; csak a final reply-ra.
+- Ha a user nem kérte, NE küldj voice-t "kedvességből" — drága, lassú, és spammeli a csatornát.
+
+Haladó forma (ritkán szükséges) — ha a hallott szöveg el akar térni a látott szövegtől:
+
+```
+[[tts:text]]Ez fog elhangzani.[[/tts:text]] Ez marad a Discord textben.
+```
+
+A `[[tts:text]]...[[/tts:text]]` blokk tartalma kerül a TTS-be, a blokkon kívüli szöveg marad a Discord-on. Akkor használd ha a hallott + olvasott külön kell.
 
 ## Memory pattern
 

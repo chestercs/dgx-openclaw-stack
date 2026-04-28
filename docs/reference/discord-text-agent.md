@@ -172,6 +172,37 @@ docker exec <PROJ>openclaw-cli openclaw agent --agent <discord-agent-id> \
 # - Or wait for the session to time out (varies by gateway config).
 ```
 
+## TTS opt-in behavior (`OPENCLAW_TTS_AUTO=tagged`)
+
+The Discord text-channel default is currently `OPENCLAW_TTS_AUTO=always` — the gateway attaches a TTS audio file to every final reply. For text-channel deploys this is often too aggressive (Discord text is a text-first surface, voice is a per-request opt-in). The recommended posture for text channels is `tagged`: the agent decides per-reply, by emitting a `[[tts:...]]` directive at the start of the final assistant text.
+
+The marker syntax is **NOT** `[tts]` (single brackets) — that's just visible text-noise. The gateway parser (`provider-error-utils-yQpR7tSK.js` → `parseTtsDirectives`) matches the regex `/\[\[tts:([^\]]+)\]\]/gi` for inline directives and `/\[\[tts:text\]\]([\s\S]*?)\[\[\/tts:text\]\]/gi` for spoken-text blocks. Anything else is ignored. The simplest opt-in marker is `[[tts:speak]]` — no provider/voice override, parser strips it from the visible text, the rest of the assistant reply gets both rendered AND voiced.
+
+Wire it in three steps:
+
+1. **`.env`:** set `OPENCLAW_TTS_AUTO=tagged`.
+2. **Force-recreate** the patcher chain: `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`.
+3. **AGENTS.md (workspace-side):** add the `## TTS — opt-in voice attach` section from [`templates/discord-text-agent/AGENTS.md.example`](../../templates/discord-text-agent/AGENTS.md.example). It tells the agent: never emit a directive by default, only on explicit user request ("mondd el voice-ban", "olvasd fel", "tts-eld", …).
+
+Verify with two prompts in Discord:
+
+1. Plain question: `@<bot> mennyi 2+2` → text-only reply, NO audio attachment.
+2. TTS-trigger question: `@<bot> mondd el voice-ban hogy mennyi 2+2` → text reply WITH audio (.mp3/.opus) attached, AND no `[[tts:...]]` directive visible in the text (the parser strips it).
+
+If the plain question returns audio anyway, either AGENTS.md is missing the opt-in section, or the env override didn't propagate. Check the live config:
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker exec ${PROJ}openclaw-cli node -e \
+  "const j=require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8'); \
+   console.log('messages.tts.auto =', JSON.parse(j).messages.tts.auto)"
+# Expect: messages.tts.auto = tagged
+```
+
+If the output is `always`, fix `.env` and force-recreate. The agent reads AGENTS.md only at session start — for AGENTS.md edits to take effect, either ask the agent to re-read it (`olvasd újra a workspace AGENTS.md-d`), restart the gateway, or wait for the session to time out.
+
+Voice-channel agents (separate `/vc join`-driven deploy) typically stay on `always` because the voice-stream path always speaks regardless of `[tts]` tagging — set their per-deploy `.env` accordingly. See [`tts-stack.md`](./tts-stack.md) → "OPENCLAW_TTS_AUTO env knob" for the per-surface decision matrix.
+
 ## Related docs
 
 - [`discord-voice-agent.md`](./discord-voice-agent.md) — voice-channel deployment
