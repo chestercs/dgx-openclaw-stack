@@ -181,7 +181,7 @@ The OpenClaw onboarding wizard gets you ~80% of the way to a working config, but
 
 Rather than tell users "also click here, there, and there after onboarding", the patcher enforces the known-good state on every `docker compose up`. Idempotent deep-merge: if the file is already correct, it exits in no-op.
 
-### 19 steps
+### 23 steps
 
 1. Remove legacy `models.providers.vllm.capabilities` (old schema).
 2. Ensure `vllm.baseUrl`, `vllm.api`, `vllm.apiKey` from env.
@@ -205,6 +205,10 @@ Rather than tell users "also click here, there, and there after onboarding", the
 17. Idempotently inject a `browser.act` cheatsheet block into the same `AGENTS.md`. Smaller open models (Gemma 4 in particular) routinely emit the flat `{element, text}` shape on `kind="fill"` actions that need the nested `{fields: [{ref, type, value}]}` shape; the cheatsheet shows the right shape next to a labelled wrong shape plus a one-line recovery hint.
 18. Wire `mcp.servers.python_sandbox` at the `openclaw-python-sandbox` service (env-gated: `PYTHON_SANDBOX_API_TOKEN`). Streamable-HTTP transport, 10-second connect timeout, Bearer auth via `headers.Authorization`. When the token is unset, the entry is *removed* from `openclaw.json` (and empty parent objects cleaned up) so the gateway doesn't try to dial a parked service. Schema verified against `docs.openclaw.ai/cli/mcp` on 2026-04-26.
 19. Wire `mcp.servers.comfyui_image` at the `openclaw-image-comfyui` bridge (env-gated: `IMAGE_GEN_API_TOKEN`). Same shape as step 18 (Streamable-HTTP, 10-second connect timeout, Bearer auth via `headers.Authorization`). The bridge runs in a *separate compose file* (`openclaw-image-comfyui/docker-compose.yml`, opt-in via `--profile image-gen`) and joins this stack's bridge via an `external: true` network reference, so bridge DNS resolves `openclaw-image-comfyui:9095` once both composes are up. When the token is unset the entry is *removed* (with parent cleanup) so the gateway doesn't try to dial a parked bridge.
+20. Discord `channels.discord.ackReactionScope = "off"` defends against openclaw issue #46024 (stale reaction-event queue replays emoji ack-reactions on session resume — bot rapidly cycles 👀🤔👍🔥 without agent awareness). Only writes when `channels.discord` is configured AND the user hasn't set the field themselves. Env override: `OPENCLAW_DISCORD_ACK_REACTION_SCOPE` (default `"off"`).
+21. Discord `channels.discord.actions.reactions = true` enables `discord:add_reaction` for agents. Default `true` because the bundled vllm-llm image carries a 1-line patch to the gemma4 parser regex (`vllm-llm/Dockerfile` + `patch_parser.py`) so colon namespaces like `discord:add_reaction` are accepted. Env override: `OPENCLAW_DISCORD_ACTIONS_REACTIONS=false` to disable.
+22. Discord-routed agent `tools.alsoAllow += ["group:messaging"]`. Walks `agents.routes[]` for entries where `match.channel === "discord"`, finds the corresponding agent in `agents.list[]`, and ensures `tools.alsoAllow` contains the configured groups. Without this, the Discord-routed agent inherits the default `tools.profile: "coding"` which excludes `group:messaging` (the `message` tool used for reactions, replies, etc.). Env override: `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW` (comma-separated, default `"group:messaging"`); empty disables the step.
+23. Ensure `${OPENCLAW_CONFIG_DIR}/canvas` exists for image-gen Path A inline rendering. The bridge mirrors generated PNGs there and emits `[embed url="/__openclaw__/canvas/<file>"]` shortcodes the gateway serves under `/__openclaw__/canvas/`. Idempotent mkdir, not env-gated (an empty dir is harmless when Path A is off). Doesn't flip the `changed` flag — it's a sibling filesystem prep, not an `openclaw.json` mutation.
 
 See inline comments in `patch-config.mjs` for the detail on each step.
 
