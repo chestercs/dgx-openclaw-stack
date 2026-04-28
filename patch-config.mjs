@@ -84,6 +84,16 @@
 //      Env override: OPENCLAW_DISCORD_ACTIONS_REACTIONS=false to disable
 //      (useful when running unpatched upstream vllm/vllm-openai image, or
 //      stripping reaction permissions from the bot for guild-rule reasons).
+//  22. Discord-routed agent tools.alsoAllow — default `["group:messaging"]`.
+//      Looks at agents.routes[] for the agentId bound to channel "discord";
+//      finds that agent in agents.list[] and ensures tools.alsoAllow contains
+//      the configured groups. Without this, the Discord-routed agent inherits
+//      the default `tools.profile: "coding"` which excludes group:messaging
+//      (the `message` tool used for reactions, replies, etc.). Verified
+//      2026-04-28: the discord-friend agent could not call `message` tool for
+//      ✅ reactions because the catalog filter dropped it. Env override:
+//      OPENCLAW_DISCORD_AGENT_ALSO_ALLOW (comma-separated, default
+//      `group:messaging`); set to empty string to disable the patcher step.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -1076,6 +1086,65 @@ if (config.channels?.discord?.enabled === true) {
     config.channels.discord.actions.reactions = reactionsOverride;
     changed = true;
     console.log(`[patch-config] channels.discord.actions.reactions = ${reactionsOverride} (vllm-llm image carries Gemma4 parser colon patch; set OPENCLAW_DISCORD_ACTIONS_REACTIONS=false on unpatched upstream images)`);
+  }
+}
+
+// ─── 22. Discord-routed agent tools.alsoAllow ────────────────────────────────
+// The default `tools.profile: "coding"` (set in step 8 unless the user
+// overrides) does NOT include `group:messaging` — the tool group that
+// surfaces the `message` tool the agent uses for `action: "react"`,
+// `action: "send"`, etc. Without an `alsoAllow` boost on the Discord-routed
+// agent, the agent thinks the `message` tool isn't in its catalog and
+// reports "tool not available" when asked to react.
+//
+// Live diagnostic 2026-04-28: discord-friend (route.match.channel === "discord")
+// inherited the coding profile, so reaction requests from the user landed as
+// "I can't use the tool 'message' here because it isn't available" — even
+// though channels.discord.actions.reactions was set true (that toggle is
+// agnostic of profile filtering).
+//
+// We don't change the agent's profile (that would lose other coding-profile
+// tools like image_generate); we ADD `group:messaging` (or whatever the
+// operator overrides via OPENCLAW_DISCORD_AGENT_ALSO_ALLOW). Comma-separated
+// list. Empty value disables the step.
+//
+// User-managed protection: if alsoAllow already contains the entry, no-op.
+// If the user adds something to alsoAllow themselves (e.g. browser), we
+// preserve it and only add what's missing.
+const alsoAllowRaw = process.env.OPENCLAW_DISCORD_AGENT_ALSO_ALLOW;
+const alsoAllowDefault = 'group:messaging';
+const alsoAllowEntries = (alsoAllowRaw === undefined ? alsoAllowDefault : alsoAllowRaw)
+  .split(',').map(s => s.trim()).filter(Boolean);
+if (alsoAllowEntries.length > 0) {
+  const routes = config.agents?.routes ?? [];
+  const discordAgentIds = new Set(
+    routes
+      .filter(r => r?.match?.channel === 'discord' && typeof r?.agentId === 'string')
+      .map(r => r.agentId),
+  );
+  const list = config.agents?.list ?? [];
+  for (const agent of list) {
+    if (!discordAgentIds.has(agent?.id)) continue;
+    agent.tools ??= {};
+    const existing = Array.isArray(agent.tools.alsoAllow) ? agent.tools.alsoAllow : [];
+    const next = [...existing];
+    let added = [];
+    for (const entry of alsoAllowEntries) {
+      if (!next.includes(entry)) {
+        next.push(entry);
+        added.push(entry);
+      }
+    }
+    if (added.length > 0) {
+      agent.tools.alsoAllow = next;
+      changed = true;
+      console.log(
+        `[patch-config] agents.list[id=${JSON.stringify(agent.id)}].tools.alsoAllow ` +
+        `+= ${JSON.stringify(added)} (Discord-routed agent needs group:messaging for ` +
+        `the message tool — coding profile excludes it; set ` +
+        `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW="" to disable this step)`,
+      );
+    }
   }
 }
 
