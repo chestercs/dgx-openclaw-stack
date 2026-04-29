@@ -9,7 +9,7 @@
 // 31B + reasoning + vision prefill + multi-step tool calling.
 //
 // This script makes the desired state deterministic — every `docker compose up`
-// re-applies the 23 steps below in a deep-merge style. Safe to re-run; exits
+// re-applies the 24 steps below in a deep-merge style. Safe to re-run; exits
 // early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
 // (pre-onboarding fresh install) so the gateway container can still boot.
 //
@@ -104,6 +104,19 @@
 //      mkdir is safe to re-run); created with 0755 perms. Doesn't
 //      flip the `changed` flag — it's a sibling filesystem
 //      preparation, not an openclaw.json mutation.
+//  24. Discord progressive streaming — `channels.discord.streaming`.
+//      Upstream default `"off"` posts replies atomically; with Gemma 4
+//      NVFP4 at ~6 tok/s a 500-token reply means ~80s of silence in the
+//      channel before anything appears. `"partial"` mode posts a single
+//      placeholder and edit-in-place as tokens arrive (Discord rate
+//      limit 5 edits / 5s per channel; at 6 tok/s with the docs default
+//      draftChunk.minChars=200 the cadence is ~5.5s/edit, well within
+//      limits on a single bot account). Env override:
+//      OPENCLAW_DISCORD_STREAMING=off|partial|block|progress, or empty
+//      string to skip the step entirely (e.g. multiple bots share an
+//      account and edit-rate collisions are a concern). Same
+//      user-managed protection as steps 20-22: only writes when
+//      channels.discord is configured AND the field is undefined.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -1181,6 +1194,54 @@ if (!fs.existsSync(canvasDir)) {
     // on first generate if Path A is enabled and the dir didn't get
     // created (e.g. host-bind permission mismatch).
     console.warn(`[patch-config] could not create ${canvasDir}: ${err.message}`);
+  }
+}
+
+// ─── 24. Discord progressive streaming ───────────────────────────────────────
+// OpenClaw upstream default `channels.discord.streaming = "off"` posts replies
+// atomically. With Gemma 4 NVFP4 at ~6 tok/s, a 500-token reply means ~80s of
+// silence in the channel before anything appears — users perceive this as the
+// bot being frozen.
+//
+// `"partial"` mode posts a single placeholder, then edit-in-place as tokens
+// arrive. Discord rate limit is 5 edits / 5s per channel; at 6 tok/s with
+// the docs-default draftChunk.minChars=200 (~33 tokens), the cadence is
+// ~5.5s / edit — well within the limit on a single bot account.
+//
+// User-managed protection (same posture as steps 20-22): only writes when
+// `channels.discord` is configured AND the user hasn't set `streaming`
+// themselves. Override the default with
+// OPENCLAW_DISCORD_STREAMING=off|partial|block|progress, or set to "" to
+// skip the step entirely (e.g. multiple bots share an account and edit
+// rate-limit collisions are a concern). `progress` is documented as a
+// Discord-side alias of `partial`; we accept it for forward-compat.
+//
+// Caveats (from docs.openclaw.ai/channels/discord.md):
+//   - Media / error / explicit-reply finals cancel pending preview edits
+//     and the final arrives atomically (correct behaviour, not regression).
+//   - Streaming is text-only; image/file attachments fall back to atomic.
+//   - draftChunk and streaming.preview.toolProgress are intentionally NOT
+//     written here — the upstream defaults (200/800/paragraph + toolProgress
+//     true) are the right starting point. Add env knobs only if a live
+//     deploy proves them necessary.
+const STREAMING_ENUM = new Set(['off', 'partial', 'block', 'progress']);
+const streamingRaw = process.env.OPENCLAW_DISCORD_STREAMING;
+const streamingMode = (streamingRaw === undefined ? 'partial' : streamingRaw.trim());
+if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
+  console.warn(
+    `[patch-config] OPENCLAW_DISCORD_STREAMING=${JSON.stringify(streamingMode)} ` +
+    `not in {off, partial, block, progress} — skipping streaming step.`,
+  );
+} else if (streamingMode !== '' && config.channels?.discord?.enabled === true) {
+  config.channels.discord ??= {};
+  if (config.channels.discord.streaming === undefined) {
+    config.channels.discord.streaming = streamingMode;
+    changed = true;
+    console.log(
+      `[patch-config] channels.discord.streaming = ${JSON.stringify(streamingMode)} ` +
+      `(progressive Discord delivery; ~5.5s edit cadence at 6 tok/s — set ` +
+      `OPENCLAW_DISCORD_STREAMING=off to disable, or "" to skip the step)`,
+    );
   }
 }
 

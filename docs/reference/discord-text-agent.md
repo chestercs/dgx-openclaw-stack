@@ -138,6 +138,74 @@ If you want to enable the upstream auto-ack instead, set `OPENCLAW_DISCORD_ACK_R
 
 For a friend-group guild, `groupPolicy: "open"` + the channel restricted by Discord channel-permissions is usually fine. For a public-server bot, `allowlist` with explicit channel IDs is the better posture.
 
+## Progressive streaming (`channels.discord.streaming`)
+
+The OpenClaw upstream default `channels.discord.streaming = "off"` posts replies atomically — the channel sees nothing until the agent emits its final assistant text. With this stack's reference backend (Gemma 4 31B NVFP4 on a single GB10 at ~6 tok/s), a typical 500-token answer takes ~80 seconds to materialise; that's ~80 seconds of dead silence in Discord, and users invariably ask "is the bot stuck?".
+
+**Patcher step 24** writes `channels.discord.streaming = "partial"` by default (env-tunable via `OPENCLAW_DISCORD_STREAMING`). `"partial"` mode posts a single placeholder message and edit-in-place as tokens arrive. The four documented modes:
+
+| mode | behaviour |
+|---|---|
+| `off` | Atomic delivery — only the final reply is posted. Upstream default. |
+| `partial` | Single preview message, edit-in-place as tokens arrive. **Stack default.** |
+| `block` | Paragraph-sized chunks posted as separate messages. |
+| `progress` | Discord-side alias of `partial`. |
+
+**Why `"partial"` works on this stack:**
+
+- Discord rate limit is **5 message edits / 5 s per channel**.
+- `draftChunk.minChars` defaults to 200 (~33 tokens).
+- 6 tok/s × 33 tokens = ~5.5 s per edit ⇒ comfortably under the limit.
+- Single dedicated bot application token (no rate-budget contention with sibling bots).
+
+A faster backend (operator points `OPENAI_BASE_URL` at a cloud Sonnet/Haiku endpoint generating at 80+ tok/s, or swaps Gemma for a local sm_120-tuned NVFP4 build that hits 30+ tok/s) would chew through the edit budget. Drop to `"block"` (chunked posts, fewer edits) or `"off"` (atomic) in those cases.
+
+**Caveats** (from [`docs.openclaw.ai/channels/discord.md`](https://docs.openclaw.ai/channels/discord.md)):
+
+- **Media, error, and explicit-reply finals cancel the pending preview edit.** The final then arrives as a fresh atomic post. This is correct behaviour: image-gen replies (Path A `[embed]` shortcodes), tool errors, and explicit-reply finals should land as standalone events, not as overwrites of an in-progress preview.
+- **Streaming is text-only.** Image attachments and file uploads use the atomic delivery path regardless of the streaming mode. Voice-channel TTS is independent.
+- **Multiple bots / gateways sharing one Discord application token** will collide on the per-channel edit budget. Set `OPENCLAW_DISCORD_STREAMING=off` in that case.
+
+**Tunable but not env-knobbed by default:**
+
+- `channels.discord.draftChunk.{minChars, maxChars, breakPreference}` — chunk size hints (defaults 200 / 800 / `"paragraph"`, clamped to `textChunkLimit`).
+- `channels.discord.streaming.preview.toolProgress` (default `true`) — whether tool-execution progress reuses the preview message.
+- `channels.discord.textChunkLimit` (default `2000`) — Discord's hard 2000-char per-message limit; replies above this are auto-split into sequential posts.
+- `channels.discord.maxLinesPerMessage` (default `17`) — splits tall messages even when under the char limit.
+
+These are intentionally left at the upstream defaults in patcher step 24. If a live deploy proves any of them needs tuning, add a focused env knob following the same pattern as `OPENCLAW_DISCORD_STREAMING` (env-gated, user-managed protection, one `[patch-config]` log line).
+
+**Override examples:**
+
+```bash
+# Disable streaming for shared-bot deploys.
+OPENCLAW_DISCORD_STREAMING=off
+
+# Switch to chunked-block mode if `partial` edits are too chatty for you.
+OPENCLAW_DISCORD_STREAMING=block
+
+# Skip the patcher step entirely (operator manages the field by hand in openclaw.json).
+OPENCLAW_DISCORD_STREAMING=
+```
+
+After changing the env, force-recreate the patcher chain so the new value lands in `openclaw.json`:
+
+```bash
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+```
+
+Verify the live config:
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker exec ${PROJ}openclaw-cli node -e \
+  "const j=require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8'); \
+   console.log('channels.discord.streaming =', JSON.parse(j).channels.discord.streaming)"
+# Expect: channels.discord.streaming = partial
+```
+
+Then mention the bot in Discord with a medium prompt (something that takes 30+ s to generate, e.g. "magyarázd el 200 szóban hogyan működik a TLS handshake"). The expected UX: a placeholder appears within ~1-2 s, the message body grows ~1 paragraph every ~5-6 s, and at the end you have a single coherent message — the bot does NOT post a fresh final and delete the preview.
+
 ## Verifying everything
 
 Quick checklist when deploying a new Discord text-channel agent:

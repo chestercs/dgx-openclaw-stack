@@ -303,6 +303,18 @@ The default `openclaw agent --timeout` of 60s was repeatedly tripping during v0.
 
 When a tool-using prompt is documented anywhere in this repo (CLAUDE.md, CUSTOMIZATION.md, README.md, docs/reference/, …) it must use `--timeout 600`. Don't drop it to 60-180s for "looks cleaner" — the next person to copy-paste it will hit the timeout and waste an hour debugging.
 
+### Discord progressive streaming via `channels.discord.streaming`
+
+The 6 tok/s figure above has a second consequence on Discord: the upstream OpenClaw default `channels.discord.streaming = "off"` posts replies atomically, so a 500-token answer produces ~80 seconds of channel silence before anything appears. Users read this as "the bot is frozen." Patcher step 24 defaults the field to `"partial"` — a single preview message edit-in-place as tokens arrive. Discord enforces 5 message edits / 5 s per channel; at 6 tok/s with the docs-default `draftChunk.minChars=200` (~33 tokens), edits land roughly every 5.5 s, comfortably under the limit on a dedicated single-bot account.
+
+Trade-offs and gotchas worth remembering before you tweak this:
+
+- **`"partial"` is right for this stack specifically** because the Discord application token is dedicated (not shared across multiple gateway processes) and the LLM is slow enough that the edit cadence is naturally throttled. A faster backend (e.g. operator points `OPENAI_BASE_URL` at a cloud Sonnet/Haiku endpoint generating at 80+ tok/s) would burn through the rate-limit budget — drop to `"block"` or `"off"` in that case.
+- **Media, error, and explicit-reply finals cancel the pending preview edit** per `docs.openclaw.ai/channels/discord.md`. The final then arrives atomically. This is correct behaviour, not a regression — image-gen replies and tool errors should reach the user as standalone events, not as overwrites of an in-progress preview.
+- **Streaming is text-only.** Image attachments (the `comfyui_image__generate` Path A `[embed]` shortcode) and file uploads still flow through the atomic delivery path; they don't get partial frames. Voice-channel TTS is independent — the streaming flag doesn't touch it.
+- **`draftChunk` and `streaming.preview.toolProgress` are intentionally not env-knobbed** in step 24 — the docs defaults (`minChars: 200`, `maxChars: 800`, `breakPreference: "paragraph"`, `toolProgress: true`) are the right starting point. Add knobs only if a live deploy proves them necessary, and follow the same pattern as the existing Discord steps (env-gated, user-managed protection, `[patch-config]` log line).
+- **Override via `OPENCLAW_DISCORD_STREAMING=off|partial|block|progress` in `.env`**, or set to empty string to skip the step entirely. Step 24 also follows the same user-managed protection as steps 20-22: if the operator already wrote `channels.discord.streaming` (any value) into `openclaw.json`, the patcher leaves it alone.
+
 ### `openclaw-base-ext` is the local image extension layer
 
 Three openclaw services (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) all reference `openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}`, NOT the upstream `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_REF}` image directly. The local image is built by the `build:` block on `openclaw-config-init`, with `./openclaw-base-ext/` as context — a tiny Dockerfile that wraps the upstream tag and adds whatever the stack needs but the upstream image lacks. As of v0.11.0 that's just `apt-get install ffmpeg`, but the layer exists so future patches (custom node deps, system libs, locale fixes) have a clean home that doesn't fork the upstream image.

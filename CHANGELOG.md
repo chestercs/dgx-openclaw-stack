@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — Discord progressive streaming
+- **Patcher step 24** writes `channels.discord.streaming = "partial"`
+  by default. The OpenClaw upstream default `"off"` posts replies
+  atomically; with Gemma 4 NVFP4 at ~6 tok/s a 500-token reply means
+  ~80 s of dead silence in the channel before anything appears, and
+  users perceive the bot as frozen. `"partial"` posts a single
+  preview message and edit-in-place as tokens arrive; Discord's edit
+  rate limit (5 / 5 s per channel) is comfortably above the
+  ~5.5 s/edit cadence at 6 tok/s × `draftChunk.minChars=200`
+  (~33 tokens) on a single dedicated bot account. Env override:
+  `OPENCLAW_DISCORD_STREAMING=off|partial|block|progress` (or empty
+  to skip the step entirely). Same user-managed protection as steps
+  20-22: only writes when `channels.discord` is configured AND the
+  operator hasn't set the field themselves. `draftChunk` and
+  `streaming.preview.toolProgress` are intentionally left at the
+  docs defaults — knob them later only if a live deploy proves it
+  necessary.
+- **`docs/reference/discord-text-agent.md`** gains a "Progressive
+  streaming" section with the four documented modes, the rate-limit
+  math, the cancel-on-media/error/explicit-final caveats, and a
+  copy-paste verification recipe.
+- **`CLAUDE.md`** "Implementation details" gets a matching paragraph
+  next to the `--timeout 600` note, since both are consequences of
+  the same ~6 tok/s LLM throughput.
+
+### Migration
+- `git pull && docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`
+  picks up step 24 and writes `channels.discord.streaming = "partial"`
+  into the live `openclaw.json` (assuming `channels.discord.enabled =
+  true` and the operator hasn't set `streaming` already).
+- Operators on a faster backend (cloud LLM endpoint, sm_120-tuned
+  NVFP4 build hitting 30+ tok/s) should set
+  `OPENCLAW_DISCORD_STREAMING=block` or `=off` to avoid burning
+  through Discord's edit rate budget.
+
 ## [0.11.0] - 2026-04-28
 
 Big release that batches every accumulated commit since v0.9.10 — the
