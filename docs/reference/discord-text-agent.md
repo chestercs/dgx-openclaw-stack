@@ -4,7 +4,7 @@ Reference for deploying an OpenClaw agent in a Discord guild text channel. Sibli
 
 Most of the gotchas in this doc come from a real friend-group deployment on 2026-04-27 / 2026-04-28. The patcher steps that defend against each of them ship as a numbered list in `patch-config.mjs`'s top docblock — search for `// 20.`, `// 21.`, `// 22.` to find their inline rationale.
 
-**Operator quick-start:** copy [`templates/discord-text-agent/AGENTS.md.example`](../../templates/discord-text-agent/AGENTS.md.example) to your `<workspace-discord>/AGENTS.md` (typically `~/.openclaw/workspace-discord/AGENTS.md` on the gateway host). The template contains the validated patterns: ack-react-then-text response form, image-gen prompt-only contract, `message`-tool reactions, web-search source-link convention.
+**Operator quick-start:** copy [`templates/discord-text-agent/AGENTS.md.example`](../../templates/discord-text-agent/AGENTS.md.example) to your `<workspace-discord>/AGENTS.md` (typically `~/.openclaw/workspace-discord/AGENTS.md` on the gateway host). The template contains the validated patterns: placeholder→edit single-message response form, opt-in `[[tts:speak]]` voice attach, opt-in reactions, image-gen prompt-only contract, `message`-tool reactions, web-search source-link convention.
 
 ## Flow
 
@@ -112,19 +112,19 @@ Plus: [issue #30585](https://github.com/openclaw/openclaw/issues/30585) — when
 
 **Stack default:** `channels.discord.ackReactionScope: "off"` (patcher step 20). Defends against both bugs.
 
-**Operator-driven option (recommended):** instruct the agent in `AGENTS.md` to call `message` with `action: "react"` and `emoji: "✅"` BEFORE it generates the text reply. This is agent-driven, predictable, only fires when the agent decides to (so no cycle from stale-queue replay). The agent emits one extra tool call per turn, which costs ~1-3s of LLM latency.
+**Recommended response form: placeholder → edit (single live message).** Instead of leaning on the upstream auto-ack OR mandating an agent-driven `message react ✅` before each reply, instruct the agent to:
 
-```markdown
-## ELSŐDLEGES VÁLASZFORMA
+1. Send a placeholder ("🤔 Pillanat...") via `message` with `action: "send"` — captures the new message ID.
+2. (Optional) Progress-edit the placeholder with `action: "edit"` while tool calls run.
+3. Final-edit the placeholder to the actual answer with `action: "edit"`.
 
-Minden mention-re ebben a sorrendben:
-1. ELŐSZÖR ack-reactiont teszel ✅-vel a user mention-üzenetére.
-2. AZTÁN szövegesen válaszolsz.
-```
+This collapses the entire bot turn into ONE Discord message that grows in place. The placeholder itself is the "I'm working on it" signal — no separate reaction needed. The TTS auto-attach (when the agent opts in via `[[tts:speak]]` directive on the FINAL edit) lands on the same message.
 
-The agent-driven path doesn't hit the cycle bug (the cycle is in the upstream queue replay logic, not in agent-emitted tool calls) and doesn't hit the NO_REPLY-stuck bug (the agent just doesn't react in that case).
+Reaction tool stays available but becomes opt-in: the agent only `react`s when it actually wants to (e.g. on a funny user message), not as a structural ack. Sidesteps both #46024 (no upstream auto-ack on the cycle path) and #30585 (no auto-ack to get stuck on NO_REPLY).
 
-If you want to enable the upstream auto-ack instead, set `OPENCLAW_DISCORD_ACK_REACTION_SCOPE` env to a non-off value (`group-mentions` is the most narrow / lowest-risk; `all` would auto-react to every channel message the bot is allowed to see). Pair with `messages.ackReaction = "<emoji>"` and `messages.removeAckAfterReply = true`. Watch the gateway log for `[discord-auto-reply]` rapid-fire events and revert to `off` if the cycle returns.
+The template at [`templates/discord-text-agent/AGENTS.md.example`](../../templates/discord-text-agent/AGENTS.md.example) ships the placeholder→edit ELSŐDLEGES VÁLASZFORMA section ready to copy.
+
+If you want the upstream auto-ack instead anyway, set `OPENCLAW_DISCORD_ACK_REACTION_SCOPE` env to a non-off value (`group-mentions` is the most narrow / lowest-risk; `all` would auto-react to every channel message the bot is allowed to see). Pair with `messages.ackReaction = "<emoji>"` and `messages.removeAckAfterReply = true`. Watch the gateway log for `[discord-auto-reply]` rapid-fire events and revert to `off` if the cycle returns.
 
 ## groupPolicy and dmPolicy
 

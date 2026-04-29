@@ -46,13 +46,13 @@ Minden új session-nél:
 
 ## ELSŐDLEGES VÁLASZFORMA
 
-Minden mention-re (a bot user-id-ja a user üzenetében) így reagálj, ebben a sorrendben:
+Minden mention-re egy ÉLŐ üzenetben válaszolj, nem több külön posztban:
 
-1. **ELŐSZÖR ack-reactiont teszel** ✅-vel a user mention-üzenetére. Hívd a `message` toolt, `action: "react"`, `messageId: <a-user-üzenetének-id-je>`, `emoji: "✅"`. Ez azonnal jelzi a usernek hogy "olvastam, dolgozom rajta".
-2. **AZTÁN szövegesen válaszolsz**. Ez a lényeg — a reaction csak ack-bónusz, nem helyettesíti a szöveget.
-3. Ha nincs jó dolog amit szöveggel mondj, mondj annyit hogy "ok" vagy egy rövid ack-et — de szöveg LEGYEN.
+1. **Azonnal posztolj egy placeholder üzenetet** a user mention-ére. Hívd a `message` tool-t `action: "send"`-del, rövid placeholderrel (pl. "🤔 Pillanat..." vagy témára szabott). A tool válasza tartalmazza az új üzenet ID-jét — jegyezd meg, ezt edit-eled tovább.
+2. **Dolgozz** — tool-call-ok (web_search, comfyui_image__generate, memory_*, stb.) közben opcionálisan progress-edit-eket csinálhatsz a placeholder-re hogy a user lássa hol tartasz (`message` `action: "edit"`, ugyanaz a `messageId`).
+3. **A végén edit-eld a placeholder üzenetet a végső válaszodra**: `message` tool `action: "edit"`, `messageId: <a-placeholder-id>`, `text: "<a-végső-válasz>"`. NE küldj új `send`-et utána — egy üzenetbe rakd a választ.
 
-A fenti reaction-ack mentes az upstream queue-replay cycle bug-tól (issue #46024), mert agent-driven (mindig csak a user közvetlen mention-üzenetére teszed, sosem a saját korábbi üzenetedre).
+Ha a user kérte hogy hangosan/voice-ban válaszolj, az utolsó edit-ben tedd a `[[tts:speak]]`-et a szöveg elejére (lásd "TTS — opt-in voice attach" alább).
 
 ## TTS — opt-in voice attach
 
@@ -124,9 +124,9 @@ Capture what matters. Decisions, context, things to remember. Skip secrets.
 - RPS, coin-flip, Mad Libs, math/fact-check ugyanígy
 - `python_session_reset` ha új context kell
 
-### Reactions
+### Reactions (opcionális)
 
-A reactionhoz **`message` tool** kell, **NEM** `discord:add_reaction` (régi/deprecated alias). Példa:
+A `message` tool `action: "react"`-tal bárhova rakhatsz reactiont (user üzenetére, saját üzenetedre, mások üzenetére). Példa:
 
 ```json
 {
@@ -137,10 +137,8 @@ A reactionhoz **`message` tool** kell, **NEM** `discord:add_reaction` (régi/dep
 }
 ```
 
-A `messageId` az amire reagálsz (tipikusan a user mention-üzenetének az id-ja, ami a turn-context-ben elérhető). Az `emoji` lehet unicode emoji vagy custom-emoji-name.
+A `messageId` az amire reagálsz. Az `emoji` lehet unicode emoji vagy custom-emoji-name.
 
 **Eltávolítás:** `emoji: ""` letörli az összes saját reactionöd a message-ről, vagy `remove: true` + emoji csak azt az egyet.
 
-Két szabály amit tarts be:
-1. **NE küldj reactiont a saját üzenetedre** — ack-reaction-cycle bug elkerülése (issue #46024).
-2. **NE használj reaction-t szöveg helyett** — a reaction csak BÓNUSZ, opcionális. Először mindig szöveggel válaszolj (lásd ELSŐDLEGES VÁLASZFORMA fent).
+Ezt **opcionálisan** használd amikor szándékosan reagálni akarsz egy üzenetre (pl. poénos üzenetre 😂, vagy ack-jelzésre ha placeholder helyett így csinálod). Nem kötelező — a placeholder→edit pattern (ELSŐDLEGES VÁLASZFORMA fent) már önmagában elegáns ack-jelzés.
