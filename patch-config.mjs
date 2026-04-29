@@ -116,9 +116,12 @@
 //      OPENCLAW_DISCORD_STREAMING=off|partial|block|progress (or empty
 //      string to skip the step entirely),
 //      OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS / _MAX_CHARS / _BREAK_PREFERENCE
-//      (each independently optional, default unset → docs default applies).
-//      Same user-managed protection as steps 20-22: only writes when
-//      channels.discord is configured AND the field is undefined.
+//      (each independently optional, default unset → docs default applies),
+//      OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS=true|false (opt-out
+//      for the "Working...\n- tool: <name>" lines that markdown-mangle on
+//      Discord 2026.4.22 — see docs/upstream-feedback/discord-toolprogress-
+//      rendering.md). Same user-managed protection as steps 20-22: only
+//      writes when channels.discord is configured AND the field is undefined.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -1326,6 +1329,49 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
           `If you wanted line-grain edits, use "newline".`,
         );
       }
+    }
+  }
+
+  // streaming.preview.toolProgress — opt-out for the "Working...\n- tool:
+  // <name>" lines that the gateway interleaves into the streaming preview.
+  // Default upstream is `true` (visible). The display has a known cosmetic
+  // bug on Discord 2026.4.22: tool names with double-underscore separators
+  // (e.g. `comfyui_image__generate`) get mangled by Discord's italic
+  // markdown parser (`_image_` becomes italic mid-name). No upstream config
+  // flag escapes this; the only knob is on/off.
+  // Set OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS=false to suppress
+  // the lines entirely if the rendering bothers you. Track upstream issue
+  // (filed via docs/upstream-feedback/discord-toolprogress-rendering.md).
+  const tpRaw = process.env.OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS?.trim();
+  if (tpRaw && streamingMode !== '' && config.channels?.discord?.enabled === true) {
+    const tpLower = tpRaw.toLowerCase();
+    if (tpLower === 'true' || tpLower === 'false') {
+      const tpBool = tpLower === 'true';
+      config.channels.discord.streaming = config.channels.discord.streaming;
+      // The schema accepts either a scalar string ("partial" / etc.) OR a
+      // nested object form. To set `streaming.preview.toolProgress` we need
+      // the nested form. Coerce only when the user actually opts in to
+      // toggling this knob.
+      if (typeof config.channels.discord.streaming === 'string') {
+        config.channels.discord.streaming = {
+          mode: config.channels.discord.streaming,
+        };
+        changed = true;
+      }
+      config.channels.discord.streaming.preview ??= {};
+      if (config.channels.discord.streaming.preview.toolProgress !== tpBool) {
+        config.channels.discord.streaming.preview.toolProgress = tpBool;
+        changed = true;
+        console.log(
+          `[patch-config] channels.discord.streaming.preview.toolProgress = ${tpBool} ` +
+          `(opt-out for the "Working... tool: ..." lines that markdown-mangle on Discord)`,
+        );
+      }
+    } else {
+      console.warn(
+        `[patch-config] OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS=${JSON.stringify(tpRaw)} ` +
+        `is not "true" or "false" — skipping.`,
+      );
     }
   }
 }

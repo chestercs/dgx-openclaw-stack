@@ -61,6 +61,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   who want line-grain can set `MIN_CHARS=100` + `BREAK_PREFERENCE=newline`
   for ~2-3s/edit. Mind the 5-edits/5s rate limit if you go below
   ~80 minChars on a single bot account.
+- **`OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS` env knob** in
+  patcher step 24 — opt-out for the streaming preview's
+  "Working...\n- tool: <name>" lines. Default unset → upstream default
+  `true` applies (visible). Set `=false` to suppress entirely. Workaround
+  for the Discord 2026.4.22 markdown-mangle on tool names with `__`
+  separators (`comfyui_image__generate` → `_image_` becomes italic
+  mid-name). The patcher transparently coerces `streaming` from scalar
+  string to nested object form when the knob is set, since `preview.*`
+  sub-keys require the nested shape; both shapes are upstream-supported.
+- **Upstream feature request draft** at
+  `docs/upstream-feedback/discord-toolprogress-rendering.md` — proposes
+  inline-code wrap / markdown-escape / `format` enum to fix the tool
+  name rendering at the source. File on `openclaw/openclaw` issues with
+  the GIF evidence attached.
 - **`breakPreference` defensive enum check** in patcher step 24.
   Discovered the validated enum is `{paragraph, newline, sentence}` from
   the openclaw 2026.4.22 runtime validator on 2026-04-29 (`Config invalid -

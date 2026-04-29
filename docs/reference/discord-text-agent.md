@@ -174,9 +174,10 @@ A faster backend (operator points `OPENAI_BASE_URL` at a cloud Sonnet/Haiku endp
 
 **Other tunables not env-knobbed by default:**
 
-- `channels.discord.streaming.preview.toolProgress` (default `true`) — whether tool-execution progress reuses the preview message.
 - `channels.discord.textChunkLimit` (default `2000`) — Discord's hard 2000-char per-message limit; replies above this are auto-split into sequential posts.
 - `channels.discord.maxLinesPerMessage` (default `17`) — splits tall messages even when under the char limit.
+
+**`streaming.preview.toolProgress` env-knobbed (`OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS=true|false`)**: surfaces "Working...\n- tool: <name>" lines mid-stream. Default `true` (upstream). **Known Discord 2026.4.22 cosmetic bug**: tool names with double-underscore separators (`comfyui_image__generate`) are mangled by Discord's italic markdown — `_image_` becomes italic mid-name. No upstream config flag escapes the tool name or wraps it in code; only this on/off exists. Set to `false` to suppress the lines if the rendering is more bothersome than the loss of mid-stream visibility. The patcher transparently coerces `streaming` from scalar string to nested object form when this knob is set, since `preview.*` sub-keys require the nested shape. Tracked feature request: [`docs/upstream-feedback/discord-toolprogress-rendering.md`](../upstream-feedback/discord-toolprogress-rendering.md).
 
 If a live deploy proves any of these needs tuning, add a focused env knob following the same pattern as `OPENCLAW_DISCORD_STREAMING` (env-gated, user-managed protection, one `[patch-config]` log line).
 
