@@ -58,9 +58,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preview-edit cadence. Each is independently optional (unset →
   docs default applies). Default streaming UX after the proxy
   removal is paragraph-grain (~5-10s/edit at 6 tok/s); operators
-  who want line-grain can set `MIN_CHARS=100` + `BREAK_PREFERENCE=line`
+  who want line-grain can set `MIN_CHARS=100` + `BREAK_PREFERENCE=newline`
   for ~2-3s/edit. Mind the 5-edits/5s rate limit if you go below
   ~80 minChars on a single bot account.
+- **`breakPreference` defensive enum check** in patcher step 24.
+  Discovered the validated enum is `{paragraph, newline, sentence}` from
+  the openclaw 2026.4.22 runtime validator on 2026-04-29 (`Config invalid -
+  channels.discord.streaming.preview.chunk.breakPreference: Invalid
+  input (allowed: 'paragraph', 'newline', 'sentence')`); the upstream
+  docs only show `"paragraph"`. The most common wrong guess is `"line"`,
+  which silently passed schema-validation in the patcher but crashed
+  the gateway with `Config invalid` on next start, putting it in a
+  restart-loop. The patcher now refuses any out-of-enum value with a
+  `[patch-config]` warning and skips writing the field.
 
 ### Migration
 - `git pull && docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`

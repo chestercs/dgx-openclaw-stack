@@ -1226,13 +1226,17 @@ if (!fs.existsSync(canvasDir)) {
 // `draftChunk` sub-knobs (minChars / maxChars / breakPreference) are env-
 // gated separately. Default unset → patcher leaves the field untouched and
 // OpenClaw uses its docs defaults (200 / 800 / "paragraph"). Lower minChars
-// + breakPreference="line" (or "sentence") shifts the UX from
+// + breakPreference="newline" (or "sentence") shifts the UX from
 // paragraph-grain edits to line-grain edits — useful for short interactive
 // replies where the docs-default 200-char paragraph chunks feel chunky.
 // Mind the Discord rate limit (5 edits / 5s per channel); minChars below
 // ~80 (~13 tokens at 6 tok/s ≈ 2s/edit cadence) starts approaching the
-// limit on a single dedicated bot. Verified valid breakPreference enum is
-// not exhaustively documented; "line" / "sentence" are operator-tested.
+// limit on a single dedicated bot. Verified breakPreference enum (from
+// runtime validator error 2026-04-29 on openclaw 2026.4.22): the docs
+// only show "paragraph", but the actual schema allows
+// {paragraph, newline, sentence}. Common gotcha: "line" sounds right
+// but is REJECTED — use "newline" instead. The patcher refuses invalid
+// values with a warning to avoid crashing the gateway on next start.
 const STREAMING_ENUM = new Set(['off', 'partial', 'block', 'progress']);
 const streamingRaw = process.env.OPENCLAW_DISCORD_STREAMING;
 const streamingMode = (streamingRaw === undefined ? 'partial' : streamingRaw.trim());
@@ -1283,12 +1287,27 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
       }
     }
     if (breakRaw && config.channels.discord.draftChunk.breakPreference === undefined) {
-      config.channels.discord.draftChunk.breakPreference = breakRaw;
-      changed = true;
-      console.log(
-        `[patch-config] channels.discord.draftChunk.breakPreference = ${JSON.stringify(breakRaw)} ` +
-        `(operator-tested values: paragraph, line, sentence — schema enum not exhaustively documented upstream)`,
-      );
+      // Defensive enum check — invalid value crashes the gateway with
+      // "Config invalid - channels.discord.streaming.preview.chunk.breakPreference:
+      // Invalid input (allowed: 'paragraph', 'newline', 'sentence')" on next
+      // start, putting the gateway into restart-loop until the operator
+      // hand-fixes .env. Confirmed enum from 2026-04-29 runtime error on
+      // openclaw 2026.4.22. "line" is the most common wrong guess —
+      // operators should use "newline".
+      const VALID_BREAK_PREFS = new Set(['paragraph', 'newline', 'sentence']);
+      if (VALID_BREAK_PREFS.has(breakRaw)) {
+        config.channels.discord.draftChunk.breakPreference = breakRaw;
+        changed = true;
+        console.log(
+          `[patch-config] channels.discord.draftChunk.breakPreference = ${JSON.stringify(breakRaw)}`,
+        );
+      } else {
+        console.warn(
+          `[patch-config] OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE=${JSON.stringify(breakRaw)} ` +
+          `not in {paragraph, newline, sentence} — skipping (would crash gateway with invalid config). ` +
+          `If you wanted line-grain edits, use "newline".`,
+        );
+      }
     }
   }
 }

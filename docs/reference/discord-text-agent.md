@@ -170,7 +170,7 @@ A faster backend (operator points `OPENAI_BASE_URL` at a cloud Sonnet/Haiku endp
 
 - `OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS` — minimum chars per edit. Default 200 (~33 tokens at 6 tok/s ≈ 5.5s/edit). Lower → more frequent edits; the soft floor is ~80 (~2s/edit) before the Discord 5-edits/5s rate limit becomes problematic.
 - `OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS` — maximum chars per edit. Default 800 (clamped to `textChunkLimit=2000`).
-- `OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE` — break heuristic. Default `"paragraph"`. Operator-tested alternates: `"line"` (line-grain edits — ideal for short replies, much closer to typing UX), `"sentence"` (mid-grain, good for long-form). The full enum is not exhaustively documented upstream — any value flows straight through to the gateway, which may reject. Verify with `docker logs openclaw-config-init --tail 30` after a force-recreate.
+- `OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE` — break heuristic. Default `"paragraph"`. Validated enum: `{paragraph, newline, sentence}`. `"newline"` gives line-grain edits ideal for short replies, much closer to typing UX; `"sentence"` is mid-grain, good for long-form. The upstream docs only show `"paragraph"`; the full enum was discovered on 2026-04-29 from the openclaw 2026.4.22 runtime validator (`Config invalid - channels.discord.streaming.preview.chunk.breakPreference: Invalid input (allowed: 'paragraph', 'newline', 'sentence')`). Common wrong guess: `"line"` — REJECTED, use `"newline"`. The patcher refuses any out-of-enum value with a `[patch-config]` warning to avoid crashing the gateway with an invalid config.
 
 **Other tunables not env-knobbed by default:**
 
@@ -185,7 +185,7 @@ If a live deploy proves any of these needs tuning, add a focused env knob follow
 ```bash
 # In .env, append:
 OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS=100
-OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE=line
+OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE=newline
 
 # Then force-recreate:
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
@@ -195,7 +195,7 @@ PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
 docker exec ${PROJ}openclaw-cli node -e \
   "const j=require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8'); \
    console.log('draftChunk =', JSON.stringify(JSON.parse(j).channels.discord.draftChunk))"
-# Expect: draftChunk = {"minChars":100,"breakPreference":"line"}
+# Expect: draftChunk = {"minChars":100,"breakPreference":"newline"}
 ```
 
 **Override examples:**
