@@ -1286,15 +1286,33 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
         console.warn(`[patch-config] OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS=${JSON.stringify(maxCharsRaw)} not a positive number — skipping.`);
       }
     }
+    // Defensive enum check + self-heal — invalid value crashes the gateway
+    // with "Config invalid - channels.discord.streaming.preview.chunk.
+    // breakPreference: Invalid input (allowed: 'paragraph', 'newline',
+    // 'sentence')" on next start, putting it in a restart-loop. Confirmed
+    // enum from 2026-04-29 runtime error on openclaw 2026.4.22. The most
+    // common wrong guess is "line" — operators should use "newline".
+    //
+    // Self-heal: if a PREVIOUS patcher run wrote an invalid value into
+    // openclaw.json (because the validator was added later in commit
+    // 02104b7), we scrub it here so the env-driven write can replace it.
+    // Without the scrub, user-managed protection (`=== undefined` check)
+    // keeps the bad value forever and blocks even a corrected env value
+    // from taking effect.
+    const VALID_BREAK_PREFS = new Set(['paragraph', 'newline', 'sentence']);
+    const currentBreak = config.channels.discord.draftChunk.breakPreference;
+    if (currentBreak !== undefined && !VALID_BREAK_PREFS.has(currentBreak)) {
+      delete config.channels.discord.draftChunk.breakPreference;
+      changed = true;
+      console.warn(
+        `[patch-config] scrubbed channels.discord.draftChunk.breakPreference = ` +
+        `${JSON.stringify(currentBreak)} (not in {paragraph, newline, sentence} — would ` +
+        `crash gateway with Config invalid). Set OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE ` +
+        `in .env to apply a valid value; common wrong guess is "line", use "newline" instead.`,
+      );
+    }
+
     if (breakRaw && config.channels.discord.draftChunk.breakPreference === undefined) {
-      // Defensive enum check — invalid value crashes the gateway with
-      // "Config invalid - channels.discord.streaming.preview.chunk.breakPreference:
-      // Invalid input (allowed: 'paragraph', 'newline', 'sentence')" on next
-      // start, putting the gateway into restart-loop until the operator
-      // hand-fixes .env. Confirmed enum from 2026-04-29 runtime error on
-      // openclaw 2026.4.22. "line" is the most common wrong guess —
-      // operators should use "newline".
-      const VALID_BREAK_PREFS = new Set(['paragraph', 'newline', 'sentence']);
       if (VALID_BREAK_PREFS.has(breakRaw)) {
         config.channels.discord.draftChunk.breakPreference = breakRaw;
         changed = true;
