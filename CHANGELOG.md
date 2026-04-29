@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — `vllm-llm-proxy` workaround service
+- **`openclaw-vllm-proxy/` directory + compose service block deleted.**
+  The proxy was a workaround for vllm-project/vllm#38946 (Gemma 4
+  streaming tool-call parser leaking `<|"|>` string-delimiter literals
+  into emitted JSON). The upstream issue was closed completed
+  2026-04-05 and the bundled `vllm/vllm-openai:gemma4-cu130` image
+  now ships `vllm 0.19.1.dev6+g6d4a8e6d2` — a post-fix build. The
+  proxy's two side-jobs (regex sanitization of `<|"|>` leaks and
+  `browser.act` shape repair for Gemma's flat+wrapper duplication)
+  both turned out unnecessary in live testing 2026-04-29: a four-test
+  Discord smoke (plain Q&A, web_search, comfyui_image generate,
+  browser.act docker.com hero-text read) passed cleanly with no
+  validator failures and no `<|"|>` leak warnings in the gateway log.
+  Removing the proxy restores true token-by-token streaming on the
+  vLLM → gateway → Discord path, which was the actual blocker for
+  patcher step 24's `channels.discord.streaming = "partial"`.
+- **`docker-compose.yml` defaults updated**: `LLM_BASE_URL` and
+  `OPENAI_BASE_URL` now point at `http://vllm-llm:8004/v1{,/}`
+  directly (formerly `vllm-llm-proxy:8004`). Operators who edited
+  `.env` for a remote vLLM backend are unaffected — the env override
+  still wins.
+
 ### Added — Discord progressive streaming
 - **Patcher step 24** writes `channels.discord.streaming = "partial"`
   by default. The OpenClaw upstream default `"off"` posts replies
@@ -31,12 +53,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`CLAUDE.md`** "Implementation details" gets a matching paragraph
   next to the `--timeout 600` note, since both are consequences of
   the same ~6 tok/s LLM throughput.
+- **Patcher step 24 also reads** `OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS`,
+  `_MAX_CHARS`, and `_BREAK_PREFERENCE` for fine-grain control of the
+  preview-edit cadence. Each is independently optional (unset →
+  docs default applies). Default streaming UX after the proxy
+  removal is paragraph-grain (~5-10s/edit at 6 tok/s); operators
+  who want line-grain can set `MIN_CHARS=100` + `BREAK_PREFERENCE=line`
+  for ~2-3s/edit. Mind the 5-edits/5s rate limit if you go below
+  ~80 minChars on a single bot account.
 
 ### Migration
 - `git pull && docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`
   picks up step 24 and writes `channels.discord.streaming = "partial"`
   into the live `openclaw.json` (assuming `channels.discord.enabled =
   true` and the operator hasn't set `streaming` already).
+- The `vllm-llm-proxy` container is no longer in the compose file.
+  After `git pull`, run `docker compose down vllm-llm-proxy 2>/dev/null
+  || docker rm -f $(docker ps -aq -f name=vllm-llm-proxy)` to clean
+  up the now-orphaned container (one-time). The image
+  (`openclaw-vllm-proxy:0.1.0`) can be removed with
+  `docker rmi openclaw-vllm-proxy:0.1.0` once nothing references it.
+- Operators who hand-edited `.env` to override `LLM_BASE_URL` /
+  `OPENAI_BASE_URL` to `http://vllm-llm:8004/...` (e.g. for the
+  2026-04-29 hot-swap test) can DELETE those overrides — the new
+  in-compose defaults already point at `vllm-llm` directly. The
+  override is harmless if left in place.
 - Operators on a faster backend (cloud LLM endpoint, sm_120-tuned
   NVFP4 build hitting 30+ tok/s) should set
   `OPENCLAW_DISCORD_STREAMING=block` or `=off` to avoid burning

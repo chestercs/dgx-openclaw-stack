@@ -166,14 +166,37 @@ A faster backend (operator points `OPENAI_BASE_URL` at a cloud Sonnet/Haiku endp
 - **Streaming is text-only.** Image attachments and file uploads use the atomic delivery path regardless of the streaming mode. Voice-channel TTS is independent.
 - **Multiple bots / gateways sharing one Discord application token** will collide on the per-channel edit budget. Set `OPENCLAW_DISCORD_STREAMING=off` in that case.
 
-**Tunable but not env-knobbed by default:**
+**`draftChunk` env-knobbed in step 24** (each independently optional, default unset → OpenClaw docs default applies):
 
-- `channels.discord.draftChunk.{minChars, maxChars, breakPreference}` — chunk size hints (defaults 200 / 800 / `"paragraph"`, clamped to `textChunkLimit`).
+- `OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS` — minimum chars per edit. Default 200 (~33 tokens at 6 tok/s ≈ 5.5s/edit). Lower → more frequent edits; the soft floor is ~80 (~2s/edit) before the Discord 5-edits/5s rate limit becomes problematic.
+- `OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS` — maximum chars per edit. Default 800 (clamped to `textChunkLimit=2000`).
+- `OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE` — break heuristic. Default `"paragraph"`. Operator-tested alternates: `"line"` (line-grain edits — ideal for short replies, much closer to typing UX), `"sentence"` (mid-grain, good for long-form). The full enum is not exhaustively documented upstream — any value flows straight through to the gateway, which may reject. Verify with `docker logs openclaw-config-init --tail 30` after a force-recreate.
+
+**Other tunables not env-knobbed by default:**
+
 - `channels.discord.streaming.preview.toolProgress` (default `true`) — whether tool-execution progress reuses the preview message.
 - `channels.discord.textChunkLimit` (default `2000`) — Discord's hard 2000-char per-message limit; replies above this are auto-split into sequential posts.
 - `channels.discord.maxLinesPerMessage` (default `17`) — splits tall messages even when under the char limit.
 
-These are intentionally left at the upstream defaults in patcher step 24. If a live deploy proves any of them needs tuning, add a focused env knob following the same pattern as `OPENCLAW_DISCORD_STREAMING` (env-gated, user-managed protection, one `[patch-config]` log line).
+If a live deploy proves any of these needs tuning, add a focused env knob following the same pattern as `OPENCLAW_DISCORD_STREAMING` (env-gated, user-managed protection, one `[patch-config]` log line).
+
+**Recipe — line-grain typing UX:**
+
+```bash
+# In .env, append:
+OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS=100
+OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE=line
+
+# Then force-recreate:
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+
+# Verify:
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker exec ${PROJ}openclaw-cli node -e \
+  "const j=require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8'); \
+   console.log('draftChunk =', JSON.stringify(JSON.parse(j).channels.discord.draftChunk))"
+# Expect: draftChunk = {"minChars":100,"breakPreference":"line"}
+```
 
 **Override examples:**
 

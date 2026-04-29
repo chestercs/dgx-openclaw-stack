@@ -104,18 +104,20 @@
 //      mkdir is safe to re-run); created with 0755 perms. Doesn't
 //      flip the `changed` flag — it's a sibling filesystem
 //      preparation, not an openclaw.json mutation.
-//  24. Discord progressive streaming — `channels.discord.streaming`.
-//      Upstream default `"off"` posts replies atomically; with Gemma 4
-//      NVFP4 at ~6 tok/s a 500-token reply means ~80s of silence in the
-//      channel before anything appears. `"partial"` mode posts a single
-//      placeholder and edit-in-place as tokens arrive (Discord rate
-//      limit 5 edits / 5s per channel; at 6 tok/s with the docs default
-//      draftChunk.minChars=200 the cadence is ~5.5s/edit, well within
-//      limits on a single bot account). Env override:
-//      OPENCLAW_DISCORD_STREAMING=off|partial|block|progress, or empty
-//      string to skip the step entirely (e.g. multiple bots share an
-//      account and edit-rate collisions are a concern). Same
-//      user-managed protection as steps 20-22: only writes when
+//  24. Discord progressive streaming — `channels.discord.streaming`
+//      and the optional `channels.discord.draftChunk.{minChars, maxChars,
+//      breakPreference}` sub-knobs. Upstream default `"off"` posts replies
+//      atomically; with Gemma 4 NVFP4 at ~6 tok/s a 500-token reply means
+//      ~80s of silence in the channel before anything appears. `"partial"`
+//      mode posts a single placeholder and edit-in-place as tokens arrive
+//      (Discord rate limit 5 edits / 5s per channel; at 6 tok/s with the
+//      docs default draftChunk.minChars=200 the cadence is ~5.5s/edit,
+//      well within limits on a single bot account). Env overrides:
+//      OPENCLAW_DISCORD_STREAMING=off|partial|block|progress (or empty
+//      string to skip the step entirely),
+//      OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS / _MAX_CHARS / _BREAK_PREFERENCE
+//      (each independently optional, default unset → docs default applies).
+//      Same user-managed protection as steps 20-22: only writes when
 //      channels.discord is configured AND the field is undefined.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
@@ -1220,10 +1222,17 @@ if (!fs.existsSync(canvasDir)) {
 //   - Media / error / explicit-reply finals cancel pending preview edits
 //     and the final arrives atomically (correct behaviour, not regression).
 //   - Streaming is text-only; image/file attachments fall back to atomic.
-//   - draftChunk and streaming.preview.toolProgress are intentionally NOT
-//     written here — the upstream defaults (200/800/paragraph + toolProgress
-//     true) are the right starting point. Add env knobs only if a live
-//     deploy proves them necessary.
+//
+// `draftChunk` sub-knobs (minChars / maxChars / breakPreference) are env-
+// gated separately. Default unset → patcher leaves the field untouched and
+// OpenClaw uses its docs defaults (200 / 800 / "paragraph"). Lower minChars
+// + breakPreference="line" (or "sentence") shifts the UX from
+// paragraph-grain edits to line-grain edits — useful for short interactive
+// replies where the docs-default 200-char paragraph chunks feel chunky.
+// Mind the Discord rate limit (5 edits / 5s per channel); minChars below
+// ~80 (~13 tokens at 6 tok/s ≈ 2s/edit cadence) starts approaching the
+// limit on a single dedicated bot. Verified valid breakPreference enum is
+// not exhaustively documented; "line" / "sentence" are operator-tested.
 const STREAMING_ENUM = new Set(['off', 'partial', 'block', 'progress']);
 const streamingRaw = process.env.OPENCLAW_DISCORD_STREAMING;
 const streamingMode = (streamingRaw === undefined ? 'partial' : streamingRaw.trim());
@@ -1242,6 +1251,45 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
       `(progressive Discord delivery; ~5.5s edit cadence at 6 tok/s — set ` +
       `OPENCLAW_DISCORD_STREAMING=off to disable, or "" to skip the step)`,
     );
+  }
+
+  // draftChunk sub-knobs — only write the fields the operator explicitly set.
+  // Each is independently env-gated and respects user-managed protection
+  // (only writes when undefined). All three knobs no-op when unset, so the
+  // OpenClaw docs default applies.
+  const minCharsRaw = process.env.OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS?.trim();
+  const maxCharsRaw = process.env.OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS?.trim();
+  const breakRaw = process.env.OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE?.trim();
+  if (minCharsRaw || maxCharsRaw || breakRaw) {
+    config.channels.discord.draftChunk ??= {};
+    if (minCharsRaw && config.channels.discord.draftChunk.minChars === undefined) {
+      const n = Number(minCharsRaw);
+      if (Number.isFinite(n) && n > 0) {
+        config.channels.discord.draftChunk.minChars = n;
+        changed = true;
+        console.log(`[patch-config] channels.discord.draftChunk.minChars = ${n}`);
+      } else {
+        console.warn(`[patch-config] OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS=${JSON.stringify(minCharsRaw)} not a positive number — skipping.`);
+      }
+    }
+    if (maxCharsRaw && config.channels.discord.draftChunk.maxChars === undefined) {
+      const n = Number(maxCharsRaw);
+      if (Number.isFinite(n) && n > 0) {
+        config.channels.discord.draftChunk.maxChars = n;
+        changed = true;
+        console.log(`[patch-config] channels.discord.draftChunk.maxChars = ${n}`);
+      } else {
+        console.warn(`[patch-config] OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS=${JSON.stringify(maxCharsRaw)} not a positive number — skipping.`);
+      }
+    }
+    if (breakRaw && config.channels.discord.draftChunk.breakPreference === undefined) {
+      config.channels.discord.draftChunk.breakPreference = breakRaw;
+      changed = true;
+      console.log(
+        `[patch-config] channels.discord.draftChunk.breakPreference = ${JSON.stringify(breakRaw)} ` +
+        `(operator-tested values: paragraph, line, sentence — schema enum not exhaustively documented upstream)`,
+      );
+    }
   }
 }
 
