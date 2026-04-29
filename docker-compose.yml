@@ -1075,6 +1075,21 @@ services:
       # upstream vllm/vllm-openai image, or to strip reaction permissions
       # entirely for guild-rule reasons.
       OPENCLAW_DISCORD_ACTIONS_REACTIONS: ${OPENCLAW_DISCORD_ACTIONS_REACTIONS:-true}
+      # Discord progressive streaming (patcher step 24). Default 'partial' —
+      # single preview message edits in place as tokens arrive. See
+      # .env.example for the full mode/draftChunk explanation. Override or
+      # set to empty string to skip the step entirely.
+      OPENCLAW_DISCORD_STREAMING: ${OPENCLAW_DISCORD_STREAMING:-partial}
+      # Optional draftChunk fine-tune (patcher step 24, sub-knobs). Each is
+      # independently optional; leaving any unset means the patcher leaves
+      # the corresponding field unwritten and OpenClaw uses its docs default
+      # (200 / 800 / "paragraph"). Set MIN_CHARS=100 + BREAK_PREFERENCE=line
+      # for line-grain typing UX. The breakPreference enum is not
+      # exhaustively documented upstream — paragraph / line / sentence are
+      # operator-tested.
+      OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS: ${OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS:-}
+      OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS: ${OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS:-}
+      OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE: ${OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE:-}
       # vLLM idle watchdog timeout (patcher step 8). Default 600s gives
       # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
       # to 300 for fast-model-only deploys.
