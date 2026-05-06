@@ -317,6 +317,24 @@ Trade-offs and gotchas worth remembering before you tweak this:
 - When the operator opts in to setting `streaming.preview.toolProgress`, the patcher coerces the `streaming` field from the scalar string form (`"partial"`) to the nested object form (`{mode: "partial", preview: {toolProgress: false}}`) — both shapes are documented as supported by OpenClaw, but the nested form is the only way to reach `preview.*` sub-keys.
 - **Override via `OPENCLAW_DISCORD_STREAMING=off|partial|block|progress` in `.env`**, or set to empty string to skip the step entirely. Step 24 also follows the same user-managed protection as steps 20-22: if the operator already wrote `channels.discord.streaming` (any value) into `openclaw.json`, the patcher leaves it alone.
 
+### Discord-routed agent tools.profile defaults to `full`, not `coding`
+
+OpenClaw's non-main agent default is `tools.profile: "coding"` — that profile catalogs `cron`, `image_generate`, `web_search`, memory/fs/runtime/web/sessions groups, but **excludes `browser`, `tts`, and `canvas`**. For an agent on a Discord route this manifests as three observable failures:
+
+- *"screenshot startlap.hu"* → bot replies *"Sorry, I can't navigate the browser and take a screenshot"*. The `browser` tool isn't in its catalog (verified 2026-04-29).
+- *"speak this on voice"* → no audio attaches. The `[[tts:speak]]` directive is parsed but the underlying tool isn't reachable, so the gateway silently strips the directive on its way to Discord.
+- canvas-embed shortcodes from `comfyui_image__generate` don't render inline — the agent can't mint same-origin URLs without the `canvas` tool.
+
+The `cron` tool IS in the `coding` profile (and the patcher already adds the catalog entry via step 22), but smaller open models like Gemma 4 NVFP4 don't reliably surface a tool from the catalog alone — they need a worked example in `AGENTS.md` to reach for it. Verified 2026-04-30: the bot replied *"I can't wake up on a timer"* to *"remind me in 1 minute"*, even though the tool was technically callable. **Step 26 patcher writes a cron-tools cheatsheet block into the discord-friend's `workspace-discord/AGENTS.md`** with the canonical `{tool: "cron", action: "add", at: "+1m", agent: "discord-friend", message: "...", channel: "discord", to: "user:<id>", deleteAfterRun: true}` shape — the doc-side fix that makes the tool actually get used.
+
+Three patcher steps work together for Discord-routed agents (step 22, 25, 26). The defaults are wired with the assumption that operators want a Discord bot that can reach for everything the main agent can:
+
+- **Step 22** (existing, default widened in v0.11.1): `tools.alsoAllow += ["group:messaging", "browser", "tts", "canvas"]`. Belt-and-braces — these stay effective even if step 25 is disabled or the operator picks a stricter profile.
+- **Step 25** (new in v0.11.1): `tools.profile = "full"`. Same effective surface as the main agent. Operator-set values in `openclaw.json` are preserved.
+- **Step 26** (new in v0.11.1): `<!-- patch-config:cron-tools:* -->` and `<!-- patch-config:browser-tools:* -->` blocks appended to `workspace-discord/AGENTS.md` so the agent reads them on session startup.
+
+Env knobs: `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE` (enum `minimal | coding | messaging | full`, default `full`, empty string disables step 25), `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW` (comma-separated, default `group:messaging,browser,tts,canvas`, empty string disables step 22).
+
 ### `openclaw-base-ext` is the local image extension layer
 
 Three openclaw services (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) all reference `openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}`, NOT the upstream `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_REF}` image directly. The local image is built by the `build:` block on `openclaw-config-init`, with `./openclaw-base-ext/` as context — a tiny Dockerfile that wraps the upstream tag and adds whatever the stack needs but the upstream image lacks. As of v0.11.0 that's just `apt-get install ffmpeg`, but the layer exists so future patches (custom node deps, system libs, locale fixes) have a clean home that doesn't fork the upstream image.

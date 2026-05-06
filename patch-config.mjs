@@ -9,7 +9,7 @@
 // 31B + reasoning + vision prefill + multi-step tool calling.
 //
 // This script makes the desired state deterministic — every `docker compose up`
-// re-applies the 24 steps below in a deep-merge style. Safe to re-run; exits
+// re-applies the 26 steps below in a deep-merge style. Safe to re-run; exits
 // early when nothing changes, and exits 0 when openclaw.json doesn't exist yet
 // (pre-onboarding fresh install) so the gateway container can still boot.
 //
@@ -84,16 +84,22 @@
 //      Env override: OPENCLAW_DISCORD_ACTIONS_REACTIONS=false to disable
 //      (useful when running unpatched upstream vllm/vllm-openai image, or
 //      stripping reaction permissions from the bot for guild-rule reasons).
-//  22. Discord-routed agent tools.alsoAllow — default `["group:messaging"]`.
-//      Looks at agents.routes[] for the agentId bound to channel "discord";
-//      finds that agent in agents.list[] and ensures tools.alsoAllow contains
-//      the configured groups. Without this, the Discord-routed agent inherits
-//      the default `tools.profile: "coding"` which excludes group:messaging
-//      (the `message` tool used for reactions, replies, etc.). Verified
-//      2026-04-28: the discord-friend agent could not call `message` tool for
-//      ✅ reactions because the catalog filter dropped it. Env override:
-//      OPENCLAW_DISCORD_AGENT_ALSO_ALLOW (comma-separated, default
-//      `group:messaging`); set to empty string to disable the patcher step.
+//  22. Discord-routed agent tools.alsoAllow — default
+//      `["group:messaging", "browser", "tts", "canvas"]`. Looks at
+//      agents.routes[] for the agentId bound to channel "discord"; finds
+//      that agent in agents.list[] and ensures tools.alsoAllow contains the
+//      configured entries. Without this, the Discord-routed agent inherits
+//      the default `tools.profile: "coding"` which is missing two whole
+//      categories the bot needs: (a) `group:messaging` (the `message` tool
+//      used for reactions, replies, etc. — verified 2026-04-28: discord-
+//      friend could not call `message` for ✅ reactions because the catalog
+//      filter dropped it); (b) `browser` / `tts` / `canvas` (verified
+//      2026-05-04: bot replies "I can't navigate the browser" to screenshot
+//      requests because the coding profile excludes the browser tool — but
+//      the openclaw-browser service is running and main agent uses it).
+//      Env override: OPENCLAW_DISCORD_AGENT_ALSO_ALLOW (comma-separated,
+//      default `group:messaging,browser,tts,canvas`); set to empty string
+//      to disable the patcher step.
 //  23. Ensure ${OPENCLAW_CONFIG_DIR}/canvas exists for Path A image-gen
 //      inline rendering. The bridge mirrors generated PNGs into this
 //      directory and emits `[embed url="/__openclaw__/canvas/<file>" /]`
@@ -122,6 +128,35 @@
 //      Discord 2026.4.22 — see docs/upstream-feedback/discord-toolprogress-
 //      rendering.md). Same user-managed protection as steps 20-22: only
 //      writes when channels.discord is configured AND the field is undefined.
+//  25. Discord-routed agent tools.profile — default `"full"`. Walks
+//      agents.routes[] for the channel=discord agentId (same as step 22),
+//      writes `tools.profile` if not already set. Without an explicit
+//      profile the agent inherits the global `coding` default which is
+//      missing browser/tts/canvas; with `full` it gets the same capability
+//      surface as the main agent. User-managed protection preserves
+//      operator-set values. Env override:
+//      OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE
+//      (minimal | coding | messaging | full); empty string disables
+//      the step.
+//  26. Workspace-discord AGENTS.md patcher-managed blocks. Appends two
+//      idempotent blocks to
+//      /home/node/.openclaw/workspace-discord/AGENTS.md (the
+//      discord-friend agent's workspace, separate from main):
+//
+//        - <!-- patch-config:cron-tools:start --> ... :end -->
+//          Tells the agent the `cron` tool exists and shows the canonical
+//          one-shot reminder shape. Without this doc the tool IS in the
+//          catalog (coding profile, see step 22) but Gemma 4 doesn't
+//          surface it from the catalog alone — verified 2026-04-30, the
+//          bot replied "I can't wake up on a timer" to "remind me in 1
+//          minute".
+//        - <!-- patch-config:browser-tools:start --> ... :end -->
+//          Mirrors the step 17 cheatsheet (browser.act parameter shapes
+//          and recovery hints) into the discord-friend's workspace so it
+//          reads them on session startup.
+//
+//      Skip cleanly if the file doesn't exist (pre-onboarding state).
+//      Same idempotency pattern as steps 16/17.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -1120,28 +1155,37 @@ if (config.channels?.discord?.enabled === true) {
 
 // ─── 22. Discord-routed agent tools.alsoAllow ────────────────────────────────
 // The default `tools.profile: "coding"` (set in step 8 unless the user
-// overrides) does NOT include `group:messaging` — the tool group that
-// surfaces the `message` tool the agent uses for `action: "react"`,
-// `action: "send"`, etc. Without an `alsoAllow` boost on the Discord-routed
-// agent, the agent thinks the `message` tool isn't in its catalog and
-// reports "tool not available" when asked to react.
+// overrides) is missing two whole categories the Discord-routed agent
+// needs:
 //
-// Live diagnostic 2026-04-28: discord-friend (route.match.channel === "discord")
-// inherited the coding profile, so reaction requests from the user landed as
-// "I can't use the tool 'message' here because it isn't available" — even
-// though channels.discord.actions.reactions was set true (that toggle is
-// agnostic of profile filtering).
+//   (a) `group:messaging` — surfaces the `message` tool the agent uses for
+//       `action: "react"`, `action: "send"`, `action: "edit"`. Live
+//       diagnostic 2026-04-28: discord-friend inherited the coding profile,
+//       so reaction requests landed as "I can't use the tool 'message' here
+//       because it isn't available" — even though
+//       channels.discord.actions.reactions was set true (that toggle is
+//       agnostic of profile filtering).
 //
-// We don't change the agent's profile (that would lose other coding-profile
-// tools like image_generate); we ADD `group:messaging` (or whatever the
-// operator overrides via OPENCLAW_DISCORD_AGENT_ALSO_ALLOW). Comma-separated
-// list. Empty value disables the step.
+//   (b) `browser` / `tts` / `canvas` — the openclaw-browser service is
+//       running and main agent uses them, but coding profile excludes them.
+//       Live diagnostic 2026-05-04: discord-friend replied "Sorry, I can't
+//       navigate the browser and take a screenshot" to "screenshot
+//       startlap.hu", and "I can't wake up on a timer on my own" to
+//       "remind me in 1 minute" — the cron tool IS in the coding profile
+//       but the bot has no AGENTS.md doc telling it the tool exists, so
+//       Gemma 4 doesn't surface it. Step 26 fixes the docs side; step 22
+//       fixes the catalog side.
+//
+// We don't change the agent's profile here (that would conflict with step
+// 25's profile override and lose change-tracking); we ADD the entries to
+// `alsoAllow` so they're effective regardless of which profile is in
+// force. Comma-separated env list, empty value disables the step.
 //
 // User-managed protection: if alsoAllow already contains the entry, no-op.
-// If the user adds something to alsoAllow themselves (e.g. browser), we
-// preserve it and only add what's missing.
+// If the user adds something to alsoAllow themselves, we preserve it and
+// only add what's missing.
 const alsoAllowRaw = process.env.OPENCLAW_DISCORD_AGENT_ALSO_ALLOW;
-const alsoAllowDefault = 'group:messaging';
+const alsoAllowDefault = 'group:messaging,browser,tts,canvas';
 const alsoAllowEntries = (alsoAllowRaw === undefined ? alsoAllowDefault : alsoAllowRaw)
   .split(',').map(s => s.trim()).filter(Boolean);
 if (alsoAllowEntries.length > 0) {
@@ -1170,8 +1214,9 @@ if (alsoAllowEntries.length > 0) {
       console.log(
         `[patch-config] agents.list[id=${JSON.stringify(agent.id)}].tools.alsoAllow ` +
         `+= ${JSON.stringify(added)} (Discord-routed agent needs group:messaging for ` +
-        `the message tool — coding profile excludes it; set ` +
-        `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW="" to disable this step)`,
+        `the message tool, browser/tts/canvas for screenshots/voice/canvas embeds — ` +
+        `coding profile excludes all four; set OPENCLAW_DISCORD_AGENT_ALSO_ALLOW="" ` +
+        `to disable this step)`,
       );
     }
   }
@@ -1374,6 +1419,157 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
       );
     }
   }
+}
+
+// ─── 25. Discord-routed agent tools.profile ──────────────────────────────────
+// Without an explicit `tools.profile` on the Discord-routed agent, OpenClaw
+// falls back to the global default `"coding"` profile. That profile includes
+// `cron`, `image`, `image_generate`, `video_generate` and the fs/runtime/web/
+// sessions/memory groups — but EXCLUDES `browser`, `tts`, and `canvas`. Three
+// observable user-facing failures from coding-only:
+//
+//   - "screenshot startlap.hu" → "Sorry, I can't navigate the browser"
+//     (verified 2026-04-29). The browser tool isn't in the catalog.
+//   - "speak this back to me on voice" → no audio attaches (the `tts`
+//     directive parser sees the token but the underlying tool isn't
+//     available so the gateway silently strips the directive).
+//   - canvas-embed shortcodes from comfyui_image generations don't render
+//     inline (the agent has no `canvas` tool to mint same-origin URLs).
+//
+// `"full"` lifts the restriction entirely (same effective surface as the
+// main agent). Step 22 explicitly adds `browser,tts,canvas` to alsoAllow as
+// belt-and-braces redundancy for operators who later switch the profile to
+// something stricter — both step 22 and step 25 are no-op when the value
+// is already what we'd write.
+//
+// User-managed protection: only writes when `tools.profile` is undefined.
+// If the operator already picked a profile in openclaw.json, we preserve it.
+// Env override: OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE
+// (minimal | coding | messaging | full). Empty string disables the step.
+const VALID_AGENT_PROFILES = new Set(['minimal', 'coding', 'messaging', 'full']);
+const profileRaw = process.env.OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE;
+const profileEntry = (profileRaw === undefined ? 'full' : profileRaw.trim());
+if (profileEntry !== '') {
+  if (!VALID_AGENT_PROFILES.has(profileEntry)) {
+    console.warn(
+      `[patch-config] OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE=${JSON.stringify(profileEntry)} ` +
+      `not in {minimal, coding, messaging, full} — skipping step 25.`,
+    );
+  } else {
+    const routes = config.agents?.routes ?? [];
+    const discordAgentIds = new Set(
+      routes
+        .filter(r => r?.match?.channel === 'discord' && typeof r?.agentId === 'string')
+        .map(r => r.agentId),
+    );
+    const list = config.agents?.list ?? [];
+    for (const agent of list) {
+      if (!discordAgentIds.has(agent?.id)) continue;
+      agent.tools ??= {};
+      if (agent.tools.profile === undefined) {
+        agent.tools.profile = profileEntry;
+        changed = true;
+        console.log(
+          `[patch-config] agents.list[id=${JSON.stringify(agent.id)}].tools.profile = ` +
+          `${JSON.stringify(profileEntry)} (without explicit profile the discord-routed ` +
+          `agent inherits "coding" which excludes browser/tts/canvas; set ` +
+          `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE="" to disable this step)`,
+        );
+      }
+    }
+  }
+}
+
+// ─── 26. Workspace-discord AGENTS.md patcher-managed blocks ──────────────────
+// The discord-friend agent has its own workspace at
+// /home/node/.openclaw/workspace-discord/ (separate from main's
+// /workspace/). Steps 16/17 only write to the main workspace's AGENTS.md.
+// This step writes two idempotent blocks to the discord workspace AGENTS.md
+// so the bot reads them on session startup:
+//
+//   1. cron-tools cheatsheet — the catalog already has `cron` (coding
+//      profile, see step 22), but smaller open models (Gemma 4 NVFP4 in
+//      particular) don't reliably surface a tool from the catalog without
+//      a worked example. Verified 2026-04-30: bot replied "I can't wake
+//      up on a timer" to "remind me in 1 minute", even though the tool
+//      was technically in its toolset. A 30-line example in AGENTS.md is
+//      the cheapest reliable fix.
+//
+//   2. browser-tools cheatsheet — same body as step 17 mirrors into main.
+//      Reused via the existing TOOLS_CHEATSHEET_BODY constant so a single
+//      edit to the cheatsheet propagates to both workspaces.
+//
+// Skip cleanly if the file doesn't exist (pre-onboarding state, or the
+// operator hasn't onboarded a Discord-routed agent yet). Same idempotency
+// pattern as steps 16/17.
+const WORKSPACE_DISCORD_AGENTS_PATH = '/home/node/.openclaw/workspace-discord/AGENTS.md';
+const CRON_CHEATSHEET_START = '<!-- patch-config:cron-tools:start -->';
+const CRON_CHEATSHEET_END = '<!-- patch-config:cron-tools:end -->';
+const CRON_CHEATSHEET_BODY =
+  '\n## Time-based reminders (cron tool)\n\n' +
+  'When the user asks for a future-tense action ("remind me in X", "tomorrow\n' +
+  'morning", "every Monday at 9"), call the `cron` tool. One-shot shape:\n\n' +
+  '```json\n' +
+  '{\n' +
+  '  "tool": "cron",\n' +
+  '  "action": "add",\n' +
+  '  "at": "+1m",\n' +
+  '  "agent": "discord-friend",\n' +
+  '  "message": "halló smalló petyuska",\n' +
+  '  "channel": "discord",\n' +
+  '  "to": "user:<discord-snowflake>",\n' +
+  '  "deleteAfterRun": true\n' +
+  '}\n' +
+  '```\n\n' +
+  '- `at` accepts ISO timestamps (with timezone offset) OR relative duration\n' +
+  '  syntax (`+1m`, `+20min`, `+2h`).\n' +
+  '- `agent: "discord-friend"` runs the wake-up turn in your own context.\n' +
+  '- `to: "user:<id>"` DMs the original requester; `to: "channel:<id>"`\n' +
+  '  posts in a guild channel. Take the user id from the inbound message\n' +
+  '  metadata or USER.md, not from the chat text.\n' +
+  '- `deleteAfterRun: true` removes the job after it fires once. Omit for\n' +
+  '  recurring jobs.\n\n' +
+  'Recurring shape — use `cron` (5- or 6-field expression) plus `tz`:\n\n' +
+  '```json\n' +
+  '{\n' +
+  '  "tool": "cron",\n' +
+  '  "action": "add",\n' +
+  '  "cron": "0 9 * * 1",\n' +
+  '  "tz": "Europe/Budapest",\n' +
+  '  "agent": "discord-friend",\n' +
+  '  "message": "monday standup ping",\n' +
+  '  "channel": "discord",\n' +
+  '  "to": "user:<id>"\n' +
+  '}\n' +
+  '```\n\n' +
+  'Acknowledge crisply ("Okay, I\'ll ping you in 1 minute") — do NOT\n' +
+  'explain the tool plumbing or apologize about timing precision.\n\n' +
+  'Cancel a scheduled job: list with `{tool: "cron", action: "list"}` to\n' +
+  'find the id, then `{tool: "cron", action: "rm", id: "<job-id>"}`.\n';
+
+if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
+  let agentsMd = fs.readFileSync(WORKSPACE_DISCORD_AGENTS_PATH, 'utf8');
+  let mdChanged = false;
+  if (!agentsMd.includes(CRON_CHEATSHEET_START)) {
+    const sep = agentsMd.endsWith('\n') ? '' : '\n';
+    agentsMd += `${sep}\n${CRON_CHEATSHEET_START}\n${CRON_CHEATSHEET_BODY}${CRON_CHEATSHEET_END}\n`;
+    mdChanged = true;
+    console.log('[patch-config] workspace-discord/AGENTS.md += cron-tools cheatsheet block');
+  }
+  if (!agentsMd.includes(TOOLS_CHEATSHEET_START)) {
+    const sep = agentsMd.endsWith('\n') ? '' : '\n';
+    agentsMd += `${sep}\n${TOOLS_CHEATSHEET_START}\n${TOOLS_CHEATSHEET_BODY}${TOOLS_CHEATSHEET_END}\n`;
+    mdChanged = true;
+    console.log('[patch-config] workspace-discord/AGENTS.md += browser-tools cheatsheet block');
+  }
+  if (mdChanged) {
+    fs.writeFileSync(WORKSPACE_DISCORD_AGENTS_PATH, agentsMd);
+  }
+} else {
+  console.log(
+    '[patch-config] workspace-discord/AGENTS.md not found — skipping discord cheatsheet ' +
+      'blocks (workspace not yet onboarded, or stack uses no discord-routed agent).'
+  );
 }
 
 if (!changed) {

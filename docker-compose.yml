@@ -1005,16 +1005,30 @@ services:
   #   21. Discord actions.reactions toggle — default `true`; works with the
   #       bundled vllm-llm gemma4 colon-namespace parser patch. Env override:
   #       OPENCLAW_DISCORD_ACTIONS_REACTIONS=false. v0.11.0+.
-  #   22. Discord-routed agent tools.alsoAllow += `group:messaging` so the
-  #       `message` tool isn't catalog-filtered out under the default
+  #   22. Discord-routed agent tools.alsoAllow +=
+  #       `group:messaging,browser,tts,canvas` so the message / browser /
+  #       tts / canvas tools aren't catalog-filtered out under the default
   #       `coding` profile. Walks agents.routes[] for the channel=discord
-  #       agentId, preserves operator-added entries. v0.11.0+.
+  #       agentId, preserves operator-added entries. v0.11.0+ (default
+  #       widened from `group:messaging` only in v0.11.1+).
   #   23. Ensure ${OPENCLAW_CONFIG_DIR}/canvas exists for Path A image-gen
   #       inline rendering. The bridge mirrors generated PNGs there and
   #       emits `[embed url="/__openclaw__/canvas/<file>"]` shortcodes the
   #       gateway serves under /__openclaw__/canvas/. Idempotent mkdir,
   #       not env-gated (an empty dir is harmless when Path A is off).
   #       v0.11.0+ (was a manual mkdir step before).
+  #   24. Discord progressive streaming — channels.discord.streaming and
+  #       optional draftChunk sub-knobs. Defaults to `partial` (single
+  #       preview message, edit-in-place). v0.11.0+.
+  #   25. Discord-routed agent tools.profile — default `full`. Without an
+  #       explicit profile the agent inherits OpenClaw's non-main default
+  #       `coding`, which excludes browser/tts/canvas. Step writes the
+  #       profile only when undefined (operator-set values preserved).
+  #       v0.11.1+.
+  #   26. Workspace-discord AGENTS.md patcher-managed blocks (cron-tools
+  #       cheatsheet + browser-tools cheatsheet, mirrored from step 17 to
+  #       the discord-friend's separate workspace). Idempotent; skips
+  #       cleanly if the file doesn't exist (pre-onboarding). v0.11.1+.
   #
   #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
   #  gateway starts anyway and the onboarding wizard can run interactively.
@@ -1095,6 +1109,21 @@ services:
       # `false` to suppress the lines entirely (workaround for the Discord
       # markdown-mangle on tool names like `comfyui_image__generate`).
       OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS: ${OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS:-}
+      # Discord-routed agent tool profile (patcher step 25). Default `full`
+      # — same effective surface as the main agent (cron, browser,
+      # image_generate, web_search, memory, python_sandbox, tts, canvas,
+      # messaging). The OpenClaw non-main default `coding` excludes
+      # browser/tts/canvas; the bot then replies "I can't navigate the
+      # browser" to screenshot requests and silently drops `[[tts:speak]]`
+      # directives. Set empty to skip the step (preserves whatever's in
+      # openclaw.json). Enum: minimal | coding | messaging | full.
+      OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE: ${OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE:-full}
+      # Discord-routed agent tools.alsoAllow additions (patcher step 22).
+      # Comma-separated list ADDED on top of the profile. Default
+      # `group:messaging,browser,tts,canvas` — messaging for the `message`
+      # tool (reactions / replies), the other three as belt-and-braces if a
+      # tighter profile is chosen later. Set empty to skip the step.
+      OPENCLAW_DISCORD_AGENT_ALSO_ALLOW: ${OPENCLAW_DISCORD_AGENT_ALSO_ALLOW:-group:messaging,browser,tts,canvas}
       # vLLM idle watchdog timeout (patcher step 8). Default 600s gives
       # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
       # to 300 for fast-model-only deploys.
