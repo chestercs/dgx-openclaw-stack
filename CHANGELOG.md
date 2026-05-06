@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Known limit — Discord guild-channel cron blocked upstream
+- **Cron-tool deferred actions DO NOT work on Discord guild text channels
+  in openclaw 2026.4.22.** The runtime emits
+  `agents.<id>.tools.allow allowlist contains unknown entries (cron).
+  These entries are shipped core tools but unavailable in the current
+  runtime/provider/model/config.` on every inbound guild message, and
+  the model (Gemma 4 NVFP4) hallucinates *"I can't use the tool 'cron'
+  here because it isn't available"* when a request includes timing
+  ("X minutes later, do Y"). DM context with the same agent works
+  cleanly. Verified 2026-05-06 with `tools.profile=full`,
+  `tools.alsoAllow=[…,cron]`, `channels.discord.capabilities=[cron]`,
+  and a `sessions_send` delegation pattern in `AGENTS.md` — none
+  unblocked the guild path. Documented in
+  `docs/upstream-feedback/discord-guild-cron-runtime-block.md` for the
+  upstream `openclaw/openclaw` repo. Workaround for operators: ask for
+  scheduling in DM, not in guild channels. Guild-channel image-gen and
+  web-search work correctly — only cron-deferred flows are affected.
+- **Patcher cheatsheet adapts**: step 26 cron-tools cheatsheet now warns
+  the agent that DM uses cron directly while guild context should
+  delegate via `sessions_send` to the main agent (which CAN call cron).
+  The delegation does not currently succeed end-to-end because Gemma
+  4 NVFP4 declines the secondary path with a self-imposed "security
+  restriction" — but the cheatsheet leaves the recipe in place for
+  operators on a more capable backend (Sonnet, GPT-4-class) where
+  the delegation should work.
+
+### Added — Discord cron flow end-to-end (Gemma 4 NVFP4 verified)
+- **Patcher step 25c** (new): writes
+  `agents.list[<discord-routed>].thinkingDefault = "minimal"`. Without
+  reasoning, Gemma 4 NVFP4 generates an immediate text-only ack ("Mehet,
+  1 perc múlva szólok!") and **does not surface structured tool-calls**
+  even when the tool is in the catalog and AGENTS.md shows the worked
+  example. Verified 2026-05-06: same Discord prompt with no thinking →
+  text-only ack, no `cron add`; with `thinkingDefault: "minimal"` → clean
+  cron registration. Higher tiers (`low`/`medium`) also work but are
+  2-3× slower. Schema-correct field name was found by walking the
+  `openclaw config schema` dump after two crash-loop attempts on the
+  wrong paths (`agents.list[*].llm.thinking` and
+  `agents.defaults.llm.thinking` are both rejected by the 2026.4.22
+  schema). Env knob: `OPENCLAW_DISCORD_AGENT_THINKING` (enum
+  `off|minimal|low|medium|high|xhigh`, default `minimal`, empty disables).
+- **Patcher step 25b** (new, self-heal): removes the invalid
+  `agents.list[*].llm` and `agents.defaults.llm.thinking` fields if a
+  prior buggy patcher revision wrote them. Without this self-heal,
+  upgrading past the broken version requires `openclaw doctor --fix` or
+  hand-editing `openclaw.json`.
+- **Patcher step 26** (refreshed): cheatsheet body in
+  `workspace-discord/AGENTS.md` rewritten in Hungarian with stronger
+  call-to-action ("KÖTELEZŐ HÍVNI, NE csak ack-elj"). The JSON shape
+  now uses `to: "channel:<DM-channel-id>"` instead of
+  `to: "user:<user-id>"` — the openclaw delivery resolver maps `user:`
+  to `channel:` by string substitution rather than a Discord API
+  lookup, so a user-id passed as `user:` ends up resolving to a
+  non-existent channel-id and delivery fails with "Unknown Channel".
+  The DM channel id is now sourced from `USER.md`. Step 26's idempotency
+  also upgraded: it now updates the body in-place when the canonical
+  cheatsheet drifts from the on-disk content (previous behavior was
+  append-only, so operators on existing installs missed cheatsheet
+  refreshes).
+
+### Changed — Patcher step 24 honors explicit env override (breaking)
+- **`OPENCLAW_DISCORD_STREAMING` now wins over an existing value in
+  `openclaw.json`.** The previous user-managed-protection contract
+  ("write only when the field is undefined") meant once the field had
+  been written there was no way to flip it via `.env` — the operator
+  had to hand-edit `openclaw.json`, which `CLAUDE.md` explicitly
+  forbids. New rule: a non-empty, valid env value overrides the live
+  config; empty string or unset still preserves whatever's there.
+  Same posture should be considered for steps 20-22 next; they retain
+  the older contract for now since their env knobs are list-shaped
+  (set-union vs. exact swap is a separate decision). Discovered while
+  trying to flip `partial → off` to work around an upstream `message`
+  tool `edit` action validator that rejects every Discord-channel
+  shape Gemma 4 NVFP4 generates (`channel: "discord"`,
+  `channel: "1498...id"`, `channel: "channel:1498..."` all fail with
+  `Discord channel id is required (use channel:<id>)`). Atomic
+  delivery (streaming=off) sidesteps the bug — at the cost of a
+  silent ~30-60s wait on the 6 tok/s NVFP4 backend before the answer
+  lands. The `partial` mode remains the right default for faster
+  backends; this change just makes the default actually overridable.
+
 ### Added — Discord-routed agent full tool capability
 - **Patcher step 25** (new): writes `tools.profile = "full"` on the
   Discord-routed agent unless the operator already set one. Without an

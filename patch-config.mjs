@@ -1187,7 +1187,21 @@ if (config.channels?.discord?.enabled === true) {
 // If the user adds something to alsoAllow themselves, we preserve it and
 // only add what's missing.
 const alsoAllowRaw = process.env.OPENCLAW_DISCORD_AGENT_ALSO_ALLOW;
-const alsoAllowDefault = 'group:messaging,browser,tts,canvas';
+// `group:messaging` was previously default but it triggers an "unknown
+// entries" warning at gateway boot AND blocks the cron tool on guild
+// channels (the runtime treats the group tag as a messaging-profile
+// activation that filters out non-messaging tools). The step 25b cleanup
+// pass removes it from existing configs; the default here avoids putting
+// it back on fresh installs. tools.profile=full already covers messaging.
+//
+// `cron` is in the `coding`/`full` profile — but on guild channels the
+// runtime tool-policy filter excludes it from the catalog the model
+// sees (verified 2026-05-06: same agent + same tools.profile=full,
+// DM context lists `cron`, guild context omits it; Gemma 4 then
+// hallucinates "I can't use the tool cron because it isn't available").
+// Explicit alsoAllow=cron defeats the filter — operator-intent override
+// of the implicit guild restriction.
+const alsoAllowDefault = 'browser,tts,canvas,cron';
 const alsoAllowEntries = (alsoAllowRaw === undefined ? alsoAllowDefault : alsoAllowRaw)
   .split(',').map(s => s.trim()).filter(Boolean);
 if (alsoAllowEntries.length > 0) {
@@ -1301,6 +1315,17 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
   );
 } else if (streamingMode !== '' && config.channels?.discord?.enabled === true) {
   config.channels.discord ??= {};
+  // Operator-explicit env knob always wins over a previously-written value:
+  // the user-managed-protection contract (steps 20-22 / 24) is "if the env
+  // is unset, leave the field alone." But when the operator explicitly sets
+  // OPENCLAW_DISCORD_STREAMING in .env, that intent must reach the live
+  // config — otherwise the only way to flip an existing `partial` to `off`
+  // is to hand-edit openclaw.json, which CLAUDE.md explicitly forbids.
+  // Empty string still skips the step entirely (preserves whatever's there).
+  const envExplicit = streamingRaw !== undefined && streamingRaw.trim() !== '';
+  const currentMode = typeof config.channels.discord.streaming === 'string'
+    ? config.channels.discord.streaming
+    : config.channels.discord.streaming?.mode;
   if (config.channels.discord.streaming === undefined) {
     config.channels.discord.streaming = streamingMode;
     changed = true;
@@ -1308,6 +1333,19 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
       `[patch-config] channels.discord.streaming = ${JSON.stringify(streamingMode)} ` +
       `(progressive Discord delivery; ~5.5s edit cadence at 6 tok/s — set ` +
       `OPENCLAW_DISCORD_STREAMING=off to disable, or "" to skip the step)`,
+    );
+  } else if (envExplicit && currentMode !== streamingMode) {
+    // Preserve the nested object form if the operator already toggled
+    // streaming.preview.toolProgress; only swap the `mode` field.
+    if (typeof config.channels.discord.streaming === 'string') {
+      config.channels.discord.streaming = streamingMode;
+    } else {
+      config.channels.discord.streaming.mode = streamingMode;
+    }
+    changed = true;
+    console.log(
+      `[patch-config] channels.discord.streaming overridden to ${JSON.stringify(streamingMode)} ` +
+      `(was ${JSON.stringify(currentMode)}; OPENCLAW_DISCORD_STREAMING explicit env wins)`,
     );
   }
 
@@ -1427,6 +1465,15 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
   }
 }
 
+// NOTE: Setting `channels.discord.capabilities = ["cron"]` does NOT unlock
+// cron on guild text-channel routes — verified 2026-05-06. The runtime
+// gates cron at the runtime/provider/model/config layer (per the
+// "shipped core tools but unavailable in the current runtime" warning),
+// not at the channel-capability layer. Documented upstream limit; the
+// workaround is to delegate guild-channel scheduling requests via
+// `sessions_send` to the main agent, which CAN call cron. See
+// docs/upstream-feedback/discord-guild-cron-runtime-block.md (TODO).
+
 // ─── 25. Discord-routed agent tools.profile ──────────────────────────────────
 // Without an explicit `tools.profile` on the Discord-routed agent, OpenClaw
 // falls back to the global default `"coding"` profile. That profile includes
@@ -1487,6 +1534,140 @@ if (profileEntry !== '') {
   }
 }
 
+// ─── 25c. Discord-routed agent thinkingDefault — default `"minimal"` ────────
+// Gemma 4 NVFP4 with `thinkingDefault: "off"` (the openclaw upstream
+// default) generates immediate text-only replies and fails to surface
+// structured tool-calls — even when the catalog includes `cron`/`browser`
+// and the AGENTS.md cheatsheet shows the worked example. The model emits
+// an apologetic "I cannot do that" instead of invoking the tool. Verified
+// 2026-05-06: same Discord prompt with no thinking → text-only ack +
+// no tool-call; same prompt via CLI with `--thinking minimal` → clean
+// `cron add` tool-call.
+//
+// `minimal` is the cheapest reasoning tier that activates the tool-choice
+// path on Gemma 4 — ~3-5s extra prefill on the 6 tok/s GB10 backend.
+// Higher tiers are 2-3× slower.
+//
+// Per-agent (agents.list.<id>.thinkingDefault) is preferred over global
+// (agents.defaults.thinkingDefault) so the main agent's CLI runs aren't
+// affected — main typically wants `off` for speed, with explicit
+// --thinking override when a tool-call is expected.
+//
+// Schema: agents.list.<id>.thinkingDefault: enum (off|minimal|low|medium|high|xhigh).
+// Found 2026-05-06 by walking the openclaw doctor schema dump after two
+// crash-loop attempts on `llm.thinking` and `agents.defaults.llm.thinking`.
+//
+// User-managed protection: if the operator already set thinkingDefault
+// on the discord-friend agent, leave it alone. Empty env value disables
+// this step entirely.
+const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const dcThinkingRaw = process.env.OPENCLAW_DISCORD_AGENT_THINKING;
+const dcThinking = (dcThinkingRaw === undefined ? 'minimal' : dcThinkingRaw.trim());
+if (dcThinking !== '') {
+  if (!VALID_THINKING_LEVELS.has(dcThinking)) {
+    console.warn(
+      `[patch-config] OPENCLAW_DISCORD_AGENT_THINKING=${JSON.stringify(dcThinking)} ` +
+      `not in {off, minimal, low, medium, high, xhigh} — skipping step 25c.`,
+    );
+  } else {
+    const bindings25c = config.bindings ?? [];
+    const discordAgentIds25c = new Set(
+      bindings25c
+        .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
+        .map(b => b.agentId),
+    );
+    const list25c = config.agents?.list ?? [];
+    for (const agent of list25c) {
+      if (!discordAgentIds25c.has(agent?.id)) continue;
+      if (agent.thinkingDefault === undefined) {
+        agent.thinkingDefault = dcThinking;
+        changed = true;
+        console.log(
+          `[patch-config] agents.list[id=${JSON.stringify(agent.id)}].thinkingDefault = ` +
+          `${JSON.stringify(dcThinking)} (Gemma 4 NVFP4 needs reasoning to surface ` +
+          `tool-calls; set OPENCLAW_DISCORD_AGENT_THINKING="" to disable)`,
+        );
+      }
+    }
+  }
+}
+
+// ─── 25b. Cleanup: remove invalid agents.list[*].llm field + stray thinking ─
+// The openclaw schema does NOT accept `llm` as a per-agent property under
+// agents.list[*] — it lives only on agents.defaults.llm. An earlier patcher
+// version (briefly shipped as v0.11.2-dev on 2026-05-06) wrote
+// agents.list[<discord-friend>].llm.thinking trying to scope thinking
+// per-agent, which crashes the gateway on next start with
+//   "agents.list.1: Unrecognized key: llm"
+// putting it in a config-invalid restart-loop. This step removes the
+// stray field so an upgrade past the broken version self-heals without
+// requiring `openclaw doctor --fix` or a hand-edit. The actual per-agent
+// thinking knob (if openclaw eventually supports one) needs to land on a
+// property the schema accepts — TBD. For now the workaround is to set
+// `agents.defaults.llm.thinking` globally, which affects every agent.
+const list25b = config.agents?.list ?? [];
+for (const agent of list25b) {
+  if (agent && Object.prototype.hasOwnProperty.call(agent, 'llm')) {
+    delete agent.llm;
+    changed = true;
+    console.log(
+      `[patch-config] removed invalid agents.list[id=${JSON.stringify(agent?.id ?? '?')}].llm ` +
+      `(schema rejects per-agent llm)`,
+    );
+  }
+}
+// Same self-heal for agents.defaults.llm.thinking — also schema-invalid in
+// 2026.4.22; an interim patcher version wrote it. Leave the rest of
+// agents.defaults.llm intact (idleTimeoutSeconds is valid).
+if (config.agents?.defaults?.llm && Object.prototype.hasOwnProperty.call(config.agents.defaults.llm, 'thinking')) {
+  delete config.agents.defaults.llm.thinking;
+  changed = true;
+  console.log(
+    `[patch-config] removed invalid agents.defaults.llm.thinking ` +
+    `(schema rejects this key in openclaw 2026.4.22)`,
+  );
+}
+
+// Discord-routed agent `tools.alsoAllow` cleanup: drop `group:messaging`.
+// The openclaw onboarding wizard pre-populates this entry, but the
+// 2026.4.22 runtime logs an "unknown entries (group:messaging)" warning
+// (verified: agent/embedded warning at every gateway boot) AND — more
+// critically — its presence on the alsoAllow list activates a runtime
+// tool-policy filter that **excludes `cron`** from the catalog when the
+// agent is hit on a guild text channel (verified 2026-05-06: same agent
+// + same prompt, DM-context registers cron successfully, guild-context
+// returns "I can't use the tool 'cron' here because it isn't available"
+// despite cron appearing textually in the system prompt). Removing
+// `group:messaging` fixes both: the warning goes away and the cron tool
+// becomes reachable on guild routes. The other alsoAllow entries
+// (`browser`, `tts`, `canvas`) remain — those are valid concrete tool
+// names, not group tags.
+//
+// `tools.profile: "full"` already covers messaging tools, so removing
+// the group tag does not narrow the agent's effective tool surface.
+// Operator-set values that don't match this exact pattern are preserved.
+const bindings25b = config.bindings ?? [];
+const discordAgentIds25b = new Set(
+  bindings25b
+    .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
+    .map(b => b.agentId),
+);
+const list25bFilter = config.agents?.list ?? [];
+for (const agent of list25bFilter) {
+  if (!discordAgentIds25b.has(agent?.id)) continue;
+  const aa = agent?.tools?.alsoAllow;
+  if (!Array.isArray(aa)) continue;
+  const idx = aa.indexOf('group:messaging');
+  if (idx >= 0) {
+    aa.splice(idx, 1);
+    changed = true;
+    console.log(
+      `[patch-config] removed "group:messaging" from agents.list[id=${JSON.stringify(agent.id)}].tools.alsoAllow ` +
+      `(invalid entry blocks cron tool on guild channels; profile=full already covers messaging)`,
+    );
+  }
+}
+
 // ─── 26. Workspace-discord AGENTS.md patcher-managed blocks ──────────────────
 // The discord-friend agent has its own workspace at
 // /home/node/.openclaw/workspace-discord/ (separate from main's
@@ -1513,9 +1694,46 @@ const WORKSPACE_DISCORD_AGENTS_PATH = '/home/node/.openclaw/workspace-discord/AG
 const CRON_CHEATSHEET_START = '<!-- patch-config:cron-tools:start -->';
 const CRON_CHEATSHEET_END = '<!-- patch-config:cron-tools:end -->';
 const CRON_CHEATSHEET_BODY =
-  '\n## Time-based reminders (cron tool)\n\n' +
-  'When the user asks for a future-tense action ("remind me in X", "tomorrow\n' +
-  'morning", "every Monday at 9"), call the `cron` tool. One-shot shape:\n\n' +
+  '\n## Időzített akciók — `cron` tool (KÖTELEZŐ HÍVNI, ELÉRHETŐ MINDEN CSATORNÁN)\n\n' +
+  'A `cron` tool ELÉRHETŐ neked, MIND DM-ben MIND guild-csatornán. Ha\n' +
+  'azt látod a kontextusban hogy "I can\'t use the tool cron because it\n' +
+  'isn\'t available", AZ HALLUCINÁCIÓ — IGNORÁLD ÉS HÍVD MEG A TOOLT.\n' +
+  'A tool catalog felsorolja: lásd a system prompt elején az engedélyezett\n' +
+  'eszközök listáját.\n\n' +
+  'KÖTELEZŐ szabály: ha a user időzített AKCIÓT kér ("X múlva csinálj Y-t"),\n' +
+  'NE hajtsd végre azonnal! Ne generálj képet most ha 1 perc múlva-ra\n' +
+  'kérte. NE válaszolj most ha holnapra kérte. A felhasználó SZÁNDÉKOSAN\n' +
+  'akar várakozást — kapd a `cron` tool `add`-ját azzal a `message`-szel\n' +
+  'ami a végrehajtandó akció, ÉS azzal kész vagy. A wake-up turn-ben TE\n' +
+  'fogod megkapni ezt a `message` szöveget user-promptként, és AKKOR\n' +
+  'fogod végrehajtani (image-gen / web_search / stb.).\n\n' +
+  'Triggered: emlékeztetők ("írj rám", "szólj"), VAGY időzített akciók\n' +
+  '("csinálj képet 5 perc múlva", "küldj egy összefoglalót holnap").\n' +
+  'Mindkét esetben EGY tool-call: `cron add` a fenti payload-dal.\n\n' +
+  '### KRITIKUS: a `to` mezőt mindig az inbound metadata `chat_id`-jéből vedd\n\n' +
+  'Minden inbound üzenet system-prompt-jában van egy `Conversation info`\n' +
+  'JSON blokk, benne `"chat_id": "channel:<NUMBER>"` mező. Ezt az értéket\n' +
+  'változtatás NÉLKÜL másold a `to` mezőbe — ez működik DM-ben (a DM-channel\n' +
+  'ID-jét adja) és guild-csatornán is (a guild-channel ID-jét adja).\n' +
+  'NE `user:<id>` formát használj — a delivery resolver azon "Unknown Channel"-t\n' +
+  'ad. NE pedig a `sender_id`-t (az a user discord snowflake) — a kettő különböző!\n\n' +
+  '### FONTOS: DM vs guild-csatorna eltérés\n\n' +
+  'DM-en (privát üzenet): a `cron` tool közvetlenül elérhető — hívd meg úgy,\n' +
+  'ahogy a payload-ban szerepel.\n\n' +
+  'Guild-csatornán (#gptteszt és társai, `is_group_chat: true` az inbound\n' +
+  'metadatában): a `cron` tool runtime-szinten nem hívható közvetlenül.\n' +
+  'HELYETTE használd a `sessions_send` tool-t és delegáld a main agent-nek:\n\n' +
+  '```json\n' +
+  '{\n' +
+  '  "tool": "sessions_send",\n' +
+  '  "to": "main",\n' +
+  '  "message": "Cron job kérés guild csatornáról. at=+1m, agent=discord-friend, channel=discord, to=<chat_id-az-inbound-metadataból>, message=\\"<a végrehajtandó akció szövege>\\". Hívd meg helyettem a cron tool-t add action-nal."\n' +
+  '}\n' +
+  '```\n\n' +
+  'A main agent megkapja és hívja a cron-t a saját kontextusából (ahol\n' +
+  'engedélyezett). A wake-up turn akkor a discord-friend agent-en fut le,\n' +
+  'tehát te kapod a `message` szöveget user-promptként és te hajtod végre.\n\n' +
+  '### Egyszeri (one-shot) emlékeztető (DM-en közvetlenül)\n\n' +
   '```json\n' +
   '{\n' +
   '  "tool": "cron",\n' +
@@ -1524,19 +1742,21 @@ const CRON_CHEATSHEET_BODY =
   '  "agent": "discord-friend",\n' +
   '  "message": "halló smalló petyuska",\n' +
   '  "channel": "discord",\n' +
-  '  "to": "user:<discord-snowflake>",\n' +
+  '  "to": "<chat_id-az-inbound-metadataból>",\n' +
   '  "deleteAfterRun": true\n' +
   '}\n' +
   '```\n\n' +
-  '- `at` accepts ISO timestamps (with timezone offset) OR relative duration\n' +
-  '  syntax (`+1m`, `+20min`, `+2h`).\n' +
-  '- `agent: "discord-friend"` runs the wake-up turn in your own context.\n' +
-  '- `to: "user:<id>"` DMs the original requester; `to: "channel:<id>"`\n' +
-  '  posts in a guild channel. Take the user id from the inbound message\n' +
-  '  metadata or USER.md, not from the chat text.\n' +
-  '- `deleteAfterRun: true` removes the job after it fires once. Omit for\n' +
-  '  recurring jobs.\n\n' +
-  'Recurring shape — use `cron` (5- or 6-field expression) plus `tz`:\n\n' +
+  '- `at: "+1m"` → percek (`+Nm`), órák (`+Nh`), másodpercek (`+Ns`)\n' +
+  '  relatív formában. ISO timestamp tz-offset-tel is jó: `"2026-05-06T17:30:00+02:00"`.\n' +
+  '- `agent: "discord-friend"` → a wake-up turn a saját kontextusodban fut.\n' +
+  '- `to`: pontosan az inbound metadata `chat_id` értéke (`"channel:<NUMBER>"`).\n' +
+  '- `channel: "discord"` → fix érték.\n' +
+  '- `deleteAfterRun: true` → egyszeri futás után magát törli.\n' +
+  '- `message`: ha a user időzített **akciót** kér (pl. "csinálj egy képet 1 perc\n' +
+  '  múlva ..."), a `message` legyen a teljes akció-instrukció — a wake-up\n' +
+  '  turn-ben TE kapod meg ezt a szöveget user-promptként, és akkor hívd a\n' +
+  '  `comfyui_image__generate`-et / `web_search`-öt / stb.\n\n' +
+  '### Ismétlődő emlékeztető (cron expression)\n\n' +
   '```json\n' +
   '{\n' +
   '  "tool": "cron",\n' +
@@ -1544,30 +1764,70 @@ const CRON_CHEATSHEET_BODY =
   '  "cron": "0 9 * * 1",\n' +
   '  "tz": "Europe/Budapest",\n' +
   '  "agent": "discord-friend",\n' +
-  '  "message": "monday standup ping",\n' +
+  '  "message": "hétfői emlékeztető",\n' +
   '  "channel": "discord",\n' +
-  '  "to": "user:<id>"\n' +
+  '  "to": "<chat_id-az-inbound-metadataból>"\n' +
   '}\n' +
   '```\n\n' +
-  'Acknowledge crisply ("Okay, I\'ll ping you in 1 minute") — do NOT\n' +
-  'explain the tool plumbing or apologize about timing precision.\n\n' +
-  'Cancel a scheduled job: list with `{tool: "cron", action: "list"}` to\n' +
-  'find the id, then `{tool: "cron", action: "rm", id: "<job-id>"}`.\n';
+  '### Lemondás\n\n' +
+  '`{"tool": "cron", "action": "list"}` → kapsz egy id-listát.\n' +
+  '`{"tool": "cron", "action": "rm", "id": "<job-id>"}` → törli.\n\n' +
+  '### Ack-stílus\n\n' +
+  'Tömör visszajelzés ("Mehet, 1 perc múlva szólok!"), majd RÖGTÖN\n' +
+  'hívd meg a `cron` tool `add`-ját. Ne magyarázd a tool-plumbing-ot\n' +
+  'és ne kérj bocsánatot a timing precision miatt.\n';
+
+// Idempotent upsert of a marker-delimited block. If the markers are not
+// present, append the block. If they are, swap the body in-place when it
+// has drifted from the canonical body (e.g. patcher upgrade ships an
+// updated cheatsheet — operators on existing installs should pick it up
+// without manual intervention). Anything outside the markers is left
+// untouched.
+function upsertMarkedBlock(content, startMarker, endMarker, body, label) {
+  const startIdx = content.indexOf(startMarker);
+  const endIdx = content.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    const sep = content.endsWith('\n') ? '' : '\n';
+    return {
+      content: content + `${sep}\n${startMarker}\n${body}${endMarker}\n`,
+      changed: true,
+      label: `+= ${label}`,
+    };
+  }
+  const before = content.slice(0, startIdx + startMarker.length);
+  const after = content.slice(endIdx);
+  const desiredInner = `\n${body}`;
+  const currentInner = content.slice(startIdx + startMarker.length, endIdx);
+  if (currentInner === desiredInner) {
+    return { content, changed: false, label: '' };
+  }
+  return {
+    content: before + desiredInner + after,
+    changed: true,
+    label: `~= ${label} (body refreshed)`,
+  };
+}
 
 if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
   let agentsMd = fs.readFileSync(WORKSPACE_DISCORD_AGENTS_PATH, 'utf8');
   let mdChanged = false;
-  if (!agentsMd.includes(CRON_CHEATSHEET_START)) {
-    const sep = agentsMd.endsWith('\n') ? '' : '\n';
-    agentsMd += `${sep}\n${CRON_CHEATSHEET_START}\n${CRON_CHEATSHEET_BODY}${CRON_CHEATSHEET_END}\n`;
+  const cronUpsert = upsertMarkedBlock(
+    agentsMd, CRON_CHEATSHEET_START, CRON_CHEATSHEET_END, CRON_CHEATSHEET_BODY,
+    'cron-tools cheatsheet',
+  );
+  if (cronUpsert.changed) {
+    agentsMd = cronUpsert.content;
     mdChanged = true;
-    console.log('[patch-config] workspace-discord/AGENTS.md += cron-tools cheatsheet block');
+    console.log(`[patch-config] workspace-discord/AGENTS.md ${cronUpsert.label}`);
   }
-  if (!agentsMd.includes(TOOLS_CHEATSHEET_START)) {
-    const sep = agentsMd.endsWith('\n') ? '' : '\n';
-    agentsMd += `${sep}\n${TOOLS_CHEATSHEET_START}\n${TOOLS_CHEATSHEET_BODY}${TOOLS_CHEATSHEET_END}\n`;
+  const toolsUpsert = upsertMarkedBlock(
+    agentsMd, TOOLS_CHEATSHEET_START, TOOLS_CHEATSHEET_END, TOOLS_CHEATSHEET_BODY,
+    'browser-tools cheatsheet',
+  );
+  if (toolsUpsert.changed) {
+    agentsMd = toolsUpsert.content;
     mdChanged = true;
-    console.log('[patch-config] workspace-discord/AGENTS.md += browser-tools cheatsheet block');
+    console.log(`[patch-config] workspace-discord/AGENTS.md ${toolsUpsert.label}`);
   }
   if (mdChanged) {
     fs.writeFileSync(WORKSPACE_DISCORD_AGENTS_PATH, agentsMd);
