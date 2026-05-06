@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Discord-routed agent full tool capability
+- **Patcher step 25** (new): writes `tools.profile = "full"` on the
+  Discord-routed agent unless the operator already set one. Without an
+  explicit profile the agent inherits the global `coding` default which
+  is missing `browser`, `tts`, and `canvas`. Symptoms verified on the
+  GB10 production stack: 2026-04-29 the bot replied *"Sorry, I can't
+  navigate the browser and take a screenshot"* — even though the
+  `openclaw-browser` service was running and the main agent could use
+  it; 2026-04-30 the bot replied *"I can't wake up on a timer on my
+  own"* to *"remind me in 1 minute"* — and here the `cron` tool IS in
+  the coding profile, but Gemma 4 NVFP4 didn't surface it from the
+  catalog without a worked example in `AGENTS.md`. Env knob:
+  `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE` (enum
+  `minimal | coding | messaging | full`, default `full`).
+- **Patcher step 26** (new): appends two idempotent patcher-managed
+  blocks to the discord-friend's `workspace-discord/AGENTS.md` —
+  `<!-- patch-config:cron-tools:* -->` (canonical one-shot
+  `{tool: "cron", action: "add", at: "+1m", agent: "discord-friend",
+  message: "...", channel: "discord", to: "user:<id>",
+  deleteAfterRun: true}` shape plus the recurring shape) and
+  `<!-- patch-config:browser-tools:* -->` (mirror of step 17's
+  cheatsheet body for the discord-friend's separate workspace).
+  Skips cleanly if the file doesn't exist (pre-onboarding state).
+- **Patcher step 22 default widened** from `"group:messaging"` to
+  `"group:messaging,browser,tts,canvas"`. Set-union, so operator
+  additions in `openclaw.json` are preserved. Backwards-incompatible
+  for operators who explicitly pinned the env var to `group:messaging`
+  in their `.env` — those installs will continue to receive only
+  messaging until they widen the env value (or delete the override).
+
+### Fixed — Patcher step 22 routing source
+- **Step 22 read `config.agents.routes[]`** for the channel-bound
+  agentId — but that path doesn't exist in the openclaw 2026.4.x
+  schema. Routing lives on the top-level `bindings[]` array
+  (`{type: "route", agentId, match: {channel}}`). Verified
+  2026-05-06 against a live config: `agents.routes` was `undefined`,
+  so the step has been a silent no-op since it shipped in v0.11.0.
+  Step 25 inherits the same bindings-source (fixed from the start);
+  `scripts/smoke-v0.11.sh` and `docs/ARCHITECTURE.md` updated to
+  match. The change explains why operators upgrading from 0.10.x
+  weren't seeing `tools.alsoAllow` populated automatically — the
+  patcher was skipping their agent entirely.
+
 ### Removed — `vllm-llm-proxy` workaround service
 - **`openclaw-vllm-proxy/` directory + compose service block deleted.**
   The proxy was a workaround for vllm-project/vllm#38946 (Gemma 4
@@ -177,11 +220,13 @@ operator workarounds.
   `group:messaging`, so the `message` tool was catalog-filtered out
   even though `actions.reactions=true`. Symptom: discord-friend
   agent responding with "I can't use the tool 'message' here
-  because it isn't available." Step 22 walks `agents.routes[]`,
-  finds Discord-routed agents (`match.channel === "discord"`), and
-  appends the missing entries to their `alsoAllow` array
-  (preserving any operator-added entries). Env-tunable via
-  `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW` (default `group:messaging`).
+  because it isn't available." Step 22 walks the routing source
+  (originally `agents.routes[]`, fixed to top-level `bindings[]` in
+  v0.11.1 — see below), finds Discord-routed agents
+  (`match.channel === "discord"`), and appends the missing entries
+  to their `alsoAllow` array (preserving any operator-added
+  entries). Env-tunable via `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW`
+  (default `group:messaging`).
 
 ### Added — vLLM gemma4 colon-namespace tool-call parser patch
 - **`vllm-llm/Dockerfile` + `patch_parser.py`** (commit `2c7e9e4`)

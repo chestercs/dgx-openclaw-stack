@@ -85,9 +85,10 @@
 //      (useful when running unpatched upstream vllm/vllm-openai image, or
 //      stripping reaction permissions from the bot for guild-rule reasons).
 //  22. Discord-routed agent tools.alsoAllow — default
-//      `["group:messaging", "browser", "tts", "canvas"]`. Looks at
-//      agents.routes[] for the agentId bound to channel "discord"; finds
-//      that agent in agents.list[] and ensures tools.alsoAllow contains the
+//      `["group:messaging", "browser", "tts", "canvas"]`. Looks at the
+//      top-level `bindings[]` array for the agentId bound to channel
+//      "discord"; finds that agent in agents.list[] and ensures
+//      tools.alsoAllow contains the
 //      configured entries. Without this, the Discord-routed agent inherits
 //      the default `tools.profile: "coding"` which is missing two whole
 //      categories the bot needs: (a) `group:messaging` (the `message` tool
@@ -129,7 +130,8 @@
 //      rendering.md). Same user-managed protection as steps 20-22: only
 //      writes when channels.discord is configured AND the field is undefined.
 //  25. Discord-routed agent tools.profile — default `"full"`. Walks
-//      agents.routes[] for the channel=discord agentId (same as step 22),
+//      the top-level bindings[] for the channel=discord agentId (same
+//      as step 22),
 //      writes `tools.profile` if not already set. Without an explicit
 //      profile the agent inherits the global `coding` default which is
 //      missing browser/tts/canvas; with `full` it gets the same capability
@@ -1189,11 +1191,15 @@ const alsoAllowDefault = 'group:messaging,browser,tts,canvas';
 const alsoAllowEntries = (alsoAllowRaw === undefined ? alsoAllowDefault : alsoAllowRaw)
   .split(',').map(s => s.trim()).filter(Boolean);
 if (alsoAllowEntries.length > 0) {
-  const routes = config.agents?.routes ?? [];
+  // Routing lives on the top-level `bindings` array (NOT `agents.routes` —
+  // that path doesn't exist in the openclaw 2026.4.22 schema; verified
+  // 2026-05-06 against a live config). Each binding is
+  // `{type: "route", agentId: "<id>", match: {channel: "<name>"}}`.
+  const bindings = config.bindings ?? [];
   const discordAgentIds = new Set(
-    routes
-      .filter(r => r?.match?.channel === 'discord' && typeof r?.agentId === 'string')
-      .map(r => r.agentId),
+    bindings
+      .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
+      .map(b => b.agentId),
   );
   const list = config.agents?.list ?? [];
   for (const agent of list) {
@@ -1456,11 +1462,12 @@ if (profileEntry !== '') {
       `not in {minimal, coding, messaging, full} — skipping step 25.`,
     );
   } else {
-    const routes = config.agents?.routes ?? [];
+    // Same routing source as step 22 — top-level bindings[].
+    const bindings = config.bindings ?? [];
     const discordAgentIds = new Set(
-      routes
-        .filter(r => r?.match?.channel === 'discord' && typeof r?.agentId === 'string')
-        .map(r => r.agentId),
+      bindings
+        .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
+        .map(b => b.agentId),
     );
     const list = config.agents?.list ?? [];
     for (const agent of list) {

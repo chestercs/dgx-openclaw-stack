@@ -126,13 +126,19 @@ if require_running "${PROJ}openclaw-cli"; then
         if (!d) { console.log("DISCORD_NOT_CONFIGURED"); process.exit(0); }
         console.log("ackReactionScope=" + (d.ackReactionScope ?? "<unset>"));
         console.log("actions.reactions=" + (d.actions?.reactions ?? "<unset>"));
-        const routes = j.agents?.routes ?? [];
-        const discordRoutes = routes.filter(r => r?.match?.channel === "discord");
+        // Routing lives on the top-level bindings[] array, NOT
+        // agents.routes[] — the latter doesn't exist in the openclaw
+        // 2026.4.x schema (verified 2026-05-06). Each entry is
+        // {type: "route", agentId, match: {channel}}.
+        const bindings = j.bindings ?? [];
+        const discordRoutes = bindings.filter(b => b?.type === "route" && b?.match?.channel === "discord");
         console.log("discord_routes=" + discordRoutes.length);
         for (const r of discordRoutes) {
             const agent = (j.agents?.list ?? []).find(a => a?.id === r.agentId);
             const allow = agent?.tools?.alsoAllow ?? [];
+            const profile = agent?.tools?.profile ?? "<unset>";
             console.log(`agent[${r.agentId}].alsoAllow=${allow.join(",")}`);
+            console.log(`agent[${r.agentId}].profile=${profile}`);
         }
     '
 
@@ -154,14 +160,28 @@ if require_running "${PROJ}openclaw-cli"; then
                  "check OPENCLAW_DISCORD_ACTIONS_REACTIONS in .env"
         fi
 
-        if echo "$LAST_OUTPUT" | grep -qE "alsoAllow=.*group:messaging"; then
-            pass "step 22: discord-routed agent has alsoAllow contains group:messaging"
+        if echo "$LAST_OUTPUT" | grep -qE "alsoAllow=.*group:messaging.*browser.*tts.*canvas"; then
+            pass "step 22: discord-routed agent alsoAllow contains group:messaging,browser,tts,canvas"
+        elif echo "$LAST_OUTPUT" | grep -qE "alsoAllow=.*group:messaging"; then
+            fail "step 22: discord-routed agent has group:messaging but missing browser/tts/canvas" \
+                 "force-recreate openclaw-config-init (default widened in v0.11.1)"
         elif echo "$LAST_OUTPUT" | grep -q "discord_routes=0"; then
-            skip "step 22: no discord-routed agent (agents.routes[] has no channel=discord match)" \
+            skip "step 22: no discord-routed agent (bindings[] has no channel=discord match)" \
                  "if you haven't run \`openclaw channels add --channel discord\` yet, this is expected"
         else
             fail "step 22: discord-routed agent missing group:messaging in alsoAllow" \
                  "force-recreate openclaw-config-init"
+        fi
+
+        if echo "$LAST_OUTPUT" | grep -qE "\.profile=full"; then
+            pass "step 25: discord-routed agent tools.profile = full"
+        elif echo "$LAST_OUTPUT" | grep -qE "\.profile=<unset>"; then
+            fail "step 25: discord-routed agent tools.profile not set" \
+                 "force-recreate openclaw-config-init (step 25 introduced in v0.11.1)"
+        elif echo "$LAST_OUTPUT" | grep -q "discord_routes=0"; then
+            : # already skipped above
+        else
+            pass "step 25: discord-routed agent tools.profile is operator-overridden (not full)"
         fi
     fi
 fi

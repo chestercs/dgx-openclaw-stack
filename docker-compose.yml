@@ -1008,9 +1008,12 @@ services:
   #   22. Discord-routed agent tools.alsoAllow +=
   #       `group:messaging,browser,tts,canvas` so the message / browser /
   #       tts / canvas tools aren't catalog-filtered out under the default
-  #       `coding` profile. Walks agents.routes[] for the channel=discord
-  #       agentId, preserves operator-added entries. v0.11.0+ (default
-  #       widened from `group:messaging` only in v0.11.1+).
+  #       `coding` profile. Walks the top-level bindings[] for the
+  #       channel=discord agentId, preserves operator-added entries.
+  #       v0.11.0+ (default widened from `group:messaging` only in
+  #       v0.11.1+; routing-source bug fixed in v0.11.1 — earlier
+  #       versions read agents.routes[] which doesn't exist in the
+  #       openclaw 2026.4.x schema, so the step was a silent no-op).
   #   23. Ensure ${OPENCLAW_CONFIG_DIR}/canvas exists for Path A image-gen
   #       inline rendering. The bridge mirrors generated PNGs there and
   #       emits `[embed url="/__openclaw__/canvas/<file>"]` shortcodes the
