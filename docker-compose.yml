@@ -215,7 +215,7 @@ services:
       --host 0.0.0.0
       --port 8004
       --api-key ${VLLM_API_KEY:-}
-      --quantization modelopt
+      --quantization ${LLM_QUANTIZATION:-modelopt}
       --moe-backend ${LLM_MOE_BACKEND:-marlin}
       --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.50}
       -tp 1
