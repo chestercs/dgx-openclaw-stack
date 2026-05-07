@@ -582,14 +582,24 @@ class LoginHelper:
             return {"profile": profile_name, "status": "saved"}
 
     def cancel(self) -> dict:
-        """Same as finish() but does NOT relaunch Chromium headless. Used
-        when the operator aborts the helper (Ctrl-C in the bootstrap
-        script). Cookies captured up to cancel time persist (Chromium
-        flushes on SIGTERM)."""
+        """Abort the headful login session and return the profile to the
+        normal headless run state. Identical to finish() in that
+        Chromium is restarted headless on the saved user-data-dir —
+        the only difference is the returned status string. Cookies
+        captured up to cancel time persist (Chromium flushes on
+        SIGTERM during stop_profile).
+
+        Pre-v0.13.0 cancel() left the profile stopped, which silently
+        broke any later browser-tool call until the openclaw-browser
+        container was restarted. Verified 2026-05-07 (bot-main was
+        dead since the 2026-04-26 bootstrap-helper cancel). The fix
+        is to mirror finish()'s relaunch path so the operator can
+        cancel without bricking the profile."""
         with self._lock:
             if not self._active_profile:
                 return {"status": "noop"}
             profile_name = self._active_profile
             self.supervisor.stop_profile(profile_name)
+            self.supervisor.start_profile(profile_name, headful=False)
             self._active_profile = None
             return {"profile": profile_name, "status": "cancelled"}
