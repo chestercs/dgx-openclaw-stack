@@ -1123,13 +1123,16 @@ services:
       OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE: ${OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE:-full}
       # Discord-routed agent tools.alsoAllow additions (patcher step 22).
       # Comma-separated list ADDED on top of the profile. Default
-      # `browser,tts,canvas,cron` — `cron` is in profile=full's catalog but
-      # the runtime guild-channel filter strips it from the visible tool list,
-      # so explicit alsoAllow restores it. `group:messaging` was previously
-      # in the default but it triggers an "unknown entries" warning and
-      # blocks `cron` on guild routes — profile=full already covers all
-      # messaging tools. Set empty to skip the step.
-      OPENCLAW_DISCORD_AGENT_ALSO_ALLOW: ${OPENCLAW_DISCORD_AGENT_ALSO_ALLOW:-browser,tts,canvas,cron}
+      # `group:messaging,browser,tts,canvas,cron` — `group:messaging` is
+      # what registers the cron tool-handler on the discord-route runtime
+      # tool-resolver (verified 2026-05-07: removing it breaks `Tool cron
+      # not found` on BOTH DM and guild routes). Yes, the gateway logs
+      # an "unknown entries (group:messaging)" warning on it — that's
+      # upstream-cosmetic, not a real block. `cron` is added explicitly
+      # so the per-route filter sees it. `browser/tts/canvas` are
+      # belt-and-braces if a tighter profile is chosen later. Set empty
+      # to skip the step.
+      OPENCLAW_DISCORD_AGENT_ALSO_ALLOW: ${OPENCLAW_DISCORD_AGENT_ALSO_ALLOW:-group:messaging,browser,tts,canvas,cron}
       # Discord-routed agent thinkingDefault (patcher step 25c). Default
       # `minimal` — Gemma 4 NVFP4 needs reasoning to surface structured
       # tool-calls. Empty disables.

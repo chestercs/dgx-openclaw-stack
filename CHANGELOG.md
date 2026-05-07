@@ -7,7 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Known limit — Discord guild-channel cron is a runtime registration gap
+### Verified — Discord smoke test 14/16 PASS (live, both routes)
+End-to-end smoke on the live GB10 stack 2026-05-07, real Discord client
+through the bot's mention surface. DM (`@ImbulClaw` direct) and guild
+(`#gptteszt` on PetyusPolisz, `<@1498350417074196621>` raw mention).
+Each row verified from the agent session trajectory's
+`messagesSnapshot` — toolCall name + args + toolResult content.
+
+| # | Feature                  | DM | Guild | Notes                                |
+|---|--------------------------|----|-------|--------------------------------------|
+| 1 | chat ack (atomic)        | ✅ | ✅    | streaming=off                        |
+| 2 | web_search               | ✅ | ✅    | SearxNG/Brave; reply has source link |
+| 3 | comfyui_image__generate  | ✅ | ✅    | sdxl PNG, 256x256                    |
+| 4 | memory_search            | ✅ | ✅    | hybrid retrieval, score >0.7         |
+| 5 | python_sandbox__exec     | ✅ | ✅    | dice roll, sandbox container         |
+| 6 | **cron**                 | ❌ | ❌    | runtime `Tool cron not found` (see)  |
+| 7 | browser screenshot       | ✅ | ✅    | bot-main profile after cancel() fix  |
+| 8 | tts (`[[tts:speak]]`)    | ✅ | ✅    | Hungarian voice attaches to message  |
+
+14/16 PASS. Cron is the only feature that fails on either route, and it
+fails on BOTH for the same upstream reason (see next section).
+
+### Known limit — Discord cron is a runtime registration gap on BOTH routes
+- **Cron-tool deferred actions DO NOT work on the Discord agent route in
+  openclaw 2026.4.22 — neither DM nor guild — the gap is at the runtime
+  tool-resolver layer, NOT a tool-policy or model issue.** Verified
+  2026-05-07 from the agent session trajectory: with `tools.profile=full`,
+  per-agent `tools.alsoAllow=[group:messaging, browser, tts, canvas, cron]`,
+  AND per-guild
+  `channels.discord.guilds.<id>.tools.alsoAllow=["cron"]` (silences both
+  the agent-level and group-level "unknown entries" warnings) the model
+  emits a perfectly-shaped structured tool-call:
+  ```
+  {name: "cron", arguments: {action: "add", at: "+90s", channel: "discord",
+                             to: "channel:<dm-or-guild-channel-id>",
+                             message: "<…>", agent: "discord-friend"}}
+  ```
+  and the runtime returns `toolResult: "Tool cron not found"`. Not a
+  policy denial — a registration gap. The model then retries a few
+  times, gets the same `not found`, and apologizes textually with
+  *"I can't use the tool 'cron' here because it isn't available."*
+- **Earlier DM-context cron successes (2026-05-06: `hawaii-paradicsom`,
+  `teszt6`)** turned out to be a transient cache state, NOT a stable
+  config baseline. Re-verified 2026-05-07: with the same agent and the
+  same payload format the cron handler is no longer reachable on DM
+  either. The "DM works, guild doesn't" hypothesis from the earlier
+  feedback note is wrong — cron is broken on BOTH routes.
+- **Workaround**: cron jobs registered via the CLI (`docker exec
+  openclaw-cli openclaw cron add …`) on the `main` agent or against
+  the `discord-friend` agent in CLI context still fire and deliver
+  to Discord channels correctly. Only the in-channel agent-driven
+  scheduling path is broken — operator-driven scheduling works.
+- **Patcher step 24c**: writes per-guild
+  `channels.discord.guilds.<id>.tools.alsoAllow=["cron"]` from the
+  comma-separated `OPENCLAW_DISCORD_GUILD_CRON_IDS` env knob (default
 - **Cron-tool deferred actions DO NOT work on Discord guild text channels
   in openclaw 2026.4.22 — the gap is at the runtime tool-resolver layer,
   NOT a tool-policy or model issue.** Verified 2026-05-07 from the agent

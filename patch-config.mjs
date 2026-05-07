@@ -1676,45 +1676,19 @@ if (config.agents?.defaults?.llm && Object.prototype.hasOwnProperty.call(config.
   );
 }
 
-// Discord-routed agent `tools.alsoAllow` cleanup: drop `group:messaging`.
-// The openclaw onboarding wizard pre-populates this entry, but the
-// 2026.4.22 runtime logs an "unknown entries (group:messaging)" warning
-// (verified: agent/embedded warning at every gateway boot) AND — more
-// critically — its presence on the alsoAllow list activates a runtime
-// tool-policy filter that **excludes `cron`** from the catalog when the
-// agent is hit on a guild text channel (verified 2026-05-06: same agent
-// + same prompt, DM-context registers cron successfully, guild-context
-// returns "I can't use the tool 'cron' here because it isn't available"
-// despite cron appearing textually in the system prompt). Removing
-// `group:messaging` fixes both: the warning goes away and the cron tool
-// becomes reachable on guild routes. The other alsoAllow entries
-// (`browser`, `tts`, `canvas`) remain — those are valid concrete tool
-// names, not group tags.
+// NOTE: Earlier (commit eda8df6) this step removed `group:messaging` from
+// the discord-routed agent's tools.alsoAllow on the theory that the
+// "unknown entries" warning meant the entry was both noisy AND blocking
+// cron. Verified 2026-05-07 that REMOVING it actually breaks DM cron too:
+// `Tool cron not found` started appearing on the DM route (which had been
+// working fine before), confirming `group:messaging` is what registers
+// the cron handler at the runtime tool-resolver layer for Discord routes.
+// The `unknown entries` warning is upstream-cosmetic, not a real block.
+// The fix for the guild-route block was the per-guild policy (step 24c),
+// not removing group:messaging.
 //
-// `tools.profile: "full"` already covers messaging tools, so removing
-// the group tag does not narrow the agent's effective tool surface.
-// Operator-set values that don't match this exact pattern are preserved.
-const bindings25b = config.bindings ?? [];
-const discordAgentIds25b = new Set(
-  bindings25b
-    .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
-    .map(b => b.agentId),
-);
-const list25bFilter = config.agents?.list ?? [];
-for (const agent of list25bFilter) {
-  if (!discordAgentIds25b.has(agent?.id)) continue;
-  const aa = agent?.tools?.alsoAllow;
-  if (!Array.isArray(aa)) continue;
-  const idx = aa.indexOf('group:messaging');
-  if (idx >= 0) {
-    aa.splice(idx, 1);
-    changed = true;
-    console.log(
-      `[patch-config] removed "group:messaging" from agents.list[id=${JSON.stringify(agent.id)}].tools.alsoAllow ` +
-      `(invalid entry blocks cron tool on guild channels; profile=full already covers messaging)`,
-    );
-  }
-}
+// The cleanup loop is gone. Operator-set tools.alsoAllow is preserved
+// as-is; step 22's set-union still adds the env-driven entries on top.
 
 // ─── 26. Workspace-discord AGENTS.md patcher-managed blocks ──────────────────
 // The discord-friend agent has its own workspace at
@@ -1758,8 +1732,13 @@ const CRON_CHEATSHEET_BODY =
   'Triggered: emlékeztetők ("írj rám", "szólj"), VAGY időzített akciók\n' +
   '("csinálj képet 5 perc múlva", "küldj egy összefoglalót holnap").\n' +
   'Mindkét esetben EGY tool-call: `cron add` a fenti payload-dal.\n\n' +
-  '**`to` mező**: az inbound metadata `chat_id` értéke (DM-ben és guild-en\n' +
-  'is `channel:<NUMBER>` formátum). NE `user:<id>`, NE `sender_id`.\n\n' +
+  '**`to` mező — fontos formátum-szabály**:\n' +
+  '- **Guild-csatornán** (`is_group_chat: true` az inbound metadatában):\n' +
+  '  másold pontosan az inbound `chat_id` értékét (`"channel:<NUMBER>"`).\n' +
+  '- **DM-ben** (`chat_id` `user:<id>` formátumban érkezik): NE ezt másold!\n' +
+  '  A delivery resolver a `user:<id>` formára `Tool cron not found`-ot ad.\n' +
+  '  HELYETTE használd a `USER.md` "Admin DM channel ID" mezőjéből vett\n' +
+  '  `channel:<dm-channel-id>` értéket (pl. `channel:1498405181677895801`).\n\n' +
   '```json\n' +
   '{"tool":"cron","action":"add","at":"+1m","agent":"discord-friend",\n' +
   ' "message":"<akció szövege>","channel":"discord",\n' +
