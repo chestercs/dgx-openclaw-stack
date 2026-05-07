@@ -1465,14 +1465,62 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
   }
 }
 
-// NOTE: Setting `channels.discord.capabilities = ["cron"]` does NOT unlock
-// cron on guild text-channel routes — verified 2026-05-06. The runtime
-// gates cron at the runtime/provider/model/config layer (per the
-// "shipped core tools but unavailable in the current runtime" warning),
-// not at the channel-capability layer. Documented upstream limit; the
-// workaround is to delegate guild-channel scheduling requests via
-// `sessions_send` to the main agent, which CAN call cron. See
-// docs/upstream-feedback/discord-guild-cron-runtime-block.md (TODO).
+// ─── 24c. Per-guild tool policy — opt-in cron on specific guilds ────────────
+// `channels.discord.guilds.<guild-id>.tools.alsoAllow` is the runtime's
+// per-guild tool-policy override. The "shipped core tools but unavailable
+// in the current runtime/provider/model/config" warning at gateway boot
+// fires when the active route is a guild channel and the per-guild
+// alsoAllow does NOT include the tool — the runtime then strips it from
+// the agent's visible catalog regardless of agents.list[*].tools.profile
+// or alsoAllow (verified 2026-05-06: profile=full + alsoAllow=[…cron]
+// + channels.discord.capabilities=[cron] all left cron blocked on guild
+// routes; only the per-guild tools.alsoAllow opens it).
+//
+// Env knob: OPENCLAW_DISCORD_GUILD_CRON_IDS=<id1>,<id2>,… (comma-separated
+// guild snowflakes where cron should be available). Empty / unset skips
+// the step entirely. The patcher unions `cron` into each listed guild's
+// alsoAllow, preserving any other entries the operator put there.
+//
+// Also drops the obsolete `channels.discord.capabilities = ["cron"]`
+// attempt from a prior patcher revision — that field was a dead end for
+// this purpose; leaving it in adds noise without effect.
+if (config.channels?.discord?.enabled === true) {
+  const caps = config.channels.discord.capabilities;
+  if (Array.isArray(caps) && caps.length === 1 && caps[0] === 'cron') {
+    delete config.channels.discord.capabilities;
+    changed = true;
+    console.log(
+      `[patch-config] removed channels.discord.capabilities = ["cron"] ` +
+      `(no-op for cron tool unblocking — see step 24c per-guild policy instead)`,
+    );
+  }
+}
+const guildCronRaw = process.env.OPENCLAW_DISCORD_GUILD_CRON_IDS;
+const guildCronIds = (guildCronRaw || '').split(',').map(s => s.trim()).filter(Boolean);
+if (guildCronIds.length > 0 && config.channels?.discord?.enabled === true) {
+  config.channels.discord.guilds ??= {};
+  for (const gid of guildCronIds) {
+    if (!/^\d{17,20}$/.test(gid)) {
+      console.warn(
+        `[patch-config] OPENCLAW_DISCORD_GUILD_CRON_IDS entry ${JSON.stringify(gid)} ` +
+        `is not a valid Discord snowflake (17-20 digits) — skipping.`,
+      );
+      continue;
+    }
+    config.channels.discord.guilds[gid] ??= {};
+    config.channels.discord.guilds[gid].tools ??= {};
+    const aa = config.channels.discord.guilds[gid].tools.alsoAllow ??= [];
+    if (!aa.includes('cron')) {
+      aa.push('cron');
+      changed = true;
+      console.log(
+        `[patch-config] channels.discord.guilds[${gid}].tools.alsoAllow += "cron" ` +
+        `(unblocks cron on this guild's text channels — without this the runtime ` +
+        `policy filter strips cron from the agent's visible catalog)`,
+      );
+    }
+  }
+}
 
 // ─── 25. Discord-routed agent tools.profile ──────────────────────────────────
 // Without an explicit `tools.profile` on the Discord-routed agent, OpenClaw
@@ -1710,72 +1758,19 @@ const CRON_CHEATSHEET_BODY =
   'Triggered: emlékeztetők ("írj rám", "szólj"), VAGY időzített akciók\n' +
   '("csinálj képet 5 perc múlva", "küldj egy összefoglalót holnap").\n' +
   'Mindkét esetben EGY tool-call: `cron add` a fenti payload-dal.\n\n' +
-  '### KRITIKUS: a `to` mezőt mindig az inbound metadata `chat_id`-jéből vedd\n\n' +
-  'Minden inbound üzenet system-prompt-jában van egy `Conversation info`\n' +
-  'JSON blokk, benne `"chat_id": "channel:<NUMBER>"` mező. Ezt az értéket\n' +
-  'változtatás NÉLKÜL másold a `to` mezőbe — ez működik DM-ben (a DM-channel\n' +
-  'ID-jét adja) és guild-csatornán is (a guild-channel ID-jét adja).\n' +
-  'NE `user:<id>` formát használj — a delivery resolver azon "Unknown Channel"-t\n' +
-  'ad. NE pedig a `sender_id`-t (az a user discord snowflake) — a kettő különböző!\n\n' +
-  '### FONTOS: DM vs guild-csatorna eltérés\n\n' +
-  'DM-en (privát üzenet): a `cron` tool közvetlenül elérhető — hívd meg úgy,\n' +
-  'ahogy a payload-ban szerepel.\n\n' +
-  'Guild-csatornán (#gptteszt és társai, `is_group_chat: true` az inbound\n' +
-  'metadatában): a `cron` tool runtime-szinten nem hívható közvetlenül.\n' +
-  'HELYETTE használd a `sessions_send` tool-t és delegáld a main agent-nek:\n\n' +
+  '**`to` mező**: az inbound metadata `chat_id` értéke (DM-ben és guild-en\n' +
+  'is `channel:<NUMBER>` formátum). NE `user:<id>`, NE `sender_id`.\n\n' +
   '```json\n' +
-  '{\n' +
-  '  "tool": "sessions_send",\n' +
-  '  "to": "main",\n' +
-  '  "message": "Cron job kérés guild csatornáról. at=+1m, agent=discord-friend, channel=discord, to=<chat_id-az-inbound-metadataból>, message=\\"<a végrehajtandó akció szövege>\\". Hívd meg helyettem a cron tool-t add action-nal."\n' +
-  '}\n' +
+  '{"tool":"cron","action":"add","at":"+1m","agent":"discord-friend",\n' +
+  ' "message":"<akció szövege>","channel":"discord",\n' +
+  ' "to":"<chat_id from inbound metadata>","deleteAfterRun":true}\n' +
   '```\n\n' +
-  'A main agent megkapja és hívja a cron-t a saját kontextusából (ahol\n' +
-  'engedélyezett). A wake-up turn akkor a discord-friend agent-en fut le,\n' +
-  'tehát te kapod a `message` szöveget user-promptként és te hajtod végre.\n\n' +
-  '### Egyszeri (one-shot) emlékeztető (DM-en közvetlenül)\n\n' +
-  '```json\n' +
-  '{\n' +
-  '  "tool": "cron",\n' +
-  '  "action": "add",\n' +
-  '  "at": "+1m",\n' +
-  '  "agent": "discord-friend",\n' +
-  '  "message": "halló smalló petyuska",\n' +
-  '  "channel": "discord",\n' +
-  '  "to": "<chat_id-az-inbound-metadataból>",\n' +
-  '  "deleteAfterRun": true\n' +
-  '}\n' +
-  '```\n\n' +
-  '- `at: "+1m"` → percek (`+Nm`), órák (`+Nh`), másodpercek (`+Ns`)\n' +
-  '  relatív formában. ISO timestamp tz-offset-tel is jó: `"2026-05-06T17:30:00+02:00"`.\n' +
-  '- `agent: "discord-friend"` → a wake-up turn a saját kontextusodban fut.\n' +
-  '- `to`: pontosan az inbound metadata `chat_id` értéke (`"channel:<NUMBER>"`).\n' +
-  '- `channel: "discord"` → fix érték.\n' +
-  '- `deleteAfterRun: true` → egyszeri futás után magát törli.\n' +
-  '- `message`: ha a user időzített **akciót** kér (pl. "csinálj egy képet 1 perc\n' +
-  '  múlva ..."), a `message` legyen a teljes akció-instrukció — a wake-up\n' +
-  '  turn-ben TE kapod meg ezt a szöveget user-promptként, és akkor hívd a\n' +
-  '  `comfyui_image__generate`-et / `web_search`-öt / stb.\n\n' +
-  '### Ismétlődő emlékeztető (cron expression)\n\n' +
-  '```json\n' +
-  '{\n' +
-  '  "tool": "cron",\n' +
-  '  "action": "add",\n' +
-  '  "cron": "0 9 * * 1",\n' +
-  '  "tz": "Europe/Budapest",\n' +
-  '  "agent": "discord-friend",\n' +
-  '  "message": "hétfői emlékeztető",\n' +
-  '  "channel": "discord",\n' +
-  '  "to": "<chat_id-az-inbound-metadataból>"\n' +
-  '}\n' +
-  '```\n\n' +
-  '### Lemondás\n\n' +
-  '`{"tool": "cron", "action": "list"}` → kapsz egy id-listát.\n' +
-  '`{"tool": "cron", "action": "rm", "id": "<job-id>"}` → törli.\n\n' +
-  '### Ack-stílus\n\n' +
-  'Tömör visszajelzés ("Mehet, 1 perc múlva szólok!"), majd RÖGTÖN\n' +
-  'hívd meg a `cron` tool `add`-ját. Ne magyarázd a tool-plumbing-ot\n' +
-  'és ne kérj bocsánatot a timing precision miatt.\n';
+  '- `at`: `+Nm` / `+Nh` / `+Ns` relatív, vagy ISO timestamp tz-offsettel.\n' +
+  '- Recurring: `at` helyett `"cron":"0 9 * * 1","tz":"Europe/Budapest"`.\n' +
+  '- Lemondás: `{"tool":"cron","action":"list"}` → id, majd\n' +
+  '  `{"tool":"cron","action":"rm","id":"<id>"}`.\n\n' +
+  'Ack-stílus: tömör ("Mehet, 1 perc múlva szólok!"), aztán RÖGTÖN\n' +
+  '`cron add`. Ne magyarázz, ne kérj bocsánatot a precízségért.\n';
 
 // Idempotent upsert of a marker-delimited block. If the markers are not
 // present, append the block. If they are, swap the body in-place when it

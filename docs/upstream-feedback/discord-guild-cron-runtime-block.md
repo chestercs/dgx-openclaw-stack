@@ -14,15 +14,54 @@ When a user pings the discord-routed agent on a **guild text channel** with a re
 
 The same agent + same prompt over a **DM context** registers `cron` cleanly and the wake-up turn fires on schedule with `comfyui_image__generate` invocation and Discord delivery.
 
-## Gateway log evidence
+## Two-layer evidence
+
+### 1. `tools.allow` warning (until per-guild policy is configured)
 
 ```
 [tools] agents.discord-friend.tools.allow allowlist contains unknown entries (cron).
         These entries are shipped core tools but unavailable in the current
         runtime/provider/model/config.
+[tools] group tools.allow allowlist contains unknown entries (cron). These
+        entries are shipped core tools but unavailable in the current
+        runtime/provider/model/config.
 ```
 
-The warning is emitted at every gateway boot AFTER the first inbound message on a guild text channel. On DM context the same `tools.allow` config does not produce the warning and `cron` is reachable.
+Setting `channels.discord.guilds.<guild-id>.tools.alsoAllow = ["cron"]` (the
+per-guild tool policy override) silences these warnings — `cron` then
+appears in the agent's textual tool catalog AND the `enable-auto-tool-choice`
+path becomes active.
+
+### 2. `toolResult: "Tool cron not found"` (the actual runtime block)
+
+But even with per-guild `alsoAllow=cron` and the warnings gone, the model's
+correctly-shaped tool-call still fails at the runtime tool-resolver layer.
+Verified 2026-05-07 from the trajectory `messagesSnapshot`:
+
+```
+role: assistant
+content: [{type: toolCall, id: chatcmpl-tool-a57fbf1cee3a3f58, name: "cron",
+           arguments: {action: "add", agent: "discord-friend", at: "+90s",
+                       channel: "discord", message: "<…>",
+                       to: "channel:1426994992248782920"}}]
+
+role: toolResult
+content: [{type: text, text: "Tool cron not found"}]
+
+role: assistant
+content: [{type: text, text: "I can't use the tool \"cron\" here because it
+           isn't available. I need to stop retrying it and answer without
+           that tool."}]
+```
+
+The model emits a perfectly-shaped tool-call (correct name, correct args
+schema). The runtime tool-resolver then returns `"Tool cron not found"` —
+NOT a tool-policy denial, NOT a schema violation, but a runtime registration
+gap on this route. The model retries a few times, gets the same error, and
+gives up with the apologetic text seen in the chat.
+
+The DM context with the same agent + same payload registers cron cleanly
+and the wake-up turn fires on schedule.
 
 ## Configuration
 

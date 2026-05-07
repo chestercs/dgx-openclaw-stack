@@ -7,31 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Known limit — Discord guild-channel cron blocked upstream
+### Known limit — Discord guild-channel cron is a runtime registration gap
 - **Cron-tool deferred actions DO NOT work on Discord guild text channels
-  in openclaw 2026.4.22.** The runtime emits
-  `agents.<id>.tools.allow allowlist contains unknown entries (cron).
-  These entries are shipped core tools but unavailable in the current
-  runtime/provider/model/config.` on every inbound guild message, and
-  the model (Gemma 4 NVFP4) hallucinates *"I can't use the tool 'cron'
-  here because it isn't available"* when a request includes timing
-  ("X minutes later, do Y"). DM context with the same agent works
-  cleanly. Verified 2026-05-06 with `tools.profile=full`,
-  `tools.alsoAllow=[…,cron]`, `channels.discord.capabilities=[cron]`,
-  and a `sessions_send` delegation pattern in `AGENTS.md` — none
-  unblocked the guild path. Documented in
-  `docs/upstream-feedback/discord-guild-cron-runtime-block.md` for the
-  upstream `openclaw/openclaw` repo. Workaround for operators: ask for
-  scheduling in DM, not in guild channels. Guild-channel image-gen and
-  web-search work correctly — only cron-deferred flows are affected.
-- **Patcher cheatsheet adapts**: step 26 cron-tools cheatsheet now warns
-  the agent that DM uses cron directly while guild context should
-  delegate via `sessions_send` to the main agent (which CAN call cron).
-  The delegation does not currently succeed end-to-end because Gemma
-  4 NVFP4 declines the secondary path with a self-imposed "security
-  restriction" — but the cheatsheet leaves the recipe in place for
-  operators on a more capable backend (Sonnet, GPT-4-class) where
-  the delegation should work.
+  in openclaw 2026.4.22 — the gap is at the runtime tool-resolver layer,
+  NOT a tool-policy or model issue.** Verified 2026-05-07 from the agent
+  session trajectory: with `tools.profile=full`, per-agent
+  `tools.alsoAllow=[…,cron]`, AND per-guild
+  `channels.discord.guilds.<id>.tools.alsoAllow=["cron"]` (silences both
+  the agent-level and group-level "unknown entries" warnings) the model
+  emits a perfectly-shaped structured tool-call:
+  ```
+  {name: "cron", arguments: {action: "add", at: "+90s", channel: "discord",
+                             to: "channel:<guild-channel-id>",
+                             message: "<…>", agent: "discord-friend"}}
+  ```
+  and the runtime returns `toolResult: "Tool cron not found"`. Not a
+  policy denial — a registration gap. The model then retries a few
+  times, gets the same `not found`, and apologizes textually with
+  *"I can't use the tool 'cron' here because it isn't available."*
+- **Patcher step 24c**: writes per-guild
+  `channels.discord.guilds.<id>.tools.alsoAllow=["cron"]` from the
+  comma-separated `OPENCLAW_DISCORD_GUILD_CRON_IDS` env knob (default
+  empty). Defeats the textual-catalog filter — does NOT fix the runtime
+  registration gap (that's upstream openclaw work).
+- **Patcher step 24c also drops** an obsolete
+  `channels.discord.capabilities=["cron"]` entry that an interim revision
+  wrote thinking it was the right surface — that field was a dead end.
+- **Documented in** `docs/upstream-feedback/discord-guild-cron-runtime-block.md`
+  with both the warning text and the trajectory evidence. Workaround
+  for operators today: ask for scheduling in DM, not guild channels.
+  Guild-channel image-gen and web-search work correctly — only
+  cron-deferred flows hit the registration gap.
+- **Patcher cheatsheet** (step 26): compacted to ~1.4KB to keep the
+  workspace-discord/AGENTS.md under the 12000-char `agent/embedded`
+  injection limit (verified 2026-05-07: at 12183 chars the runtime
+  silently truncates the bootstrap file in the injected context, and
+  the cron section was the casualty). DM-context cron payload examples
+  retained; guild-context delegation removed (it doesn't work today).
 
 ### Added — Discord cron flow end-to-end (Gemma 4 NVFP4 verified)
 - **Patcher step 25c** (new): writes

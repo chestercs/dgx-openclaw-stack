@@ -1130,6 +1130,18 @@ services:
       # blocks `cron` on guild routes — profile=full already covers all
       # messaging tools. Set empty to skip the step.
       OPENCLAW_DISCORD_AGENT_ALSO_ALLOW: ${OPENCLAW_DISCORD_AGENT_ALSO_ALLOW:-browser,tts,canvas,cron}
+      # Discord-routed agent thinkingDefault (patcher step 25c). Default
+      # `minimal` — Gemma 4 NVFP4 needs reasoning to surface structured
+      # tool-calls. Empty disables.
+      OPENCLAW_DISCORD_AGENT_THINKING: ${OPENCLAW_DISCORD_AGENT_THINKING:-minimal}
+      # Per-guild cron tool allow-list (patcher step 24c). Comma-separated
+      # Discord guild snowflake IDs where the cron tool should be available
+      # on text channels. Without an entry the runtime per-guild policy
+      # filter strips cron from the visible catalog (gateway logs
+      # "shipped core tools but unavailable in the current
+      # runtime/provider/model/config"). Default empty (no guilds get
+      # cron on text channels by default — operator opt-in per guild).
+      OPENCLAW_DISCORD_GUILD_CRON_IDS: ${OPENCLAW_DISCORD_GUILD_CRON_IDS:-}
       # vLLM idle watchdog timeout (patcher step 8). Default 600s gives
       # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
       # to 300 for fast-model-only deploys.
