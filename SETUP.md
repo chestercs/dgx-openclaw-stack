@@ -39,7 +39,8 @@ sudo systemctl restart docker
 The Gemma 4 NVFP4 weights are gated. You need to:
 
 1. Create (or log into) your HuggingFace account.
-2. Accept the Gemma 4 license at: https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4
+2. Accept the Gemma 4 MoE license at: https://huggingface.co/nvidia/Gemma-4-26B-A4B-NVFP4
+   (Optional for the dense 31B alternative: https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4 — the same token covers both.)
 3. Create a read-scope access token at: https://huggingface.co/settings/tokens
 
 Keep that `hf_...` token handy — you'll paste it into `.env` in step 3.
@@ -134,7 +135,7 @@ Install the official OpenClaw Chrome extension. After install:
 3. Paste your `OPENCLAW_GATEWAY_TOKEN` (from `.env`) as the token.
 4. The extension's onboarding wizard launches. Pick:
    - **Provider**: vLLM (OpenAI-compatible).
-   - **Model**: `nvidia/Gemma-4-31B-IT-NVFP4` (the patcher will register this anyway in phase 2b; if the wizard offers a different default, pick whatever and the patcher will fix it).
+   - **Model**: `nvidia/Gemma-4-26B-A4B-NVFP4` (the patcher will register this anyway in phase 2b alongside the dense 31B alternative; if the wizard offers a different default, pick whatever and the patcher will fix it).
    - **Tool calling**: enabled.
    - **Memory search**: enabled, `BAAI/bge-m3`.
 

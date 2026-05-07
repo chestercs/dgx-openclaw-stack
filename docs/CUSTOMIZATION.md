@@ -6,40 +6,67 @@ How to swap things out without breaking the stack.
 
 ## Swap the LLM
 
-The three coupled pieces are:
+The default backend is `nvidia/Gemma-4-26B-A4B-NVFP4` (MoE, ~52 tok/s on GB10) running in the `vllm-llm` service. The dense 31B alternative is preserved as a profile-gated `vllm-llm-dense` service for parity testing and rollback. Both are registered in the OpenClaw catalog by the patcher regardless of which is running.
 
-1. The `--model` flag on `vllm-llm` in `docker-compose.yml`.
-2. The `LLM_MODEL_ID` constant in `patch-config.mjs`.
-3. The `LLM_MODEL_ENTRY` metadata in `patch-config.mjs` (context window, input modalities, reasoning flag).
+The three coupled pieces for any further model change are:
 
-Any model change requires editing all three. **Why three places?** vLLM needs to know which weights to load (#1); the patcher needs to know which model id to register in the OpenClaw provider catalog so tool-calling routes to the right entry (#2); and OpenClaw uses the metadata in the catalog entry to cap prompt sizes, gate vision input, and drive the thinking-mode UI (#3). They aren't auto-derived from each other — consistency is your job. We hard-code these rather than templating them because a mistake here (a wrong context window, a missing `image` input type) is silent: the stack boots, chats work, and tool calls or images break in subtle ways hours later.
+1. The `--model` flag on `vllm-llm` (or `vllm-llm-dense`) in `docker-compose.yml`.
+2. The `LLM_MODEL_ID_*` constants and the `LLM_MODEL_ENTRIES[]` array in `patch-config.mjs`.
+3. The `LLM_MODEL_ENTRY_*` metadata in `patch-config.mjs` (context window, input modalities, reasoning flag).
+
+Any new model requires editing all three. **Why three places?** vLLM needs to know which weights to load (#1); the patcher needs to know which model id to register in the OpenClaw provider catalog so tool-calling routes to the right entry (#2); and OpenClaw uses the metadata in the catalog entry to cap prompt sizes, gate vision input, and drive the thinking-mode UI (#3). They aren't auto-derived from each other — consistency is your job. We hard-code these rather than templating them because a mistake here (a wrong context window, a missing `image` input type) is silent: the stack boots, chats work, and tool calls or images break in subtle ways hours later.
+
+### Switch to dense Gemma 4 31B (alternative profile)
+
+The dense variant lives in the `vllm-llm-dense` service block, parked behind `profiles: ["dense"]`. Same image, same hostname (`vllm-llm`), so the OpenClaw gateway reaches it via bridge DNS without any extra config. To switch:
+
+```bash
+# 1. Tell the patcher to point agents.defaults.llm.model at the dense id.
+#    (Edit .env, then re-run the patcher to apply.)
+echo 'LLM_DEFAULT_MODEL_ID=nvidia/Gemma-4-31B-IT-NVFP4' >> .env
+
+# 2. Stop MoE.
+docker compose stop vllm-llm
+
+# 3. Start dense (opt-in profile).
+COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense
+
+# 4. Re-patch + recreate gateway so agents.defaults.llm.model takes effect.
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+```
+
+To go back to MoE, reverse: drop the `LLM_DEFAULT_MODEL_ID` line (or set it to `nvidia/Gemma-4-26B-A4B-NVFP4`), `docker compose stop vllm-llm-dense`, `docker compose up -d vllm-llm`, recreate the gateway. The dense service uses its own `LLM_GPU_MEM_UTIL_DENSE` env (default `0.68`) so the historical dense tuning stays intact when you flip back.
+
+The two `agents.defaults.llm.model` swap is gated by the patcher's only-if-missing rule — once a value is written, the patcher honors it. To force a reset, manually clear the field in `openclaw.json` before the recreate (`jq` works), or pick the model in the OpenClaw UI which writes the new id.
 
 ### Smaller Gemma 4 (12B NVFP4)
 
-If you want to run two users at full 256K context each, or you need to leave more headroom for other workloads, drop to the 12B variant:
+If you want to leave even more headroom for other workloads (image-gen, browser automation, multi-user beyond 2), drop to the 12B variant:
 
 ```yaml
 # docker-compose.yml
 --model nvidia/Gemma-4-12B-IT-NVFP4
+# also remove --moe-backend ...  (12B is dense, not MoE)
 ```
 
 ```js
-// patch-config.mjs
-const LLM_MODEL_ID = 'nvidia/Gemma-4-12B-IT-NVFP4';
+// patch-config.mjs — add a third entry to LLM_MODEL_ENTRIES, or replace
+// LLM_MODEL_ID_MOE depending on whether you want both registered.
 ```
 
-The 12B NVFP4 weighs ~6–7 GB. Bump `LLM_GPU_MEM_UTIL` to `0.50–0.60` if you still want a big KV cache, or stay at `0.68` and get a huge effective KV budget.
+The 12B NVFP4 weighs ~6–7 GB. Bump `LLM_GPU_MEM_UTIL` to `0.50–0.60` if you still want a big KV cache, or stay at `0.50` and get a huge effective KV budget.
 
 ### BF16 Gemma 4 (if you're on non-NVFP4 hardware)
 
-Remove `--quantization modelopt` and swap the model id:
+Remove `--quantization modelopt` (and `--moe-backend …` if you were on the MoE branch) and swap the model id:
 
 ```yaml
 --model google/gemma-4-31b-it
 # (remove) --quantization modelopt
+# (remove) --moe-backend marlin
 ```
 
-BF16 weights are ~62 GB — you'll need to raise `LLM_GPU_MEM_UTIL` and give up the embedding stack. Expect ~3.7 tok/s decode vs ~6.9 tok/s for NVFP4 on GB10.
+BF16 weights are ~62 GB — you'll need to raise `LLM_GPU_MEM_UTIL` and give up the embedding stack. Expect ~3.7 tok/s decode vs ~6.9 tok/s for the dense 31B NVFP4 (and ~52 tok/s for the MoE NVFP4) on GB10.
 
 ### Non-Gemma models
 
@@ -47,9 +74,10 @@ The `--tool-call-parser gemma4` / `--reasoning-parser gemma4` / `--chat-template
 
 - Change the parser names (`qwen3`, `deepseek_r1`, etc.).
 - Provide the corresponding chat template under `templates/`.
-- Set `LLM_MODEL_ENTRY.reasoning` correctly (some models have separate `<thinking>` channels that OpenClaw understands if you flag them).
+- Drop `--moe-backend …` (Gemma 4 MoE-specific; other model families either don't use MoE or use vLLM's default expert backend).
+- Set `LLM_MODEL_ENTRY_*.reasoning` correctly (some models have separate `<thinking>` channels that OpenClaw understands if you flag them).
 
-Also update the model's `contextWindow` and `maxTokens` in `LLM_MODEL_ENTRY` — OpenClaw uses these to cap tool call prompts.
+Also update the model's `contextWindow` and `maxTokens` in the `LLM_MODEL_ENTRIES[]` — OpenClaw uses these to cap tool call prompts.
 
 ## Swap the embedding model
 
@@ -76,11 +104,11 @@ The OpenClaw `memorySearch` records the embedding vector dimension when you firs
 
 ## Tune for your actual concurrency
 
-The shipped defaults assume ~2 concurrent users on a 128 GB GB10. If that's wrong:
+The shipped defaults assume ~2 concurrent users on a 128 GB GB10 with the MoE backend active. If that's wrong:
 
-- **Solo user**: `LLM_MAX_NUM_SEQS=1`, optionally raise `LLM_GPU_MEM_UTIL=0.75` if embedding stack is disabled.
-- **3–4 users**: Not recommended on GB10 at 256K context. Either drop to a 12B model, or cap `LLM_MAX_MODEL_LEN=131072` (128K) and raise `LLM_MAX_NUM_SEQS=4`. Each user gets stable ~50K.
-- **Batch throughput workload** (no humans, script-driven): raise `LLM_MAX_NUM_SEQS=8+`, drop `LLM_MAX_MODEL_LEN` to the shortest prompt size you'll actually hit, and accept longer per-request TTFT.
+- **Solo user**: `LLM_MAX_NUM_SEQS=1`, optionally raise `LLM_GPU_MEM_UTIL=0.75` if the embedding stack is disabled. Headroom buys prefix-caching depth, not per-decode latency.
+- **3–4 users**: On the MoE backend this is feasible at full 256K because each FP8 KV slot is only ~3.3 GB at 256K — `LLM_MAX_NUM_SEQS=4` fits inside `LLM_GPU_MEM_UTIL=0.50` with margin. The constraint is throughput, not memory: at 4 simultaneously decoding users you split ~52 tok/s across them. On the dense backend, drop to `LLM_MAX_MODEL_LEN=131072` (128K) and raise `LLM_MAX_NUM_SEQS=4`.
+- **Batch throughput workload** (no humans, script-driven): raise `LLM_MAX_NUM_SEQS=8+`, drop `LLM_MAX_MODEL_LEN` to the shortest prompt size you'll actually hit, and accept longer per-request TTFT. MoE is well-suited here — `--max-num-batched-tokens` can also be raised to `16384` for higher prefill throughput on dedicated hardware.
 
 ### Idle-timeout headroom
 

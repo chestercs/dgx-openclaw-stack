@@ -65,29 +65,37 @@ Workaround at the time: an entrypoint that wrote the default gateway IP into `/e
 
 vLLM's official day-1 Gemma 4 image. CUDA 13.0, Transformers 5.5+, native `gemma4` architecture and `modelopt` NVFP4 kernels. Community images like `scitrera/dgx-spark-vllm:0.17.0-t5` **do not work** — their Transformers version doesn't know the `gemma4` architecture and rejects the config.
 
+### Model selection: MoE default, dense alternative
+
+Default backend: `nvidia/Gemma-4-26B-A4B-NVFP4` (Mixture-of-Experts, 25.2B total / 3.8B active per token, 128 fine-grained experts with top-8 routing). Decode tops out around **52 tok/s** on GB10 — ~7.5× faster than the dense 31B variant the stack used through v0.x. The dense backend lives in the parallel `vllm-llm-dense` service block, parked behind `profiles: ["dense"]`, so an operator who wants parity-test against the older numbers can flip with `COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`.
+
+Both share the same `vllm/vllm-openai:gemma4-cu130` base image (extended with our 1-line tool-call-parser regex patch in `./vllm-llm/Dockerfile`), the same chat template (`tool_chat_template_gemma4.jinja`), the same parsers (`gemma4` for both reasoning and tool-call), and the same FP8 KV cache. The model swap is genuinely a `--model` change plus the MoE-specific `--moe-backend` flag.
+
 ### Quantization: `--quantization modelopt`
 
-Activates the NVIDIA Model Optimizer NVFP4 GEMM kernels. `nvidia/Gemma-4-31B-IT-NVFP4` is a `modelopt`-format checkpoint — vLLM will error out if you pass `--quantization fp8` or leave it blank.
+Activates the NVIDIA Model Optimizer NVFP4 GEMM kernels. Both `nvidia/Gemma-4-26B-A4B-NVFP4` and `nvidia/Gemma-4-31B-IT-NVFP4` are `modelopt`-format checkpoints (the MoE one quantized via the `nvfp4_experts_only` recipe) — vLLM will error out if you pass `--quantization fp8` or leave it blank.
 
-### Memory budget: `--gpu-memory-utilization 0.68`
+### MoE routing: `--moe-backend marlin` (Blackwell SM121)
 
-The GB10 has 128 GB of unified memory. vLLM's util fraction is computed against `nvidia-smi`-reported "free memory" at process start, so the final footprint is:
+GB10's `sm_121` rejects vLLM's default CUTLASS MoE backend on Gemma 4's fused 3D expert tensor format — CUTLASS produces NaN scale factors and corrupted output. Marlin decompresses FP4 weights to BF16 at inference time; slightly slower per expert but functionally correct on every Blackwell variant. Override with `LLM_MOE_BACKEND=cutlass` in `.env` only if you're on H100/B200 where the upstream CUTLASS path works.
 
-```
-vllm_footprint ≈ 0.68 * gpu_free_at_start + ~14 GB fixed overhead
-              ≈ 96 GB on an otherwise idle GB10
-```
+The dense `vllm-llm-dense` service does NOT pass `--moe-backend` — the flag is MoE-specific; setting it on a dense run errors out.
 
-Leaving about **9 GB for the embedding service** (`~8 GB vLLM runtime + ~1.1 GB bge-m3 weights`) and **~15 GB of true host headroom** for the kernel, Docker, logging, and any other workload you might run on the box. `0.85` is the "embedding-free" setting and gives you ~86 GB KV cache — but the embedding service's `docker compose up` will OOM-fail in that state.
+### Memory budget: `--gpu-memory-utilization 0.50` (MoE) / `0.68` (dense)
+
+The GB10 has 128 GB of unified memory. vLLM's util fraction is computed against `nvidia-smi`-reported "free memory" at process start. The MoE working set is small enough that **0.50** (~64 GB cap) is the safe default — it covers the 16.5 GB model plus 2 × 256K FP8 KV (~6.6 GB) with margin for prefix-caching and prefill buffers. The dense profile keeps the historical **0.68** default via the separate `LLM_GPU_MEM_UTIL_DENSE` env var on the `vllm-llm-dense` service.
+
+Leaving about **64 GB free** under the MoE default lets the embedding service, ComfyUI, and the OS share the rest comfortably. Raise to `0.85` (the verified throughput-ceiling tuning point) only if the embedding service is parked and you want to maximise prefix-caching depth.
 
 ### Concurrency: `--max-num-seqs 2`
 
-Practical stable context bands at `0.68` util:
+Practical stable context bands on the MoE backend at `0.50` util:
 
-- 1 active user alone: up to ~220K tokens before preemption (256K theoretical max reachable occasionally).
-- 2 active users simultaneously: up to ~110K tokens each before preemption.
+- 1 active user alone: full 256K tokens, no preemption (~3.3 GB FP8 KV).
+- 2 active users simultaneously: 256K each, no preemption (~6.6 GB FP8 KV total — well inside the budget).
+- The constraint at higher concurrency is throughput, not memory: at 4 simultaneously decoding users you split ~52 tok/s across them.
 
-Preemption in vLLM is **suspend/resume**, not a crash. You see higher TTFT on long prompts, not errors. So pick `max-num-seqs` based on your expected concurrency, not a worst-case margin.
+On the dense backend, the historical bands still apply: ~220K (1 user), ~110K each (2 users). Preemption in vLLM is **suspend/resume**, not a crash — you see higher TTFT on long prompts, not errors. So pick `max-num-seqs` based on your expected concurrency, not a worst-case margin.
 
 ### KV cache: `--kv-cache-dtype fp8`
 

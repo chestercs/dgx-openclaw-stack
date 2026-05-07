@@ -91,39 +91,56 @@ volumes:
 
 services:
   ######################
-  ## vLLM — Gemma 4 31B Dense (Instruction Tuned), NVFP4 quantization
+  ## vLLM — Gemma 4 26B-A4B MoE (Instruction Tuned), NVFP4 quantization (DEFAULT)
   #
-  #  Model:  nvidia/Gemma-4-31B-IT-NVFP4
-  #    - 31.3B dense parameters in NVFP4 (~15-16 GB weights vs ~62 GB BF16)
-  #    - <0.4% accuracy drop vs BF16 (GPQA 75.71→75.46, MMLU Pro 85.25→84.94)
-  #    - 256K context window, multimodal (text + image)
-  #    - Apache 2.0 license
-  #    - GB10/Blackwell (sm_120/sm_121) native FP4 hardware acceleration
+  #  Model:  nvidia/Gemma-4-26B-A4B-NVFP4
+  #    - 25.2B total / 3.8B active params per token (128 experts, top-8 routing)
+  #    - NVFP4 quantization (~16.5 GB weights), nvfp4_experts_only modelopt recipe
+  #    - 256K context window, multimodal (text + image, vision tower included)
+  #    - Apache 2.0 license, gated on HF (license-acceptance via HUGGING_FACE_HUB_TOKEN)
+  #    - GB10/Blackwell (sm_120/sm_121) compatible via Marlin MoE backend
   #
-  #  GB10 day-1 benchmark (vLLM, NVFP4):
-  #    - Decode: ~6.9 tok/s (1 user) — ~2x faster than BF16 (3.7 tok/s)
-  #    - 273 GB/s LPDDR5x bandwidth is the bottleneck; NVFP4 reduces weight
-  #      reads per decoded token ~4x.
-  #    - Theoretical decode ceiling: 273 / 16 ≈ 17 tok/s (BF16 only ~4.4).
+  #  GB10 benchmark (vLLM, NVFP4 MoE, ai-muninn 2026-04):
+  #    - Decode: ~52 tok/s (1 user) — ~7.5x faster than the 31B dense it replaces.
+  #    - 16.5 GB model + ~3.3 GB FP8 KV per 256K seq → 2 users × 256K fit
+  #      comfortably at LLM_GPU_MEM_UTIL=0.50 (~64 GB cap, ~47 GB KV available).
+  #    - 273 GB/s LPDDR5x bandwidth bottleneck unchanged, but only ~3.8B active
+  #      weights are read per decoded token — that's the speedup.
   #
-  #  Image: vllm/vllm-openai:gemma4-cu130 — official vLLM day-1 Gemma 4 image.
-  #  CUDA 13.0, Transformers 5.5+, native gemma4 + NVFP4 (modelopt) kernels.
+  #  The dense 31B variant is preserved as `vllm-llm-dense` (profile: dense)
+  #  below for parity testing and rollback. Both are registered in OpenClaw's
+  #  catalog by patch-config.mjs regardless of which is running.
+  #
+  #  Image: vllm/vllm-openai:gemma4-cu130 — official vLLM day-1 Gemma 4 image,
+  #  wrapped in our ./vllm-llm/Dockerfile with a 1-line tool-call-parser regex
+  #  patch (see `vllm-llm.image:` comment below). The base image, CUDA 13,
+  #  Transformers 5.5+, and the gemma4 + NVFP4 (modelopt) kernels apply
+  #  identically to MoE and dense.
   #
   #  Key flags:
-  #    --quantization modelopt         : activates NVIDIA Model Optimizer NVFP4 GEMM
-  #    --gpu-memory-utilization 0.68   : leaves ~9 GB for the embedding stack and
-  #                                      ~15 GB host headroom for OS + Docker + misc.
-  #                                      Raise to 0.85 if the embedding stack is off
-  #                                      — you get ~86 GB KV cache instead of ~58 GB.
+  #    --quantization modelopt         : activates NVIDIA Model Optimizer NVFP4 GEMM.
+  #    --moe-backend marlin            : Blackwell SM121 (GB10) MUST use Marlin —
+  #                                      CUTLASS produces NaN scale factors on
+  #                                      the fused 3D expert tensor format that
+  #                                      Gemma 4 MoE ships. Marlin decompresses
+  #                                      FP4→BF16 at inference time, slightly
+  #                                      slower per-expert but functionally
+  #                                      correct. Switch to `cutlass` only on
+  #                                      H100/B200 if a vLLM upgrade fixes SM121.
+  #                                      Override via LLM_MOE_BACKEND in .env.
+  #    --gpu-memory-utilization 0.50   : MoE has a smaller effective working set
+  #                                      than dense (16.5 GB model + ~6.6 GB KV
+  #                                      for 2 × 256K), so 0.50 is the new safe
+  #                                      default. Raise to 0.85 (the verified
+  #                                      52 tok/s tuning point) if the embedding
+  #                                      stack is parked or you want headroom
+  #                                      for prefix-caching across many sessions.
   #    --kv-cache-dtype fp8            : halves KV cache, lets continuous batching
   #                                      stretch across more concurrent seqs.
-  #    --max-model-len 262144          : Gemma 4 model spec maximum (256K).
-  #    --max-num-seqs 2                : 2 concurrent users via continuous batching.
-  #                                      Practical stable bands (0.68 util):
-  #                                        1 user × ~220K context preempt-free
-  #                                        2 users × ~110K each preempt-free
-  #                                      Preemption is suspend/resume, not a crash
-  #                                      — it just increases TTFT on long prompts.
+  #    --max-model-len 262144          : Gemma 4 architecture maximum (256K).
+  #    --max-num-seqs 2                : 2 concurrent users via continuous batching,
+  #                                      each holding 256K context preempt-free at
+  #                                      LLM_GPU_MEM_UTIL=0.50.
   #    --max-num-batched-tokens 8192   : chunked prefill batch size.
   #    --enable-prefix-caching         : system prompts de-duplicated across turns.
   #    --enable-chunked-prefill        : long prompts don't block decode of others.
@@ -177,13 +194,23 @@ services:
     # the compose DNS name `vllm-llm`.
     # ports:
     #   - "127.0.0.1:8004:8004"
+    # MoE default. The 26B-A4B variant routes only ~3.8B params per token via
+    # 128 fine-grained experts (top-8) — ~7.5× faster decode than the 31B dense
+    # NVFP4 it replaces (52 tok/s vs 6.9 tok/s on GB10), 16.5 GB model footprint
+    # leaves plenty of room for 2 × 256K KV at LLM_GPU_MEM_UTIL=0.50.
+    # On Blackwell SM121 (GB10) `--moe-backend marlin` is mandatory: CUTLASS
+    # produces NaN scale factors on the fused 3D expert tensor format. Marlin
+    # decompresses FP4 → BF16 at inference time (slightly slower per-expert,
+    # functionally correct). To run the dense 31B alternative instead, see
+    # the `vllm-llm-dense` block below — it reuses this image and hostname.
     command: >
-      --model nvidia/Gemma-4-31B-IT-NVFP4
+      --model nvidia/Gemma-4-26B-A4B-NVFP4
       --host 0.0.0.0
       --port 8004
       --api-key ${VLLM_API_KEY:-}
       --quantization modelopt
-      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.68}
+      --moe-backend ${LLM_MOE_BACKEND:-marlin}
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.50}
       -tp 1
       --load-format safetensors
       --kv-cache-dtype fp8
@@ -225,6 +252,95 @@ services:
     healthcheck:
       # vLLM /health returns 200 when the model is loaded and ready.
       # Cold-start can take 60-120s (safetensors load + NVFP4 kernel JIT).
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8004/health\", timeout=2); sys.exit(0)' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+
+  ######################
+  ## vLLM — Gemma 4 31B IT NVFP4 dense (OPT-IN ALTERNATIVE, profile: dense)
+  #
+  #  The dense 31B variant the stack used through v0.x. Slower (~6.9 tok/s
+  #  decode on GB10) but identical context window (256K) and tool-call surface.
+  #  Kept as an opt-in alternative for parity testing and rollback.
+  #
+  #  Mutex with `vllm-llm`: same `hostname: vllm-llm`, different container
+  #  name — Docker's bridge DNS resolves `vllm-llm` to whichever container
+  #  is currently running. Profile-mutex enforces "only one at a time":
+  #
+  #    # Default (MoE):
+  #    docker compose up -d
+  #
+  #    # Switch to dense:
+  #    docker compose stop vllm-llm
+  #    COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense
+  #    # Then update LLM_DEFAULT_MODEL_ID in .env and recreate the patcher:
+  #    docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+  #
+  #  Both models are registered in the OpenClaw catalog regardless of which
+  #  one is running — see patch-config.mjs LLM_MODEL_ENTRY_MOE / _DENSE.
+  ######################
+  vllm-llm-dense:
+    profiles: ["dense"]
+    build:
+      context: ./vllm-llm
+      args:
+        VLLM_BASE_IMAGE: vllm/vllm-openai:gemma4-cu130
+    image: ${CONTAINER_NAME_PREFIX:-dgx-openclaw-}vllm-llm:gemma4-cu130-colonfix
+    container_name: ${CONTAINER_NAME_PREFIX:-}vllm-llm-dense
+    hostname: vllm-llm
+    restart: unless-stopped
+    ipc: host
+    tty: true
+    # ports:
+    #   - "127.0.0.1:8004:8004"
+    command: >
+      --model nvidia/Gemma-4-31B-IT-NVFP4
+      --host 0.0.0.0
+      --port 8004
+      --api-key ${VLLM_API_KEY:-}
+      --quantization modelopt
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL_DENSE:-0.68}
+      -tp 1
+      --load-format safetensors
+      --kv-cache-dtype fp8
+      --max-model-len ${LLM_MAX_MODEL_LEN:-262144}
+      --max-num-seqs ${LLM_MAX_NUM_SEQS:-2}
+      --max-num-batched-tokens 8192
+      --reasoning-parser gemma4
+      --tool-call-parser gemma4
+      --chat-template /templates/tool_chat_template_gemma4.jinja
+      --enable-auto-tool-choice
+      --limit-mm-per-prompt '{"image":4,"audio":0}'
+      --mm-processor-kwargs '{"max_soft_tokens":280}'
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --enforce-eager
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
+      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      - ./templates:/templates:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options:
+        max-size: "150m"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8004/health\", timeout=2); sys.exit(0)' || exit 1"]
       interval: 15s
       timeout: 5s

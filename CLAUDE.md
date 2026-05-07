@@ -4,7 +4,7 @@ Guidance for Claude Code (and other coding agents) working on this repository.
 
 ## What this repo is
 
-A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 31B NVFP4 on vLLM), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first SearxNG meta-search backend, a bilingual TTS surface (Kokoro 82M English by default + opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router), and a Whisper STT backend (`faster-whisper` large-v3 via the upstream speaches-ai image, EN + HU autodetect). Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
+A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 26B-A4B MoE NVFP4 on vLLM by default, with the dense 31B preserved as a `profiles: ["dense"]` opt-in alternative), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first SearxNG meta-search backend, a bilingual TTS surface (Kokoro 82M English by default + opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router), and a Whisper STT backend (`faster-whisper` large-v3 via the upstream speaches-ai image, EN + HU autodetect). Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
 
 The repo's value proposition is the **wiring**, not any individual component:
 - Model + embedding + gateway + memory + web search are pre-integrated.
@@ -297,15 +297,19 @@ The W3C WebAuthn spec is origin-bound. In a noVNC session, the operator's browse
 
 ### Multi-step tool-call agent runs need a generous `--timeout`
 
-Gemma 4 NVFP4 generates at ~6 tok/s on GB10. A multi-step tool-call agent run does several LLM calls in sequence: system-prompt prefill → tool-call args → tool-result digestion → final reply. Each leg is ~100-300 tokens, which adds up to 90-130s of wall-clock for a 3-call run. With the current MCP catalog (`python_sandbox__*`, `comfyui_image__*`, plus the always-on memory/file/exec/browser surface) the system-prompt prefill alone burns the first 3-5s of every call.
+The dense Gemma 4 31B NVFP4 (the historical default, now opt-in via `profiles: ["dense"]`) generates at ~6 tok/s on GB10. The MoE 26B-A4B NVFP4 default reaches ~52 tok/s — ~7.5× faster — so the wall-clock arithmetic below is the worst-case (dense) calibration. On the MoE backend, a 3-call agent run typically lands in 15-30s instead of 90-130s.
 
-The default `openclaw agent --timeout` of 60s was repeatedly tripping during v0.9.0 smoke tests with both `python_sandbox__python_exec` and `comfyui_image__list_workflows` — the gateway logs `embedded run timeout, rawErrorPreview: "Request was aborted." failoverReason: "timeout"` and the agent reply field is empty. Bumping to `--timeout 600` resolves it cleanly; `--timeout 300` is the floor for single-tool runs. The vLLM idle watchdog (`agents.defaults.llm.idleTimeoutSeconds=300`, patcher step 8) is independent — it only catches a stuck connection, not a slow-but-progressing run. Reasoning multipliers (`--thinking medium`, `--thinking high`) make this 2-3× worse; reserve them for genuinely hard prompts.
+Even so: a multi-step tool-call agent run does several LLM calls in sequence — system-prompt prefill → tool-call args → tool-result digestion → final reply. With the current MCP catalog (`python_sandbox__*`, `comfyui_image__*`, plus the always-on memory/file/exec/browser surface) the system-prompt prefill alone burns the first 1-5s of every call (faster on MoE, slower on dense).
+
+The default `openclaw agent --timeout` of 60s was repeatedly tripping during v0.9.0 smoke tests on the dense backend with both `python_sandbox__python_exec` and `comfyui_image__list_workflows` — the gateway logs `embedded run timeout, rawErrorPreview: "Request was aborted." failoverReason: "timeout"` and the agent reply field is empty. Bumping to `--timeout 600` resolves it cleanly; `--timeout 300` is the floor for single-tool runs on dense. On MoE, `--timeout 300` is comfortably safe even for multi-tool runs, and `--timeout 600` keeps the same prompt portable to any operator who flips back to dense for parity testing. **Always document `--timeout 600` for tool-using examples** so they survive both backends — the next person to copy-paste shouldn't have to know which is active. The vLLM idle watchdog (`agents.defaults.llm.idleTimeoutSeconds=600`, patcher step 8) is independent — it only catches a stuck connection, not a slow-but-progressing run. Reasoning multipliers (`--thinking medium`, `--thinking high`) make this 2-3× worse; reserve them for genuinely hard prompts.
 
 When a tool-using prompt is documented anywhere in this repo (CLAUDE.md, CUSTOMIZATION.md, README.md, docs/reference/, …) it must use `--timeout 600`. Don't drop it to 60-180s for "looks cleaner" — the next person to copy-paste it will hit the timeout and waste an hour debugging.
 
 ### Discord progressive streaming via `channels.discord.streaming`
 
-The 6 tok/s figure above has a second consequence on Discord: the upstream OpenClaw default `channels.discord.streaming = "off"` posts replies atomically, so a 500-token answer produces ~80 seconds of channel silence before anything appears. Users read this as "the bot is frozen." Patcher step 24 defaults the field to `"partial"` — a single preview message edit-in-place as tokens arrive. Discord enforces 5 message edits / 5 s per channel; at 6 tok/s with the docs-default `draftChunk.minChars=200` (~33 tokens), edits land roughly every 5.5 s, comfortably under the limit on a dedicated single-bot account.
+The decode-rate above has a second consequence on Discord: the upstream OpenClaw default `channels.discord.streaming = "off"` posts replies atomically, so on dense at 6 tok/s a 500-token answer produces ~80 seconds of channel silence before anything appears. Users read this as "the bot is frozen." Patcher step 24 defaults the field to `"partial"` — a single preview message edit-in-place as tokens arrive. Discord enforces 5 message edits / 5 s per channel; on dense at 6 tok/s with the docs-default `draftChunk.minChars=200` (~33 tokens), edits land roughly every 5.5 s, comfortably under the limit on a dedicated single-bot account.
+
+**MoE re-tuning note (post-2026-05 backend swap):** at 52 tok/s the MoE backend hits the same `minChars=200` boundary every ~0.6s, which would burn through Discord's 5-edits/5s rate limit in the first second. With the default `OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS=200` left in `.env` the cadence still works but feels closer to atomic delivery (each edit lands far below the rate-limit floor). For genuinely typewriter-feel streaming on MoE, consider `OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS=1000`+ and `OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE=paragraph` — that's ~1s of MoE decode per edit, well under the rate-limit budget. The right knob value depends on the actual reply length distribution; defer the tuning until smoke-tested traffic data is available.
 
 Trade-offs and gotchas worth remembering before you tweak this:
 
@@ -381,7 +385,7 @@ docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
 # 3. Hybrid memory smoke
 docker exec ${PROJ}openclaw-cli sh -c \
   'mkdir -p ~/.openclaw/workspace/memory && \
-   echo "Gemma 4 31B NVFP4 runs at ~6.9 tok/s on GB10." > ~/.openclaw/workspace/memory/test.md'
+   echo "Gemma 4 26B-A4B MoE NVFP4 runs at ~52 tok/s on GB10." > ~/.openclaw/workspace/memory/test.md'
 docker exec ${PROJ}openclaw-cli openclaw memory index --force
 docker exec ${PROJ}openclaw-cli openclaw memory search "How fast is Gemma on GB10?"
                                                         # → score >0.4, returns test.md

@@ -2,22 +2,35 @@
 
 > Reference material: model choices, variants, and the rationale behind them.
 
-## Active LLM (unified OpenClaw stack, 2026-04-22 onward)
+## Active LLM (unified OpenClaw stack, 2026-05 onward)
 
-Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — in-stack `vllm-llm` service:
+Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — in-stack `vllm-llm` service (MoE default) with a parallel `vllm-llm-dense` service block parked behind `profiles: ["dense"]` for parity testing and rollback.
 
-- Image: `vllm/vllm-openai:gemma4-cu130`
-- Model: `nvidia/Gemma-4-31B-IT-NVFP4`
+**MoE default** (`vllm-llm` service):
+- Image: `vllm/vllm-openai:gemma4-cu130` + 1-line tool-call-parser regex patch (`./vllm-llm/Dockerfile`)
+- Model: `nvidia/Gemma-4-26B-A4B-NVFP4` — 25.2B total / 3.8B active per token, 128 experts top-8
+- Quantization: NVFP4 via NVIDIA Model Optimizer `nvfp4_experts_only` recipe (~16.5 GB weights)
+- MoE backend: Marlin (mandatory on Blackwell SM121 — CUTLASS NaNs on the fused 3D expert format)
 - Port: 8004
+- Decode: ~52 tok/s on GB10 (verified ai-muninn 2026-04, ~7.5× faster than the dense 31B it replaces)
+- Vision tower included; same `gemma4` parser + `tool_chat_template_gemma4.jinja` as dense
+
+**Dense alternative** (`vllm-llm-dense`, `profiles: ["dense"]`):
+- Same image, same chat template, same parsers
+- Model: `nvidia/Gemma-4-31B-IT-NVFP4` — 31.3B dense in NVFP4 (~17 GB weights)
 - Decode: ~6.9 tok/s on GB10
+- Same `hostname: vllm-llm` so the OpenClaw gateway resolves it via bridge DNS without config change
+- Mutex via profile: `docker compose stop vllm-llm` then `COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`
+
+Both are registered in the OpenClaw catalog by `patch-config.mjs` (`LLM_MODEL_ENTRIES[]` array). `agents.defaults.llm.model` is driven by `LLM_DEFAULT_MODEL_ID` in `.env` (default = MoE id).
 
 ## Standalone variants (port 8004 mutex — only one at a time)
 
-Under `llm/` there's an intentional pattern: several Gemma 4 31B variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.
+Under `llm/` there's an intentional pattern: several Gemma 4 variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.
 
 - `gemma_4_31b_bf16/` — BF16 standalone (`google/gemma-4-31B-it`), 8K × 8 users
 - `litellm/` — BF16 + LiteLLM proxy (port 4000) + Postgres, 64K × 2 users
-- `gemma_4_31b_nvfp4/` — NVFP4 standalone twin of the unified `vllm-llm` (legacy / fallback)
+- `gemma_4_31b_nvfp4/` — NVFP4 standalone twin of the unified `vllm-llm-dense` (legacy / fallback)
 - `qwen3-5_27b_opus/` — alternative model
 
 Before swapping: `docker compose stop vllm-llm` (and `vllm-embedding` if the sibling embedding stack also swaps).

@@ -169,11 +169,19 @@ import path from 'node:path';
 
 const CONFIG_PATH = '/home/node/.openclaw/openclaw.json';
 
-// LLM provider — Gemma 4 31B IT NVFP4 on the in-compose `vllm-llm` service.
-// Override LLM_BASE_URL in .env to point at any OpenAI-compatible chat endpoint
-// (remote vLLM, Bedrock proxy, OpenRouter, …). See .env.example and
-// docs/CUSTOMIZATION.md → "Run with a remote vLLM backend".
-const LLM_MODEL_ID = 'nvidia/Gemma-4-31B-IT-NVFP4';
+// LLM provider — Gemma 4 NVFP4 on the in-compose `vllm-llm` (MoE default) /
+// `vllm-llm-dense` (opt-in profile) service. Override LLM_BASE_URL in .env to
+// point at any OpenAI-compatible chat endpoint (remote vLLM, Bedrock proxy,
+// OpenRouter, …). See .env.example and docs/CUSTOMIZATION.md → "Run with a
+// remote vLLM backend".
+//
+// Both catalog entries are registered regardless of which compose service is
+// running — the user can flip `LLM_DEFAULT_MODEL_ID` and the matching profile
+// without re-patching. agents.defaults.llm.model points at the active id.
+const LLM_MODEL_ID_MOE = 'nvidia/Gemma-4-26B-A4B-NVFP4';
+const LLM_MODEL_ID_DENSE = 'nvidia/Gemma-4-31B-IT-NVFP4';
+const LLM_DEFAULT_MODEL_ID =
+  process.env.LLM_DEFAULT_MODEL_ID?.trim() || LLM_MODEL_ID_MOE;
 const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://vllm-llm:8004/v1/';
 const LLM_API = 'openai-completions';
 const VLLM_API_KEY = process.env.VLLM_API_KEY ?? '';
@@ -184,19 +192,26 @@ const VLLM_API_KEY = process.env.VLLM_API_KEY ?? '';
 const EMBED_MODEL = 'BAAI/bge-m3';
 const EMBED_BASE_URL = process.env.EMBED_BASE_URL || 'http://vllm-embedding:8005/v1/';
 
-// input: ['text','image'] — Gemma 4 NVFP4 natively supports vision input (NVIDIA's
-// release ships the vision tower, not just the LM). The vllm-llm service also
-// passes `--limit-mm-per-prompt '{"image":4,"audio":0}'`. OpenClaw uses this
-// catalog entry to decide whether to forward image parts in multimodal messages.
-const LLM_MODEL_ENTRY = {
-  id: LLM_MODEL_ID,
-  name: LLM_MODEL_ID,
+// input: ['text','image'] — Gemma 4 NVFP4 natively supports vision input
+// (NVIDIA's release ships the vision tower for both MoE and dense). The
+// vllm-llm service also passes `--limit-mm-per-prompt '{"image":4,"audio":0}'`.
+// OpenClaw uses these catalog entries to decide whether to forward image parts
+// in multimodal messages and to cap prompt sizes.
+const LLM_MODEL_ENTRY_MOE = {
+  id: LLM_MODEL_ID_MOE,
+  name: LLM_MODEL_ID_MOE,
   reasoning: false,
   input: ['text', 'image'],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 262144,
   maxTokens: 8192,
 };
+const LLM_MODEL_ENTRY_DENSE = {
+  ...LLM_MODEL_ENTRY_MOE,
+  id: LLM_MODEL_ID_DENSE,
+  name: LLM_MODEL_ID_DENSE,
+};
+const LLM_MODEL_ENTRIES = [LLM_MODEL_ENTRY_MOE, LLM_MODEL_ENTRY_DENSE];
 
 if (!fs.existsSync(CONFIG_PATH)) {
   console.log(`[patch-config] ${CONFIG_PATH} does not exist yet — onboarding has not run. Skipping patch.`);
@@ -244,26 +259,49 @@ if (vllm) {
   }
 }
 
-// (3) Ensure the NVFP4 model entry is in the provider's models[] catalog.
+// (3) Ensure both NVFP4 model entries (MoE default, dense alternative) are in
+//     the provider's models[] catalog. We register both regardless of which
+//     compose service (`vllm-llm` MoE-default or `vllm-llm-dense` opt-in) is
+//     running — the user can swap the active backend via .env + profile flip
+//     without re-patching, and the OpenClaw UI shows both options. Whichever
+//     id is in agents.defaults.llm.model (step 3b) is what the agent reaches
+//     for; if it doesn't match the running vLLM, requests 404 — that's the
+//     trade-off for not hand-editing openclaw.json on every swap.
 if (vllm) {
   vllm.models ??= [];
-  const existing = vllm.models.find((m) => m?.id === LLM_MODEL_ID);
-  if (!existing) {
-    vllm.models.push(LLM_MODEL_ENTRY);
-    changed = true;
-    console.log(`[patch-config] added provider model entry: ${LLM_MODEL_ID} (contextWindow=262144).`);
-  } else {
-    const before = JSON.stringify(existing);
-    for (const [k, v] of Object.entries(LLM_MODEL_ENTRY)) {
-      if (JSON.stringify(existing[k]) !== JSON.stringify(v)) {
-        existing[k] = v;
+  for (const entry of LLM_MODEL_ENTRIES) {
+    const existing = vllm.models.find((m) => m?.id === entry.id);
+    if (!existing) {
+      vllm.models.push(entry);
+      changed = true;
+      console.log(`[patch-config] added provider model entry: ${entry.id} (contextWindow=${entry.contextWindow}).`);
+    } else {
+      const before = JSON.stringify(existing);
+      for (const [k, v] of Object.entries(entry)) {
+        if (JSON.stringify(existing[k]) !== JSON.stringify(v)) {
+          existing[k] = v;
+        }
+      }
+      if (JSON.stringify(existing) !== before) {
+        changed = true;
+        console.log(`[patch-config] updated provider model entry: ${entry.id}.`);
       }
     }
-    if (JSON.stringify(existing) !== before) {
-      changed = true;
-      console.log(`[patch-config] updated provider model entry: ${LLM_MODEL_ID}.`);
-    }
   }
+}
+
+// (3b) Default agent model id. We write LLM_DEFAULT_MODEL_ID into
+//      agents.defaults.llm.model only if the field is unset — once an operator
+//      picks a model in the OpenClaw UI it lands here, and we honor that
+//      choice on subsequent re-runs. Set LLM_DEFAULT_MODEL_ID in .env to drive
+//      the first-time default (defaults to the MoE id).
+config.agents ??= {};
+config.agents.defaults ??= {};
+config.agents.defaults.llm ??= {};
+if (!config.agents.defaults.llm.model) {
+  config.agents.defaults.llm.model = LLM_DEFAULT_MODEL_ID;
+  changed = true;
+  console.log(`[patch-config] agents.defaults.llm.model = ${LLM_DEFAULT_MODEL_ID} (was unset).`);
 }
 
 // (4) Ensure memorySearch points at the local bge-m3 embedding service.

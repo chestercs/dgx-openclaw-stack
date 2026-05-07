@@ -331,7 +331,9 @@ current_hf=$(grep -E '^HUGGING_FACE_HUB_TOKEN=' "$ENV_FILE" | head -n1 | cut -d=
 if [[ -z "$current_hf" || "$current_hf" == "hf_CHANGE_ME" ]]; then
   log "You need a HuggingFace access token to download the Gemma 4 NVFP4 weights."
   log "Create one at https://huggingface.co/settings/tokens (read scope is enough)."
-  log "Accept the license at https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4 first."
+  log "Accept the license at https://huggingface.co/nvidia/Gemma-4-26B-A4B-NVFP4 first."
+  log "(If you also want the dense 31B alternative, accept"
+  log " https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4 with the same token.)"
   printf '%bHUGGING_FACE_HUB_TOKEN%b (hf_...): ' "$BOLD" "$RESET"
   read -r hf_token
   if [[ -n "$hf_token" ]]; then

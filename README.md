@@ -1,24 +1,25 @@
 <!--
 Keywords for discovery: NVIDIA DGX Spark, ASUS Ascent GB10, Grace-Blackwell,
-GB10 Superchip, NVFP4, FP4 quantization, Gemma 4 31B, vLLM, local LLM,
-self-hosted agent, OpenClaw, bge-m3, multilingual embeddings, RAG, tool calling,
-128 GB unified memory, ARM64 AI workstation, edge AI, on-device AI, docker compose,
-SearxNG, privacy-respecting web search, self-hosted meta-search, hybrid retrieval,
-hybrid BM25 + vector search, MMR re-ranking, x86_64 GPU server, cloud LLM backend,
-OpenAI compatible, Anthropic, OpenRouter, AWS Bedrock, hosted LLM, RTX 4090.
+GB10 Superchip, NVFP4, FP4 quantization, Gemma 4 26B-A4B MoE, Gemma 4 31B,
+mixture of experts, vLLM, local LLM, self-hosted agent, OpenClaw, bge-m3,
+multilingual embeddings, RAG, tool calling, 128 GB unified memory, ARM64 AI
+workstation, edge AI, on-device AI, docker compose, SearxNG, privacy-respecting
+web search, self-hosted meta-search, hybrid retrieval, hybrid BM25 + vector
+search, MMR re-ranking, x86_64 GPU server, cloud LLM backend, OpenAI compatible,
+Anthropic, OpenRouter, AWS Bedrock, hosted LLM, RTX 4090.
 -->
 
 # DGX OpenClaw Stack
 
 > **A one-command, production-grade local AI agent stack** — OpenClaw + vLLM + bge-m3 multilingual embeddings + SearxNG private web search + hybrid (BM25 + vector) memory retrieval, wired together in a single `docker compose` file.
 >
-> **Calibrated** for the NVIDIA GB10 "Grace-Blackwell" Superchip (NVIDIA DGX Spark, ASUS Ascent GB10) running Gemma 4 31B in NVFP4. **Portable** to other hardware — swap the LLM for whatever fits your GPU, or point OpenClaw at a cloud LLM API and keep everything else.
+> **Calibrated** for the NVIDIA GB10 "Grace-Blackwell" Superchip (NVIDIA DGX Spark, ASUS Ascent GB10) running Gemma 4 26B-A4B MoE in NVFP4 (with the dense 31B preserved as a profile-gated alternative). **Portable** to other hardware — swap the LLM for whatever fits your GPU, or point OpenClaw at a cloud LLM API and keep everything else.
 
 The default profile's tuning decisions — NVFP4 quantization, GPU memory split between LLM and embedding, FP8 KV cache, concurrency bands, context-window budgeting — are calibrated to the GB10 Superchip's specific hardware profile: **128 GB of unified LPDDR5X**, **273 GB/s bandwidth**, and **native FP4 tensor-core acceleration** (`sm_120`/`sm_121`). On a DGX Spark or ASUS Ascent GB10 you get those numbers out of the box. On other hardware everything except the LLM service is reusable as-is.
 
 [![Docker Compose](https://img.shields.io/badge/docker%20compose-24.0%2B-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-0.11%2B-7C3AED)](https://github.com/vllm-project/vllm)
-[![Gemma 4](https://img.shields.io/badge/Gemma%204-31B%20NVFP4-4285F4)](https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4)
+[![Gemma 4](https://img.shields.io/badge/Gemma%204-26B--A4B%20MoE%20NVFP4-4285F4)](https://huggingface.co/nvidia/Gemma-4-26B-A4B-NVFP4)
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-2026.4.15%2B-0A7F3F)](https://openclaw.ai)
 [![Hardware](https://img.shields.io/badge/hardware-DGX%20Spark%20%7C%20ASUS%20GB10-76B900?logo=nvidia&logoColor=white)](#hardware-targets)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -29,7 +30,7 @@ The default profile's tuning decisions — NVFP4 quantization, GPU memory split 
 
 | You are… | What you get | Time to working stack |
 |---|---|---|
-| **A GB10 owner** (DGX Spark, ASUS Ascent GB10) | The calibrated reference profile. Boot the stack and run Gemma 4 31B NVFP4 with multilingual embeddings, hybrid memory, private web search, bilingual TTS — on your hardware, no cloud. | ~30 min, mostly model download |
+| **A GB10 owner** (DGX Spark, ASUS Ascent GB10) | The calibrated reference profile. Boot the stack and run Gemma 4 26B-A4B MoE NVFP4 (~52 tok/s decode) with multilingual embeddings, hybrid memory, private web search, bilingual TTS — on your hardware, no cloud. The dense 31B is preserved as a profile-gated alternative for parity testing. | ~30 min, mostly model download |
 | **An x86_64 + NVIDIA GPU operator** (RTX 4090, A6000, etc.) | Same wiring; swap `vllm-llm` for a model your VRAM holds (Gemma 4 12B BF16, Qwen 2.5, Llama 3.3). All non-LLM services transfer unchanged. | ~30 min + tuning |
 | **A cloud-LLM user** (OpenAI, Anthropic, OpenRouter, Bedrock, remote vLLM) | Park the local LLM service, point three env vars at your hosted endpoint. You still get the local agent stack: bge-m3 embeddings, SearxNG private search, hybrid memory, dreaming, heartbeat, TTS. | ~10 min (no GPU) |
 | **A contributor or curious reader** | A worked example of a deterministic, opinionated AI agent stack. Every wiring decision has a *why* in the comments; the patcher is small enough to read in one sitting. | n/a — start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
@@ -42,7 +43,7 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 
 | Component | What it does |
 |---|---|
-| **Gemma 4 31B IT (NVFP4)** | 31B-parameter Google Gemma 4 dense model, quantized by NVIDIA to NVFP4 (FP4 with NVIDIA's block format). Native tool calling, 256K context, multimodal (text + image). |
+| **Gemma 4 26B-A4B MoE (NVFP4)** | 25.2B-total / 3.8B-active Google Gemma 4 mixture-of-experts model (128 experts, top-8 routing), quantized by NVIDIA to NVFP4 with the `nvfp4_experts_only` recipe. Native tool calling, 256K context, multimodal (text + image), ~52 tok/s decode on GB10. The dense 31B variant lives behind `--profile dense` for parity testing and rollback. |
 | **bge-m3 embeddings** | BAAI/bge-m3 multilingual dense embeddings via vLLM. 100+ languages, 1024-dim, 8K context, EN↔HU cosine ≈ 0.88. |
 | **SearxNG meta-search** | Self-hosted, privacy-respecting web search backend wired into OpenClaw's native `webSearch` provider. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Wikipedia family, Reddit, GitHub, arXiv) — queries never reach Google / Bing / Yandex / Yahoo / Baidu. |
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
@@ -69,14 +70,15 @@ The reference profile **won't boot as-is on non-GB10 hardware** — `vllm/vllm-o
 
 ### Performance (measured on GB10, single-shot generation)
 
-| Scenario | Value |
-|---|---|
-| Decode throughput, 1 concurrent user | ~6.9 tok/s sustained (NVFP4) vs ~3.7 tok/s (BF16) — ~2× speedup |
-| Stable context window, 1 concurrent user | ~220K tokens before vLLM preemption |
-| Stable context window, 2 concurrent users | ~110K tokens each, served via continuous batching |
-| Vision prefill per image | ~280 vision tokens for a ≈ 512×512 region, sub-second encode |
-| First-boot cold start (after model download) | ~3–4 min from `up` to gateway-ready |
-| KV cache | FP8 (halves cache footprint vs default BF16 KV cache) |
+| Scenario | MoE 26B-A4B (default) | Dense 31B (alternative) |
+|---|---|---|
+| Decode throughput, 1 concurrent user | ~52 tok/s sustained (NVFP4 + Marlin MoE backend) | ~6.9 tok/s sustained (NVFP4) |
+| Stable context window, 1 concurrent user | 256K (full architecture maximum, fits in budget) | ~220K tokens before vLLM preemption |
+| Stable context window, 2 concurrent users | 256K each, ~6.6 GB FP8 KV total | ~110K tokens each, continuous batching |
+| Model footprint | ~16.5 GB (NVFP4 weights, vision tower included) | ~17 GB (NVFP4 weights, vision tower included) |
+| Vision prefill per image | ~280 vision tokens for a ≈ 512×512 region, sub-second encode (both) | — |
+| First-boot cold start (after model download) | ~3–4 min from `up` to gateway-ready (both) | — |
+| KV cache | FP8 (halves cache footprint vs default BF16 KV cache) | FP8 (same) |
 
 Numbers come from a DGX Spark with 128 GB unified LPDDR5X. Single-prompt streaming with a warm KV cache; throughput drops with longer contexts and more concurrent users. Re-tune the `LLM_GPU_MEM_UTIL` / `LLM_MAX_NUM_SEQS` constants in `.env` for other hardware.
 
@@ -106,8 +108,8 @@ That's it — the patcher applies all 15 steps and the gateway goes healthy. **T
     │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
     │  │ vllm-llm        │  │ vllm-embedding  │  │ searxng        │  │
     │  │ :8004 (internal)│  │ :8005 (internal)│  │ :8080 (internal)│  │
-    │  │ Gemma 4 31B     │  │ bge-m3 (567M)   │  │ privacy meta-   │  │
-    │  │ NVFP4, 256K ctx │  │ 1024-dim, 8K ctx│  │ search (CPU)    │  │
+    │  │ Gemma 4 26B-A4B │  │ bge-m3 (567M)   │  │ privacy meta-   │  │
+    │  │ MoE NVFP4, 256K │  │ 1024-dim, 8K ctx│  │ search (CPU)    │  │
     │  └────────▲────────┘  └────────▲────────┘  └────────▲────────┘  │
     │           │ compose DNS        │ compose DNS        │ compose DNS│
     │  ┌────────┴────────────────────┴────────────────────┴────────┐  │
