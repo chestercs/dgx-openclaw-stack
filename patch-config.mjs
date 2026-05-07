@@ -213,6 +213,25 @@ const LLM_MODEL_ENTRY_DENSE = {
 };
 const LLM_MODEL_ENTRIES = [LLM_MODEL_ENTRY_MOE, LLM_MODEL_ENTRY_DENSE];
 
+// If LLM_DEFAULT_MODEL_ID points at a model NOT in the hard-coded pair
+// (e.g. a community NVFP4 quantization the operator picked to bypass an
+// upstream loader bug), register a generic catalog entry on the fly so the
+// agent default can resolve. Same shape as the NVIDIA entries: text+image
+// modalities, 256K context, 8K reply cap. If the actual model has different
+// capabilities, the operator can override the catalog entry post-hoc via the
+// OpenClaw UI — patcher's only-if-missing rule on agents.defaults.llm.model
+// preserves their choice.
+if (
+  LLM_DEFAULT_MODEL_ID !== LLM_MODEL_ID_MOE &&
+  LLM_DEFAULT_MODEL_ID !== LLM_MODEL_ID_DENSE
+) {
+  LLM_MODEL_ENTRIES.push({
+    ...LLM_MODEL_ENTRY_MOE,
+    id: LLM_DEFAULT_MODEL_ID,
+    name: LLM_DEFAULT_MODEL_ID,
+  });
+}
+
 if (!fs.existsSync(CONFIG_PATH)) {
   console.log(`[patch-config] ${CONFIG_PATH} does not exist yet — onboarding has not run. Skipping patch.`);
   process.exit(0);

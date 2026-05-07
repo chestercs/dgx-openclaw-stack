@@ -4,6 +4,22 @@ Common failure modes and their fixes, grouped by the service you're most likely 
 
 For a structured map of which media features render on which surfaces (web chat / Discord text / agent skill API / control UI), see `docs/reference/chat-surface-capability-matrix.md`. For pre-flight verification before merging a new media-bridge, see `docs/reference/media-bridge-checklist.md`.
 
+## LLM stack — MoE first-boot
+
+### "vllm-llm crash-loop with `KeyError: 'layers.0.experts.0.down_proj.input_scale'`"
+
+You're hitting [vllm-project/vllm#38912](https://github.com/vllm-project/vllm/issues/38912): the `vllm/vllm-openai:gemma4-cu130` base image's `gemma4.py` model loader doesn't map NVFP4 expert scale-key suffixes (`.weight_scale`, `.weight_scale_2`, `.input_scale`) to the `FusedMoE` parameter names. The `nvidia/Gemma-4-26B-A4B-NVFP4` checkpoint uses the `nvfp4_experts_only` recipe, which produces exactly those scale keys — and the loader trips on the first one.
+
+The upstream fix shipped as PR [#39045](https://github.com/vllm-project/vllm/pull/39045) (merged 2026-04-09) — but the `gemma4-cu130` tag's pinned manifest may pre-date it. Three mitigations, listed by safety:
+
+1. **Switch to a community NVFP4 quantization that ships a self-contained loader patch** — set `LLM_MODEL_ID=RedHatAI/gemma-4-26B-A4B-it-NVFP4` (or another community quant verified working with the current `gemma4-cu130` image) and keep `LLM_DEFAULT_MODEL_ID` in sync. The patcher auto-registers a catalog entry for the override id. Caveat: max-model-len may need to drop from 256K to 96K depending on the quant; check the model card.
+
+2. **Roll forward the base image** to a `gemma4-cu130` revision that includes PR #39045 — `docker pull vllm/vllm-openai:gemma4-cu130 && docker compose build vllm-llm`. If the digest doesn't change, the upstream tag is still pinned to a pre-fix build; fall back to option 1 or 3.
+
+3. **Roll back to the dense 31B alternative** — `docker compose stop vllm-llm && COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`, then set `LLM_DEFAULT_MODEL_ID=nvidia/Gemma-4-31B-IT-NVFP4` in `.env` and recreate the patcher chain. ~7.5× slower but stable; bounce back to MoE when the upstream image picks up the fix.
+
+Don't bind-mount a `gemma4_patched.py` from a non-pinned third-party HuggingFace user repo without explicit operator approval — vLLM's model loader runs untrusted Python at boot, so the supply chain matters here.
+
 ## Media surfaces — first-glance fixes
 
 These are the symptoms operators hit first when integrating image-gen, TTS, or any new media feature. Each links to the deeper reference for context.

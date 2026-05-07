@@ -203,8 +203,15 @@ services:
     # decompresses FP4 → BF16 at inference time (slightly slower per-expert,
     # functionally correct). To run the dense 31B alternative instead, see
     # the `vllm-llm-dense` block below — it reuses this image and hostname.
+    # `LLM_MODEL_ID` lets an operator try a different MoE checkpoint (e.g. a
+    # community NVFP4 quantization that doesn't trip the upstream gemma4 model
+    # loader's expert scale-key bug — see TROUBLESHOOTING.md "MoE model load
+    # KeyError"). Default = the NVIDIA reference. If you change this, also set
+    # `LLM_DEFAULT_MODEL_ID` to the same value so OpenClaw routes agent calls
+    # to the served id (the patcher reads LLM_DEFAULT_MODEL_ID and registers
+    # the catalog entry dynamically when it isn't one of the hard-coded pair).
     command: >
-      --model nvidia/Gemma-4-26B-A4B-NVFP4
+      --model ${LLM_MODEL_ID:-nvidia/Gemma-4-26B-A4B-NVFP4}
       --host 0.0.0.0
       --port 8004
       --api-key ${VLLM_API_KEY:-}
