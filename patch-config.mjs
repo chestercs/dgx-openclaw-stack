@@ -160,6 +160,23 @@
 //      Skip cleanly if the file doesn't exist (pre-onboarding state).
 //      Same idempotency pattern as steps 16/17.
 //
+//  27. Workspace-discord AGENTS.md image-gen workflow-picker block. When
+//      the operator has set IMAGE_GEN_DEFAULT_WORKFLOW (i.e. the v0.11.0
+//      max-quality 4K bundle is installed and the bridge default points
+//      at one of its workflows), append a cheatsheet block that tells
+//      the discord-friend agent which workflow to pass for which
+//      use-case (SFW / adult / fast iteration / SUPIR-OOM fallback). The
+//      catalog already exposes `comfyui_image__list_workflows` but the
+//      same Gemma-doesn't-surface-tools-from-catalog-alone problem from
+//      step 26 applies to workflow names — without a worked example,
+//      requests get routed at random across the available workflows.
+//      Env-gated by IMAGE_GEN_DEFAULT_WORKFLOW; when unset, the step
+//      skips so users who haven't installed the bundle don't get a
+//      cheatsheet for non-existent workflows. Once written, the block
+//      stays in AGENTS.md even if the env unsets (operator can delete
+//      manually) — same posture as the messaging in steps 16/17 (we
+//      don't strip user-visible markdown on env retraction).
+//
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
 // log a `[patch-config]` line for every field you change.
@@ -1903,6 +1920,43 @@ const CRON_CHEATSHEET_BODY =
   'Ack-stílus: tömör ("Mehet, 1 perc múlva szólok!"), aztán RÖGTÖN\n' +
   '`cron add`. Ne magyarázz, ne kérj bocsánatot a precízségért.\n';
 
+// Step 27 cheatsheet — image-gen workflow picker. Body interpolates the
+// configured IMAGE_GEN_DEFAULT_WORKFLOW so the cheatsheet stays accurate
+// when an operator picks a different default. Skipped entirely when env
+// is empty (gated below).
+const IMAGE_GEN_CHEATSHEET_START = '<!-- patch-config:image-gen-tools:start -->';
+const IMAGE_GEN_CHEATSHEET_END = '<!-- patch-config:image-gen-tools:end -->';
+const IMAGE_GEN_DEFAULT_WORKFLOW = (process.env.IMAGE_GEN_DEFAULT_WORKFLOW || '').trim();
+const IMAGE_GEN_CHEATSHEET_BODY =
+  '\n## Képgenerálás — `comfyui_image__generate` workflow picker\n\n' +
+  'A `comfyui_image__generate` tool a max-quality 4K FLUX stack-et szolgálja\n' +
+  'ki ezen a deploy-on. A `workflow=` paramétert a kérés stílusa alapján\n' +
+  'válaszd:\n\n' +
+  '- **Default** (hagyd ki a `workflow=`-t): a bridge a beállított\n' +
+  '  `IMAGE_GEN_DEFAULT_WORKFLOW`-ot használja (jelenleg\n' +
+  `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-4k-supir'}\`). Ez a\n` +
+  '  helyes választás minden általános "csinálj egy [jelenetet]" kérésre.\n' +
+  '- **Felnőtt tartalom**: `workflow="flux-krea-4k-adult-realism"` a\n' +
+  '  fotórealisztikus felnőtt-pathra (LoRA stack), vagy\n' +
+  '  `workflow="flux-krea-4k-adult"` a könnyebb single-LoRA verzióra.\n' +
+  '- **Gyors iteráció / warm-up**: `workflow="flux-krea-2k"` — kihagyja\n' +
+  '  a SUPIR upscale fázist, ~3× gyorsabb, 2K kimenet.\n' +
+  '- **SUPIR OOM fallback**: `workflow="flux-krea-4k-tiled"` — csak akkor,\n' +
+  '  ha a 4k-supir verzió OOM-mal száll el (komplex kompozícióknál előfordul).\n\n' +
+  '`width` és `height` defaultja 1536 (natív pre-upscale res; a végső\n' +
+  'kimenet ~4× ennyi a SUPIR fázis után). Nagyobb natív res = lassabb\n' +
+  'de több részlet; a SUPIR fázis bármilyen natív méretet ~4K-ra skáláz.\n\n' +
+  '`negative` prompt ajánlott baseline (a workflow defaults-ja már\n' +
+  'tartalmazza, csak akkor felülírd, ha a kérés specifikus negatívot\n' +
+  'igényel):\n' +
+  '`"deformed, blurry, lowres, watermark, extra fingers, cartoon, anime,\n' +
+  'painting, illustration, oversaturated, bad anatomy"`\n\n' +
+  '**KÖTELEZŐ output szabály ugyanaz mint amit a tool-leírás mond**: a\n' +
+  '`display_markdown` mező pontos verbatim tartalmát beillesztened a\n' +
+  'válasz elejére (mindkét sorát — image URL ÉS [embed] shortcode), aztán\n' +
+  'a kommentárod utána. Enélkül a user vagy a webchat-en vagy a Discord-on\n' +
+  'NEM látja a képet.\n';
+
 // Idempotent upsert of a marker-delimited block. If the markers are not
 // present, append the block. If they are, swap the body in-place when it
 // has drifted from the canonical body (e.g. patcher upgrade ships an
@@ -1954,6 +2008,22 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
     agentsMd = toolsUpsert.content;
     mdChanged = true;
     console.log(`[patch-config] workspace-discord/AGENTS.md ${toolsUpsert.label}`);
+  }
+  // Step 27 — image-gen workflow picker. Gated on IMAGE_GEN_DEFAULT_WORKFLOW;
+  // skip when the operator hasn't installed the v0.11.0 max-quality 4K bundle
+  // (otherwise the cheatsheet would point at workflows that don't exist and
+  // the agent would emit `unknown workflow` errors on every default-routed
+  // image request).
+  if (IMAGE_GEN_DEFAULT_WORKFLOW) {
+    const imageGenUpsert = upsertMarkedBlock(
+      agentsMd, IMAGE_GEN_CHEATSHEET_START, IMAGE_GEN_CHEATSHEET_END,
+      IMAGE_GEN_CHEATSHEET_BODY, 'image-gen-tools cheatsheet',
+    );
+    if (imageGenUpsert.changed) {
+      agentsMd = imageGenUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${imageGenUpsert.label}`);
+    }
   }
   if (mdChanged) {
     fs.writeFileSync(WORKSPACE_DISCORD_AGENTS_PATH, agentsMd);

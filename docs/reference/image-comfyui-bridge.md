@@ -448,6 +448,119 @@ docker exec ${PROJ}openclaw-cli sh -c 'cat ~/.openclaw/openclaw.json' \
   | jq '.mcp.servers.comfyui_image // "removed"'
 ```
 
+## Recommended model bundle for max-quality 4K
+
+The bridge ships no model weights. The five `flux-krea-*.json`
+workflow templates added in v0.11.0 expect a specific bundle of
+open-weight models on the operator's ComfyUI install. Running this
+download is opt-in — without it, the bundle's templates fail at
+ComfyUI's prompt-validate step ("model not found"), but the legacy
+`flux-schnell` / `sdxl-base` templates keep working unchanged.
+
+Total disk ≈ 60-70 GB. Targets are paths inside the user's ComfyUI
+basedir (`models/diffusion_models/`, `models/clip/`, etc.).
+
+```bash
+# Run on the host that owns the ComfyUI basedir. Pre-req: HF_TOKEN env
+# or `huggingface-cli login` for FLUX-Krea-dev (gated behind the
+# FLUX.1-dev license click-through on huggingface.co — accept once,
+# token works thereafter).
+export HF_HUB_ENABLE_HF_TRANSFER=1
+BASEDIR=/path/to/comfyui/basedir   # adjust to your install
+
+# Primary FLUX stack (~34 GB)
+huggingface-cli download black-forest-labs/FLUX.1-Krea-dev \
+    flux1-krea-dev.safetensors --local-dir "$BASEDIR/models/diffusion_models/"
+huggingface-cli download comfyanonymous/flux_text_encoders \
+    t5xxl_fp16.safetensors clip_l.safetensors --local-dir "$BASEDIR/models/clip/"
+huggingface-cli download black-forest-labs/FLUX.1-dev \
+    ae.safetensors --local-dir "$BASEDIR/models/vae/"
+
+# SUPIR backbone (~18 GB) — required for the 4k-supir / 4k-adult /
+# 4k-adult-realism templates. Pruned weights from kijai's mirror keep
+# the download under 6 GB per checkpoint.
+huggingface-cli download Kijai/SUPIR_pruned \
+    SUPIR-v0Q_fp16.safetensors --local-dir "$BASEDIR/models/diffusion_models/"
+huggingface-cli download stabilityai/sdxl-vae \
+    sdxl_vae.safetensors --local-dir "$BASEDIR/models/vae/"
+huggingface-cli download RunDiffusion/Juggernaut-XL-v9 \
+    juggernautXL_v9Rundiffusion.safetensors --local-dir "$BASEDIR/models/checkpoints/"
+
+# Upscaler (~70 MB) — used by the 4k-tiled fallback path
+huggingface-cli download Kim2091/UltraSharp \
+    4x-UltraSharp.pth --local-dir "$BASEDIR/models/upscale_models/"
+
+# LoRAs (~1.3 GB total) — realism stack used by 4k-supir; flux-uncensored
+# adds the adult variants. Files are renamed to match the workflow
+# templates' baked-in filenames.
+huggingface-cli download strangerzonehf/Flux-Super-Realism-LoRA \
+    super-realism.safetensors --local-dir "$BASEDIR/models/loras/"
+huggingface-cli download XLabs-AI/flux-RealismLora \
+    lora.safetensors --local-dir "$BASEDIR/models/loras/" \
+    && mv "$BASEDIR/models/loras/lora.safetensors" \
+          "$BASEDIR/models/loras/flux-realism-xlabs.safetensors"
+huggingface-cli download enhanceaiteam/Flux-uncensored \
+    lora.safetensors --local-dir "$BASEDIR/models/loras/" \
+    && mv "$BASEDIR/models/loras/lora.safetensors" \
+          "$BASEDIR/models/loras/flux-uncensored-v2.safetensors"
+```
+
+License notes (operator-owned, same posture as F5-TTS HU's CC-BY-NC
+weights):
+
+- **FLUX.1-Krea-dev / FLUX.1-dev**: free for personal / research use under
+  the FLUX.1-dev license; commercial deployment requires a separate
+  agreement with Black Forest Labs. Click-through on the HF model card
+  acts as license acceptance.
+- **flux-uncensored-v2**: non-commercial; included only in the `4k-adult*`
+  templates. Ship with caution — verify the upstream model card before
+  routing user-facing traffic through it.
+- **Juggernaut-XL-v9**: SDXL fine-tune under the SDXL community license;
+  used here only as the SUPIR refiner backbone, not as a generation model.
+- **super-realism / flux-realism-xlabs**: model-card-stated open-weights
+  for personal use; verify the upstream model card if planning commercial
+  deployment.
+- **4x-UltraSharp**: public-domain ESRGAN model.
+- **SUPIR-v0Q (pruned by kijai)**: research weights; non-commercial.
+
+## Required custom nodes for the bundle
+
+The bundle templates depend on three custom-node packs that aren't in
+the upstream ComfyUI core. Install them inside the user's ComfyUI compose
+project's `basedir/custom_nodes/` directory (each `git clone` plus its
+own `pip install -r requirements.txt` if present), then restart the
+ComfyUI container.
+
+```bash
+cd "$BASEDIR/custom_nodes"
+
+# SUPIR diffusion-restoration upscaler — used by the 4k-supir / 4k-adult
+# / 4k-adult-realism templates. The kijai fork is the maintained one.
+git clone https://github.com/kijai/ComfyUI-SUPIR.git
+( cd ComfyUI-SUPIR && pip install -r requirements.txt )
+
+# Ultimate SD Upscale — used by the 4k-tiled fallback. ssitu's fork is
+# the most actively maintained ComfyUI port.
+git clone https://github.com/ssitu/ComfyUI_UltimateSDUpscale.git
+# (no requirements.txt — pure-python on top of ComfyUI's own deps)
+
+# rgthree-comfy — workflow-quality-of-life nodes (mute/bypass groups,
+# conditional skip-on-mute). Optional but recommended; the shipped
+# templates work without it.
+git clone https://github.com/rgthree/rgthree-comfy.git
+
+# ComfyUI-Manager — UI-based add-on installer for any future expansion.
+# Optional but recommended; lets the operator install additional nodes
+# from the ComfyUI web UI without further SSH copy-paste.
+git clone https://github.com/ltdrdata/ComfyUI-Manager.git
+( cd ComfyUI-Manager && pip install -r requirements.txt )
+```
+
+After install + ComfyUI restart, the new node types
+(`SUPIR_model_loader_v2`, `UltimateSDUpscale`, …) appear under the
+right-click "Add Node" menu and the workflow templates parse without
+"unknown node type" errors.
+
 ## Known limits
 
 - **No img2img yet.** The shipped workflows are text-to-image only.

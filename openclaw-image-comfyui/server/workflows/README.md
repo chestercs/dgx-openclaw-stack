@@ -4,17 +4,29 @@ Each `*.json` here is a literal ComfyUI **API-format** export with one
 extra `_metadata` block at the top that the bridge reads at startup and
 strips before submission.
 
-The bridge ships two reference templates:
+The bridge ships seven reference templates as of v0.11.0. Two are
+generic universal-fallback templates; five are the max-quality 4K
+bundle added in v0.11.0 (require the recommended model bundle —
+see `docs/reference/image-comfyui-bridge.md` → "Recommended model
+bundle for max-quality 4K").
 
-- `flux-schnell.json` — FLUX.1 Schnell, 4-step distilled. Fastest.
-- `sdxl-base.json` — generic SDXL 25-step. Works with any SDXL
-  fine-tune (Pony XL, Illustrious XL, RealVisXL, …) — drop the
-  checkpoint into `basedir/models/checkpoints/` and pass `checkpoint=…`.
+| Template | Purpose | Native res | Final res | Models needed |
+|--|--|--|--|--|
+| `flux-schnell` | FLUX.1 Schnell, 4-step distilled. Fastest universal. | 1024² | 1024² | any FLUX-Schnell `*.safetensors` |
+| `sdxl-base` | Generic SDXL 25-step. Works with any SDXL fine-tune. | 1024² | 1024² | any SDXL `*.safetensors` |
+| `flux-krea-2k` | Single-stage FLUX-Krea-dev, 2048². Fast SFW iteration. | 2048² | 2048² | bundle (FLUX-Krea + t5xxl + ae) |
+| `flux-krea-4k-supir` | Max SFW realism (DEFAULT for max-quality deploys). FLUX-Krea + realism LoRA stack → SUPIR → ~4K. | 1536² | ~4K | bundle + SUPIR + Juggernaut-XL-v9 |
+| `flux-krea-4k-tiled` | SFW fallback when 4k-supir OOMs. Ultimate SD Upscale tile pass instead of SUPIR. | 1536² | ~4K | bundle + 4x-UltraSharp |
+| `flux-krea-4k-adult` | Adult content, single LoRA → SUPIR → ~4K. | 1536² | ~4K | bundle + SUPIR + flux-uncensored-v2 |
+| `flux-krea-4k-adult-realism` | Max adult realism: uncensored + realism LoRA stack → SUPIR → ~4K. | 1536² | ~4K | bundle + SUPIR + all LoRAs |
 
-Both ship with `"ckpt_name": "REPLACE_ME.safetensors"`. The bridge will
-**refuse to generate** with that placeholder — pass `checkpoint=` per
-call OR edit the JSON once and replace the placeholder with your
-filename.
+Both legacy templates (`flux-schnell` / `sdxl-base`) ship with
+`"ckpt_name": "REPLACE_ME.safetensors"` — the bridge refuses to
+generate with that placeholder. Either pass `checkpoint=` per call
+or edit the JSON once. The five `flux-krea-*` templates load FLUX-Krea-dev
+via `UNETLoader` instead of `CheckpointLoaderSimple`, with the filename
+baked in — they need no `checkpoint=` argument and `checkpoint_required`
+is `false`.
 
 ## Adding a custom workflow
 

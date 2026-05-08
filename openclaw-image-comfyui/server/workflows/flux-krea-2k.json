@@ -1,0 +1,109 @@
+{
+  "_metadata": {
+    "name": "flux-krea-2k",
+    "description": "FLUX.1-Krea-dev single-stage 2048x2048 photorealism. Fast SFW iteration / warm-up path. Skips the SUPIR upscale — output is 2K, ~30-60s on GB10. Uses the recommended FLUX sampler chain (ModelSamplingFlux + SamplerCustomAdvanced) for res-aware sigma scheduling. Requires FLUX-Krea-dev UNet, t5xxl_fp16 + clip_l, and ae.safetensors (see docs/reference/image-comfyui-bridge.md → 'Recommended model bundle').",
+    "checkpoint_required": false,
+    "defaults": {
+      "steps": 30,
+      "cfg": 3.5,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "width": 2048,
+      "height": 2048,
+      "batch_size": 1,
+      "negative": ""
+    },
+    "targets": {
+      "prompt":     {"node": "10", "input": "text"},
+      "negative":   {"node": "11", "input": "text"},
+      "width":      {"node": "20", "input": "width"},
+      "height":     {"node": "20", "input": "height"},
+      "batch_size": {"node": "20", "input": "batch_size"},
+      "seed":       {"node": "30", "input": "noise_seed"},
+      "steps":      {"node": "31", "input": "steps"},
+      "cfg":        {"node": "12", "input": "guidance"},
+      "sampler":    {"node": "32", "input": "sampler_name"},
+      "scheduler":  {"node": "31", "input": "scheduler"}
+    }
+  },
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {"unet_name": "flux1-krea-dev.safetensors", "weight_dtype": "default"}
+  },
+  "2": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "t5xxl_fp16.safetensors",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "10": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "11": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "12": {
+    "class_type": "FluxGuidance",
+    "inputs": {"guidance": 3.5, "conditioning": ["10", 0]}
+  },
+  "13": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {"conditioning": ["11", 0]}
+  },
+  "20": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {"width": 2048, "height": 2048, "batch_size": 1}
+  },
+  "21": {
+    "class_type": "ModelSamplingFlux",
+    "inputs": {
+      "model": ["1", 0],
+      "max_shift": 1.15,
+      "base_shift": 0.5,
+      "width": 2048,
+      "height": 2048
+    }
+  },
+  "30": {
+    "class_type": "RandomNoise",
+    "inputs": {"noise_seed": 0}
+  },
+  "31": {
+    "class_type": "BasicScheduler",
+    "inputs": {"scheduler": "simple", "steps": 30, "denoise": 1.0, "model": ["21", 0]}
+  },
+  "32": {
+    "class_type": "KSamplerSelect",
+    "inputs": {"sampler_name": "euler"}
+  },
+  "33": {
+    "class_type": "BasicGuider",
+    "inputs": {"model": ["21", 0], "conditioning": ["12", 0]}
+  },
+  "34": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise":         ["30", 0],
+      "guider":        ["33", 0],
+      "sampler":       ["32", 0],
+      "sigmas":        ["31", 0],
+      "latent_image":  ["20", 0]
+    }
+  },
+  "40": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["34", 0], "vae": ["3", 0]}
+  },
+  "50": {
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "openclaw-bridge/flux-krea-2k", "images": ["40", 0]}
+  }
+}

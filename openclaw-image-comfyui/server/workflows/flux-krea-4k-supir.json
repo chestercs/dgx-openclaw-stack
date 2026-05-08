@@ -1,0 +1,187 @@
+{
+  "_metadata": {
+    "name": "flux-krea-4k-supir",
+    "description": "Max SFW realism: FLUX.1-Krea-dev native 1536x1536 + realism LoRA stack (super-realism @ 0.6, flux-realism-xlabs @ 0.4) → SUPIR diffusion-restoration upscale to ~4K. Headline path of the v0.11.0 max-quality 4K bundle. Requires the recommended model bundle PLUS the kijai/ComfyUI-SUPIR custom node and Juggernaut-XL-v9 + sdxl_vae as the SUPIR refiner backbone (see docs/reference/image-comfyui-bridge.md → 'Recommended model bundle').",
+    "checkpoint_required": false,
+    "defaults": {
+      "steps": 30,
+      "cfg": 3.5,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "width": 1536,
+      "height": 1536,
+      "batch_size": 1,
+      "negative": "deformed, blurry, lowres, watermark, extra fingers, cartoon, anime, painting, illustration, oversaturated, bad anatomy"
+    },
+    "targets": {
+      "prompt":     {"node": "10", "input": "text"},
+      "negative":   {"node": "11", "input": "text"},
+      "width":      {"node": "20", "input": "width"},
+      "height":     {"node": "20", "input": "height"},
+      "batch_size": {"node": "20", "input": "batch_size"},
+      "seed":       {"node": "30", "input": "noise_seed"},
+      "steps":      {"node": "31", "input": "steps"},
+      "cfg":        {"node": "12", "input": "guidance"},
+      "sampler":    {"node": "32", "input": "sampler_name"},
+      "scheduler":  {"node": "31", "input": "scheduler"}
+    }
+  },
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {"unet_name": "flux1-krea-dev.safetensors", "weight_dtype": "default"}
+  },
+  "2": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "t5xxl_fp16.safetensors",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "5": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {"model": ["1", 0], "lora_name": "super-realism.safetensors", "strength_model": 0.6}
+  },
+  "6": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {"model": ["5", 0], "lora_name": "flux-realism-xlabs.safetensors", "strength_model": 0.4}
+  },
+  "10": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "11": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "12": {
+    "class_type": "FluxGuidance",
+    "inputs": {"guidance": 3.5, "conditioning": ["10", 0]}
+  },
+  "13": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {"conditioning": ["11", 0]}
+  },
+  "20": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {"width": 1536, "height": 1536, "batch_size": 1}
+  },
+  "21": {
+    "class_type": "ModelSamplingFlux",
+    "inputs": {
+      "model": ["6", 0],
+      "max_shift": 1.15,
+      "base_shift": 0.5,
+      "width": 1536,
+      "height": 1536
+    }
+  },
+  "30": {
+    "class_type": "RandomNoise",
+    "inputs": {"noise_seed": 0}
+  },
+  "31": {
+    "class_type": "BasicScheduler",
+    "inputs": {"scheduler": "simple", "steps": 30, "denoise": 1.0, "model": ["21", 0]}
+  },
+  "32": {
+    "class_type": "KSamplerSelect",
+    "inputs": {"sampler_name": "euler"}
+  },
+  "33": {
+    "class_type": "BasicGuider",
+    "inputs": {"model": ["21", 0], "conditioning": ["12", 0]}
+  },
+  "34": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise":         ["30", 0],
+      "guider":        ["33", 0],
+      "sampler":       ["32", 0],
+      "sigmas":        ["31", 0],
+      "latent_image":  ["20", 0]
+    }
+  },
+  "40": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["34", 0], "vae": ["3", 0]}
+  },
+  "60": {
+    "class_type": "SUPIR_model_loader_v2",
+    "inputs": {
+      "supir_model": "SUPIR-v0Q_fp16.safetensors",
+      "sdxl_model":  "juggernautXL_v9Rundiffusion.safetensors",
+      "fp8_unet":        false,
+      "diffusion_dtype": "fp16"
+    }
+  },
+  "61": {
+    "class_type": "SUPIR_first_stage",
+    "inputs": {
+      "SUPIR_VAE":         ["60", 1],
+      "image":             ["40", 0],
+      "use_tiled_vae":     true,
+      "encoder_tile_size": 512,
+      "decoder_tile_size": 64,
+      "encoder_dtype":     "auto"
+    }
+  },
+  "62": {
+    "class_type": "SUPIR_encode",
+    "inputs": {
+      "SUPIR_VAE":          ["61", 2],
+      "image":              ["61", 0],
+      "use_tiled_vae":      true,
+      "encoder_tile_size_pixels": 1024
+    }
+  },
+  "63": {
+    "class_type": "SUPIR_conditioner",
+    "inputs": {
+      "SUPIR_model":     ["60", 0],
+      "latents":         ["62", 0],
+      "positive_prompt": "high quality, detailed, photorealistic, 4k, sharp focus",
+      "negative_prompt": "blurry, low quality, oversaturated, jpeg artifacts, deformed, watermark"
+    }
+  },
+  "64": {
+    "class_type": "SUPIR_sample",
+    "inputs": {
+      "SUPIR_model":         ["60", 0],
+      "latents":             ["62", 0],
+      "positive":            ["63", 0],
+      "negative":            ["63", 1],
+      "seed":                0,
+      "steps":               50,
+      "cfg_scale_start":     4.0,
+      "cfg_scale_end":       4.0,
+      "EDM_s_churn":         5,
+      "s_noise":             1.003,
+      "DPMPP_eta":           1.0,
+      "control_scale_start": 1.0,
+      "control_scale_end":   1.0,
+      "restore_cfg":         4.0,
+      "keep_model_loaded":   true,
+      "sampler":             "RestoreEDMSampler",
+      "sampler_tile_size":   1024,
+      "sampler_tile_stride": 512
+    }
+  },
+  "65": {
+    "class_type": "SUPIR_decode",
+    "inputs": {
+      "SUPIR_VAE":         ["61", 2],
+      "latents":           ["64", 0],
+      "use_tiled_vae":     true,
+      "decoder_tile_size": 64
+    }
+  },
+  "70": {
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "openclaw-bridge/flux-krea-4k-supir", "images": ["65", 0]}
+  }
+}

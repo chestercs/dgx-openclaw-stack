@@ -276,6 +276,18 @@ either:
   `server/workflows/<name>.json` and replace `"REPLACE_ME.safetensors"`
   with your filename, then restart the bridge.
 
+### Recommended max-quality 4K bundle (v0.11.0)
+
+For ultra-realistic 4K output the bundle ships five `flux-krea-*`
+workflow templates that require a specific set of open-weight models
+(FLUX.1-Krea-dev + SUPIR + realism LoRAs, ~60-70 GB total). The full
+download script and license notes are in
+`../docs/reference/image-comfyui-bridge.md`
+→ "Recommended model bundle for max-quality 4K". Once installed and
+the operator sets `IMAGE_GEN_DEFAULT_WORKFLOW=flux-krea-4k-supir` in
+`.env`, conversational requests like "@bot generate a sunset"
+auto-route through the FLUX-Krea-dev → SUPIR upscale → ~4K pipeline.
+
 ## Content & license posture
 
 The bridge is **content-agnostic**. It submits whatever workflow you
