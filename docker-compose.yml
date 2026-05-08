@@ -318,7 +318,7 @@ services:
       --port 8005
       --api-key ${VLLM_API_KEY:-}
       --quantization modelopt
-      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL_DENSE:-0.30}
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL_DENSE:-0.40}
       -tp 1
       --load-format safetensors
       --kv-cache-dtype fp8
