@@ -204,12 +204,12 @@ services:
     # functionally correct). To run the dense 31B alternative instead, see
     # the `vllm-llm-dense` block below — it reuses this image and hostname.
     # `LLM_MODEL_ID` lets an operator try a different MoE checkpoint (e.g. a
-    # community NVFP4 quantization that doesn't trip the upstream gemma4 model
-    # loader's expert scale-key bug — see TROUBLESHOOTING.md "MoE model load
-    # KeyError"). Default = the NVIDIA reference. If you change this, also set
-    # `LLM_DEFAULT_MODEL_ID` to the same value so OpenClaw routes agent calls
-    # to the served id (the patcher reads LLM_DEFAULT_MODEL_ID and registers
-    # the catalog entry dynamically when it isn't one of the hard-coded pair).
+    # community NVFP4 quantization that ships its own loader patch — see
+    # TROUBLESHOOTING.md "MoE model load KeyError"). Default = the NVIDIA
+    # reference. The patcher auto-registers a catalog entry for any override
+    # id so the OpenClaw UI lists it; default-model selection happens in the
+    # UI / per-agent settings (the schema doesn't expose a writable
+    # agents.defaults.llm.model field for the patcher to set).
     command: >
       --model ${LLM_MODEL_ID:-nvidia/Gemma-4-26B-A4B-NVFP4}
       --host 0.0.0.0
@@ -282,8 +282,8 @@ services:
   #    # Switch to dense:
   #    docker compose stop vllm-llm
   #    COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense
-  #    # Then update LLM_DEFAULT_MODEL_ID in .env and recreate the patcher:
-  #    docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+  #    # Then pick the dense model in the OpenClaw UI (the catalog already has
+  #    # both entries — the patcher registered them on first boot).
   #
   #  Both models are registered in the OpenClaw catalog regardless of which
   #  one is running — see patch-config.mjs LLM_MODEL_ENTRY_MOE / _DENSE.

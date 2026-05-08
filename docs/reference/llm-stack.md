@@ -22,7 +22,7 @@ Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — in-stack `vllm-llm` ser
 - Same `hostname: vllm-llm` so the OpenClaw gateway resolves it via bridge DNS without config change
 - Mutex via profile: `docker compose stop vllm-llm` then `COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`
 
-Both are registered in the OpenClaw catalog by `patch-config.mjs` (`LLM_MODEL_ENTRIES[]` array). `agents.defaults.llm.model` is driven by `LLM_DEFAULT_MODEL_ID` in `.env` (default = MoE id).
+Both are registered in the OpenClaw catalog by `patch-config.mjs` (`LLM_MODEL_ENTRIES[]` array). The active model is picked via the OpenClaw UI's model dropdown — the schema doesn't expose a writable `agents.defaults.llm.model` field, so the patcher only ensures the entries exist; it doesn't pin a default.
 
 ## Standalone variants (port 8004 mutex — only one at a time)
 

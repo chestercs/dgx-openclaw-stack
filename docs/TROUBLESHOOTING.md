@@ -12,11 +12,13 @@ You're hitting [vllm-project/vllm#38912](https://github.com/vllm-project/vllm/is
 
 The upstream fix shipped as PR [#39045](https://github.com/vllm-project/vllm/pull/39045) (merged 2026-04-09) — but the `gemma4-cu130` tag's pinned manifest may pre-date it. Three mitigations, listed by safety:
 
-1. **Switch to a community NVFP4 quantization that ships a self-contained loader patch** — set `LLM_MODEL_ID=RedHatAI/gemma-4-26B-A4B-it-NVFP4` (or another community quant verified working with the current `gemma4-cu130` image) and keep `LLM_DEFAULT_MODEL_ID` in sync. The patcher auto-registers a catalog entry for the override id. Caveat: max-model-len may need to drop from 256K to 96K depending on the quant; check the model card.
+1. **Switch to a community NVFP4 quantization that ships a self-contained loader patch** — set `LLM_MODEL_ID=RedHatAI/gemma-4-26B-A4B-it-NVFP4` (or another community quant verified working with the current `gemma4-cu130` image) and `LLM_QUANTIZATION=compressed-tensors` (or whatever scheme the quant uses). The patcher auto-registers a catalog entry for the override id, and the OpenClaw UI lists it. Caveat: max-model-len may need to drop from 256K to 96K depending on the quant; check the model card.
 
 2. **Roll forward the base image** to a `gemma4-cu130` revision that includes PR #39045 — `docker pull vllm/vllm-openai:gemma4-cu130 && docker compose build vllm-llm`. If the digest doesn't change, the upstream tag is still pinned to a pre-fix build; fall back to option 1 or 3.
 
-3. **Roll back to the dense 31B alternative** — `docker compose stop vllm-llm && COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`, then set `LLM_DEFAULT_MODEL_ID=nvidia/Gemma-4-31B-IT-NVFP4` in `.env` and recreate the patcher chain. ~7.5× slower but stable; bounce back to MoE when the upstream image picks up the fix.
+3. **Roll back to the dense 31B alternative** — `docker compose stop vllm-llm && COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`, then pick the dense id in the OpenClaw UI's model dropdown. ~7.5× slower but stable; bounce back to MoE when the upstream image picks up the fix.
+
+4. **Apply this stack's bundled build-time loader patch** — `vllm-llm/patch_gemma4_loader.py` (added 2026-05-08) mirrors PR #39045 against the in-image `gemma4.py` at `docker compose build` time. Patches both the `expert_params_mapping` literal, the matching branch in `Gemma4Model.load_weights`, and the `_weight_iterator` namespace re-sub (`.experts.{id}.` → `.moe.experts.{id}.`). All three blocks are idempotent and assert their pre-PR#39045 shapes, so a future base-image bump that lands the upstream fix forces a build-time failure here, prompting you to retire the patch.
 
 Don't bind-mount a `gemma4_patched.py` from a non-pinned third-party HuggingFace user repo without explicit operator approval — vLLM's model loader runs untrusted Python at boot, so the supply chain matters here.
 

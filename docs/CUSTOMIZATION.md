@@ -21,23 +21,20 @@ Any new model requires editing all three. **Why three places?** vLLM needs to kn
 The dense variant lives in the `vllm-llm-dense` service block, parked behind `profiles: ["dense"]`. Same image, same hostname (`vllm-llm`), so the OpenClaw gateway reaches it via bridge DNS without any extra config. To switch:
 
 ```bash
-# 1. Tell the patcher to point agents.defaults.llm.model at the dense id.
-#    (Edit .env, then re-run the patcher to apply.)
-echo 'LLM_DEFAULT_MODEL_ID=nvidia/Gemma-4-31B-IT-NVFP4' >> .env
-
-# 2. Stop MoE.
+# 1. Stop MoE.
 docker compose stop vllm-llm
 
-# 3. Start dense (opt-in profile).
+# 2. Start dense (opt-in profile).
 COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense
 
-# 4. Re-patch + recreate gateway so agents.defaults.llm.model takes effect.
-docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+# 3. Pick the dense id in the OpenClaw UI's model dropdown (the patcher
+#    has already registered both `nvidia/Gemma-4-26B-A4B-NVFP4` and
+#    `nvidia/Gemma-4-31B-IT-NVFP4` in the provider catalog on first boot).
 ```
 
-To go back to MoE, reverse: drop the `LLM_DEFAULT_MODEL_ID` line (or set it to `nvidia/Gemma-4-26B-A4B-NVFP4`), `docker compose stop vllm-llm-dense`, `docker compose up -d vllm-llm`, recreate the gateway. The dense service uses its own `LLM_GPU_MEM_UTIL_DENSE` env (default `0.68`) so the historical dense tuning stays intact when you flip back.
+To go back to MoE, reverse: `docker compose stop vllm-llm-dense`, `docker compose up -d vllm-llm`, then pick the MoE id in the UI. The dense service uses its own `LLM_GPU_MEM_UTIL_DENSE` env (default `0.68`) so the historical dense tuning stays intact when you flip back.
 
-The two `agents.defaults.llm.model` swap is gated by the patcher's only-if-missing rule — once a value is written, the patcher honors it. To force a reset, manually clear the field in `openclaw.json` before the recreate (`jq` works), or pick the model in the OpenClaw UI which writes the new id.
+OpenClaw's schema doesn't expose a writable `agents.defaults.llm.model` field, so the active model is picked in the UI / per-agent settings — there's no `.env` knob that flips it for you. The patcher's role is to make sure both entries exist in the catalog so the UI can show them.
 
 ### Smaller Gemma 4 (12B NVFP4)
 

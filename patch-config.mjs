@@ -176,12 +176,12 @@ const CONFIG_PATH = '/home/node/.openclaw/openclaw.json';
 // remote vLLM backend".
 //
 // Both catalog entries are registered regardless of which compose service is
-// running — the user can flip `LLM_DEFAULT_MODEL_ID` and the matching profile
-// without re-patching. agents.defaults.llm.model points at the active id.
+// running. Default-model selection is left to the OpenClaw UI / per-agent
+// settings — the schema does not expose a writable agents.defaults.llm.model
+// field for the patcher to set. The vLLM `--model` flag (driven by .env's
+// LLM_MODEL_ID) decides which checkpoint actually serves on port 8004.
 const LLM_MODEL_ID_MOE = 'nvidia/Gemma-4-26B-A4B-NVFP4';
 const LLM_MODEL_ID_DENSE = 'nvidia/Gemma-4-31B-IT-NVFP4';
-const LLM_DEFAULT_MODEL_ID =
-  process.env.LLM_DEFAULT_MODEL_ID?.trim() || LLM_MODEL_ID_MOE;
 const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://vllm-llm:8004/v1/';
 const LLM_API = 'openai-completions';
 const VLLM_API_KEY = process.env.VLLM_API_KEY ?? '';
@@ -213,22 +213,22 @@ const LLM_MODEL_ENTRY_DENSE = {
 };
 const LLM_MODEL_ENTRIES = [LLM_MODEL_ENTRY_MOE, LLM_MODEL_ENTRY_DENSE];
 
-// If LLM_DEFAULT_MODEL_ID points at a model NOT in the hard-coded pair
-// (e.g. a community NVFP4 quantization the operator picked to bypass an
-// upstream loader bug), register a generic catalog entry on the fly so the
-// agent default can resolve. Same shape as the NVIDIA entries: text+image
+// If LLM_MODEL_ID env (the vLLM-served checkpoint) points at a model NOT in
+// the hard-coded pair (e.g. a community NVFP4 quantization the operator picked
+// to bypass an upstream loader bug), register a generic catalog entry on the
+// fly so the OpenClaw UI shows it. Same shape as the NVIDIA entries: text+image
 // modalities, 256K context, 8K reply cap. If the actual model has different
-// capabilities, the operator can override the catalog entry post-hoc via the
-// OpenClaw UI — patcher's only-if-missing rule on agents.defaults.llm.model
-// preserves their choice.
+// capabilities, the operator can override the catalog entry post-hoc via the UI.
+const LLM_MODEL_ID_OVERRIDE = process.env.LLM_MODEL_ID?.trim();
 if (
-  LLM_DEFAULT_MODEL_ID !== LLM_MODEL_ID_MOE &&
-  LLM_DEFAULT_MODEL_ID !== LLM_MODEL_ID_DENSE
+  LLM_MODEL_ID_OVERRIDE &&
+  LLM_MODEL_ID_OVERRIDE !== LLM_MODEL_ID_MOE &&
+  LLM_MODEL_ID_OVERRIDE !== LLM_MODEL_ID_DENSE
 ) {
   LLM_MODEL_ENTRIES.push({
     ...LLM_MODEL_ENTRY_MOE,
-    id: LLM_DEFAULT_MODEL_ID,
-    name: LLM_DEFAULT_MODEL_ID,
+    id: LLM_MODEL_ID_OVERRIDE,
+    name: LLM_MODEL_ID_OVERRIDE,
   });
 }
 
@@ -282,10 +282,11 @@ if (vllm) {
 //     the provider's models[] catalog. We register both regardless of which
 //     compose service (`vllm-llm` MoE-default or `vllm-llm-dense` opt-in) is
 //     running — the user can swap the active backend via .env + profile flip
-//     without re-patching, and the OpenClaw UI shows both options. Whichever
-//     id is in agents.defaults.llm.model (step 3b) is what the agent reaches
-//     for; if it doesn't match the running vLLM, requests 404 — that's the
-//     trade-off for not hand-editing openclaw.json on every swap.
+//     without re-patching, and the OpenClaw UI shows both options. The actual
+//     active id is whatever the running vLLM serves on port 8004; if the agent
+//     asks for a different one, vLLM 404s. The OpenClaw schema doesn't expose
+//     a writable agents.defaults.llm.model field, so default-model selection
+//     is left to the UI / per-agent settings.
 if (vllm) {
   vllm.models ??= [];
   for (const entry of LLM_MODEL_ENTRIES) {
@@ -307,20 +308,6 @@ if (vllm) {
       }
     }
   }
-}
-
-// (3b) Default agent model id. We write LLM_DEFAULT_MODEL_ID into
-//      agents.defaults.llm.model only if the field is unset — once an operator
-//      picks a model in the OpenClaw UI it lands here, and we honor that
-//      choice on subsequent re-runs. Set LLM_DEFAULT_MODEL_ID in .env to drive
-//      the first-time default (defaults to the MoE id).
-config.agents ??= {};
-config.agents.defaults ??= {};
-config.agents.defaults.llm ??= {};
-if (!config.agents.defaults.llm.model) {
-  config.agents.defaults.llm.model = LLM_DEFAULT_MODEL_ID;
-  changed = true;
-  console.log(`[patch-config] agents.defaults.llm.model = ${LLM_DEFAULT_MODEL_ID} (was unset).`);
 }
 
 // (4) Ensure memorySearch points at the local bge-m3 embedding service.
