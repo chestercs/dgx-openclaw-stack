@@ -135,19 +135,59 @@ NEW_LOOP = '''                ) in expert_params_mapping:
                         expert_id=expert_id,
                     )'''
 
+# Block 3: _weight_iterator namespace remap. The fused-MoE submodule is
+# registered under a `.moe.` prefix in the model (`named_parameters()`
+# returns names like `layers.0.moe.experts.w2_input_scale`), but the
+# checkpoint stores `.experts.{id}.` names without the `.moe.` prefix.
+# Without this re-sub, every per-expert scale name slips past the matcher
+# branch in load_weights (the moe_name-without-`.moe.` doesn't exist in
+# params_dict) and falls through to the bare-name fallback, which fails
+# with the original KeyError. The re-sub injects `.moe.` so the matcher
+# can land the parameter correctly. This hunk lives in `_weight_iterator`
+# right after the gate/up/down packed-projection re-naming and before the
+# 3D-tensor explosion comment.
+OLD_REMAP = '''                        ".moe.down_proj",
+                    )
+
+                # MoE expert weights: checkpoint stores as 3D packed
+                # tensors.  Explode into per-expert 2D weights for
+                # FusedMoE weight_loader.'''
+
+NEW_REMAP = '''                        ".moe.down_proj",
+                    )
+
+                # Remap individual 2D expert weights:
+                # .experts.{id}.{proj} → .moe.experts.{id}.{proj}
+                # (This handles per-expert 2D quantized weights)
+                name = re.sub(r"\\.experts\\.(\\d+)\\.", r".moe.experts.\\1.", name)
+
+                # MoE expert weights: checkpoint stores as 3D packed
+                # tensors.  Explode into per-expert 2D weights for
+                # FusedMoE weight_loader.'''
+
 
 def main() -> int:
     with open(LOADER_PATH, "r", encoding="utf-8") as f:
         src = f.read()
 
-    # Idempotency guard: the new for-loop introduces a `weight_name_base`
-    # local variable that doesn't exist anywhere in the unpatched file.
-    # If we see it, the file is already patched — skip cleanly.
-    if "weight_name_base = weight_name.rstrip" in src:
-        print("[gemma4-loader-patch] NVFP4 scale-suffix matcher already present — skipping (idempotent re-run).")
+    # Idempotency guard: all three blocks introduce something that doesn't
+    # exist in the unpatched file (`weight_name_base` local, `re.sub` in
+    # _weight_iterator). If both are present, the file is already patched.
+    matcher_present = "weight_name_base = weight_name.rstrip" in src
+    remap_present = 'name = re.sub(r"\\.experts\\.(\\d+)\\."' in src
+    if matcher_present and remap_present:
+        print("[gemma4-loader-patch] all three NVFP4 fix-blocks already present — skipping (idempotent re-run).")
         return 0
+    if matcher_present != remap_present:
+        sys.stderr.write(
+            "[gemma4-loader-patch] FATAL: file is in a half-patched state "
+            f"(matcher_present={matcher_present}, remap_present={remap_present}). "
+            "This means a previous patch run applied some hunks but not others. "
+            "Rebuild from the unpatched base image to recover.\n"
+        )
+        return 1
 
-    # Pre-apply assertions: both OLD blocks must be present verbatim.
+    # Pre-apply assertions: all three OLD blocks must be present verbatim.
     if OLD_MAPPING not in src:
         sys.stderr.write(
             "[gemma4-loader-patch] FATAL: OLD_MAPPING block not found at "
@@ -167,21 +207,39 @@ def main() -> int:
         )
         return 1
 
-    patched = src.replace(OLD_MAPPING, NEW_MAPPING, 1).replace(OLD_LOOP, NEW_LOOP, 1)
+    if OLD_REMAP not in src:
+        sys.stderr.write(
+            "[gemma4-loader-patch] FATAL: OLD_REMAP block not found at "
+            f"{LOADER_PATH}. The _weight_iterator MoE-explode pre-amble does "
+            "not match the expected pre-PR#39045 shape. Inspect the file and "
+            "re-derive the patch before continuing.\n"
+        )
+        return 1
 
-    # Post-apply assertion: the new shape must now be present.
+    patched = (
+        src.replace(OLD_MAPPING, NEW_MAPPING, 1)
+        .replace(OLD_LOOP, NEW_LOOP, 1)
+        .replace(OLD_REMAP, NEW_REMAP, 1)
+    )
+
+    # Post-apply assertion: all three new shapes must be present.
     if "weight_name_base = weight_name.rstrip" not in patched:
         sys.stderr.write(
-            "[gemma4-loader-patch] FATAL: post-replace verification failed — the "
-            "new matcher is not present. Build aborted to prevent shipping a "
-            "broken image.\n"
+            "[gemma4-loader-patch] FATAL: post-replace verification failed — "
+            "the new matcher is not present.\n"
+        )
+        return 1
+    if 'name = re.sub(r"\\.experts\\.(\\d+)\\."' not in patched:
+        sys.stderr.write(
+            "[gemma4-loader-patch] FATAL: post-replace verification failed — "
+            "the _weight_iterator namespace re-sub is not present.\n"
         )
         return 1
 
     with open(LOADER_PATH, "w", encoding="utf-8") as f:
         f.write(patched)
 
-    print(f"[gemma4-loader-patch] NVFP4 expert scale-suffix matcher applied at {LOADER_PATH}")
+    print(f"[gemma4-loader-patch] NVFP4 expert scale-suffix matcher + namespace re-sub applied at {LOADER_PATH}")
     print("[gemma4-loader-patch] (mirrors vllm-project/vllm PR #39045; retire this patch when the base image manifest picks up the fix upstream)")
     return 0
 
