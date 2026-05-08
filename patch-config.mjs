@@ -200,6 +200,11 @@ const EMBED_BASE_URL = process.env.EMBED_BASE_URL || 'http://vllm-embedding:8005
 const LLM_MODEL_ENTRY_MOE = {
   id: LLM_MODEL_ID_MOE,
   name: LLM_MODEL_ID_MOE,
+  // `api: 'openai-completions'` matches the shape of the entry the OpenClaw
+  // wizard writes during onboarding for the dense 31B; entries missing this
+  // field were observed to be silently filtered out of the runtime model
+  // selection on 2026.4.22, so the catalog must include it explicitly.
+  api: 'openai-completions',
   reasoning: false,
   input: ['text', 'image'],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -283,10 +288,13 @@ if (vllm) {
 //     compose service (`vllm-llm` MoE-default or `vllm-llm-dense` opt-in) is
 //     running — the user can swap the active backend via .env + profile flip
 //     without re-patching, and the OpenClaw UI shows both options. The actual
-//     active id is whatever the running vLLM serves on port 8004; if the agent
-//     asks for a different one, vLLM 404s. The OpenClaw schema doesn't expose
-//     a writable agents.defaults.llm.model field, so default-model selection
-//     is left to the UI / per-agent settings.
+//     active id is set by step 3b (`agents.defaults.model.primary`); if the
+//     primary doesn't match the running vLLM's served-model-name, requests
+//     404 with "model X does not exist".
+//
+//     The MoE entry includes `api: 'openai-completions'` to match the dense
+//     entry's shape; entries without `api` were observed to be filtered out
+//     of the runtime model selection on OpenClaw 2026.4.22.
 if (vllm) {
   vllm.models ??= [];
   for (const entry of LLM_MODEL_ENTRIES) {
@@ -307,6 +315,48 @@ if (vllm) {
         console.log(`[patch-config] updated provider model entry: ${entry.id}.`);
       }
     }
+  }
+}
+
+// (3b) Ensure agents.defaults.models / agents.defaults.model.primary point
+//      at the active vLLM checkpoint. The OpenClaw schema for agent default
+//      model lives at `agents.defaults.model.primary` (a string of the form
+//      `<provider>/<model_id>`) and `agents.defaults.models` (a dict of
+//      provider/id keys → empty objects, the available-set). Without this:
+//      the UI / agent runtime keeps whatever was set during onboarding (often
+//      a stale id from a previous backend), and every request 404s.
+//
+//      LLM_MODEL_ID env (the operator's chosen served-checkpoint, default
+//      MoE id when unset) drives the desired primary. If the operator has
+//      manually set a different primary in the UI / openclaw.json, we honor
+//      it ONLY IF it matches one of our known models — otherwise we coerce
+//      back to the desired id, because a stale primary breaks every request.
+const desiredServedId = LLM_MODEL_ID_OVERRIDE || LLM_MODEL_ID_MOE;
+const desiredPrimary = `vllm/${desiredServedId}`;
+config.agents ??= {};
+config.agents.defaults ??= {};
+config.agents.defaults.models ??= {};
+config.agents.defaults.model ??= {};
+const knownModelKeys = [LLM_MODEL_ID_MOE, LLM_MODEL_ID_DENSE]
+  .concat(LLM_MODEL_ID_OVERRIDE ? [LLM_MODEL_ID_OVERRIDE] : [])
+  .map((id) => `vllm/${id}`);
+for (const k of knownModelKeys) {
+  if (!(k in config.agents.defaults.models)) {
+    config.agents.defaults.models[k] = {};
+    changed = true;
+    console.log(`[patch-config] agents.defaults.models["${k}"] = {} (added).`);
+  }
+}
+const currentPrimary = config.agents.defaults.model.primary;
+if (currentPrimary !== desiredPrimary) {
+  // Operator-set primary survives only if it points at a model we registered
+  // in this run. Otherwise it's stale and would cause 404s.
+  if (currentPrimary && knownModelKeys.includes(currentPrimary)) {
+    console.log(`[patch-config] agents.defaults.model.primary preserved at user-set ${currentPrimary} (registered in catalog).`);
+  } else {
+    config.agents.defaults.model.primary = desiredPrimary;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.model.primary: ${currentPrimary ?? '(unset)'} -> ${desiredPrimary}`);
   }
 }
 

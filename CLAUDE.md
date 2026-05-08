@@ -297,7 +297,7 @@ The W3C WebAuthn spec is origin-bound. In a noVNC session, the operator's browse
 
 ### Multi-step tool-call agent runs need a generous `--timeout`
 
-The dense Gemma 4 31B NVFP4 (the historical default, now opt-in via `profiles: ["dense"]`) generates at ~6 tok/s on GB10. The MoE 26B-A4B NVFP4 default reaches ~52 tok/s — ~7.5× faster — so the wall-clock arithmetic below is the worst-case (dense) calibration. On the MoE backend, a 3-call agent run typically lands in 15-30s instead of 90-130s.
+The dense Gemma 4 31B NVFP4 (the historical default, now opt-in via `profiles: ["dense"]`) generates at ~6 tok/s on GB10. The MoE 26B-A4B NVFP4 default reaches ~52 tok/s — ~7.5× faster — so the wall-clock arithmetic below is the worst-case (dense) calibration. Verified 2026-05-08 on a single-tool web_search agent run (`--message "Use web_search to find the title of docker.com"`): cold-cache first run ~120s (system-prompt prefill + tool round-trip + model JIT), warm-cache subsequent runs ~11s. Multi-tool runs scale roughly linearly with call count from there.
 
 Even so: a multi-step tool-call agent run does several LLM calls in sequence — system-prompt prefill → tool-call args → tool-result digestion → final reply. With the current MCP catalog (`python_sandbox__*`, `comfyui_image__*`, plus the always-on memory/file/exec/browser surface) the system-prompt prefill alone burns the first 1-5s of every call (faster on MoE, slower on dense).
 
