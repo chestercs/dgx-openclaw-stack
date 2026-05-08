@@ -30,7 +30,7 @@ The default profile's tuning decisions — NVFP4 quantization, GPU memory split 
 
 | You are… | What you get | Time to working stack |
 |---|---|---|
-| **A GB10 owner** (DGX Spark, ASUS Ascent GB10) | The calibrated reference profile. Boot the stack and run Gemma 4 26B-A4B MoE NVFP4 (~22 tok/s decode single-stream, ~86 tok/s aggregate at 4-paralel) with multilingual embeddings, hybrid memory, private web search, bilingual TTS — on your hardware, no cloud. The dense 31B is preserved as a profile-gated alternative for parity testing. | ~30 min, mostly model download |
+| **A GB10 owner** (DGX Spark, ASUS Ascent GB10) | The calibrated reference profile. Boot the stack and run Gemma 4 26B-A4B MoE NVFP4 (~25 tok/s decode single-stream, ~112 tok/s aggregate at 4-paralel) with multilingual embeddings, hybrid memory, private web search, bilingual TTS — on your hardware, no cloud. The dense 31B is preserved as a profile-gated alternative for parity testing. | ~30 min, mostly model download |
 | **An x86_64 + NVIDIA GPU operator** (RTX 4090, A6000, etc.) | Same wiring; swap `vllm-llm` for a model your VRAM holds (Gemma 4 12B BF16, Qwen 2.5, Llama 3.3). All non-LLM services transfer unchanged. | ~30 min + tuning |
 | **A cloud-LLM user** (OpenAI, Anthropic, OpenRouter, Bedrock, remote vLLM) | Park the local LLM service, point three env vars at your hosted endpoint. You still get the local agent stack: bge-m3 embeddings, SearxNG private search, hybrid memory, dreaming, heartbeat, TTS. | ~10 min (no GPU) |
 | **A contributor or curious reader** | A worked example of a deterministic, opinionated AI agent stack. Every wiring decision has a *why* in the comments; the patcher is small enough to read in one sitting. | n/a — start with [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
@@ -43,7 +43,7 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 
 | Component | What it does |
 |---|---|
-| **Gemma 4 26B-A4B MoE (NVFP4)** | 25.2B-total / 3.8B-active Google Gemma 4 mixture-of-experts model (128 experts, top-8 routing), quantized by NVIDIA to NVFP4 with the `nvfp4_experts_only` recipe. Native tool calling, 256K context, multimodal (text + image), ~22.5 tok/s decode single-stream on GB10 with Marlin SM121 backend (~3.7× faster than dense). The dense 31B variant lives behind `--profile dense` for parity testing and rollback. |
+| **Gemma 4 26B-A4B MoE (NVFP4)** | 25.2B-total / 3.8B-active Google Gemma 4 mixture-of-experts model (128 experts, top-8 routing), quantized by NVIDIA to NVFP4 with the `nvfp4_experts_only` recipe. Native tool calling, 256K context, multimodal (text + image), ~25 tok/s decode single-stream on GB10 with Marlin SM121 backend + CUDA graphs (~4× faster than dense; ~112 tok/s aggregate at 4-paralel). The dense 31B variant lives behind `--profile dense` for parity testing and rollback. |
 | **bge-m3 embeddings** | BAAI/bge-m3 multilingual dense embeddings via vLLM. 100+ languages, 1024-dim, 8K context, EN↔HU cosine ≈ 0.88. |
 | **SearxNG meta-search** | Self-hosted, privacy-respecting web search backend wired into OpenClaw's native `webSearch` provider. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Wikipedia family, Reddit, GitHub, arXiv) — queries never reach Google / Bing / Yandex / Yahoo / Baidu. |
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
@@ -72,8 +72,8 @@ The reference profile **won't boot as-is on non-GB10 hardware** — `vllm/vllm-o
 
 | Scenario | MoE 26B-A4B (default) | Dense 31B (alternative) |
 |---|---|---|
-| Decode throughput, 1 concurrent user | ~22.5 tok/s sustained (NVFP4 + Marlin MoE backend on SM121, measured 2026-05-08) | ~6.9 tok/s sustained (NVFP4) |
-| Aggregate throughput, 4 concurrent users | ~86 tok/s (~21.5 tok/s per user — continuous-batching is ~100% efficient) | n/a (single-stream profile) |
+| Decode throughput, 1 concurrent user | ~24.9 tok/s sustained (NVFP4 + Marlin MoE backend on SM121 + CUDA graphs, measured 2026-05-08) | ~6.9 tok/s sustained (NVFP4) |
+| Aggregate throughput, 4 concurrent users | ~112 tok/s (~28 tok/s per user — continuous-batching + CUDA graphs amortize kernel-launch overhead) | n/a (single-stream profile) |
 | Stable context window, 1 concurrent user | 256K reachable (prefill-bound past ~100K — 100K prompt + 200 gen ≈ 70s wall) | ~220K tokens before vLLM preemption |
 | Stable context window, paged 4 simul users | ~4.3× concurrency at 256K (paging-runtime; full simul-256K = preempt) | ~110K tokens each, continuous batching |
 | Model footprint | ~16.5 GB (NVFP4 weights, vision tower included) | ~17 GB (NVFP4 weights, vision tower included) |

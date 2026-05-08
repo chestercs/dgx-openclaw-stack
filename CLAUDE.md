@@ -297,15 +297,15 @@ The W3C WebAuthn spec is origin-bound. In a noVNC session, the operator's browse
 
 ### Multi-step tool-call agent runs need a generous `--timeout`
 
-The dense Gemma 4 31B NVFP4 (the historical default, now opt-in via `profiles: ["dense"]`) generates at ~6 tok/s decode on GB10. The MoE 26B-A4B NVFP4 default measured on this stack with `--moe-backend marlin` (mandatory on Blackwell SM121), `LLM_GPU_MEM_UTIL=0.30`, `LLM_MAX_NUM_SEQS=4`:
+The dense Gemma 4 31B NVFP4 (the historical default, now opt-in via `profiles: ["dense"]`) generates at ~6 tok/s decode on GB10. The MoE 26B-A4B NVFP4 default measured on this stack with `--moe-backend marlin` (mandatory on Blackwell SM121), `LLM_GPU_MEM_UTIL=0.30`, `LLM_MAX_NUM_SEQS=4`, CUDA graphs ON (`LLM_ENFORCE_EAGER` unset):
 
-- **Decode**: ~22.5 tok/s single-stream (200-token generation, tiny prompt, warm)
-- **Prefill**: ~1300–1500 tok/s, chunked, near-flat across 10K-100K context
-- **Concurrent 4-parallel** (4 simul tiny-prompt 200-gen): 86 tok/s aggregate, ~21.5 tok/s per user — continuous-batching is ~100% efficient on this profile
-- **Long-context**: 100K prompt + 200 gen ≈ 70s wall; 200K + 200 gen ≈ 4 min (prefill-bound past ~50K context)
+- **Decode**: ~24.9 tok/s single-stream (200-token generation, tiny prompt, warm)
+- **Prefill**: ~1400–1600 tok/s, chunked, near-flat across 10K-100K context
+- **Concurrent 4-parallel** (4 simul tiny-prompt 200-gen): **112 tok/s aggregate**, ~28 tok/s per user — continuous-batching is ~100% efficient on this profile, AND CUDA graphs amortize kernel-launch overhead across iterations giving an extra ~30% multi-user boost
+- **Long-context**: 100K prompt + 200 gen ≈ 68s wall; 200K + 200 gen ≈ 4 min (prefill-bound past ~50K context)
 - **Verified 2026-05-08 on a single-tool web_search agent run**: cold-cache first run ~120s (system-prompt prefill + tool round-trip + model JIT), warm-cache subsequent runs ~11s. Multi-tool runs scale roughly linearly with call count from there.
 
-The Blackwell-SM121 Marlin path runs at roughly half the throughput of the CUTLASS path on B200 (the 52 tok/s ai-muninn published number) — that's the SM121-specific cost of the Marlin fp4→bf16 dequantize on every expert call. Still ~3.7× faster than the dense 31B baseline, and the 4-parallel aggregate keeps multi-user throughput linear.
+The Blackwell-SM121 Marlin path runs at roughly half the throughput of the CUTLASS path on B200 (the 52 tok/s ai-muninn published number) — that's the SM121-specific cost of the Marlin fp4→bf16 dequantize on every expert call. Still ~3.7× faster than the dense 31B baseline, and the 4-parallel aggregate keeps multi-user throughput linear. The pre-2026 "GB10 unified-mem CUDA-graphs hangs" gotcha appears resolved in vLLM 0.19+ — eager mode kept as a rollback path via `LLM_ENFORCE_EAGER=1`.
 
 Even so: a multi-step tool-call agent run does several LLM calls in sequence — system-prompt prefill → tool-call args → tool-result digestion → final reply. With the current MCP catalog (`python_sandbox__*`, `comfyui_image__*`, plus the always-on memory/file/exec/browser surface) the system-prompt prefill alone burns the first 1-5s of every call (faster on MoE, slower on dense).
 

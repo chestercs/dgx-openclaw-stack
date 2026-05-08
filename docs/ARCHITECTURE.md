@@ -67,7 +67,7 @@ vLLM's official day-1 Gemma 4 image. CUDA 13.0, Transformers 5.5+, native `gemma
 
 ### Model selection: MoE default, dense alternative
 
-Default backend: `nvidia/Gemma-4-26B-A4B-NVFP4` (Mixture-of-Experts, 25.2B total / 3.8B active per token, 128 fine-grained experts with top-8 routing). Decode measured at **~22.5 tok/s single-stream** on GB10 with the mandatory Marlin MoE backend (SM121-specific cost — Marlin dequantizes FP4→BF16 on every expert call vs. the CUTLASS path on B200 that ai-muninn measured at 52 tok/s). Still ~3.7× faster than the dense 31B variant the stack used through v0.x, and continuous-batching adds linearly: 4-parallel measured at **~86 tok/s aggregate (~21.5 tok/s per user)**. The dense backend lives in the parallel `vllm-llm-dense` service block, parked behind `profiles: ["dense"]`, so an operator who wants parity-test against the older numbers can flip with `COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`.
+Default backend: `nvidia/Gemma-4-26B-A4B-NVFP4` (Mixture-of-Experts, 25.2B total / 3.8B active per token, 128 fine-grained experts with top-8 routing). Decode measured at **~24.9 tok/s single-stream** on GB10 with the mandatory Marlin MoE backend (SM121-specific cost — Marlin dequantizes FP4→BF16 on every expert call vs. the CUTLASS path on B200 that ai-muninn measured at 52 tok/s) and CUDA graphs ON. Still ~3.7× faster than the dense 31B variant the stack used through v0.x, and continuous-batching adds linearly: 4-parallel measured at **~112 tok/s aggregate (~28 tok/s per user)**. The dense backend lives in the parallel `vllm-llm-dense` service block, parked behind `profiles: ["dense"]`, so an operator who wants parity-test against the older numbers can flip with `COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`.
 
 Both share the same `vllm/vllm-openai:gemma4-cu130` base image (extended with our 1-line tool-call-parser regex patch in `./vllm-llm/Dockerfile`), the same chat template (`tool_chat_template_gemma4.jinja`), the same parsers (`gemma4` for both reasoning and tool-call), and the same FP8 KV cache. The model swap is genuinely a `--model` change plus the MoE-specific `--moe-backend` flag.
 
@@ -118,9 +118,9 @@ Gemma 4 NVFP4 ships with the vision tower — NVIDIA quantized the whole model, 
 
 `max_soft_tokens: 280` is the sweet spot for moodboard / document reading (≈ 512×512 region). Bump to 560 or 1120 for OCR, charts, or handwriting; every additional soft token eats KV cache.
 
-### `--enforce-eager`
+### CUDA graphs (`LLM_ENFORCE_EAGER`)
 
-CUDA graphs disabled. On GB10's unified memory, CUDA graphs have caused hard-to-reproduce hangs during long-context decode. Eager mode costs a few percent of throughput but is stable. Feel free to flip this off on your own hardware if you don't see issues.
+CUDA graphs are ON by default — `LLM_ENFORCE_EAGER` env unset omits the `--enforce-eager` flag. Verified 2026-05-08 on GB10 + Marlin SM121 + MoE 26B-A4B: ~10% single-stream gain (22.5 → 24.9 tok/s) and ~30% 4-paralel-aggregate gain (86 → 112 tok/s) over eager mode, no hangs across a 5K-200K context sweep. The pre-2026 "hard-to-reproduce hangs during long-context decode" gotcha appears resolved in vLLM 0.19+. Set `LLM_ENFORCE_EAGER=1` in `.env` to force eager mode if a future vLLM image / model combo turns the graphs unstable on your hardware.
 
 ## vllm-embedding service design
 

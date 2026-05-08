@@ -160,7 +160,14 @@ services:
   #    --mm-processor-kwargs ...       : vision token budget per image (280 is the
   #                                      sweet spot ≈ 512×512; raise to 560/1120 for
   #                                      OCR, charts, handwriting at the cost of KV).
-  #    --enforce-eager                 : CUDA graphs off (more stable on GB10 unified mem).
+  #    ${LLM_ENFORCE_EAGER:+--enforce-eager} : CUDA graphs ON by default (LLM_ENFORCE_EAGER unset).
+  #                                      Verified 2026-05-08 on GB10 + Marlin SM121 backend +
+  #                                      MoE 26B-A4B: ~10% single-stream gain (22.5 → 24.9 tok/s)
+  #                                      and ~30% 4-paralel-aggregate gain (86 → 112 tok/s) over
+  #                                      eager mode, no hangs across 5K-200K context sweep.
+  #                                      The pre-2026 "GB10 unified-mem CUDA-graphs hangs" gotcha
+  #                                      appears resolved in vLLM 0.19+. Set LLM_ENFORCE_EAGER=1
+  #                                      in .env to force eager (back-compat / rollback path).
   ######################
   vllm-llm:
     # Custom image with a 1-line patch to the Gemma4 tool-call parser regex
@@ -239,7 +246,7 @@ services:
       --mm-processor-kwargs '{"max_soft_tokens":280}'
       --enable-prefix-caching
       --enable-chunked-prefill
-      --enforce-eager
+      ${LLM_ENFORCE_EAGER:+--enforce-eager}
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
@@ -332,7 +339,7 @@ services:
       --mm-processor-kwargs '{"max_soft_tokens":280}'
       --enable-prefix-caching
       --enable-chunked-prefill
-      --enforce-eager
+      ${LLM_ENFORCE_EAGER:+--enforce-eager}
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
