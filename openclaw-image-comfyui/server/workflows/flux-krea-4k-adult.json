@@ -106,17 +106,11 @@
     "class_type": "VAEDecode",
     "inputs": {"samples": ["34", 0], "vae": ["3", 0]}
   },
-  "55": {
-    "class_type": "CheckpointLoaderSimple",
-    "inputs": {"ckpt_name": "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"}
-  },
   "60": {
-    "class_type": "SUPIR_model_loader_v2",
+    "class_type": "SUPIR_model_loader",
     "inputs": {
-      "model":            ["55", 0],
-      "clip":             ["55", 1],
-      "vae":              ["55", 2],
       "supir_model":      "SUPIR-v0Q_fp16.safetensors",
+      "sdxl_model":       "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
       "fp8_unet":         false,
       "diffusion_dtype":  "fp16"
     }

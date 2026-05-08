@@ -86,8 +86,18 @@ class Workflow:
 
     def _resolve_target(self, param: str) -> Optional[tuple[str, str]]:
         """Return (node_id, input_key) for `param`, or None if unmappable.
-        Priority: explicit _metadata.targets → CLASS_TYPE_FALLBACK."""
+        Priority: explicit _metadata.targets → CLASS_TYPE_FALLBACK.
+
+        Opt-out semantics: `targets.<param>: false` (JSON literal) means
+        "this workflow has no controllable knob for `param` even though
+        a matching class_type exists in the graph". Used by multi-stage
+        workflows that have multiple `CheckpointLoaderSimple` nodes for
+        different sub-models (e.g. SUPIR's Juggernaut backbone) where
+        the bridge's class-type fallback would otherwise pick the wrong
+        node and corrupt the auxiliary checkpoint slot."""
         explicit = self.targets.get(param)
+        if explicit is False:
+            return None
         if isinstance(explicit, dict):
             node = explicit.get("node")
             inp = explicit.get("input")
