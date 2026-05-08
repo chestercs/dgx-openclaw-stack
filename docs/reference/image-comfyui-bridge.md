@@ -476,11 +476,13 @@ huggingface-cli download comfyanonymous/flux_text_encoders \
 huggingface-cli download black-forest-labs/FLUX.1-Krea-dev \
     ae.safetensors --local-dir "$BASEDIR/models/vae/"
 
-# SUPIR backbone (~18 GB) — required for the 4k-supir / 4k-adult /
-# 4k-adult-realism templates. Pruned weights from kijai's mirror keep
-# the download under 6 GB per checkpoint.
+# SUPIR backbone (~12 GB) — required for the 4k-supir / 4k-adult /
+# 4k-adult-realism templates. Note both SUPIR weights AND the SDXL
+# refiner backbone (Juggernaut) live under models/checkpoints/ because
+# SUPIR_model_loader (legacy v1) reads its `sdxl_model` AND
+# `supir_model` COMBOs from the checkpoints/ directory.
 huggingface-cli download Kijai/SUPIR_pruned \
-    SUPIR-v0Q_fp16.safetensors --local-dir "$BASEDIR/models/diffusion_models/"
+    SUPIR-v0Q_fp16.safetensors --local-dir "$BASEDIR/models/checkpoints/"
 huggingface-cli download stabilityai/sdxl-vae \
     sdxl_vae.safetensors --local-dir "$BASEDIR/models/vae/"
 huggingface-cli download RunDiffusion/Juggernaut-XL-v9 \
