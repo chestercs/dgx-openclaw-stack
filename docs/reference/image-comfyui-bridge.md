@@ -473,7 +473,7 @@ huggingface-cli download black-forest-labs/FLUX.1-Krea-dev \
     flux1-krea-dev.safetensors --local-dir "$BASEDIR/models/diffusion_models/"
 huggingface-cli download comfyanonymous/flux_text_encoders \
     t5xxl_fp16.safetensors clip_l.safetensors --local-dir "$BASEDIR/models/clip/"
-huggingface-cli download black-forest-labs/FLUX.1-dev \
+huggingface-cli download black-forest-labs/FLUX.1-Krea-dev \
     ae.safetensors --local-dir "$BASEDIR/models/vae/"
 
 # SUPIR backbone (~18 GB) — required for the 4k-supir / 4k-adult /
@@ -484,7 +484,7 @@ huggingface-cli download Kijai/SUPIR_pruned \
 huggingface-cli download stabilityai/sdxl-vae \
     sdxl_vae.safetensors --local-dir "$BASEDIR/models/vae/"
 huggingface-cli download RunDiffusion/Juggernaut-XL-v9 \
-    juggernautXL_v9Rundiffusion.safetensors --local-dir "$BASEDIR/models/checkpoints/"
+    Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors --local-dir "$BASEDIR/models/checkpoints/"
 
 # Upscaler (~70 MB) — used by the 4k-tiled fallback path
 huggingface-cli download Kim2091/UltraSharp \

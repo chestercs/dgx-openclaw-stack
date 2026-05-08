@@ -114,7 +114,7 @@
     "class_type": "SUPIR_model_loader_v2",
     "inputs": {
       "supir_model": "SUPIR-v0Q_fp16.safetensors",
-      "sdxl_model":  "juggernautXL_v9Rundiffusion.safetensors",
+      "sdxl_model":  "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
       "fp8_unet":        false,
       "diffusion_dtype": "fp16"
     }
