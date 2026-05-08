@@ -189,11 +189,18 @@ services:
     restart: unless-stopped
     ipc: host
     tty: true
-    # Uncomment to expose the vLLM OpenAI API on the host for debug / direct access.
-    # Default: service is reachable only by sibling containers (openclaw-*) via
-    # the compose DNS name `vllm-llm`.
-    # ports:
-    #   - "127.0.0.1:8004:8004"
+    # vLLM OpenAI-compatible API published to the host. `LLM_BIND` controls
+    # which interface the host-side mapping listens on:
+    #   127.0.0.1 (default) — loopback only; in-host curl + sibling containers
+    #   0.0.0.0             — LAN-exposed (requires VLLM_API_KEY for auth);
+    #                         opt-in for multi-host setups, direct workstation
+    #                         clients, etc. The Bearer-token auth is the only
+    #                         barrier to a leaked endpoint, so don't set this
+    #                         if VLLM_API_KEY isn't strong / rotated.
+    # Sibling containers always reach via compose DNS `vllm-llm:8004`;
+    # publishing is purely for external/LAN access.
+    ports:
+      - "${LLM_BIND:-127.0.0.1}:8004:8004"
     # MoE default. The 26B-A4B variant routes only ~3.8B params per token via
     # 128 fine-grained experts (top-8) — ~7.5× faster decode than the 31B dense
     # NVFP4 it replaces (52 tok/s vs 6.9 tok/s on GB10), 16.5 GB model footprint
@@ -300,8 +307,10 @@ services:
     restart: unless-stopped
     ipc: host
     tty: true
-    # ports:
-    #   - "127.0.0.1:8004:8004"
+    # Same LLM_BIND env-knob as the MoE service — see comment block on
+    # `vllm-llm` above for security trade-offs.
+    ports:
+      - "${LLM_BIND:-127.0.0.1}:8004:8004"
     command: >
       --model nvidia/Gemma-4-31B-IT-NVFP4
       --host 0.0.0.0
