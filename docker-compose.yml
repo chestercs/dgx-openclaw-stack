@@ -333,8 +333,15 @@ services:
       --mm-processor-kwargs '{"max_soft_tokens":280}'
       --enable-prefix-caching
       --enable-chunked-prefill
-      ${LLM_ENFORCE_EAGER:+--enforce-eager}
+      --enforce-eager
     environment:
+      # Dense hardcodes `--enforce-eager` (CUDA graphs OFF). The dense weights
+      # take ~31 GB in unified memory; with CUDA graphs ON the activations +
+      # graph capture overhead consumes another ~6 GB, leaving the 0.30 util
+      # budget with effectively zero KV pool. Eager mode here is the
+      # low-RAM single-user trade-off: ~5% per-token slower but fits
+      # 128K context inside ~7 GB KV. The MoE service runs CUDA graphs ON
+      # via the LLM_ENFORCE_EAGER env knob — only the dense is forced eager.
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
