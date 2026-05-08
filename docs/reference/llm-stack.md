@@ -4,7 +4,11 @@
 
 ## Active LLM (unified OpenClaw stack, 2026-05 onward)
 
-Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — in-stack `vllm-llm` service (MoE default) with a parallel `vllm-llm-dense` service block parked behind `profiles: ["dense"]` for parity testing and rollback.
+Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — TWO concurrent in-stack services running side by side, no profile-mutex:
+- `vllm-llm` (MoE) on hostname `vllm-llm`, port 8004, OpenClaw provider id `vllm`
+- `vllm-llm-dense` on hostname `vllm-llm-dense`, port 8005, OpenClaw provider id `vllm-dense`
+
+Both reachable simultaneously; the UI picks the active model.
 
 **MoE default** (`vllm-llm` service):
 - Image: `vllm/vllm-openai:gemma4-cu130` + 1-line tool-call-parser regex patch (`./vllm-llm/Dockerfile`)
@@ -15,12 +19,13 @@ Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — in-stack `vllm-llm` ser
 - Decode: ~52 tok/s on GB10 (verified ai-muninn 2026-04, ~7.5× faster than the dense 31B it replaces)
 - Vision tower included; same `gemma4` parser + `tool_chat_template_gemma4.jinja` as dense
 
-**Dense alternative** (`vllm-llm-dense`, `profiles: ["dense"]`):
+**Dense concurrent** (`vllm-llm-dense`, runs alongside MoE, port 8005, no profile):
 - Same image, same chat template, same parsers
 - Model: `nvidia/Gemma-4-31B-IT-NVFP4` — 31.3B dense in NVFP4 (~17 GB weights)
 - Decode: ~6.9 tok/s on GB10
-- Same `hostname: vllm-llm` so the OpenClaw gateway resolves it via bridge DNS without config change
-- Mutex via profile: `docker compose stop vllm-llm` then `COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`
+- Tuned for low-RAM single-user 256K (`LLM_GPU_MEM_UTIL_DENSE=0.30`, `LLM_MAX_NUM_SEQS_DENSE=1`)
+- Hostname `vllm-llm-dense`, separate OpenClaw provider id `vllm-dense` (`baseUrl: http://vllm-llm-dense:8005/v1/`)
+- Together both backends ≈ 76 GB host RAM use, leaving 50+ GB free
 
 Both are registered in the OpenClaw catalog by `patch-config.mjs` (`LLM_MODEL_ENTRIES[]` array). The active model is picked via the OpenClaw UI's model dropdown — the schema doesn't expose a writable `agents.defaults.llm.model` field, so the patcher only ensures the entries exist; it doesn't pin a default.
 

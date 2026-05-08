@@ -16,25 +16,31 @@ The three coupled pieces for any further model change are:
 
 Any new model requires editing all three. **Why three places?** vLLM needs to know which weights to load (#1); the patcher needs to know which model id to register in the OpenClaw provider catalog so tool-calling routes to the right entry (#2); and OpenClaw uses the metadata in the catalog entry to cap prompt sizes, gate vision input, and drive the thinking-mode UI (#3). They aren't auto-derived from each other — consistency is your job. We hard-code these rather than templating them because a mistake here (a wrong context window, a missing `image` input type) is silent: the stack boots, chats work, and tool calls or images break in subtle ways hours later.
 
-### Switch to dense Gemma 4 31B (alternative profile)
+### Both backends run by default — pick in the UI
 
-The dense variant lives in the `vllm-llm-dense` service block, parked behind `profiles: ["dense"]`. Same image, same hostname (`vllm-llm`), so the OpenClaw gateway reaches it via bridge DNS without any extra config. To switch:
+Both vLLM services come up together: MoE 26B-A4B on `vllm-llm:8004` (provider id `vllm`) and dense 31B on `vllm-llm-dense:8005` (provider id `vllm-dense`). The OpenClaw gateway reaches both through bridge DNS, the patcher registers separate provider entries for each, and the user picks the active model in the OpenClaw UI's model dropdown.
+
+If you want to disable one to free RAM:
 
 ```bash
-# 1. Stop MoE.
+# Stop the dense backend (saves ~38 GB host RAM):
+docker compose stop vllm-llm-dense
+
+# Stop the MoE backend (saves ~38 GB host RAM):
 docker compose stop vllm-llm
-
-# 2. Start dense (opt-in profile).
-COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense
-
-# 3. Pick the dense id in the OpenClaw UI's model dropdown (the patcher
-#    has already registered both `nvidia/Gemma-4-26B-A4B-NVFP4` and
-#    `nvidia/Gemma-4-31B-IT-NVFP4` in the provider catalog on first boot).
 ```
 
-To go back to MoE, reverse: `docker compose stop vllm-llm-dense`, `docker compose up -d vllm-llm`, then pick the MoE id in the UI. The dense service uses its own `LLM_GPU_MEM_UTIL_DENSE` env (default `0.68`) so the historical dense tuning stays intact when you flip back.
+To restart either: `docker compose up -d <service>`.
 
-OpenClaw's schema doesn't expose a writable `agents.defaults.llm.model` field, so the active model is picked in the UI / per-agent settings — there's no `.env` knob that flips it for you. The patcher's role is to make sure both entries exist in the catalog so the UI can show them.
+To run only one of them on first boot, scale the other to zero in your `compose.override.yml` or use the `--no-start` flag selectively. There's no profile-mutex — neither service is opt-in by default anymore.
+
+Tuning the dense for low-RAM single-user is the same set of knobs as the MoE side, but with the `_DENSE` suffix:
+
+```env
+LLM_GPU_MEM_UTIL_DENSE=0.30        # default — single-user 256K profile
+LLM_MAX_NUM_SEQS_DENSE=1           # default — solo
+LLM_MAX_MODEL_LEN_DENSE=131072     # drop to 128K if 256K isn't needed (~halves dense KV)
+```
 
 ### Smaller Gemma 4 (12B NVFP4)
 

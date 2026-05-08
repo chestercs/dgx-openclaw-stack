@@ -13,7 +13,7 @@ Anthropic, OpenRouter, AWS Bedrock, hosted LLM, RTX 4090.
 
 > **A one-command, production-grade local AI agent stack** — OpenClaw + vLLM + bge-m3 multilingual embeddings + SearxNG private web search + hybrid (BM25 + vector) memory retrieval, wired together in a single `docker compose` file.
 >
-> **Calibrated** for the NVIDIA GB10 "Grace-Blackwell" Superchip (NVIDIA DGX Spark, ASUS Ascent GB10) running Gemma 4 26B-A4B MoE in NVFP4 (with the dense 31B preserved as a profile-gated alternative). **Portable** to other hardware — swap the LLM for whatever fits your GPU, or point OpenClaw at a cloud LLM API and keep everything else.
+> **Calibrated** for the NVIDIA GB10 "Grace-Blackwell" Superchip (NVIDIA DGX Spark, ASUS Ascent GB10) running Gemma 4 26B-A4B MoE NVFP4 and Gemma 4 31B IT NVFP4 dense **side by side on separate ports** (8004 / 8005, separate OpenClaw provider entries) — pick either model in the UI without restarting. **Portable** to other hardware — swap the LLM for whatever fits your GPU, or point OpenClaw at a cloud LLM API and keep everything else.
 
 The default profile's tuning decisions — NVFP4 quantization, GPU memory split between LLM and embedding, FP8 KV cache, concurrency bands, context-window budgeting — are calibrated to the GB10 Superchip's specific hardware profile: **128 GB of unified LPDDR5X**, **273 GB/s bandwidth**, and **native FP4 tensor-core acceleration** (`sm_120`/`sm_121`). On a DGX Spark or ASUS Ascent GB10 you get those numbers out of the box. On other hardware everything except the LLM service is reusable as-is.
 
@@ -43,7 +43,8 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 
 | Component | What it does |
 |---|---|
-| **Gemma 4 26B-A4B MoE (NVFP4)** | 25.2B-total / 3.8B-active Google Gemma 4 mixture-of-experts model (128 experts, top-8 routing), quantized by NVIDIA to NVFP4 with the `nvfp4_experts_only` recipe. Native tool calling, 256K context, multimodal (text + image), ~25 tok/s decode single-stream on GB10 with Marlin SM121 backend + CUDA graphs (~4× faster than dense; ~112 tok/s aggregate at 4-paralel). The dense 31B variant lives behind `--profile dense` for parity testing and rollback. |
+| **Gemma 4 26B-A4B MoE (NVFP4)** | 25.2B-total / 3.8B-active Google Gemma 4 mixture-of-experts model (128 experts, top-8 routing), quantized by NVIDIA to NVFP4 with the `nvfp4_experts_only` recipe. Native tool calling, 256K context, multimodal (text + image), ~25 tok/s decode single-stream on GB10 with Marlin SM121 backend + CUDA graphs (~4× faster than dense; ~112 tok/s aggregate at 4-parallel). |
+| **Gemma 4 31B IT (NVFP4) — concurrent dense** | 31.3B dense Google Gemma 4 quantized to NVFP4. Runs side-by-side with the MoE on port 8005 (provider id `vllm-dense`), single-user / 256K context / ~6.9 tok/s decode profile. Pick either model in the OpenClaw UI without restarting; the dense backend exists for parity testing, multimodal-heavy workloads where dense quality matters, or as a fallback. |
 | **bge-m3 embeddings** | BAAI/bge-m3 multilingual dense embeddings via vLLM. 100+ languages, 1024-dim, 8K context, EN↔HU cosine ≈ 0.88. |
 | **SearxNG meta-search** | Self-hosted, privacy-respecting web search backend wired into OpenClaw's native `webSearch` provider. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Wikipedia family, Reddit, GitHub, arXiv) — queries never reach Google / Bing / Yandex / Yahoo / Baidu. |
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
@@ -107,11 +108,18 @@ That's it — the patcher applies all 15 steps and the gateway goes healthy. **T
     │  DGX Spark / ASUS GB10                                         │
     │                                                                 │
     │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
-    │  │ vllm-llm        │  │ vllm-embedding  │  │ searxng        │  │
-    │  │ :8004 (internal)│  │ :8005 (internal)│  │ :8080 (internal)│  │
-    │  │ Gemma 4 26B-A4B │  │ bge-m3 (567M)   │  │ privacy meta-   │  │
-    │  │ MoE NVFP4, 256K │  │ 1024-dim, 8K ctx│  │ search (CPU)    │  │
-    │  └────────▲────────┘  └────────▲────────┘  └────────▲────────┘  │
+    │  ┌─────────────────┐  ┌─────────────────┐                       │
+    │  │ vllm-llm        │  │ vllm-llm-dense  │                       │
+    │  │ :8004 (internal)│  │ :8005 (internal)│                       │
+    │  │ Gemma 4 26B-A4B │  │ Gemma 4 31B IT  │                       │
+    │  │ MoE NVFP4, 256K │  │ dense NVFP4 256K│                       │
+    │  └────────▲────────┘  └────────▲────────┘                       │
+    │  ┌─────────────────┐  ┌─────────────────┐                       │
+    │  │ vllm-embedding  │  │ searxng         │                       │
+    │  │ :8005 (internal)│  │ :8080 (internal)│                       │
+    │  │ bge-m3 (567M)   │  │ privacy meta-   │                       │
+    │  │ 1024-dim, 8K ctx│  │ search (CPU)    │                       │
+    │  └────────▲────────┘  └────────▲────────┘                       │
     │           │ compose DNS        │ compose DNS        │ compose DNS│
     │  ┌────────┴────────────────────┴────────────────────┴────────┐  │
     │  │ openclaw-gateway            :18789 (exposed)              │◀── Chrome ext.

@@ -169,20 +169,17 @@ import path from 'node:path';
 
 const CONFIG_PATH = '/home/node/.openclaw/openclaw.json';
 
-// LLM provider — Gemma 4 NVFP4 on the in-compose `vllm-llm` (MoE default) /
-// `vllm-llm-dense` (opt-in profile) service. Override LLM_BASE_URL in .env to
-// point at any OpenAI-compatible chat endpoint (remote vLLM, Bedrock proxy,
-// OpenRouter, …). See .env.example and docs/CUSTOMIZATION.md → "Run with a
-// remote vLLM backend".
-//
-// Both catalog entries are registered regardless of which compose service is
-// running. Default-model selection is left to the OpenClaw UI / per-agent
-// settings — the schema does not expose a writable agents.defaults.llm.model
-// field for the patcher to set. The vLLM `--model` flag (driven by .env's
-// LLM_MODEL_ID) decides which checkpoint actually serves on port 8004.
+// LLM providers — Gemma 4 NVFP4 served by TWO concurrent in-compose backends:
+//   - `vllm-llm` (MoE 26B-A4B, port 8004) → OpenClaw provider id `vllm`
+//   - `vllm-llm-dense` (dense 31B IT, port 8005) → OpenClaw provider id `vllm-dense`
+// Both run by default; the user picks which to talk to via the model dropdown
+// in the OpenClaw UI. Either baseUrl can be overridden in .env to point at a
+// remote endpoint (LLM_BASE_URL for MoE, LLM_DENSE_BASE_URL for dense). See
+// .env.example and docs/CUSTOMIZATION.md → "Run with a remote vLLM backend".
 const LLM_MODEL_ID_MOE = 'nvidia/Gemma-4-26B-A4B-NVFP4';
 const LLM_MODEL_ID_DENSE = 'nvidia/Gemma-4-31B-IT-NVFP4';
 const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://vllm-llm:8004/v1/';
+const LLM_DENSE_BASE_URL = process.env.LLM_DENSE_BASE_URL || 'http://vllm-llm-dense:8005/v1/';
 const LLM_API = 'openai-completions';
 const VLLM_API_KEY = process.env.VLLM_API_KEY ?? '';
 
@@ -216,26 +213,27 @@ const LLM_MODEL_ENTRY_DENSE = {
   id: LLM_MODEL_ID_DENSE,
   name: LLM_MODEL_ID_DENSE,
 };
-const LLM_MODEL_ENTRIES = [LLM_MODEL_ENTRY_MOE, LLM_MODEL_ENTRY_DENSE];
 
-// If LLM_MODEL_ID env (the vLLM-served checkpoint) points at a model NOT in
-// the hard-coded pair (e.g. a community NVFP4 quantization the operator picked
-// to bypass an upstream loader bug), register a generic catalog entry on the
-// fly so the OpenClaw UI shows it. Same shape as the NVIDIA entries: text+image
-// modalities, 256K context, 8K reply cap. If the actual model has different
-// capabilities, the operator can override the catalog entry post-hoc via the UI.
+// MoE-side optional override (LLM_MODEL_ID env). If set to something other
+// than the hard-coded MoE id, register a generic catalog entry on the
+// vllm provider — useful for community NVFP4 quants that ship loader patches.
 const LLM_MODEL_ID_OVERRIDE = process.env.LLM_MODEL_ID?.trim();
+const LLM_MOE_ENTRIES = [LLM_MODEL_ENTRY_MOE];
 if (
   LLM_MODEL_ID_OVERRIDE &&
   LLM_MODEL_ID_OVERRIDE !== LLM_MODEL_ID_MOE &&
   LLM_MODEL_ID_OVERRIDE !== LLM_MODEL_ID_DENSE
 ) {
-  LLM_MODEL_ENTRIES.push({
+  LLM_MOE_ENTRIES.push({
     ...LLM_MODEL_ENTRY_MOE,
     id: LLM_MODEL_ID_OVERRIDE,
     name: LLM_MODEL_ID_OVERRIDE,
   });
 }
+// Dense-side: just the one hard-coded entry. (If a future community quant of
+// the dense 31B needs catalog registration, add another env-knob mirroring
+// the MoE pattern; not worth the complexity until that's a real use case.)
+const LLM_DENSE_ENTRIES = [LLM_MODEL_ENTRY_DENSE];
 
 if (!fs.existsSync(CONFIG_PATH)) {
   console.log(`[patch-config] ${CONFIG_PATH} does not exist yet — onboarding has not run. Skipping patch.`);
@@ -283,26 +281,27 @@ if (vllm) {
   }
 }
 
-// (3) Ensure both NVFP4 model entries (MoE default, dense alternative) are in
-//     the provider's models[] catalog. We register both regardless of which
-//     compose service (`vllm-llm` MoE-default or `vllm-llm-dense` opt-in) is
-//     running — the user can swap the active backend via .env + profile flip
-//     without re-patching, and the OpenClaw UI shows both options. The actual
-//     active id is set by step 3b (`agents.defaults.model.primary`); if the
-//     primary doesn't match the running vLLM's served-model-name, requests
-//     404 with "model X does not exist".
+// (3) Two-provider catalog. The vllm provider serves MoE on port 8004; the
+//     vllm-dense provider serves dense 31B on port 8005. Both run by default
+//     (no profile-mutex), so both should be registered in the OpenClaw catalog
+//     under their own provider id.
 //
-//     The MoE entry includes `api: 'openai-completions'` to match the dense
-//     entry's shape; entries without `api` were observed to be filtered out
-//     of the runtime model selection on OpenClaw 2026.4.22.
+//     Migration: prior versions registered the dense entry on the `vllm`
+//     provider's models[]. If we find a leftover dense entry there, remove it
+//     (it would cause routing confusion — calls to vllm/<dense> hit the MoE
+//     endpoint and 404).
+//
+//     The `api: 'openai-completions'` mezőt mindkét entry kapja; nélküle a
+//     runtime model-selection silent-filter-eli ki őket (verified on OC 2026.4.22).
 if (vllm) {
+  // Sync vllm provider core fields (already done in step 2) — just register MoE-side entries.
   vllm.models ??= [];
-  for (const entry of LLM_MODEL_ENTRIES) {
+  for (const entry of LLM_MOE_ENTRIES) {
     const existing = vllm.models.find((m) => m?.id === entry.id);
     if (!existing) {
       vllm.models.push(entry);
       changed = true;
-      console.log(`[patch-config] added provider model entry: ${entry.id} (contextWindow=${entry.contextWindow}).`);
+      console.log(`[patch-config] vllm.models[] += ${entry.id} (contextWindow=${entry.contextWindow}).`);
     } else {
       const before = JSON.stringify(existing);
       for (const [k, v] of Object.entries(entry)) {
@@ -312,34 +311,89 @@ if (vllm) {
       }
       if (JSON.stringify(existing) !== before) {
         changed = true;
-        console.log(`[patch-config] updated provider model entry: ${entry.id}.`);
+        console.log(`[patch-config] vllm.models[] updated ${entry.id}.`);
       }
+    }
+  }
+  // Legacy migration: drop dense from the vllm provider if it's been registered there
+  // by an older patcher version.
+  const legacyDenseIdx = vllm.models.findIndex((m) => m?.id === LLM_MODEL_ID_DENSE);
+  if (legacyDenseIdx >= 0) {
+    vllm.models.splice(legacyDenseIdx, 1);
+    changed = true;
+    console.log(`[patch-config] vllm.models[] cleanup: removed legacy ${LLM_MODEL_ID_DENSE} (now lives on vllm-dense provider).`);
+  }
+}
+
+// (3a) Ensure the vllm-dense provider exists with correct core fields + dense
+//      catalog entry. If the operator parks the dense container with a remote
+//      override (LLM_DENSE_BASE_URL=http://...:9000/v1/), this just rewrites
+//      the URL — the catalog stays sane.
+config.models ??= {};
+config.models.providers ??= {};
+config.models.providers['vllm-dense'] ??= {};
+const vllmDense = config.models.providers['vllm-dense'];
+const desiredDenseCore = {
+  baseUrl: LLM_DENSE_BASE_URL,
+  api: LLM_API,
+};
+if (VLLM_API_KEY) desiredDenseCore.apiKey = VLLM_API_KEY;
+for (const [k, v] of Object.entries(desiredDenseCore)) {
+  if (vllmDense[k] !== v) {
+    const prev = vllmDense[k];
+    vllmDense[k] = v;
+    changed = true;
+    const shown = k === 'apiKey' ? `${String(v).slice(0, 4)}...(len=${String(v).length})` : v;
+    const prevShown = k === 'apiKey' && typeof prev === 'string' ? `(len=${prev.length})` : prev;
+    console.log(`[patch-config] models.providers.vllm-dense.${k}: ${prevShown ?? '(unset)'} -> ${shown}`);
+  }
+}
+vllmDense.models ??= [];
+for (const entry of LLM_DENSE_ENTRIES) {
+  const existing = vllmDense.models.find((m) => m?.id === entry.id);
+  if (!existing) {
+    vllmDense.models.push(entry);
+    changed = true;
+    console.log(`[patch-config] vllm-dense.models[] += ${entry.id}.`);
+  } else {
+    const before = JSON.stringify(existing);
+    for (const [k, v] of Object.entries(entry)) {
+      if (JSON.stringify(existing[k]) !== JSON.stringify(v)) {
+        existing[k] = v;
+      }
+    }
+    if (JSON.stringify(existing) !== before) {
+      changed = true;
+      console.log(`[patch-config] vllm-dense.models[] updated ${entry.id}.`);
     }
   }
 }
 
-// (3b) Ensure agents.defaults.models / agents.defaults.model.primary point
-//      at the active vLLM checkpoint. The OpenClaw schema for agent default
-//      model lives at `agents.defaults.model.primary` (a string of the form
-//      `<provider>/<model_id>`) and `agents.defaults.models` (a dict of
-//      provider/id keys → empty objects, the available-set). Without this:
-//      the UI / agent runtime keeps whatever was set during onboarding (often
-//      a stale id from a previous backend), and every request 404s.
-//
-//      LLM_MODEL_ID env (the operator's chosen served-checkpoint, default
-//      MoE id when unset) drives the desired primary. If the operator has
-//      manually set a different primary in the UI / openclaw.json, we honor
-//      it ONLY IF it matches one of our known models — otherwise we coerce
-//      back to the desired id, because a stale primary breaks every request.
-const desiredServedId = LLM_MODEL_ID_OVERRIDE || LLM_MODEL_ID_MOE;
-const desiredPrimary = `vllm/${desiredServedId}`;
+// (3b) Ensure agents.defaults.models has both provider/id keys + agents.defaults.model.primary
+//      points at a known model. Default primary = the MoE id (or LLM_MODEL_ID
+//      override if set). Migrate stale `vllm/<dense>` keys to `vllm-dense/<dense>`.
+const desiredServedMoEId = LLM_MODEL_ID_OVERRIDE || LLM_MODEL_ID_MOE;
+const desiredPrimary = `vllm/${desiredServedMoEId}`;
 config.agents ??= {};
 config.agents.defaults ??= {};
 config.agents.defaults.models ??= {};
 config.agents.defaults.model ??= {};
-const knownModelKeys = [LLM_MODEL_ID_MOE, LLM_MODEL_ID_DENSE]
-  .concat(LLM_MODEL_ID_OVERRIDE ? [LLM_MODEL_ID_OVERRIDE] : [])
-  .map((id) => `vllm/${id}`);
+
+// Known keys after migration: MoE-side under vllm/, dense under vllm-dense/.
+const knownModelKeys = [
+  ...LLM_MOE_ENTRIES.map((e) => `vllm/${e.id}`),
+  ...LLM_DENSE_ENTRIES.map((e) => `vllm-dense/${e.id}`),
+];
+
+// Migrate stale `vllm/<dense>` key to `vllm-dense/<dense>` (older patcher wrote
+// it under the vllm provider; rename so it routes to the right backend).
+const staleDenseKey = `vllm/${LLM_MODEL_ID_DENSE}`;
+const correctDenseKey = `vllm-dense/${LLM_MODEL_ID_DENSE}`;
+if (staleDenseKey in config.agents.defaults.models) {
+  delete config.agents.defaults.models[staleDenseKey];
+  changed = true;
+  console.log(`[patch-config] agents.defaults.models: removed stale "${staleDenseKey}" (migrated to "${correctDenseKey}").`);
+}
 for (const k of knownModelKeys) {
   if (!(k in config.agents.defaults.models)) {
     config.agents.defaults.models[k] = {};
@@ -349,9 +403,13 @@ for (const k of knownModelKeys) {
 }
 const currentPrimary = config.agents.defaults.model.primary;
 if (currentPrimary !== desiredPrimary) {
-  // Operator-set primary survives only if it points at a model we registered
-  // in this run. Otherwise it's stale and would cause 404s.
-  if (currentPrimary && knownModelKeys.includes(currentPrimary)) {
+  // Migrate stale `vllm/<dense>` primary to `vllm-dense/<dense>` if the
+  // operator had picked dense in the old single-provider layout.
+  if (currentPrimary === staleDenseKey) {
+    config.agents.defaults.model.primary = correctDenseKey;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.model.primary migrated: ${staleDenseKey} -> ${correctDenseKey}`);
+  } else if (currentPrimary && knownModelKeys.includes(currentPrimary)) {
     console.log(`[patch-config] agents.defaults.model.primary preserved at user-set ${currentPrimary} (registered in catalog).`);
   } else {
     config.agents.defaults.model.primary = desiredPrimary;

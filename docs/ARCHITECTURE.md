@@ -67,7 +67,12 @@ vLLM's official day-1 Gemma 4 image. CUDA 13.0, Transformers 5.5+, native `gemma
 
 ### Model selection: MoE default, dense alternative
 
-Default backend: `nvidia/Gemma-4-26B-A4B-NVFP4` (Mixture-of-Experts, 25.2B total / 3.8B active per token, 128 fine-grained experts with top-8 routing). Decode measured at **~24.9 tok/s single-stream** on GB10 with the mandatory Marlin MoE backend (SM121-specific cost — Marlin dequantizes FP4→BF16 on every expert call vs. the CUTLASS path on B200 that ai-muninn measured at 52 tok/s) and CUDA graphs ON. Still ~3.7× faster than the dense 31B variant the stack used through v0.x, and continuous-batching adds linearly: 4-parallel measured at **~112 tok/s aggregate (~28 tok/s per user)**. The dense backend lives in the parallel `vllm-llm-dense` service block, parked behind `profiles: ["dense"]`, so an operator who wants parity-test against the older numbers can flip with `COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`.
+**Two backends running concurrently:**
+
+- **`vllm-llm`** (port 8004, provider id `vllm` in OpenClaw): `nvidia/Gemma-4-26B-A4B-NVFP4` — Mixture-of-Experts, 25.2B total / 3.8B active per token, 128 fine-grained experts with top-8 routing. Decode measured at **~24.9 tok/s single-stream**, **~112 tok/s 4-parallel aggregate** (~28 tok/s per user) on GB10 with the mandatory Marlin MoE backend (SM121-specific cost — Marlin dequantizes FP4→BF16 on every expert call vs. the CUTLASS path on B200 that ai-muninn measured at 52 tok/s) and CUDA graphs ON.
+- **`vllm-llm-dense`** (port 8005, provider id `vllm-dense`): `nvidia/Gemma-4-31B-IT-NVFP4` — dense 31B, ~6.9 tok/s decode on GB10. Tuned for low-RAM single-user (`LLM_MAX_NUM_SEQS_DENSE=1`, `LLM_GPU_MEM_UTIL_DENSE=0.30`, 256K context).
+
+Both reachable simultaneously, no profile-mutex. The user picks the model in the OpenClaw UI dropdown; the patcher registers separate `vllm` + `vllm-dense` providers in `models.providers`. Combined RAM footprint at default settings: ~38 GB MoE + ~38 GB dense + ~10 GB embedding/everything-else = ~86 GB / 128 GB on the GB10, leaves ~42 GB free.
 
 Both share the same `vllm/vllm-openai:gemma4-cu130` base image (extended with our 1-line tool-call-parser regex patch in `./vllm-llm/Dockerfile`), the same chat template (`tool_chat_template_gemma4.jinja`), the same parsers (`gemma4` for both reasoning and tool-call), and the same FP8 KV cache. The model swap is genuinely a `--model` change plus the MoE-specific `--moe-backend` flag.
 

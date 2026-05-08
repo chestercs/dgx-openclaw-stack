@@ -107,9 +107,10 @@ services:
   #    - 273 GB/s LPDDR5x bandwidth bottleneck unchanged, but only ~3.8B active
   #      weights are read per decoded token — that's the speedup.
   #
-  #  The dense 31B variant is preserved as `vllm-llm-dense` (profile: dense)
-  #  below for parity testing and rollback. Both are registered in OpenClaw's
-  #  catalog by patch-config.mjs regardless of which is running.
+  #  The dense 31B variant runs ALONGSIDE this service as `vllm-llm-dense`
+  #  on port 8005 — separate hostname, separate OpenClaw provider entry
+  #  (vllm-dense). Both backends respond simultaneously; the user picks
+  #  the model from the OpenClaw UI dropdown.
   #
   #  Image: vllm/vllm-openai:gemma4-cu130 — official vLLM day-1 Gemma 4 image,
   #  wrapped in our ./vllm-llm/Dockerfile with a 1-line tool-call-parser regex
@@ -215,8 +216,9 @@ services:
     # On Blackwell SM121 (GB10) `--moe-backend marlin` is mandatory: CUTLASS
     # produces NaN scale factors on the fused 3D expert tensor format. Marlin
     # decompresses FP4 → BF16 at inference time (slightly slower per-expert,
-    # functionally correct). To run the dense 31B alternative instead, see
-    # the `vllm-llm-dense` block below — it reuses this image and hostname.
+    # functionally correct). The dense 31B alternative runs concurrently in
+    # the `vllm-llm-dense` block below on its own port (8005) and hostname
+    # (vllm-llm-dense), no profile-mutex, both reachable simultaneously.
     # `LLM_MODEL_ID` lets an operator try a different MoE checkpoint (e.g. a
     # community NVFP4 quantization that ships its own loader patch — see
     # TROUBLESHOOTING.md "MoE model load KeyError"). Default = the NVIDIA
@@ -282,54 +284,46 @@ services:
   ######################
   ## vLLM — Gemma 4 31B IT NVFP4 dense (OPT-IN ALTERNATIVE, profile: dense)
   #
-  #  The dense 31B variant the stack used through v0.x. Slower (~6.9 tok/s
-  #  decode on GB10) but identical context window (256K) and tool-call surface.
-  #  Kept as an opt-in alternative for parity testing and rollback.
+  #  The dense 31B variant the stack used through v0.x. Runs ALONGSIDE the MoE
+  #  by default — its own port (8005) and hostname (vllm-llm-dense), separate
+  #  OpenClaw provider entry (vllm-dense). Both are reachable simultaneously,
+  #  so an operator can A/B compare on the fly via the UI's model dropdown.
   #
-  #  Mutex with `vllm-llm`: same `hostname: vllm-llm`, different container
-  #  name — Docker's bridge DNS resolves `vllm-llm` to whichever container
-  #  is currently running. Profile-mutex enforces "only one at a time":
+  #  Tuning intent: single-user, 256K context, low-RAM. ~6.9 tok/s decode on
+  #  GB10 (slower than MoE but full architecture context preserved). Default
+  #  LLM_GPU_MEM_UTIL_DENSE=0.30 matches the MoE side, leaving ~26 GB free
+  #  with both backends up (17 GB MoE + 17 GB dense + 14 GB MoE-KV + ~21 GB
+  #  dense-KV + 25 GB everything else ≈ 102 GB / 128 GB on the host).
   #
-  #    # Default (MoE):
-  #    docker compose up -d
-  #
-  #    # Switch to dense:
-  #    docker compose stop vllm-llm
-  #    COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense
-  #    # Then pick the dense model in the OpenClaw UI (the catalog already has
-  #    # both entries — the patcher registered them on first boot).
-  #
-  #  Both models are registered in the OpenClaw catalog regardless of which
-  #  one is running — see patch-config.mjs LLM_MODEL_ENTRY_MOE / _DENSE.
+  #  Pick the model in the OpenClaw UI dropdown; both providers are registered
+  #  in the catalog by the patcher (vllm/<MoE> + vllm-dense/<dense>).
   ######################
   vllm-llm-dense:
-    profiles: ["dense"]
     build:
       context: ./vllm-llm
       args:
         VLLM_BASE_IMAGE: vllm/vllm-openai:gemma4-cu130
     image: ${CONTAINER_NAME_PREFIX:-dgx-openclaw-}vllm-llm:gemma4-cu130-colonfix
     container_name: ${CONTAINER_NAME_PREFIX:-}vllm-llm-dense
-    hostname: vllm-llm
+    hostname: vllm-llm-dense
     restart: unless-stopped
     ipc: host
     tty: true
-    # Same LLM_BIND env-knob as the MoE service — see comment block on
-    # `vllm-llm` above for security trade-offs.
+    # Same LLM_BIND env-knob as the MoE service. Different host port (8005).
     ports:
-      - "${LLM_BIND:-127.0.0.1}:8004:8004"
+      - "${LLM_BIND:-127.0.0.1}:8005:8005"
     command: >
       --model nvidia/Gemma-4-31B-IT-NVFP4
       --host 0.0.0.0
-      --port 8004
+      --port 8005
       --api-key ${VLLM_API_KEY:-}
       --quantization modelopt
-      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL_DENSE:-0.68}
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL_DENSE:-0.30}
       -tp 1
       --load-format safetensors
       --kv-cache-dtype fp8
-      --max-model-len ${LLM_MAX_MODEL_LEN:-262144}
-      --max-num-seqs ${LLM_MAX_NUM_SEQS:-2}
+      --max-model-len ${LLM_MAX_MODEL_LEN_DENSE:-262144}
+      --max-num-seqs ${LLM_MAX_NUM_SEQS_DENSE:-1}
       --max-num-batched-tokens 8192
       --reasoning-parser gemma4
       --tool-call-parser gemma4
@@ -364,7 +358,7 @@ services:
       memlock: -1
       stack: 67108864
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8004/health\", timeout=2); sys.exit(0)' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8005/health\", timeout=2); sys.exit(0)' || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20

@@ -4,7 +4,7 @@ Guidance for Claude Code (and other coding agents) working on this repository.
 
 ## What this repo is
 
-A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 26B-A4B MoE NVFP4 on vLLM by default, with the dense 31B preserved as a `profiles: ["dense"]` opt-in alternative), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first SearxNG meta-search backend, a bilingual TTS surface (Kokoro 82M English by default + opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router), and a Whisper STT backend (`faster-whisper` large-v3 via the upstream speaches-ai image, EN + HU autodetect). Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
+A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM (Gemma 4 26B-A4B MoE NVFP4 on `vllm-llm:8004` and Gemma 4 31B IT NVFP4 dense on `vllm-llm-dense:8005` running side by side, two separate OpenClaw provider entries — pick either model in the UI without restarting), a multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first SearxNG meta-search backend, a bilingual TTS surface (Kokoro 82M English by default + opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router), and a Whisper STT backend (`faster-whisper` large-v3 via the upstream speaches-ai image, EN + HU autodetect). Calibrated for NVIDIA GB10 (DGX Spark / ASUS Ascent), portable to other hardware via documented overrides.
 
 The repo's value proposition is the **wiring**, not any individual component:
 - Model + embedding + gateway + memory + web search are pre-integrated.
