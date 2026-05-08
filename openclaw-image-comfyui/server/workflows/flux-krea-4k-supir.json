@@ -110,13 +110,19 @@
     "class_type": "VAEDecode",
     "inputs": {"samples": ["34", 0], "vae": ["3", 0]}
   },
+  "55": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {"ckpt_name": "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"}
+  },
   "60": {
     "class_type": "SUPIR_model_loader_v2",
     "inputs": {
-      "supir_model": "SUPIR-v0Q_fp16.safetensors",
-      "sdxl_model":  "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
-      "fp8_unet":        false,
-      "diffusion_dtype": "fp16"
+      "model":            ["55", 0],
+      "clip":             ["55", 1],
+      "vae":              ["55", 2],
+      "supir_model":      "SUPIR-v0Q_fp16.safetensors",
+      "fp8_unet":         false,
+      "diffusion_dtype":  "fp16"
     }
   },
   "61": {
@@ -133,10 +139,11 @@
   "62": {
     "class_type": "SUPIR_encode",
     "inputs": {
-      "SUPIR_VAE":          ["61", 2],
-      "image":              ["61", 0],
-      "use_tiled_vae":      true,
-      "encoder_tile_size_pixels": 1024
+      "SUPIR_VAE":         ["60", 1],
+      "image":             ["61", 1],
+      "use_tiled_vae":     true,
+      "encoder_tile_size": 1024,
+      "encoder_dtype":     "auto"
     }
   },
   "63": {
@@ -174,7 +181,7 @@
   "65": {
     "class_type": "SUPIR_decode",
     "inputs": {
-      "SUPIR_VAE":         ["61", 2],
+      "SUPIR_VAE":         ["60", 1],
       "latents":           ["64", 0],
       "use_tiled_vae":     true,
       "decoder_tile_size": 64

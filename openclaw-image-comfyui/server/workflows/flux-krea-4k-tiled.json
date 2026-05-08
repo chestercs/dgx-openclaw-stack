@@ -141,7 +141,8 @@
       "seam_fix_mask_blur":0,
       "seam_fix_padding":  0,
       "force_uniform_tiles": true,
-      "tiled_decode":      true
+      "tiled_decode":      true,
+      "batch_size":        1
     }
   },
   "90": {
