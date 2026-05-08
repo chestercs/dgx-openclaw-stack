@@ -117,6 +117,26 @@ class ComfyClient:
                     outputs = entry.get("outputs") or {}
                     status_obj = entry.get("status") or {}
                     completed = bool(status_obj.get("completed"))
+                    status_str = status_obj.get("status_str")
+                    if status_str == "error":
+                        # ComfyUI workflow execution failed (e.g. node raised
+                        # an exception, OOM, missing model file). Without this
+                        # branch the bridge polls forever because `completed`
+                        # stays False on error. Surface the failing node and
+                        # the underlying exception so the agent can react
+                        # instead of hitting the per-call timeout.
+                        err_node = err_type = err_exc = "unknown"
+                        for m in status_obj.get("messages") or []:
+                            if isinstance(m, list) and len(m) >= 2 and m[0] == "execution_error":
+                                data = m[1] if isinstance(m[1], dict) else {}
+                                err_node = str(data.get("node_id", "?"))
+                                err_type = str(data.get("node_type", "?"))
+                                err_exc = str(data.get("exception_message", "")).strip() or "no exception message"
+                                break
+                        raise ComfyUIError(
+                            f"prompt {prompt_id} execution failed at node {err_node} "
+                            f"({err_type}): {err_exc}"
+                        )
                     if completed and outputs:
                         return entry
                     # Entry exists but no outputs yet — keep polling.
