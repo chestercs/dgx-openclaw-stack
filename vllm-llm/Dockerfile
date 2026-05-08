@@ -1,20 +1,27 @@
-# Custom vLLM image for this stack with a 1-line patch to the Gemma4 tool-call
-# parser regex (line 338 of gemma4_tool_parser.py). Upstream regex is
-#   `<\|tool_call>call:([\w\-\.]+)\{(.*?)\}<tool_call\|>`
-# — character class `[\w\-\.]` allows letters/digits/underscores/hyphens/dots
-# but NOT colons. The OpenClaw Discord plugin in 2026.4.x publishes its
-# agent-facing tools with colon namespaces (e.g. `discord:add_reaction`),
-# unlike every other plugin which uses `__` separators. Without this patch,
-# Gemma 4 NVFP4 emits the canonical `<|tool_call>call:discord:add_reaction{...}<tool_call|>`
-# envelope, but the parser regex stops capturing at the second colon, fails to
-# extract the call, and the literal envelope leaks into the model's content
-# field — Discord chat shows garbage text instead of an actual reaction.
+# Custom vLLM image for this stack with two surgical patches over the upstream
+# `vllm/vllm-openai:gemma4-cu130` base image:
 #
-# Adding ':' to the char class (-> `[\w\-\.:]`) makes the parser accept colon
-# namespaces transparently. The patch is idempotent (str.replace) and asserts
-# the upstream pattern is present, so any future upstream regex change forces
-# a manual review of this Dockerfile rather than silently shipping a broken
-# image.
+#   1. patch_parser.py — extends the gemma4 tool-call parser regex (line 338
+#      of gemma4_tool_parser.py) so it accepts colon namespaces. Upstream
+#      `[\w\-\.]+` rejects colons; the OpenClaw Discord plugin uses
+#      `discord:add_reaction` (colon-namespaced), and without this patch every
+#      reaction tool-call leaks into Discord as literal envelope text.
+#
+#   2. patch_gemma4_loader.py — fills in the NVFP4 expert scale-suffix matcher
+#      in `vllm/model_executor/models/gemma4.py`'s Gemma4Model.load_weights.
+#      This mirrors upstream PR #39045 (merged 2026-04-09 as commit 3aecdf08).
+#      The base image's `gemma4-cu130` tag manifest predates the fix on some
+#      pulls, leaving the loader's expert_params_mapping unable to handle
+#      `.input_scale` / `.input_global_scale` / `.weight_scale` suffixes — both
+#      `nvidia/Gemma-4-26B-A4B-NVFP4` and `RedHatAI/gemma-4-26B-A4B-it-NVFP4`
+#      crash on boot with `KeyError: 'layers.0.experts.0.down_proj.input_scale'`.
+#      See vllm-project/vllm#38912 for the bug, #39045 for the fix.
+#
+# Both patches are idempotent (str.replace) and assert their OLD shapes
+# pre-application, so any future upstream change forces a build-time failure
+# here rather than silently shipping a broken image — the operator must
+# either re-derive the patch or retire it (when the base image manifest
+# already contains the upstream fix).
 #
 # Build context: ./vllm-llm/ (this directory). Image name is set in
 # docker-compose.yml's `vllm-llm.image` field, so the build step caches and
@@ -24,3 +31,6 @@ FROM ${VLLM_BASE_IMAGE}
 
 COPY patch_parser.py /tmp/patch_parser.py
 RUN python3 /tmp/patch_parser.py && rm /tmp/patch_parser.py
+
+COPY patch_gemma4_loader.py /tmp/patch_gemma4_loader.py
+RUN python3 /tmp/patch_gemma4_loader.py && rm /tmp/patch_gemma4_loader.py
