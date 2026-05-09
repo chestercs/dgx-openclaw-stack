@@ -1,23 +1,29 @@
 {
   "_metadata": {
     "name": "flux-krea-2k",
-    "description": "FLUX.1-Krea-dev single-stage 2048x2048 photorealism. Fast SFW iteration / warm-up path. Skips the SUPIR upscale — output is 2K, ~30-60s on GB10. Uses the recommended FLUX sampler chain (ModelSamplingFlux + SamplerCustomAdvanced) for res-aware sigma scheduling. Requires FLUX-Krea-dev UNet, t5xxl_fp16 + clip_l, and ae.safetensors (see docs/reference/image-comfyui-bridge.md → 'Recommended model bundle').",
+    "description": "FLUX.1-Krea-dev single-stage photorealism. Default resolution 1280x720 (16:9 widescreen, ~30s render on warm GB10). Pass width=2048 height=2048 to render at 2K square (~4 min). Recommended default workflow for the bundle — the upscaled-to-4K variants (flux-krea-4k-supir / 4k-tiled / 4k-adult / 4k-adult-realism) currently produce visible UltimateSDUpscale tile-seam artifacts on FLUX latents and are not recommended; the single-stage path here is artifact-free at any res FLUX can produce natively (typically up to 2K square or 1920x1088). Uses the recommended FLUX sampler chain (ModelSamplingFlux + SamplerCustomAdvanced) with width/height kept in lockstep across EmptyLatent and ModelSamplingFlux for correct sigma scheduling. Requires FLUX-Krea-dev UNet, t5xxl_fp16 + clip_l, and ae.safetensors (see docs/reference/image-comfyui-bridge.md → 'Recommended model bundle').",
     "checkpoint_required": false,
     "defaults": {
       "steps": 30,
       "cfg": 3.5,
       "sampler": "euler",
       "scheduler": "simple",
-      "width": 2048,
-      "height": 2048,
+      "width": 1280,
+      "height": 720,
       "batch_size": 1,
       "negative": ""
     },
     "targets": {
       "prompt":     {"node": "10", "input": "text"},
       "negative":   {"node": "11", "input": "text"},
-      "width":      {"node": "20", "input": "width"},
-      "height":     {"node": "20", "input": "height"},
+      "width":      [
+        {"node": "20", "input": "width"},
+        {"node": "21", "input": "width"}
+      ],
+      "height":     [
+        {"node": "20", "input": "height"},
+        {"node": "21", "input": "height"}
+      ],
       "batch_size": {"node": "20", "input": "batch_size"},
       "seed":       {"node": "30", "input": "noise_seed"},
       "steps":      {"node": "31", "input": "steps"},
@@ -60,7 +66,7 @@
   },
   "20": {
     "class_type": "EmptySD3LatentImage",
-    "inputs": {"width": 2048, "height": 2048, "batch_size": 1}
+    "inputs": {"width": 1280, "height": 720, "batch_size": 1}
   },
   "21": {
     "class_type": "ModelSamplingFlux",
@@ -68,8 +74,8 @@
       "model": ["1", 0],
       "max_shift": 1.15,
       "base_shift": 0.5,
-      "width": 2048,
-      "height": 2048
+      "width": 1280,
+      "height": 720
     }
   },
   "30": {

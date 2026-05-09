@@ -1929,26 +1929,29 @@ const IMAGE_GEN_CHEATSHEET_END = '<!-- patch-config:image-gen-tools:end -->';
 const IMAGE_GEN_DEFAULT_WORKFLOW = (process.env.IMAGE_GEN_DEFAULT_WORKFLOW || '').trim();
 const IMAGE_GEN_CHEATSHEET_BODY =
   '\n## Képgenerálás — `comfyui_image__generate` workflow picker\n\n' +
-  'A `comfyui_image__generate` tool a max-quality 4K FLUX stack-et szolgálja\n' +
-  'ki ezen a deploy-on. A `workflow=` paramétert a kérés stílusa alapján\n' +
-  'válaszd:\n\n' +
+  'Az alapcsomag (FLUX.1-Krea-dev + LoRA-k) ezen a deploy-on. Workflow\n' +
+  'választás:\n\n' +
   '- **Default** (hagyd ki a `workflow=`-t): a bridge a beállított\n' +
   '  `IMAGE_GEN_DEFAULT_WORKFLOW`-ot használja (jelenleg\n' +
-  `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-4k-supir'}\`). Ez a\n` +
-  '  helyes választás minden általános "csinálj egy [jelenetet]" kérésre.\n' +
-  '- **Felnőtt tartalom**: `workflow="flux-krea-4k-adult-realism"` a\n' +
-  '  fotórealisztikus felnőtt-pathra (LoRA stack), vagy\n' +
-  '  `workflow="flux-krea-4k-adult"` a könnyebb single-LoRA verzióra.\n' +
-  '- **Gyors iteráció / warm-up**: `workflow="flux-krea-2k"` — kihagyja\n' +
-  '  a SUPIR upscale fázist, ~3× gyorsabb, 2K kimenet.\n' +
-  '- **SUPIR OOM fallback**: `workflow="flux-krea-4k-tiled"` — csak akkor,\n' +
-  '  ha a 4k-supir verzió OOM-mal száll el (komplex kompozícióknál előfordul).\n\n' +
-  '`width` és `height` defaultja 1536 (natív pre-upscale res; a végső\n' +
-  'kimenet ~4× ennyi a SUPIR fázis után). Nagyobb natív res = lassabb\n' +
-  'de több részlet; a SUPIR fázis bármilyen natív méretet ~4K-ra skáláz.\n\n' +
-  '`negative` prompt ajánlott baseline (a workflow defaults-ja már\n' +
-  'tartalmazza, csak akkor felülírd, ha a kérés specifikus negatívot\n' +
-  'igényel):\n' +
+  `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-2k'}\`). Single-stage\n` +
+  '  FLUX-Krea-dev natív render, **default felbontás 1280×720** (16:9\n' +
+  '  widescreen, ~30s warm cache-ben GB10-en). Tisztán photorealisztikus,\n' +
+  '  semmi tile-műtermék. Ez minden általános "csinálj egy [jelenetet]"\n' +
+  '  kérés helyes választása.\n' +
+  '- **2K (négyzet)**: ugyanaz a workflow, csak `width=2048, height=2048`-t\n' +
+  '  passolj a hívásban. ~4 min/kép cold cache, ~1 perc warm. Square\n' +
+  '  composition; ez a MAX natív FLUX-Krea-dev res ami artifact-mentes.\n' +
+  '- **Egyéb felbontások**: bármilyen `width × height` értékre adható (16:9\n' +
+  '  panoráma 1920×1088, portrait 768×1280, stb). FLUX 1024-2048 közötti\n' +
+  '  natív res-en ad legjobb minőséget; magasabb értékek lassabbak és\n' +
+  '  kompozíciós hibákat hozhatnak.\n' +
+  '- **4K-os workflow-k** (`flux-krea-4k-*`): jelenleg **NEM ajánlottak** —\n' +
+  '  az UltimateSDUpscale tile pass látható seam-műtermékeket és\n' +
+  '  ghost-arcokat termel a FLUX latensen (verifikálva benchmark-on\n' +
+  '  2026-05-09). Használd a 2K-s flux-krea-2k workflow-t és kérd a\n' +
+  '  felhasználót, hogy maga upscaling-elje külön ESRGAN-nal ha 4K kell.\n\n' +
+  '`negative` prompt ajánlott baseline (a workflow defaults-ja üres,\n' +
+  'csak akkor add meg, ha a kérés specifikus negatívot igényel):\n' +
   '`"deformed, blurry, lowres, watermark, extra fingers, cartoon, anime,\n' +
   'painting, illustration, oversaturated, bad anatomy"`\n\n' +
   '**KÖTELEZŐ output szabály ugyanaz mint amit a tool-leírás mond**: a\n' +

@@ -84,25 +84,46 @@ class Workflow:
                 return node_id
         return None
 
-    def _resolve_target(self, param: str) -> Optional[tuple[str, str]]:
-        """Return (node_id, input_key) for `param`, or None if unmappable.
-        Priority: explicit _metadata.targets → CLASS_TYPE_FALLBACK.
+    def _resolve_target(self, param: str) -> Optional[list[tuple[str, str]]]:
+        """Return list of (node_id, input_key) bindings for `param`, or
+        None if unmappable. Priority: explicit _metadata.targets →
+        CLASS_TYPE_FALLBACK. Always returns a list (single-element for
+        legacy dict form, multi-element for array form).
 
-        Opt-out semantics: `targets.<param>: false` (JSON literal) means
-        "this workflow has no controllable knob for `param` even though
-        a matching class_type exists in the graph". Used by multi-stage
-        workflows that have multiple `CheckpointLoaderSimple` nodes for
-        different sub-models (e.g. SUPIR's Juggernaut backbone) where
-        the bridge's class-type fallback would otherwise pick the wrong
-        node and corrupt the auxiliary checkpoint slot."""
+        Three target shapes supported in `_metadata.targets.<param>`:
+
+          1. Single dict   `{"node": "20", "input": "width"}` →
+             one binding, single-element list.
+          2. Array of dicts `[{"node":"20","input":"width"},
+                              {"node":"21","input":"width"}]` →
+             multiple bindings, override applies to ALL listed nodes.
+             Used when a single bridge knob (e.g. width) needs to
+             stay in lockstep across two graph nodes — e.g.
+             EmptyLatentImage + ModelSamplingFlux for FLUX where
+             both expect the same resolution for proper sigma
+             scheduling.
+          3. Literal `false` → opt-out from class_type fallback.
+             Used by multi-stage workflows that have multiple nodes
+             of the fallback's class_type (e.g. SUPIR's Juggernaut
+             CheckpointLoaderSimple) where the bridge's first-match
+             fallback would corrupt the wrong slot."""
         explicit = self.targets.get(param)
         if explicit is False:
             return None
+        if isinstance(explicit, list):
+            bindings: list[tuple[str, str]] = []
+            for item in explicit:
+                if isinstance(item, dict):
+                    node = item.get("node")
+                    inp = item.get("input")
+                    if isinstance(node, str) and isinstance(inp, str):
+                        bindings.append((node, inp))
+            return bindings if bindings else None
         if isinstance(explicit, dict):
             node = explicit.get("node")
             inp = explicit.get("input")
             if isinstance(node, str) and isinstance(inp, str):
-                return (node, inp)
+                return [(node, inp)]
         fallback = CLASS_TYPE_FALLBACK.get(param)
         if fallback is None:
             return None
@@ -110,7 +131,7 @@ class Workflow:
         node_id = self._find_node_by_class_type(class_type)
         if node_id is None:
             return None
-        return (node_id, input_key)
+        return [(node_id, input_key)]
 
     def bind(self, args: dict[str, Any]) -> dict:
         """Produce a ComfyUI-ready prompt dict by applying `args` to the
@@ -155,39 +176,55 @@ class Workflow:
                 # a different workflow).
                 log.info("workflow %r ignored override for %r (no target)", self.name, key)
                 continue
-            node_id, input_key = target
-            _set_input(graph, node_id, input_key, value)
+            # `target` is now a list of (node_id, input_key) — single
+            # entry for the legacy dict form, multi-entry for the array
+            # form (used when one bridge knob has to stay in lockstep
+            # across two graph nodes — e.g. width/height on
+            # EmptyLatentImage AND ModelSamplingFlux for FLUX).
+            for node_id, input_key in target:
+                _set_input(graph, node_id, input_key, value)
 
         # Checkpoint required-but-not-set guard. If the workflow declares
         # checkpoint_required and the resulting graph still has the
-        # REPLACE_ME placeholder, refuse.
+        # REPLACE_ME placeholder, refuse. The list form is iterated;
+        # if ANY of the targets still has a placeholder, the guard fires.
         if self.checkpoint_required:
-            ck_target = self._resolve_target("checkpoint")
-            if ck_target is not None:
-                node_id, input_key = ck_target
-                current = graph.get(node_id, {}).get("inputs", {}).get(input_key)
-                if isinstance(current, str) and current.startswith("REPLACE_ME"):
-                    raise WorkflowError(
-                        f"workflow {self.name!r} requires a checkpoint name. Pass "
-                        "`checkpoint=...` to comfyui_image__generate, or edit the "
-                        f"workflow JSON to replace the REPLACE_ME placeholder. "
-                        "Models live under ComfyUI's basedir/models/checkpoints/."
-                    )
+            ck_targets = self._resolve_target("checkpoint")
+            if ck_targets is not None:
+                for node_id, input_key in ck_targets:
+                    current = graph.get(node_id, {}).get("inputs", {}).get(input_key)
+                    if isinstance(current, str) and current.startswith("REPLACE_ME"):
+                        raise WorkflowError(
+                            f"workflow {self.name!r} requires a checkpoint name. Pass "
+                            "`checkpoint=...` to comfyui_image__generate, or edit the "
+                            f"workflow JSON to replace the REPLACE_ME placeholder. "
+                            "Models live under ComfyUI's basedir/models/checkpoints/."
+                        )
 
         return graph
 
 
-def _negative_target(targets: dict) -> Optional[tuple[str, str]]:
+def _negative_target(targets: dict) -> Optional[list[tuple[str, str]]]:
     """Negative prompt has no class_type fallback (multiple
     CLIPTextEncode nodes are normal). Workflows must declare it
     explicitly under targets.negative; otherwise the negative override
-    is silently dropped."""
+    is silently dropped. Same array-or-dict shape semantics as
+    `_resolve_target` — single dict or list of dicts both supported."""
     explicit = targets.get("negative")
+    if isinstance(explicit, list):
+        bindings: list[tuple[str, str]] = []
+        for item in explicit:
+            if isinstance(item, dict):
+                node = item.get("node")
+                inp = item.get("input")
+                if isinstance(node, str) and isinstance(inp, str):
+                    bindings.append((node, inp))
+        return bindings if bindings else None
     if isinstance(explicit, dict):
         node = explicit.get("node")
         inp = explicit.get("input")
         if isinstance(node, str) and isinstance(inp, str):
-            return (node, inp)
+            return [(node, inp)]
     return None
 
 

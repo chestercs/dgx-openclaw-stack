@@ -118,7 +118,7 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.11.0"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.11.1"}
 
 
 TOOLS = [
@@ -163,17 +163,18 @@ TOOLS = [
             "ComfyUI's basedir/models/checkpoints/). Use comfyui_image__list_"
             "workflows first if you don't know which workflow to pick."
             "\n\n"
-            "Workflow picker quick-guide for the v0.11.0 max-quality 4K bundle "
+            "Workflow picker quick-guide for the v0.11.0 FLUX-Krea-dev bundle "
             "(skip if your deploy hasn't installed the recommended models):\n"
-            "  - SFW max realism (DEFAULT for max-quality deploys): "
-            "`flux-krea-4k-supir` — FLUX-Krea + realism LoRA stack → SUPIR → ~4K.\n"
-            "  - SFW fast iteration: `flux-krea-2k` — single-stage 2048², "
-            "skips the SUPIR upscale (~3× faster).\n"
-            "  - SFW SUPIR-OOM fallback: `flux-krea-4k-tiled` — same stage 1, "
-            "Ultimate SD Upscale tile pass instead of SUPIR.\n"
-            "  - Adult content (single LoRA): `flux-krea-4k-adult`.\n"
-            "  - Adult max realism (LoRA stack): `flux-krea-4k-adult-realism`.\n"
-            "  - Anything else / unknown checkpoint: `sdxl-base` or `flux-schnell`."
+            "  - DEFAULT (single-stage, photorealistic): `flux-krea-2k` at "
+            "1280x720 (16:9, ~30s warm). Pass width=2048, height=2048 for "
+            "2K square (~1 min warm). Any res 1024-2048 works artifact-free.\n"
+            "  - 4K-via-upscale variants (`flux-krea-4k-*`): NOT RECOMMENDED — "
+            "the UltimateSDUpscale tile pass produces visible seam artifacts "
+            "and ghost faces on FLUX latents (verified 2026-05-09). Use "
+            "`flux-krea-2k` and let the user upscale via ESRGAN externally "
+            "if 4K is needed.\n"
+            "  - Anything else / non-FLUX checkpoint: `sdxl-base` or "
+            "`flux-schnell`."
         ),
         "inputSchema": {
             "type": "object",
