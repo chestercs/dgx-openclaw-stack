@@ -1389,6 +1389,13 @@ services:
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       OPENCLAW_NO_RESPAWN: "1"
+      # Bridge auth token, exposed inside the gateway container so the
+      # operator-only `!~/.openclaw/bin/img` bash command (Gemma-bypass
+      # for adult image generation) can hit the bridge MCP without the
+      # secret being committed in the workspace script. The bash command
+      # is gated by `commands.ownerAllowFrom` (operator's Discord user
+      # id only) on a private single-user deploy.
+      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
       TZ: ${TZ:-UTC}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
