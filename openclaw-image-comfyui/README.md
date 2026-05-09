@@ -276,17 +276,19 @@ either:
   `server/workflows/<name>.json` and replace `"REPLACE_ME.safetensors"`
   with your filename, then restart the bridge.
 
-### Recommended max-quality 4K bundle (v0.11.0)
+### Recommended FLUX-Krea-dev bundle (v0.11.x)
 
-For ultra-realistic 4K output the bundle ships five `flux-krea-*`
-workflow templates that require a specific set of open-weight models
-(FLUX.1-Krea-dev + SUPIR + realism LoRAs, ~60-70 GB total). The full
-download script and license notes are in
-`../docs/reference/image-comfyui-bridge.md`
-→ "Recommended model bundle for max-quality 4K". Once installed and
-the operator sets `IMAGE_GEN_DEFAULT_WORKFLOW=flux-krea-4k-supir` in
-`.env`, conversational requests like "@bot generate a sunset"
-auto-route through the FLUX-Krea-dev → SUPIR upscale → ~4K pipeline.
+The bundle ships two single-stage `flux-krea-*` workflow templates
+(SFW + adult-content via the flux-uncensored-v2 LoRA) that require
+the FLUX.1-Krea-dev base + t5xxl_fp16 + clip_l + ae.safetensors
+(~35 GB total). The full download script and license notes are in
+`../docs/reference/image-comfyui-bridge.md` → "Recommended model
+bundle". Once installed and the operator sets
+`IMAGE_GEN_DEFAULT_WORKFLOW=flux-krea-2k` in `.env`, conversational
+requests like "@bot generate a sunset" auto-route through the
+single-stage FLUX-Krea-dev pipeline at 1280×720 default. Pass
+`width=2048,height=2048` (or any aspect up to 2K) for higher
+resolution.
 
 ## Content & license posture
 

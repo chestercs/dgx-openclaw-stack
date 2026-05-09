@@ -4,29 +4,49 @@ Each `*.json` here is a literal ComfyUI **API-format** export with one
 extra `_metadata` block at the top that the bridge reads at startup and
 strips before submission.
 
-The bridge ships seven reference templates as of v0.11.0. Two are
-generic universal-fallback templates; five are the max-quality 4K
-bundle added in v0.11.0 (require the recommended model bundle —
-see `docs/reference/image-comfyui-bridge.md` → "Recommended model
-bundle for max-quality 4K").
+The bridge ships four templates. Two FLUX-Krea-dev workflows are the
+recommended path on this stack (require the model bundle — see
+`docs/reference/image-comfyui-bridge.md` → "Recommended model bundle").
+Two legacy templates (`flux-schnell`, `sdxl-base`) stay for any
+non-FLUX-Krea checkpoints the operator may also keep around.
 
-| Template | Purpose | Native res | Final res | Models needed |
-|--|--|--|--|--|
-| `flux-schnell` | FLUX.1 Schnell, 4-step distilled. Fastest universal. | 1024² | 1024² | any FLUX-Schnell `*.safetensors` |
-| `sdxl-base` | Generic SDXL 25-step. Works with any SDXL fine-tune. | 1024² | 1024² | any SDXL `*.safetensors` |
-| `flux-krea-2k` | Single-stage FLUX-Krea-dev, 2048². Fast SFW iteration. | 2048² | 2048² | bundle (FLUX-Krea + t5xxl + ae) |
-| `flux-krea-4k-supir` | Max SFW realism (DEFAULT for max-quality deploys). FLUX-Krea + realism LoRA stack → SUPIR → ~4K. | 1536² | ~4K | bundle + SUPIR + Juggernaut-XL-v9 |
-| `flux-krea-4k-tiled` | SFW fallback when 4k-supir OOMs. Ultimate SD Upscale tile pass instead of SUPIR. | 1536² | ~4K | bundle + 4x-UltraSharp |
-| `flux-krea-4k-adult` | Adult content, single LoRA → SUPIR → ~4K. | 1536² | ~4K | bundle + SUPIR + flux-uncensored-v2 |
-| `flux-krea-4k-adult-realism` | Max adult realism: uncensored + realism LoRA stack → SUPIR → ~4K. | 1536² | ~4K | bundle + SUPIR + all LoRAs |
+| Template | Purpose | Native res range | Models needed |
+|--|--|--|--|
+| `flux-krea-2k` | DEFAULT. Single-stage photorealism, any res up to 2K. | 256-2048 (any aspect) | bundle (FLUX-Krea + t5xxl + ae) |
+| `flux-krea-2k-adult` | Adult content. Same pipeline + flux-uncensored-v2 LoRA. | 256-2048 (any aspect) | bundle + flux-uncensored-v2 |
+| `flux-schnell` | FLUX.1 Schnell, 4-step distilled. Fastest universal. | 1024² | any FLUX-Schnell `*.safetensors` |
+| `sdxl-base` | Generic SDXL 25-step. Works with any SDXL fine-tune. | 1024² | any SDXL `*.safetensors` |
 
-Both legacy templates (`flux-schnell` / `sdxl-base`) ship with
+Both `flux-krea-*` templates take width/height args and render at the
+exact requested resolution — the targets cover both `EmptySD3LatentImage`
+AND `ModelSamplingFlux` so the FLUX sigma schedule stays correct across
+the resolution range. Defaults: 1280×720 widescreen. Pass
+`width=2048,height=2048` for 2K square, `width=1920,height=1088` for
+HD panorama, `width=768,height=1280` for portrait, and so on.
+
+The legacy `flux-schnell` / `sdxl-base` templates ship with
 `"ckpt_name": "REPLACE_ME.safetensors"` — the bridge refuses to
 generate with that placeholder. Either pass `checkpoint=` per call
-or edit the JSON once. The five `flux-krea-*` templates load FLUX-Krea-dev
-via `UNETLoader` instead of `CheckpointLoaderSimple`, with the filename
+or edit the JSON once. The `flux-krea-*` templates load FLUX-Krea-dev
+via `UNETLoader` (not `CheckpointLoaderSimple`) with the filename
 baked in — they need no `checkpoint=` argument and `checkpoint_required`
 is `false`.
+
+### Why no 4K workflow
+
+Earlier v0.11.0 attempts shipped four 4K workflows
+(`flux-krea-4k-supir/tiled/adult/adult-realism`) that ran the
+`flux-krea-2k` first stage and then SUPIR or UltimateSDUpscale at
+2.5× to ~3840×3840. Verified end-to-end on GB10 on 2026-05-09:
+SUPIR's `SUPIR_conditioner` raises `Cannot copy out of meta tensor`
+under ComfyUI 0.12+ accelerate dispatch (upstream bug, persists across
+fp8_unet and keep_model_loaded toggles), and the UltimateSDUpscale
+fallback produces visible 1024-pixel tile-seam grids and ghost-face
+artifacts on FLUX latents at any tested denoise (0.15-0.35) and
+seam_fix mode. Operators who genuinely need 4K should render at
+`flux-krea-2k` 2048×2048 native and upscale externally with
+ESRGAN (no diffusion, no tile artifacts). The four 4K workflows are
+removed in this revision.
 
 ## Adding a custom workflow
 
