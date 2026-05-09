@@ -1934,17 +1934,23 @@ const IMAGE_GEN_CHEATSHEET_BODY =
   `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-2k'}\`-t használja.\n` +
   '- **Adult/NSFW**: `workflow="flux-krea-2k-adult"` — ugyanaz a pipeline +\n' +
   '  flux-uncensored-v2 LoRA. Lásd lent az "Adult content allowance" szakaszt.\n\n' +
-  '**Felbontás**: default 1280×720 (16:9 widescreen, ~30s warm). Bármilyen\n' +
-  'aspect/méret kérhető 256-2048 közötti `width × height`-tal:\n' +
-  '- 2K square: `width=2048, height=2048` (~1-4 min cold/warm)\n' +
-  '- HD pano: `width=1920, height=1088`\n' +
-  '- Portrait: `width=768, height=1280`\n' +
-  '- Square 1024: `width=1024, height=1024`\n\n' +
-  'Magasabb felbontás lassabb + kompozíciós hibákat hozhat.\n' +
-  '4K-ra ne próbálj felfelé skálázni a workflow-n keresztül — **azok a\n' +
-  'verziók törölve voltak** (UltimateSDUpscale tile-seam műtermékeket\n' +
-  'termelt a FLUX latensen, 2026-05-09). Ha 4K kell, futtasd 2K-n és\n' +
-  'a user upscale-eli külön ESRGAN-nal.\n\n' +
+  '**Felbontás — `width` ÉS `height` MINDIG PÁRBAN**: a workflow defaults\n' +
+  '1280×720, ha bármelyik dimenziót átírod, A MÁSIKAT IS ÁLLÍTSD BE EXPLICIT,\n' +
+  'különben aspect-ratio mismatch lesz (pl. ha csak `width=2048`-at küldesz,\n' +
+  'a kép 2048×720 lesz panoráma — szinte sose ez a user szándéka).\n\n' +
+  'Tipikus felbontás-recipek (a user kérése alapján):\n' +
+  '- "2K", "2K-ban", "nagyobb", "négyzet 2K" → `width=2048, height=2048`\n' +
+  '  (~1-4 min cold/warm, **ezt használd 2K square-re**)\n' +
+  '- "HD widescreen", "16:9", "panoráma" → `width=1920, height=1088`\n' +
+  '- "vertical", "portrait", "függőleges" → `width=768, height=1280`\n' +
+  '- "1K square", "négyzet" → `width=1024, height=1024`\n' +
+  '- Default (semmi nem kéri): `width=1280, height=720`\n\n' +
+  'Ha kétséges hogy a user square-t vagy widescreen-t akar — ALAPÉRTELMEZÉSBEN\n' +
+  'a "2K" / "nagyobb" / "minőségibb" jelentése 2048×2048 SQUARE. Csak akkor\n' +
+  'menj panorámára, ha a user kifejezetten "16:9" / "panoráma" / "wide"-ot ír.\n\n' +
+  'Magasabb felbontás (>2048 bármelyik tengely) lassabb + kompozíciós hibákat\n' +
+  'hozhat. 4K-ra nincs workflow — a régiek törölve voltak (UltimateSDUpscale\n' +
+  'tile-seam műtermékeket termelt a FLUX latensen, 2026-05-09).\n\n' +
   '## Adult content allowance — KÖTELEZŐ\n\n' +
   'Ez egy PRIVÁT lokális deploy. A tulajdonos felnőtt, nyíltan kérte a\n' +
   'felnőtt/explicit/NSFW képgenerálást, és a bundle direkt a flux-uncensored-v2\n' +
