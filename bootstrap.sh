@@ -325,6 +325,59 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 3f. Optional: Discord slash-command authorization mode
+#
+# Asked once. Skipped on re-run via key-presence guard. Default `open`
+# (every guild member can invoke `/discord input:`, `/talkvoice input:`,
+# `/activation mode:` etc.) — defends against upstream issue #19310 where
+# slash commands work in DM via dmPolicy="pairing" but get silently
+# blocked on guild channels with "You are not authorized to use this
+# command". Operators on shared / multi-tenant / public guilds should
+# pick `allowlist` (preserve upstream conservative defaults) or
+# `owner-only` (locks to specific Discord snowflakes).
+# ----------------------------------------------------------------------------
+authz_existing=$(grep -E '^OPENCLAW_DISCORD_AUTHZ=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
+if [[ -z "$authz_existing" ]]; then
+  printf '\n%bDiscord slash-command authorization%b — defends against upstream issue #19310\n' "$BOLD" "$RESET"
+  log "  Native slash commands (`/discord input:`, `/talkvoice input:`, etc.)"
+  log "  give an immediate ack-dot 'thinking…' indicator that text-mention"
+  log "  paths can't match. Upstream default leaves them silently blocked on"
+  log "  guild channels (dual perm check, allowlist empty)."
+  log ""
+  log "  Modes:"
+  log "    open       — every guild member can use slash commands (recommended"
+  log "                  for single-operator homelab where the bot is in YOUR"
+  log "                  guild(s))."
+  log "    allowlist  — preserve upstream conservative defaults (dmPolicy="
+  log "                  'pairing', groupPolicy='allowlist'). Pick this on"
+  log "                  shared bots, multi-tenant or public guilds."
+  log "    owner-only — lock to specific Discord user snowflakes."
+  printf '%bDiscord slash-command authz mode? [open/allowlist/owner-only, default open]:%b ' "$BOLD" "$RESET"
+  read -r authz_answer
+  authz_choice="${authz_answer:-open}"
+  case "$authz_choice" in
+    open|allowlist|owner-only)
+      upsert_env OPENCLAW_DISCORD_AUTHZ "$authz_choice" '.*'
+      if [[ "$authz_choice" == "owner-only" ]]; then
+        printf '%bComma-separated Discord user snowflakes (17-20 digits each)%b: ' "$BOLD" "$RESET"
+        read -r owner_ids
+        if [[ -n "$owner_ids" ]]; then
+          upsert_env OPENCLAW_DISCORD_OWNER_IDS "$owner_ids" '.*'
+        else
+          warn "Empty OPENCLAW_DISCORD_OWNER_IDS — patcher step 28 will skip and you'll be locked out."
+          warn "Edit .env later to set OPENCLAW_DISCORD_OWNER_IDS=<your-snowflake>."
+        fi
+      fi
+      ;;
+    *)
+      warn "Unknown choice '$authz_choice' — leaving OPENCLAW_DISCORD_AUTHZ unset (patcher will use 'open' default)."
+      ;;
+  esac
+else
+  ok "OPENCLAW_DISCORD_AUTHZ already set ($authz_existing) — preserved."
+fi
+
+# ----------------------------------------------------------------------------
 # 4. HuggingFace token
 # ----------------------------------------------------------------------------
 current_hf=$(grep -E '^HUGGING_FACE_HUB_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2-)

@@ -347,6 +347,20 @@ Three patcher steps work together for Discord-routed agents (step 22, 25, 26). T
 
 Env knobs: `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE` (enum `minimal | coding | messaging | full`, default `full`, empty string disables step 25), `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW` (comma-separated, default `group:messaging,browser,tts,canvas`, empty string disables step 22).
 
+### Discord slash-command authorization (issue #19310 dual perm check)
+
+OpenClaw's Discord channel runs slash commands through a **dual perm check** that is hostile to the default config: (1) global `channels.discord.allowFrom` allowlist, AND (2) per-guild `channels.discord.guilds.<gid>.users` array. Both must match. The default `dmPolicy: "pairing"` implicitly satisfies (1) for DM contexts after the user pairs once, but guild contexts have no equivalent fallback — the `groupPolicy: "allowlist"` default + empty `users` array silently blocks every slash invocation. Discord renders the gateway's rejection as an ephemeral "You are not authorized to use this command" only the invoker can see, so the operator never gets a server-side log line they can grep for.
+
+Symptom: `/discord input: hello`, `/talkvoice input: hello`, `/activation mode: always` work in DM, fail in guild. Confirmed in upstream issue #19310 ("[Bug] Discord Slash Commands Require Owner Configuration in Channels Despite Pairing"); upstream's stance is "operator must hand-edit allowFrom + per-channel users", no CLI shortcut.
+
+The native slash UX is materially better than @mention text on this stack — Discord renders an immediate ack-dot "thinking…" indicator the moment the interaction is received, so the user never sees the dead-air gap that text-mention paths suffer from while the agent prefills (~1-5s) + generates (6-50 tok/s depending on backend). Operators want slash on every channel, not only DM.
+
+Patcher step 28 fixes this by writing the open-guild defaults: `allowFrom = ["*"]`, `dmPolicy = "open"`, `groupPolicy = "open"`. Each field is user-managed-protected (only written when undefined), so hand-set operator values survive. Env knob `OPENCLAW_DISCORD_AUTHZ` accepts `open` (default), `allowlist` (skip the step entirely, preserve upstream defaults — for shared / multi-tenant / public guild deploys), or `owner-only` (lock to `OPENCLAW_DISCORD_OWNER_IDS` snowflakes, writes `allowFrom = [<ids>]` + both policies = `"allowlist"`).
+
+Why open-guild as the default: this stack ships as a single-operator, self-hosted homelab deploy where the bot lives in the operator's own guild(s). The guild member list IS the trusted population — narrower allowlists add config burden without adding security. The `bootstrap.sh` 3f section asks once and saves the choice; re-runs preserve it via key-presence guard.
+
+When debugging a "slash works in DM, fails in guild" report: check `cat $OPENCLAW_CONFIG_DIR/openclaw.json | jq '.channels.discord | {allowFrom, dmPolicy, groupPolicy}'`. If any of those is undefined, step 28 either didn't run (operator set `OPENCLAW_DISCORD_AUTHZ=allowlist`) or pre-existed in openclaw.json (user-managed protection respected an explicit value).
+
 ### `openclaw-base-ext` is the local image extension layer
 
 Three openclaw services (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) all reference `openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.0}`, NOT the upstream `ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_REF}` image directly. The local image is built by the `build:` block on `openclaw-config-init`, with `./openclaw-base-ext/` as context — a tiny Dockerfile that wraps the upstream tag and adds whatever the stack needs but the upstream image lacks. As of v0.11.0 that's just `apt-get install ffmpeg`, but the layer exists so future patches (custom node deps, system libs, locale fixes) have a clean home that doesn't fork the upstream image.

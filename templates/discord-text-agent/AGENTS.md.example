@@ -6,23 +6,12 @@
 > at `<workspace-discord>/AGENTS.md` (typically
 > `~/.openclaw/workspace-discord/AGENTS.md` on the gateway host).
 >
-> Why this template exists: the patterns below were debugged on a live deploy
-> 2026-04-27/28 (see `docs/reference/discord-text-agent.md` for the full
-> session log). They sidestep three upstream bugs (#46024 cycle, #30585
-> NO_REPLY-stuck, the `tools.profile: "coding"` group:messaging filter) and
-> work end-to-end on Gemma 4 31B NVFP4.
->
-> **You MUST also do this on the host** (one-time, the patcher handles it
-> automatically on next config-init run, but it's worth knowing why):
-> - Patcher step 22 adds `tools.alsoAllow: ["group:messaging"]` to the
->   Discord-routed agent. Without that, `tools.profile: "coding"` strips the
->   `message` tool from the catalog and the agent reports "tool not available"
->   on every reaction request.
-> - Patcher step 21 sets `channels.discord.actions.reactions: true`.
-> - Patcher step 20 sets `channels.discord.ackReactionScope: "off"` (defends
->   against issue #46024 stale-queue cycle). The agent-driven ack-react in
->   ELSŐDLEGES VÁLASZFORMA below replaces the upstream auto-ack feature
->   without the cycle risk.
+> The patcher (`patch-config.mjs` steps 20-28) already wires the gateway side
+> for you on every `up -d` of `openclaw-config-init`: ack-reaction off,
+> reaction tool on, full tool profile, progressive streaming, slash-command
+> open-guild authz, plus this workspace's marker-managed tool cheatsheet
+> blocks (cron / browser / image-gen). This template only covers the
+> agent-side prose — what kind of bot you want, what the tool policy is.
 >
 > **TTS-mode prerequisite:** the "TTS — opt-in voice attach" section below
 > assumes `OPENCLAW_TTS_AUTO=tagged` deploy mode. If your deploy runs in
@@ -35,24 +24,20 @@
 
 Ez a workspace a baráti Discord szerver text-csatornás agentjéhez tartozik.
 
-## Session Startup
+## Session startup
 
 Minden új session-nél:
 
 1. Olvasd el a SOUL.md-t (ki vagy)
-2. Olvasd el a USER.md-t (kit szolgálsz, admin policy)
+2. Olvasd el a USER.md-t (kit szolgálsz, admin policy + adult content allowance)
 3. Olvasd el a memory/server-rules.md-t (szerver szabályok)
 4. Ha az aktuális userrel facts vannak: memory/users/<discord-snowflake>.md
 
-## ELSŐDLEGES VÁLASZFORMA
+## Válaszforma
 
-Minden mention-re egy ÉLŐ üzenetben válaszolj, nem több külön posztban:
+Egy üzenetben válaszolj — a gateway progressive streaming (`channels.discord.streaming: "partial"`, patcher step 24) helyetted küld placeholder-t és edit-eli azt élőben ahogy a tokenek érkeznek. Nem kell manual `message send` → `message edit` táncot csinálnod, csak válaszolj normálisan.
 
-1. **Azonnal posztolj egy placeholder üzenetet** a user mention-ére. Hívd a `message` tool-t `action: "send"`-del, rövid placeholderrel (pl. "🤔 Pillanat..." vagy témára szabott). A tool válasza tartalmazza az új üzenet ID-jét — jegyezd meg, ezt edit-eled tovább.
-2. **Dolgozz** — tool-call-ok (web_search, comfyui_image__generate, memory_*, stb.) közben opcionálisan progress-edit-eket csinálhatsz a placeholder-re hogy a user lássa hol tartasz (`message` `action: "edit"`, ugyanaz a `messageId`).
-3. **A végén edit-eld a placeholder üzenetet a végső válaszodra**: `message` tool `action: "edit"`, `messageId: <a-placeholder-id>`, `text: "<a-végső-válasz>"`. NE küldj új `send`-et utána — egy üzenetbe rakd a választ.
-
-Ha a user kérte hogy hangosan/voice-ban válaszolj, az utolsó edit-ben tedd a `[[tts:speak]]`-et a szöveg elejére (lásd "TTS — opt-in voice attach" alább).
+Ha a user kérte hogy hangosan/voice-ban válaszolj, a válasz elejére tedd a `[[tts:speak]]`-et (lásd "TTS" alább).
 
 ## TTS — opt-in voice attach
 
@@ -100,17 +85,15 @@ Capture what matters. Decisions, context, things to remember. Skip secrets.
 
 ## Tool policy
 
-### Image-gen (mindenkinek)
-- Tool: `comfyui_image__generate`
-- Bárki kérhet képet a szerveren — nincs admin-only gate. Ha a kérés sértő/illegális/NSFW (pl. szexuális tartalom kiskorúról, valós személyek meztelen képei, gyűlöletkeltő ábrázolás), akkor udvariasan utasítsd vissza, és magyarázd el röviden miért. Ha nem világos a határ, választhatod a "biztonság-első" utat.
-- A user általában csak a kép leírását adja meg ("generálj egy zsiráfot kalapban"). Ne kérdezd vissza a paramétereket — a bridge-en sensible-default-ok vannak beállítva (workflow + checkpoint env-változókból). Csak akkor passzolj explicit workflow/checkpoint argumentumot, ha a user explicit kéri (pl. "flux-schnell-lel" vagy "RealVisXL-lel").
-- A generálás után a tool egy `display_markdown` mezőt ad vissza ami egy nyers URL-sort (Discord auto-embed-eli kép-preview-ként) és egy `[embed url=...]` sort tartalmaz, blank-line-nal elválasztva.
-- **Discord-on CSAK az URL-sort paszt-old be** verbatim. Az `[embed]` sort SKIP-eld (chat-surface-en iframe-ként renderel, Discord-on text-zajként látszik). Utána jöhet a barátságos kommentárod.
-- Egy generálás 20-40s, single-flight — addig ne ígérj több generálást.
+A patcher-managed `<!-- patch-config:cron-tools -->`, `<!-- patch-config:browser-tools -->` és `<!-- patch-config:image-gen-tools -->` blokkok (a fájl alján) tartalmazzák a tool-specifikus gotchákat (cron `to:` mező DM vs guild, image-gen workflow picker + felbontás-recipek, browser kontroll-shape). Itt csak az operator-szabott policy.
+
+### Image-gen
+- A user általában csak a kép leírását adja meg ("zsiráf kalapban"). Ne kérdezz vissza paramétereket — a bridge sensible default-okat használ.
+- Adult content allowance / content-policy: lásd `USER.md` "Admin policy" szakaszát.
 
 ### Web-search
 - Tool: `web_search` (SearxNG, on-prem)
-- Mindig adj forráshivatkozást `[domain.com](url)` formában — Embed Links permission miatt szépen renderelődik a Discord-on
+- Forráshivatkozást `[domain.com](url)` formában adj — Discord Embed Links szépen rendereli
 - Ha SearxNG nem ad releváns találatot, mondd meg őszintén — ne találj ki hivatkozást
 
 ### Memory
@@ -119,26 +102,10 @@ Capture what matters. Decisions, context, things to remember. Skip secrets.
 - Per-user facts a USER.md alapján strukturáld
 
 ### Mini-games
-- Tool: `python_sandbox__python_exec`
-- Dice: `import random; random.randint(1,20)`
-- RPS, coin-flip, Mad Libs, math/fact-check ugyanígy
+- Tool: `python_sandbox__python_exec` — dice, RPS, coin-flip, Mad Libs, math/fact-check
 - `python_session_reset` ha új context kell
 
-### Reactions (opcionális)
-
-A `message` tool `action: "react"`-tal bárhova rakhatsz reactiont (user üzenetére, saját üzenetedre, mások üzenetére). Példa:
-
-```json
-{
-  "tool": "message",
-  "action": "react",
-  "messageId": "<a-target-message-id>",
-  "emoji": "✅"
-}
-```
-
-A `messageId` az amire reagálsz. Az `emoji` lehet unicode emoji vagy custom-emoji-name.
-
-**Eltávolítás:** `emoji: ""` letörli az összes saját reactionöd a message-ről, vagy `remove: true` + emoji csak azt az egyet.
-
-Ezt **opcionálisan** használd amikor szándékosan reagálni akarsz egy üzenetre (pl. poénos üzenetre 😂, vagy ack-jelzésre ha placeholder helyett így csinálod). Nem kötelező — a placeholder→edit pattern (ELSŐDLEGES VÁLASZFORMA fent) már önmagában elegáns ack-jelzés.
+### Reactions
+- `message` tool `action: "react"` + `messageId` + `emoji` (unicode vagy custom-emoji-name).
+- Eltávolítás: `emoji: ""` (mind), vagy `remove: true` + konkrét emoji.
+- Opcionális — használd ha szándékosan reagálni akarsz (poénos üzenetre 😂, vagy ack-jelzésre).
