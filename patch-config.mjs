@@ -2015,6 +2015,40 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
 // =off to skip the corresponding sub-step entirely.
 if (config.channels?.discord?.enabled === true) {
   // (29a) Voice subsystem
+  //
+  // Self-heal: an earlier patcher revision (commit 9ea0f12, briefly shipped
+  // 2026-05-11) tried to write `channels.discord.voice.mode = "stt-tts"`
+  // based on a docs page that turned out to be inaccurate — the openclaw
+  // 2026.4.22 schema rejects `voice.mode` with "Unrecognized key: mode",
+  // putting the gateway in a config-invalid restart loop. The schema only
+  // accepts the `voice.enabled` toggle plus `voice.realtime.*` /
+  // `voice.autoJoin` / `voice.allowedChannels` / `voice.daveEncryption` /
+  // `voice.decryptionFailureTolerance` sub-keys (verified against the live
+  // doctor output 2026-05-11). The actual STT+TTS vs realtime selection is
+  // an implicit fallback: if no `voice.realtime.*` block is configured,
+  // the runtime uses batch STT (via tools.media.audio) + TTS (via the
+  // global messages.tts.providers chain), which is what this stack already
+  // wires through patcher steps 11 + 14. So enabling voice.enabled alone
+  // is enough to put the bundle in "stt-tts" mode on this stack.
+  //
+  // OPENCLAW_DISCORD_VOICE keeps its meaning as a future-friendly enum;
+  // `stt-tts` and `off` are the only modes wired today. `agent-proxy` and
+  // `bidi` need realtime credentials the bundle doesn't ship — they're
+  // documented for forward-compat but the patcher refuses to write any
+  // mode-selection key the schema doesn't recognize.
+  if (
+    config.channels.discord.voice &&
+    Object.prototype.hasOwnProperty.call(config.channels.discord.voice, 'mode')
+  ) {
+    delete config.channels.discord.voice.mode;
+    changed = true;
+    console.warn(
+      `[patch-config] scrubbed channels.discord.voice.mode (upstream 2026.4.22 ` +
+      `schema rejects it; STT-TTS is the implicit fallback when no realtime ` +
+      `provider is configured — see step 29 comment).`,
+    );
+  }
+
   const VALID_VOICE_MODES = new Set(['stt-tts', 'agent-proxy', 'bidi']);
   const voiceRaw = process.env.OPENCLAW_DISCORD_VOICE;
   const voiceMode = (voiceRaw === undefined ? 'stt-tts' : voiceRaw.trim());
@@ -2025,24 +2059,27 @@ if (config.channels?.discord?.enabled === true) {
       `[patch-config] OPENCLAW_DISCORD_VOICE=${JSON.stringify(voiceMode)} ` +
       `not in {stt-tts, agent-proxy, bidi, off} — skipping voice substep.`,
     );
-  } else {
+  } else if (voiceMode === 'stt-tts') {
     config.channels.discord.voice ??= {};
     if (config.channels.discord.voice.enabled === undefined) {
       config.channels.discord.voice.enabled = true;
       changed = true;
       console.log(
         `[patch-config] channels.discord.voice.enabled = true ` +
-        `(registers /vc join|leave|status; set OPENCLAW_DISCORD_VOICE=off to skip)`,
+        `(registers /vc join|leave|status; implicit STT-TTS via this stack's ` +
+        `faster-whisper + Kokoro/F5-TTS — set OPENCLAW_DISCORD_VOICE=off to skip)`,
       );
     }
-    if (config.channels.discord.voice.mode === undefined) {
-      config.channels.discord.voice.mode = voiceMode;
-      changed = true;
-      console.log(
-        `[patch-config] channels.discord.voice.mode = ${JSON.stringify(voiceMode)} ` +
-        `(stt-tts pairs with this stack's self-hosted faster-whisper + Kokoro)`,
-      );
-    }
+  } else {
+    // agent-proxy / bidi — need realtime provider credentials the bundle
+    // doesn't ship out of the box. Document the gap rather than writing
+    // half-config that would crash on first /vc join.
+    console.warn(
+      `[patch-config] OPENCLAW_DISCORD_VOICE=${JSON.stringify(voiceMode)} requires ` +
+      `voice.realtime.* credentials (provider, model, voice) which this stack ` +
+      `doesn't auto-configure — wire them in openclaw.json manually before ` +
+      `enabling, or use OPENCLAW_DISCORD_VOICE=stt-tts.`,
+    );
   }
 
   // (29b) Thread bindings (/focus, /unfocus, /agents, /session)
