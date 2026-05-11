@@ -1968,6 +1968,106 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
   }
 }
 
+// ─── 29. Discord feature surface: voice + thread bindings ──────────────────
+// Wires the two OpenClaw Discord features that ship gated-off by default:
+//
+//   (a) channels.discord.voice.enabled = true → registers /vc join, /vc leave,
+//       /vc status native slash commands. Without this the operator sees no
+//       voice-channel hooks at all in the Discord slash picker.
+//
+//   (b) channels.discord.threadBindings.enabled = true → registers /focus,
+//       /unfocus, /agents, /session idle, /session max-age. Lets a Discord
+//       thread bind to a specific subagent/session so follow-ups stay on
+//       the same conversational rail. Without this the slash picker shows
+//       /dock-discord (always-on identity flow) but none of the per-thread
+//       bind controls.
+//
+// Both are widely useful on a single-operator homelab deploy and the upstream
+// "off by default" is a multi-tenant-safety stance the homelab doesn't need.
+// Voice in particular is the unlock for `/talkvoice input:` smooth UX in
+// voice channels — same ack-dot benefit as text slash commands.
+//
+// Voice mode picker (channels.discord.voice.mode):
+//
+//   "stt-tts"      — batch STT + TTS pipeline. Pairs cleanly with this
+//                    stack's self-hosted faster-whisper (port 8093) +
+//                    Kokoro / F5-TTS via the TTS router (port 8090).
+//                    DEFAULT on this stack because the wiring already
+//                    exists for both halves (patcher step 11 + step 14).
+//                    Higher latency than realtime, but works fully offline.
+//   "agent-proxy"  — realtime voice frontend handles turn-timing,
+//                    interruption, playback; delegates substantive work
+//                    to the routed agent via openclaw_agent_consult. Needs
+//                    a realtime-capable provider (OpenAI Realtime, etc.).
+//                    The self-hosted stack has no realtime provider, so
+//                    this mode wouldn't work out of the box here — leave
+//                    OFF unless the operator wires up realtime credentials.
+//   "bidi"         — realtime model converses directly with tool exposure
+//                    back to the agent. Same realtime-provider requirement.
+//
+// Env knobs:
+//   OPENCLAW_DISCORD_VOICE=stt-tts (default) | agent-proxy | bidi | off
+//   OPENCLAW_DISCORD_THREAD_BINDINGS=on (default) | off
+//
+// User-managed protection: only writes nested fields when undefined. If the
+// operator hand-set voice.* or threadBindings.* in openclaw.json, those
+// survive. Empty env value still triggers the default (stt-tts / on); set
+// =off to skip the corresponding sub-step entirely.
+if (config.channels?.discord?.enabled === true) {
+  // (29a) Voice subsystem
+  const VALID_VOICE_MODES = new Set(['stt-tts', 'agent-proxy', 'bidi']);
+  const voiceRaw = process.env.OPENCLAW_DISCORD_VOICE;
+  const voiceMode = (voiceRaw === undefined ? 'stt-tts' : voiceRaw.trim());
+  if (voiceMode === 'off') {
+    // Explicit opt-out: skip voice silently.
+  } else if (!VALID_VOICE_MODES.has(voiceMode)) {
+    console.warn(
+      `[patch-config] OPENCLAW_DISCORD_VOICE=${JSON.stringify(voiceMode)} ` +
+      `not in {stt-tts, agent-proxy, bidi, off} — skipping voice substep.`,
+    );
+  } else {
+    config.channels.discord.voice ??= {};
+    if (config.channels.discord.voice.enabled === undefined) {
+      config.channels.discord.voice.enabled = true;
+      changed = true;
+      console.log(
+        `[patch-config] channels.discord.voice.enabled = true ` +
+        `(registers /vc join|leave|status; set OPENCLAW_DISCORD_VOICE=off to skip)`,
+      );
+    }
+    if (config.channels.discord.voice.mode === undefined) {
+      config.channels.discord.voice.mode = voiceMode;
+      changed = true;
+      console.log(
+        `[patch-config] channels.discord.voice.mode = ${JSON.stringify(voiceMode)} ` +
+        `(stt-tts pairs with this stack's self-hosted faster-whisper + Kokoro)`,
+      );
+    }
+  }
+
+  // (29b) Thread bindings (/focus, /unfocus, /agents, /session)
+  const threadBindingsRaw = (process.env.OPENCLAW_DISCORD_THREAD_BINDINGS?.trim() || 'on').toLowerCase();
+  if (threadBindingsRaw === 'off') {
+    // Explicit opt-out.
+  } else if (threadBindingsRaw !== 'on') {
+    console.warn(
+      `[patch-config] OPENCLAW_DISCORD_THREAD_BINDINGS=${JSON.stringify(threadBindingsRaw)} ` +
+      `not in {on, off} — skipping thread-bindings substep.`,
+    );
+  } else {
+    config.channels.discord.threadBindings ??= {};
+    if (config.channels.discord.threadBindings.enabled === undefined) {
+      config.channels.discord.threadBindings.enabled = true;
+      changed = true;
+      console.log(
+        `[patch-config] channels.discord.threadBindings.enabled = true ` +
+        `(registers /focus, /unfocus, /agents, /session; set ` +
+        `OPENCLAW_DISCORD_THREAD_BINDINGS=off to skip)`,
+      );
+    }
+  }
+}
+
 // ─── 26. Workspace-discord AGENTS.md patcher-managed blocks ──────────────────
 // The discord-friend agent has its own workspace at
 // /home/node/.openclaw/workspace-discord/ (separate from main's
