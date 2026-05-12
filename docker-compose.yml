@@ -1285,6 +1285,36 @@ services:
       # runtime/provider/model/config"). Default empty (no guilds get
       # cron on text channels by default — operator opt-in per guild).
       OPENCLAW_DISCORD_GUILD_CRON_IDS: ${OPENCLAW_DISCORD_GUILD_CRON_IDS:-}
+      # Discord slash-command authorization mode (patcher step 28). Defends
+      # against issue #19310: native slash commands work in DM via dmPolicy=
+      # "pairing" but get silently blocked on guild channels because the
+      # dual perm check (allowFrom + per-guild users) is empty by default.
+      # `open` (default) writes allowFrom=["*"] + dmPolicy=open + groupPolicy=
+      # open, letting every guild member use slash commands. `allowlist`
+      # skips the step entirely; `owner-only` locks to OPENCLAW_DISCORD_OWNER_IDS.
+      OPENCLAW_DISCORD_AUTHZ: ${OPENCLAW_DISCORD_AUTHZ:-open}
+      OPENCLAW_DISCORD_OWNER_IDS: ${OPENCLAW_DISCORD_OWNER_IDS:-}
+      # Discord voice subsystem (patcher step 29). `stt-tts` (default)
+      # registers /vc join|leave|status and implicitly uses this stack's
+      # self-hosted faster-whisper (port 8093) + Kokoro/F5-TTS via the
+      # TTS router (port 8090). Note: upstream OpenClaw 2026.4.22 does NOT
+      # ship a real STT→LLM→TTS audio loop on Discord voice channels yet
+      # (issue #49246 still open); /vc join makes the bot SIT in the voice
+      # channel but it won't hear or speak. Set `off` to hide /vc commands
+      # entirely until upstream lands a working loop.
+      OPENCLAW_DISCORD_VOICE: ${OPENCLAW_DISCORD_VOICE:-stt-tts}
+      # Discord thread bindings (patcher step 29). `on` (default) registers
+      # /focus, /unfocus, /agents, /session — lets a thread bind to a
+      # session for context-rail continuation.
+      OPENCLAW_DISCORD_THREAD_BINDINGS: ${OPENCLAW_DISCORD_THREAD_BINDINGS:-on}
+      # Per-guild "respond to every message" mode (patcher step 30).
+      # Comma-separated Discord guild snowflakes. Each listed guild gets
+      # `channels.discord.guilds.<id>.requireMention = false` — bot
+      # answers every text message without @mention. Equivalent to a
+      # persistent `/activation always` that survives gateway recreates
+      # (the slash command sets in-memory session state only). Empty =
+      # keep upstream mention-only default everywhere.
+      OPENCLAW_DISCORD_ALL_MESSAGES_GUILDS: ${OPENCLAW_DISCORD_ALL_MESSAGES_GUILDS:-}
       # Image-gen workflow-picker cheatsheet (patcher step 27). When set,
       # appends a `<!-- patch-config:image-gen-tools:* -->` block to the
       # discord-friend agent's workspace-discord/AGENTS.md so Gemma surfaces
