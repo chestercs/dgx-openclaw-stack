@@ -2105,6 +2105,65 @@ if (config.channels?.discord?.enabled === true) {
   }
 }
 
+// ─── 30. Per-guild requireMention override — "respond to every message" ─────
+// The upstream default `channels.discord.guilds.<id>.requireMention: true`
+// makes the bot mention-only in every guild. Operators who want the bot to
+// respond to every text message in a specific guild (homelab "always-on
+// assistant" UX) need to flip this to false. The `/activation always` slash
+// command does this at session level (in-memory state) — but session state
+// is lost on every gateway recreate (e.g. after a patcher run), so the bot
+// silently reverts to mention-only on the next message. Patcher step 30
+// writes the persistent guild-level override so the always-on mode survives
+// recreates.
+//
+// Env knob: OPENCLAW_DISCORD_ALL_MESSAGES_GUILDS=<csv-of-snowflakes>.
+// Each listed guild ID gets `requireMention: false` written under
+// `channels.discord.guilds.<id>`. Empty / unset → skip the step entirely
+// and keep the upstream mention-only default everywhere.
+//
+// User-managed protection: only writes when the guild's `requireMention`
+// is undefined. If the operator hand-set it to a specific value (true or
+// false) on that guild, we preserve it. The guild block is created if
+// missing (same shape as step 24c per-guild cron policy).
+//
+// Caveats:
+//   - "respond to every message" means EVERY message — bot will react to
+//     idle chatter, other bots' posts (unless allowBots=false), unrelated
+//     conversation. On a busy guild this can be spammy and rate-limit
+//     prone. The operator should know the guild traffic shape before
+//     opting in.
+//   - The discord-friend agent's prompt (AGENTS.md) doesn't know about this
+//     change — if it was tuned to expect mention-only invocation, the
+//     all-messages mode may produce wrong-feeling replies. Worth reviewing
+//     the system prompt with all-messages in mind.
+//   - DMs are unaffected — requireMention is per-guild only.
+const allMessagesGuildsRaw = process.env.OPENCLAW_DISCORD_ALL_MESSAGES_GUILDS;
+const allMessagesGuildIds = (allMessagesGuildsRaw || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+if (allMessagesGuildIds.length > 0 && config.channels?.discord?.enabled === true) {
+  config.channels.discord.guilds ??= {};
+  for (const gid of allMessagesGuildIds) {
+    if (!/^\d{17,20}$/.test(gid)) {
+      console.warn(
+        `[patch-config] OPENCLAW_DISCORD_ALL_MESSAGES_GUILDS entry ` +
+        `${JSON.stringify(gid)} is not a valid Discord snowflake ` +
+        `(17-20 digits) — skipping.`,
+      );
+      continue;
+    }
+    config.channels.discord.guilds[gid] ??= {};
+    if (config.channels.discord.guilds[gid].requireMention === undefined) {
+      config.channels.discord.guilds[gid].requireMention = false;
+      changed = true;
+      console.log(
+        `[patch-config] channels.discord.guilds[${gid}].requireMention = false ` +
+        `(persistent always-on mode; bot responds to every message in this ` +
+        `guild — equivalent to /activation always but survives recreates)`,
+      );
+    }
+  }
+}
+
 // ─── 26. Workspace-discord AGENTS.md patcher-managed blocks ──────────────────
 // The discord-friend agent has its own workspace at
 // /home/node/.openclaw/workspace-discord/ (separate from main's
