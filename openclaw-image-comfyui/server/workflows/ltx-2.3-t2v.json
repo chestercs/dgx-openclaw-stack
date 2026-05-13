@@ -1,0 +1,51 @@
+{
+  "_metadata": {
+    "name": "ltx-2.3-t2v",
+    "description": "LTX-Video 2.3 distilled-fp8 text-to-video with native audio. Single-stage 4-step diffusion via euler_cfg_pp + ManualSigmas. Verified end-to-end on GB10 2026-05-14: 4-second clip at 512x768 generates in ~130s cold-cache, ~30-60s warm. Audio is muxed into the mp4 by CreateVideo. The companion ltx-2.3-i2v.json adds LoadImage + LTXVImgToVideoInplace for image-to-video conditioning.",
+    "kind": "video",
+    "checkpoint_required": false,
+    "defaults": {
+      "width": 512,
+      "height": 768,
+      "length": 97,
+      "fps": 24,
+      "negative": ""
+    },
+    "targets": {
+      "prompt":   { "node": "4",  "input": "text" },
+      "negative": { "node": "5",  "input": "text" },
+      "seed":     { "node": "10", "input": "noise_seed" },
+      "width":    { "node": "6",  "input": "width" },
+      "height":   { "node": "6",  "input": "height" },
+      "length": [
+        { "node": "6", "input": "length" },
+        { "node": "7", "input": "frames_number" }
+      ],
+      "fps": [
+        { "node": "7",  "input": "frame_rate" },
+        { "node": "9",  "input": "frame_rate" },
+        { "node": "18", "input": "fps" }
+      ]
+    }
+  },
+
+  "1":  {"class_type": "CheckpointLoaderSimple",  "inputs": {"ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"}},
+  "2":  {"class_type": "LTXAVTextEncoderLoader",  "inputs": {"text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors", "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors", "device": "default"}},
+  "3":  {"class_type": "LTXVAudioVAELoader",      "inputs": {"ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"}},
+  "4":  {"class_type": "CLIPTextEncode",          "inputs": {"text": "REPLACE_AT_BIND_TIME", "clip": ["2", 0]}},
+  "5":  {"class_type": "CLIPTextEncode",          "inputs": {"text": "", "clip": ["2", 0]}},
+  "6":  {"class_type": "EmptyLTXVLatentVideo",    "inputs": {"width": 512, "height": 768, "length": 97, "batch_size": 1}},
+  "7":  {"class_type": "LTXVEmptyLatentAudio",    "inputs": {"frames_number": 97, "frame_rate": 24, "batch_size": 1, "audio_vae": ["3", 0]}},
+  "8":  {"class_type": "LTXVConcatAVLatent",      "inputs": {"video_latent": ["6", 0], "audio_latent": ["7", 0]}},
+  "9":  {"class_type": "LTXVConditioning",        "inputs": {"positive": ["4", 0], "negative": ["5", 0], "frame_rate": 24.0}},
+  "10": {"class_type": "RandomNoise",             "inputs": {"noise_seed": 42}},
+  "11": {"class_type": "KSamplerSelect",          "inputs": {"sampler_name": "euler_cfg_pp"}},
+  "12": {"class_type": "ManualSigmas",            "inputs": {"sigmas": "0.85, 0.7250, 0.4219, 0.0"}},
+  "13": {"class_type": "CFGGuider",               "inputs": {"model": ["1", 0], "positive": ["9", 0], "negative": ["9", 1], "cfg": 1.0}},
+  "14": {"class_type": "SamplerCustomAdvanced",   "inputs": {"noise": ["10", 0], "guider": ["13", 0], "sampler": ["11", 0], "sigmas": ["12", 0], "latent_image": ["8", 0]}},
+  "15": {"class_type": "LTXVSeparateAVLatent",    "inputs": {"av_latent": ["14", 0]}},
+  "16": {"class_type": "VAEDecodeTiled",          "inputs": {"samples": ["15", 0], "vae": ["1", 2], "tile_size": 512, "overlap": 64, "temporal_size": 64, "temporal_overlap": 8}},
+  "17": {"class_type": "LTXVAudioVAEDecode",      "inputs": {"samples": ["15", 1], "audio_vae": ["3", 0]}},
+  "18": {"class_type": "CreateVideo",             "inputs": {"images": ["16", 0], "fps": 24.0, "audio": ["17", 0]}},
+  "19": {"class_type": "SaveVideo",               "inputs": {"video": ["18", 0], "filename_prefix": "openclaw-bridge/ltx-2.3-t2v", "format": "auto", "codec": "auto"}}
+}

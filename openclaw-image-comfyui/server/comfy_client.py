@@ -246,52 +246,77 @@ class ComfyClient:
         return r.json()
 
 
+_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".gif")
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff")
+
+
+def _media_kind_for(filename: str, bucket_hint: str, node_out: dict) -> str:
+    """Resolve the media kind of a /history output entry.
+
+    Reality check from GB10 against ComfyUI 0.21.1 (2026-05-14): the
+    core `SaveVideo` node emits its mp4 under the `images[]` bucket
+    (not `videos[]`) and signals video-ness via a sibling
+    `animated: [true]` flag on the node's output dict. So we cannot
+    rely on the bucket name alone — and on top of that, the historical
+    `gifs[]` bucket from VHS_VideoCombine contains mp4/webm too, not
+    just GIFs. Filename extension is the most reliable signal across
+    all three node types, with sibling-flag and bucket as fallbacks.
+
+    Priority:
+      1. Filename extension (mp4/webm/mov/gif → video; png/jpg → image)
+      2. Sibling `animated: [true]` on the node output (SaveVideo's
+         marker)
+      3. Bucket hint (`images` → image; `videos` / `gifs` → video)
+    """
+    name = (filename or "").lower()
+    for ext in _VIDEO_EXTS:
+        if name.endswith(ext):
+            return "video"
+    for ext in _IMAGE_EXTS:
+        if name.endswith(ext):
+            return "image"
+    animated = node_out.get("animated")
+    if isinstance(animated, list) and any(bool(a) for a in animated):
+        return "video"
+    return "video" if bucket_hint in ("videos", "gifs") else "image"
+
+
 def extract_media_outputs(history_entry: dict) -> list[dict]:
     """Walk a /history entry's outputs and produce a flat list of
     {filename, subfolder, type, node_id, media_kind} for every saved
     media file (images, videos, audio).
 
-    ComfyUI's output shape is `{node_id: {"<bucket>": [{filename,
-    subfolder, type}]}}` where `<bucket>` is one of:
+    Each entry gets a `media_kind` tag (`"image"` / `"video"`) resolved
+    via `_media_kind_for` so the caller can branch on it without
+    parsing the filename extension itself, and without trusting the
+    /history bucket key. (SaveVideo on ComfyUI 0.21.1 emits its mp4
+    under `images[]` with a sibling `animated: [true]` flag — bucket
+    name alone is unreliable.)
 
-      - "images" — SaveImage, PreviewImage, and similar image-saving
-        nodes.
-      - "videos" — SaveVideo (the ComfyUI core video node added in
-        0.16.x for the day-0 LTX support).
-      - "gifs"   — VHS_VideoCombine (VideoHelperSuite custom node).
-        Despite the name, files in this bucket are usually mp4/webm,
-        not literal GIFs.
-      - "audio"  — SaveAudio. We don't surface these as standalone
-        outputs today (LTX-2.3 muxes audio into the video file via
-        CreateVideo + SaveVideo); a future audio-only workflow would
-        need a small extension of the caller's handling.
-
-    Each entry gets a `media_kind` tag (`"image"` / `"video"`) so the
-    caller can branch on it without parsing the filename extension:
-    a `.mp4` from a CreateVideo->SaveVideo chain belongs to "videos",
-    not "images", and the bridge's PIL probe must be skipped for
-    those (mp4 bytes are not a valid PIL.Image input).
+    ComfyUI's bucket layout: `{node_id: {"<bucket>": [{filename,
+    subfolder, type}], "animated"?: [bool], ...}}` where `<bucket>` is
+    one of `images`, `videos`, `gifs`, `audio`. We surface `audio`
+    only when no other output exists for that node — the LTX-2.3
+    pipeline muxes audio into the mp4 via CreateVideo → SaveVideo so
+    standalone audio surfacing isn't a hot path.
     """
     found: list[dict] = []
     outputs = history_entry.get("outputs") or {}
     for node_id, node_out in outputs.items():
         if not isinstance(node_out, dict):
             continue
-        for bucket, kind in (
-            ("images", "image"),
-            ("videos", "video"),
-            ("gifs",   "video"),
-        ):
+        for bucket in ("images", "videos", "gifs"):
             for entry in node_out.get(bucket) or []:
-                if not entry.get("filename"):
+                fn = entry.get("filename")
+                if not fn:
                     continue
                 found.append(
                     {
                         "node_id": node_id,
-                        "filename": entry["filename"],
+                        "filename": fn,
                         "subfolder": entry.get("subfolder", ""),
                         "type": entry.get("type", "output"),
-                        "media_kind": kind,
+                        "media_kind": _media_kind_for(fn, bucket, node_out),
                     }
                 )
     return found
