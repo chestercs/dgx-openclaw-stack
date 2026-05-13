@@ -1524,6 +1524,11 @@ services:
     stdin_open: true
     tty: true
     init: true
-    entrypoint: ["/bin/sh", "-c", "exec sleep infinity"]
+    # Compose's `entrypoint:` overrides the Dockerfile ENTRYPOINT, so we
+    # chain through /opt/patch-mcp-timeout.sh explicitly here — otherwise
+    # the CLI's embedded-runner MCP path keeps the unpatched 60s SDK
+    # timeout. The script exec's "$@" after patching, so the sleep
+    # behaviour is preserved.
+    entrypoint: ["/opt/patch-mcp-timeout.sh", "/bin/sh", "-c", "exec sleep infinity"]
     depends_on:
       - openclaw-gateway

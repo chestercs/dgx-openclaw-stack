@@ -44,27 +44,34 @@ RUN apt-get update \
 #
 # The right fix is upstream (have OpenClaw pass `options.timeout` per server,
 # or honor `mcp.servers.<name>.requestTimeoutMs` if added to the schema).
-# Until that lands, we sed-replace the literal in both the ESM and CJS
-# entry points so every place the SDK reads the default picks up our value.
-# Substitution is `60000` → `(parseInt(process.env.MCP_REQUEST_TIMEOUT_MS,10)||1800000)`
-# — env-driven at runtime, defaults to 30 minutes. Idempotent: a re-build
-# finds no `60000` to replace (already substituted), and the sed exits cleanly.
+# Until that lands, our `patch-mcp-timeout.sh` entrypoint wrapper runs at
+# every container start, grep-finds every `DEFAULT_REQUEST_TIMEOUT_MSEC =
+# 60000` literal under `/app`, and sed-replaces it with
+# `(parseInt(process.env.MCP_REQUEST_TIMEOUT_MS,10)||1800000)` — env-driven
+# at runtime, defaults to 30 minutes.
 #
-# Scope reminder: this affects ALL MCP tool calls from the gateway —
-# comfyui_image__generate(_video), python_sandbox, browser, etc. A 30-minute
-# ceiling is overhead-only for fast calls; for genuinely-hung tools it
-# delays the error surface by 29 minutes vs the previous default. The
-# tradeoff favors long-running media generators.
-RUN set -eux; \
-    PROTOCOL_FILES="$(find /app -type f -path '*@modelcontextprotocol/sdk/dist/*/shared/protocol.js' 2>/dev/null)"; \
-    if [ -z "$PROTOCOL_FILES" ]; then \
-        echo "ERROR: no MCP SDK protocol.js found under /app — image layout changed?" >&2; \
-        exit 1; \
-    fi; \
-    for f in $PROTOCOL_FILES; do \
-        sed -i 's|DEFAULT_REQUEST_TIMEOUT_MSEC = 60000|DEFAULT_REQUEST_TIMEOUT_MSEC = (parseInt(process.env.MCP_REQUEST_TIMEOUT_MS,10)\|\|1800000)|' "$f"; \
-        echo "patched MCP timeout: $f"; \
-        grep -n DEFAULT_REQUEST_TIMEOUT_MSEC "$f" || true; \
-    done
+# Why a runtime hook rather than a build-time RUN: empirical observation
+# (2026-05-14) showed the upstream openclaw image has BOTH a top-level
+# `/app/node_modules/...` SDK copy AND a `/app/dist/extensions/browser/node_modules/...`
+# extension-bundled copy, and a build-time `find` only matched one of the
+# locations — the other got (re)populated later in image layering or at
+# runtime, leaving its 60s default in place. Starting the patch at runtime
+# via `ENTRYPOINT` finds and rewrites both unconditionally.
+#
+# Idempotent: a restart on an already-patched container finds no `60000`
+# literal to replace and exits clean in ~50ms. Scope reminder: this
+# affects ALL MCP tool calls from the gateway — comfyui_image__generate(_video),
+# python_sandbox, browser, etc. A 30-minute ceiling is overhead-only for
+# fast calls; for genuinely-hung tools it delays the error surface by ~29
+# minutes vs the previous default. The tradeoff favors long-running media
+# generators.
+COPY patch-mcp-timeout.sh /opt/patch-mcp-timeout.sh
+RUN chmod +x /opt/patch-mcp-timeout.sh
+
+# Wrap the upstream image's entrypoint via a JSON-form ENTRYPOINT so any
+# `command:` from compose services is passed through verbatim. The
+# upstream openclaw image declares no ENTRYPOINT (just CMD), so this
+# overrides cleanly without losing default behaviour.
+ENTRYPOINT ["/opt/patch-mcp-timeout.sh"]
 
 USER node
