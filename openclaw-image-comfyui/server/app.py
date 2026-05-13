@@ -119,7 +119,7 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.1"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.0"}
 
 # LTX-Video 2.3 knobs — only used when the operator has enabled the
 # video tool surface. Defaults survive a fresh install where the
@@ -128,7 +128,7 @@ SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.1"}
 # generate_video), but a workflow-not-found error surfaces cleanly
 # the first time a caller tries to use it without the workflows in
 # place.
-LTX_VIDEO_DEFAULT_LENGTH_FRAMES = int(os.environ.get("LTX_VIDEO_DEFAULT_LENGTH_FRAMES", "97"))
+LTX_VIDEO_DEFAULT_LENGTH_FRAMES = int(os.environ.get("LTX_VIDEO_DEFAULT_LENGTH_FRAMES", "96"))
 LTX_VIDEO_DEFAULT_FPS = int(os.environ.get("LTX_VIDEO_DEFAULT_FPS", "24"))
 # `on` / `off` — controls the default audio state when the caller doesn't
 # pass audio_enabled. Workflows that don't support disabling audio (no
@@ -138,32 +138,6 @@ LTX_VIDEO_DEFAULT_AUDIO = os.environ.get("LTX_VIDEO_DEFAULT_AUDIO", "on").strip(
 # 60-second clips that take 30+ minutes and blow past Discord's
 # auto-embed size cap. Bridge enforces seconds = length / fps <= cap.
 LTX_VIDEO_MAX_DURATION_S = float(os.environ.get("LTX_VIDEO_MAX_DURATION_S", "10"))
-
-# Pre-warm ComfyUI's VRAM cache at bridge startup. Fixes the cold-cache
-# tax that breaks Discord: OpenClaw's MCP client uses the SDK's
-# hardcoded 60s default request timeout (resetTimeoutOnProgress is
-# `false` in their codebase, verified live 2026-05-14), so a cold-cache
-# LTX render at ~130s would time out before producing any visible
-# result on Discord — even though the bridge eventually finishes and
-# writes a valid mp4. Pre-warming at startup means subsequent renders
-# hit warm VRAM (~24-30s) and fit cleanly under MCP's 60s window.
-#
-# Default ON. Set to "false" / "0" / empty to disable (e.g. dev hosts
-# without LTX models installed where the warmup would spam errors).
-# The warmup fires in a background task so it doesn't block uvicorn
-# startup or the /healthz probe; first user call may still hit cold
-# cache if it arrives during the ~120s warm-up window.
-LTX_VIDEO_WARMUP_ON_STARTUP = os.environ.get("LTX_VIDEO_WARMUP_ON_STARTUP", "true").strip().lower() not in ("", "0", "false", "no", "off")
-LTX_VIDEO_WARMUP_WORKFLOW = os.environ.get("LTX_VIDEO_WARMUP_WORKFLOW", "ltx-2.3-t2v").strip()
-LTX_VIDEO_WARMUP_PROMPT = os.environ.get("LTX_VIDEO_WARMUP_PROMPT", "a single static frame, abstract gradient")
-
-# Optional keepalive cadence — fires the same warmup render every N
-# seconds to defend against ComfyUI offloading models during idle
-# periods. Default 0 = disabled, because empirically ComfyUI 0.21.1
-# does NOT auto-offload on idle (verified 2026-05-13: VRAM held
-# ~115 GB resident across hours of bridge idle). Set to e.g. 1800
-# (30 minutes) on hosts where you've observed model offloading.
-LTX_VIDEO_KEEPALIVE_S = int(os.environ.get("LTX_VIDEO_KEEPALIVE_S", "0") or "0")
 
 
 TOOLS = [
@@ -1172,102 +1146,13 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
     )
 
 
-# ── Cache pre-warm (v0.12.1+) ────────────────────────────────────────
-async def _ltx_warmup_render() -> None:
-    """Fire one minimal LTX render to warm ComfyUI's VRAM cache.
-
-    Why this exists: OpenClaw's MCP runtime (verified live on
-    2026-05-14) uses the MCP SDK's hardcoded 60-second default request
-    timeout and does NOT pass `resetTimeoutOnProgress: true` when
-    invoking tools — so a 130s cold-cache LTX render times out before
-    the bridge can return its result, even though ComfyUI eventually
-    finishes the render and writes a valid mp4. Pre-warming at bridge
-    startup means real user calls hit warm VRAM and finish in
-    ~24-30s, comfortably under MCP's 60s window.
-
-    Uses the smallest valid LTX latent (`length=9` — step-8 from min=1
-    in EmptyLTXVLatentVideo) at 256x256 so the model load is the only
-    slow part; sampling and decode are negligible. Total wall-clock
-    matches a cold-cache full render (~120-150s on GB10) because the
-    bottleneck is loading 30GB checkpoint + 9GB encoder into VRAM, not
-    the sample count.
-
-    Background task — does NOT block bridge startup. First user call
-    during the ~120s warmup window still hits cold cache and may time
-    out at the MCP layer. After the warmup completes, all renders are
-    warm. Logs a single line on success / failure; never raises.
-    """
-    if not LTX_VIDEO_WARMUP_ON_STARTUP:
-        return
-    try:
-        workflow = loader.get(LTX_VIDEO_WARMUP_WORKFLOW)
-    except WorkflowError:
-        log.info(
-            "warmup: skipped (workflow %r not loaded — operator hasn't "
-            "assembled an LTX workflow yet, or LTX_VIDEO_WARMUP_WORKFLOW "
-            "points at a missing template)",
-            LTX_VIDEO_WARMUP_WORKFLOW,
-        )
-        return
-    try:
-        bind_args = {
-            "prompt": LTX_VIDEO_WARMUP_PROMPT,
-            "width": 256,
-            "height": 256,
-            "length": 9,
-            "fps": 24,
-            "seed": 1,
-        }
-        prompt_dict = workflow.bind(bind_args)
-        client_id = "bridge-warmup-" + uuid.uuid4().hex[:8]
-        started = time.monotonic()
-        log.info("warmup: submitting minimal render to warm ComfyUI cache (workflow=%s)", LTX_VIDEO_WARMUP_WORKFLOW)
-        prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
-        await comfy.wait_for_completion(prompt_id, timeout_s=600)
-        elapsed = time.monotonic() - started
-        log.info(
-            "warmup: done in %.1fs (prompt_id=%s) — subsequent renders should hit warm cache",
-            elapsed, prompt_id,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "warmup failed: %s — first user render may hit cold cache and "
-            "exceed MCP's 60s timeout. Verify ComfyUI has the LTX checkpoint "
-            "+ Gemma encoder installed; see docs/reference/video-comfyui-bridge.md.",
-            e,
-        )
-
-
-async def _ltx_keepalive_loop() -> None:
-    """Periodic warmup — defends against ComfyUI model offload during
-    long idle periods. Opt-in via LTX_VIDEO_KEEPALIVE_S > 0 in `.env`.
-    Same minimal render as startup warmup; if cache is warm the call
-    is a no-op (~5-10s); if ComfyUI offloaded, the call reloads
-    everything for the next render."""
-    if LTX_VIDEO_KEEPALIVE_S <= 0:
-        return
-    while True:
-        try:
-            await asyncio.sleep(LTX_VIDEO_KEEPALIVE_S)
-            await _ltx_warmup_render()
-        except asyncio.CancelledError:
-            return
-        except Exception as e:  # noqa: BLE001
-            log.warning("keepalive iteration failed: %s — will retry next cycle", e)
-
-
 # ── Lifecycle ─────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def _on_start() -> None:
     log.info(
-        "image-bridge starting; comfyui_url=%s default_timeout=%.0fs max_concurrency=%d warmup=%s keepalive_s=%d",
+        "image-bridge starting; comfyui_url=%s default_timeout=%.0fs max_concurrency=%d",
         COMFYUI_URL, DEFAULT_TIMEOUT_S, MAX_CONCURRENCY,
-        "on" if LTX_VIDEO_WARMUP_ON_STARTUP else "off", LTX_VIDEO_KEEPALIVE_S,
     )
-    if LTX_VIDEO_WARMUP_ON_STARTUP:
-        asyncio.create_task(_ltx_warmup_render())
-    if LTX_VIDEO_KEEPALIVE_S > 0:
-        asyncio.create_task(_ltx_keepalive_loop())
 
 
 @app.on_event("shutdown")

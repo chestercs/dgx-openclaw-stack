@@ -32,7 +32,7 @@ services:
   openclaw-image-comfyui:
     build:
       context: ./server
-    image: openclaw-image-comfyui:0.12.1
+    image: openclaw-image-comfyui:0.12.0
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
     hostname: openclaw-image-comfyui
     # `image-gen` profile gates this service so an absent --profile flag
@@ -96,22 +96,10 @@ services:
       # the caller doesn't override per-call. Duration cap prevents
       # an agent from asking for a 60-second render that blows past
       # Discord's auto-embed envelope and the per-tool timeout.
-      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-97}
+      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-96}
       LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
       LTX_VIDEO_DEFAULT_AUDIO: ${LTX_VIDEO_DEFAULT_AUDIO:-on}
       LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}
-      # v0.12.1+ — pre-warm ComfyUI's VRAM cache at bridge startup so
-      # the first user render doesn't hit a 130s cold-cache load and
-      # blow past OpenClaw's MCP 60s request timeout (the SDK default;
-      # OpenClaw's runtime doesn't pass resetTimeoutOnProgress=true so
-      # progress notifications alone wouldn't fix it). Background task,
-      # doesn't block startup. See app.py _ltx_warmup_render() doc.
-      LTX_VIDEO_WARMUP_ON_STARTUP: ${LTX_VIDEO_WARMUP_ON_STARTUP:-true}
-      LTX_VIDEO_WARMUP_WORKFLOW: ${LTX_VIDEO_WARMUP_WORKFLOW:-ltx-2.3-t2v}
-      # Optional periodic re-warm. Default off — empirically ComfyUI
-      # 0.21.1 doesn't auto-offload, so once warm stays warm. Set to
-      # e.g. 1800 (30 min) if you observe offloads on your install.
-      LTX_VIDEO_KEEPALIVE_S: ${LTX_VIDEO_KEEPALIVE_S:-0}
     volumes:
       # workflows/ is COPYed into the image AND bind-mounted ro so
       # operators can drop new templates without rebuilding. The bridge
