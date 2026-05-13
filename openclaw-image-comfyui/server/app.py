@@ -313,7 +313,7 @@ TOOLS = [
                 "init_image_base64": {"type": "string", "description": "I2V: raw base64 of the source frame. Alternative to init_image_url."},
                 "timeout_s":  {"type": "number",  "description": f"Max wall-clock seconds. Default {DEFAULT_TIMEOUT_S:.0f}. Use 900+ on cold cache."},
                 "include_base64": {"type": "boolean", "description": "Embed mp4 bytes as base64 in the response. Default false — mp4s are usually MB-scale, embedding would balloon the agent context.", "default": False},
-                "attach_image_content": {"type": "boolean", "description": "Add the mp4 bytes as MCP attachment alongside the metadata text. Default true.", "default": True},
+                "attach_image_content": {"type": "boolean", "description": "Add the mp4 bytes as MCP `image` content alongside the metadata text. Default FALSE for video — mp4 is not a valid image content type, and downstream LLMs that try PIL.Image.open() on it surface a `cannot identify image file` 400 error on the NEXT chat turn. Keep false unless you know your chat surface handles raw mp4 in MCP image slots (most don't).", "default": False},
             },
             "required": ["prompt"],
             "additionalProperties": False,
@@ -788,7 +788,13 @@ async def _tool_generate_video(args: dict) -> dict:
         timeout_s = DEFAULT_TIMEOUT_S
 
     include_base64 = bool(args.get("include_base64", False))
-    attach_image_content = bool(args.get("attach_image_content", True))
+    # For video, attach_image_content defaults to FALSE — mp4 bytes are
+    # NOT a valid MCP `image` content type. Downstream LLMs that try
+    # PIL.Image.open() on the attached bytes (vllm + Gemma 4 verified
+    # 2026-05-14) surface a 400 "cannot identify image file" on the
+    # NEXT turn, killing the Discord reply path. Image-gen keeps the
+    # true default because PNG/JPG bytes DO open as PIL images cleanly.
+    attach_image_content = bool(args.get("attach_image_content", False))
 
     client_id = uuid.uuid4().hex
     started = time.monotonic()
