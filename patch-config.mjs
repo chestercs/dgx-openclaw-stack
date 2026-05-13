@@ -2106,41 +2106,45 @@ if (config.channels?.discord?.enabled === true) {
 }
 
 // ─── 30. Discord wildcard guild requireMention default ─────────────────────
-// Upstream OpenClaw default: in a guild channel, the bot only processes a
+// Upstream OpenClaw default in a guild channel: the bot only processes a
 // message that explicitly @mentions it (or replies to one of its own
-// messages). The `/activation mention|always` slash command writes a session
-// hint that the LLM sees, but **does not actually gate the preflight check**
-// — verified by reading the bundled 2026.4.22 plugin source
-// (`extensions/discord/allow-list-CuKLSnAf.js` →
-// `resolveDiscordShouldRequireMention()` consults
-// `channelConfig?.requireMention ?? guildInfo?.requireMention ?? true`,
-// `groupActivation` from the session entry is not consulted). Upstream
-// closed the gap as "not planned" (issue #22172) — the documented official
-// path for "respond to every message in a guild" is the persistent
-// per-guild `requireMention: false` config.
+// messages). This step writes the wildcard
+// `channels.discord.guilds["*"].requireMention = false` so the bot's
+// gate is open in every guild it joins — the matching posture for the
+// rest of this stack's wide-open homelab defaults (open-guild authz,
+// voice + threadBindings on, slash UX everywhere).
 //
-// The bundled guild-entry resolver supports a wildcard key `"*"` that
-// matches any guild without an explicit entry (same file, function
-// `resolveDiscordGuildEntry()` — `entries["*"]` fallback after id + slug
-// match attempts). Writing `channels.discord.guilds["*"].requireMention =
-// false` is therefore the **guild-ID-free** way to make the bot respond
-// to every message in every guild it's a member of — exactly the slash-
-// UX-everywhere posture a single-operator homelab deploy wants, with zero
-// snowflakes baked into the public repo.
+// Why the wildcard, not a specific guild id: the bundled guild-entry
+// resolver (`extensions/discord/allow-list-CuKLSnAf.js` →
+// `resolveDiscordGuildEntry()`) tries id-match → slug-match →
+// `entries["*"]` fallback, so the wildcard makes this public-repo-safe
+// (no snowflakes baked into the committed config). Per-guild entries
+// resolve first, so an operator can still set
+// `channels.discord.guilds.<id>.requireMention = true` later to silence
+// the bot in a specific noisy guild without touching this default.
 //
 // Defaults: OPENCLAW_DISCORD_REQUIRE_MENTION=off → write
-// `guilds["*"].requireMention = false`. Operators on shared / multi-tenant
-// / public deploys should set OPENCLAW_DISCORD_REQUIRE_MENTION=on to skip
-// this step and preserve the upstream-conservative mention-required
-// default. The env value IS the desired `requireMention` posture, so the
-// naming maps 1:1 to the config field semantics.
+// `guilds["*"].requireMention = false`. Operators on shared / multi-
+// tenant / public deploys should set OPENCLAW_DISCORD_REQUIRE_MENTION=on
+// to skip this step and preserve the upstream-conservative mention-
+// required default. The env value IS the desired `requireMention`
+// posture, so the naming maps 1:1 to the config field semantics.
 //
 // User-managed protection: only writes when `guilds["*"].requireMention`
-// is undefined. Operator-set explicit entries for specific guild IDs are
-// untouched — wildcard resolves last in `resolveDiscordGuildEntry()` so a
-// per-guild override always wins. An operator can keep this step active
-// (default-off) and still apply `requireMention: true` to a specific noisy
-// guild via `openclaw config set channels.discord.guilds.<id>.requireMention true`.
+// is undefined; if the operator hand-set the wildcard entry, the value
+// survives.
+//
+// Important: this is the GATE — it decides whether messages reach the
+// agent at all. The `/activation mention|always` slash command is a
+// DIFFERENT layer: it writes `sessionEntry.groupActivation` which the
+// agent's system-intro prompt builder consumes as a behavior hint for
+// the LLM (always-mode = "you see everything, use the silent token to
+// stay quiet when not addressed"; mention-mode = "you're invoked only
+// when explicitly mentioned"). The slash is consistent with whatever
+// gate this step has produced — it does not flip the gate at runtime
+// and was never designed to. See CLAUDE.md "Discord mention gate vs
+// /activation slash" for the full breakdown; upstream issue #22172 was
+// closed as "not planned" because the slash is working as designed.
 if (config.channels?.discord?.enabled === true) {
   const requireMentionRaw =
     (process.env.OPENCLAW_DISCORD_REQUIRE_MENTION?.trim() || 'off').toLowerCase();

@@ -377,9 +377,11 @@ OpenClaw splits its Discord slash surface across three feature buckets, and a sl
 
 The patcher steps 20, 21, 22, 24, 24c, 25, 25c, 28, 29, 30 collectively wire the Discord side from "out-of-the-box minimal" to "full-feature homelab assistant" — each step has a one-line console log when it writes, and `docker logs openclaw-config-init | grep '[patch-config]'` is the canonical way to confirm which features landed on a given install.
 
-### Discord guild mention requirement and the `/activation` slash-command trap
+### Discord mention gate (config) vs `/activation` slash (LLM behavior hint)
 
-`/activation mention|always` looks like the natural way to make the bot respond to every guild message without an @mention — the slash exists, the bot acks ("✅ Selected always" / "⚙️ Group activation set to always"), and the upstream docs even reference it. **It doesn't actually flip the preflight mention gate.** Verified by reading the bundled 2026.4.22 plugin source: `commands-handlers.runtime-DfQhZZft.js`'s `handleActivationCommand` only writes `sessionEntry.groupActivation = mode` (consumed by `buildGroupIntro` in `get-reply-CwuPJWAe.js` purely as an LLM-facing system-intro hint), while the gate that decides whether a message reaches the agent at all is `resolveDiscordShouldRequireMention` in `extensions/discord/allow-list-CuKLSnAf.js`:
+Two independent layers in the upstream Discord plugin that are easy to conflate. They look like the same thing from the operator's point of view but they're not, and getting them mixed up leads to misdiagnosing slash-command behavior as a bug.
+
+**Layer 1 — the gate.** Whether a guild message reaches the agent at all is decided by `resolveDiscordShouldRequireMention` in the bundled `extensions/discord/allow-list-CuKLSnAf.js`:
 
 ```js
 function resolveDiscordShouldRequireMention(params) {
@@ -389,17 +391,24 @@ function resolveDiscordShouldRequireMention(params) {
 }
 ```
 
-`groupActivation` is never consulted in that chain. Upstream issue #22172 ("Discord guild messages: /activation ignored …") tracks the gap; it was closed as "not planned" — the canonical documented path is the persistent `channels.discord.guilds.<id>.requireMention = false` config.
+Pure config-driven: `channels.discord.guilds.<id>.requireMention` (or the wildcard `"*"` entry, see below) — there is no session-store input, no slash-command input. Whoever the operator is, this is the operator's gate.
 
-**The wildcard `"*"` key in `guilds` is what makes this work in a public repo without baking operator snowflakes.** The bundled `resolveDiscordGuildEntry` function tries id-match → slug-match → `entries["*"]` fallback. So writing `channels.discord.guilds["*"].requireMention = false` covers every guild the bot is in without ever committing a guild ID. Per-guild overrides still win — an explicit `channels.discord.guilds.<id>.requireMention = true` set by the operator beats the wildcard, so you can keep the open default and selectively silence a noisy guild.
+**Layer 2 — the LLM behavior hint.** `/activation mention|always` writes `sessionEntry.groupActivation = mode` via `handleActivationCommand` in `commands-handlers.runtime-DfQhZZft.js`. That value is consumed by `buildGroupIntro` in `get-reply-CwuPJWAe.js` as an LLM-facing system-intro line:
+
+- `always` → *"Activation: always-on (you receive every group message)."* + a silent-token instruction so the LLM can opt out of replying to messages that aren't for it
+- `mention` → *"Activation: trigger-only (you are invoked only when explicitly mentioned; recent context may be included)."* — no silent-token instruction because in `mention` mode the gate is supposed to be doing the filtering, so the LLM never sees non-mention messages in the first place
+
+So the slash assumes the operator has set the gate appropriately and tells the LLM how to behave within that gate. **It is not a runtime gate toggle and was never designed to be one** — upstream issue #22172 ("/activation ignored") was closed as "not planned" because the slash is working as designed; the reporter assumed it controlled the gate.
+
+**Wildcard `"*"` in `guilds` is the public-repo-safe gate setting.** The bundled `resolveDiscordGuildEntry` tries id-match → slug-match → `entries["*"]` fallback, so writing `channels.discord.guilds["*"].requireMention = false` opens the gate for every guild the bot joins without committing any snowflakes. Per-guild overrides still win — an explicit `channels.discord.guilds.<id>.requireMention = true` set by the operator beats the wildcard, so you can keep the open default and selectively silence a noisy guild.
 
 Patcher step 30 writes the wildcard by default. Env knob `OPENCLAW_DISCORD_REQUIRE_MENTION`:
-- `off` (default) — write `guilds["*"].requireMention = false`. Bot responds to every guild message. Matches the rest of this stack's wide-open homelab defaults (open-guild authz, voice + threadBindings on, slash UX everywhere).
-- `on` — skip the step, preserve upstream mention-required default. Use on shared / multi-tenant / public deploys.
+- `off` (default) — write `guilds["*"].requireMention = false`. Bot's gate is open in every guild. LLM gets the `always`-mode intro line whenever the operator invokes `/activation always` (or by default on the first turn after the system-intro flag is set), with the silent-token instruction so it can be selective. Matches the rest of this stack's wide-open homelab defaults (open-guild authz, voice + threadBindings on, slash UX everywhere).
+- `on` — skip the step, preserve upstream mention-required default. Gate stays closed; only mention/reply messages reach the agent; `/activation mention` is then consistent with what the gate actually does. Use on shared / multi-tenant / public deploys.
 
-The naming maps 1:1 to the schema field semantics — the env value IS the desired `requireMention` posture. User-managed protection: the patcher only writes when `guilds["*"].requireMention` is undefined; if you hand-set the wildcard entry (or any specific guild entry), the operator value survives.
+The env value IS the desired `requireMention` posture. User-managed protection: the patcher only writes when `guilds["*"].requireMention` is undefined; if you hand-set the wildcard entry (or any specific guild entry), the operator value survives.
 
-**Don't try to "fix" `/activation always` by patching the bundled plugin.** It would carry across image upgrades the bundle isn't expected to be forked over. The whole point of step 30 is to make the user-facing experience match the implied behavior of the slash command, without modifying upstream code. The slash itself still works as a session-hint helper — useful if you want the agent's reply tone to acknowledge "always-on" framing — it just isn't the gate.
+**When a user reports "I set `/activation mention` but the bot still replies to everything,"** that's not a bug — they have the gate open (step 30 default) and the slash is purely the LLM behavior hint. Either close the gate at the config level (`OPENCLAW_DISCORD_REQUIRE_MENTION=on` and restart, or `openclaw config set channels.discord.guilds."*".requireMention true` for hot-reload), or accept that with the gate open the bot will see and may decide to reply to any message the LLM finds worth replying to. Don't try to "fix" this by patching the bundled plugin to make the slash flip the gate — that fork would break on every image upgrade, and the upstream design intentionally separates operator config from in-session behavior hints.
 
 ### `openclaw-base-ext` is the local image extension layer
 

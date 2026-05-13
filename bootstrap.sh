@@ -378,24 +378,21 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 3g. Discord guild mention requirement (patcher step 30)
+# 3g. Discord guild mention gate (patcher step 30)
 # ----------------------------------------------------------------------------
-# Upstream OpenClaw default: the bot only responds to messages that @mention
-# it (or reply to one of its own messages). The `/activation always` slash
-# command writes a session hint but does NOT flip the gate — verified
-# against the 2026.4.22 plugin source. See CLAUDE.md "Discord guild
-# mention requirement and the `/activation` slash-command trap".
-#
-# Patcher step 30 writes the wildcard `channels.discord.guilds["*"].
-# requireMention = false` — no guild IDs baked in. `off` (default) →
-# bot responds to every guild message. `on` → preserve upstream gate.
+# Sets the wildcard `channels.discord.guilds["*"].requireMention` — the
+# gate that decides whether the bot even sees guild messages without an
+# @mention. `off` (default) → gate open everywhere; `on` → upstream
+# mention-required default. See CLAUDE.md "Discord mention gate vs
+# /activation slash" for how this interacts with the in-band slash.
 # ----------------------------------------------------------------------------
 require_mention_existing=$(grep -E '^OPENCLAW_DISCORD_REQUIRE_MENTION=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
 if [[ -z "$require_mention_existing" ]]; then
-  printf '\n%bDiscord guild mention requirement%b — should the bot reply to every guild message, or only when @mentioned?\n' "$BOLD" "$RESET"
-  log "  off  — bot responds to EVERY message in every guild it joins"
+  printf '\n%bDiscord guild mention gate%b — should the bot see every guild message, or only those that @mention it?\n' "$BOLD" "$RESET"
+  log "  off  — gate open: bot sees EVERY message in every guild it joins"
   log "         (wildcard via guilds[\"*\"].requireMention=false; no guild"
-  log "         IDs committed). Recommended for single-operator homelabs."
+  log "         IDs committed). The LLM still decides per-message whether"
+  log "         to reply. Recommended for single-operator homelabs."
   log "  on   — preserve upstream default (mention required). Pick this on"
   log "         shared, multi-tenant or public deploys."
   printf '%bChoice [off/on] (default off)%b: ' "$BOLD" "$RESET"

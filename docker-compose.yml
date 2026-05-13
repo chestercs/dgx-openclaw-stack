@@ -1307,13 +1307,12 @@ services:
       # /focus, /unfocus, /agents, /session — lets a thread bind to a
       # session for context-rail continuation.
       OPENCLAW_DISCORD_THREAD_BINDINGS: ${OPENCLAW_DISCORD_THREAD_BINDINGS:-on}
-      # Discord guild mention requirement (patcher step 30, wildcard-only —
-      # no guild IDs baked in). `off` (default) writes
-      # `channels.discord.guilds["*"].requireMention = false` so the bot
-      # responds to every guild message, matching the slash-UX-everywhere
-      # posture this stack assumes. `on` skips the step and preserves
-      # upstream's mention-required default. Operators on shared / public
-      # deploys should set `on`.
+      # Discord guild mention gate (patcher step 30, wildcard `guilds["*"]`
+      # so no operator guild IDs end up in the public repo). `off` (default)
+      # opens the gate everywhere; `on` preserves upstream's mention-
+      # required default. The `/activation` slash is a separate layer (LLM
+      # behavior hint, not a gate toggle) — see CLAUDE.md "Discord mention
+      # gate vs /activation slash".
       OPENCLAW_DISCORD_REQUIRE_MENTION: ${OPENCLAW_DISCORD_REQUIRE_MENTION:-off}
       # Image-gen workflow-picker cheatsheet (patcher step 27). When set,
       # appends a `<!-- patch-config:image-gen-tools:* -->` block to the
