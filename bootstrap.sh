@@ -378,6 +378,42 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 3g. Discord guild mention requirement (patcher step 30)
+# ----------------------------------------------------------------------------
+# Upstream OpenClaw default: the bot only responds to messages that @mention
+# it (or reply to one of its own messages). The `/activation always` slash
+# command writes a session hint but does NOT flip the gate — verified
+# against the 2026.4.22 plugin source. See CLAUDE.md "Discord guild
+# mention requirement and the `/activation` slash-command trap".
+#
+# Patcher step 30 writes the wildcard `channels.discord.guilds["*"].
+# requireMention = false` — no guild IDs baked in. `off` (default) →
+# bot responds to every guild message. `on` → preserve upstream gate.
+# ----------------------------------------------------------------------------
+require_mention_existing=$(grep -E '^OPENCLAW_DISCORD_REQUIRE_MENTION=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
+if [[ -z "$require_mention_existing" ]]; then
+  printf '\n%bDiscord guild mention requirement%b — should the bot reply to every guild message, or only when @mentioned?\n' "$BOLD" "$RESET"
+  log "  off  — bot responds to EVERY message in every guild it joins"
+  log "         (wildcard via guilds[\"*\"].requireMention=false; no guild"
+  log "         IDs committed). Recommended for single-operator homelabs."
+  log "  on   — preserve upstream default (mention required). Pick this on"
+  log "         shared, multi-tenant or public deploys."
+  printf '%bChoice [off/on] (default off)%b: ' "$BOLD" "$RESET"
+  read -r require_mention_choice
+  require_mention_choice="${require_mention_choice:-off}"
+  case "$require_mention_choice" in
+    on|off)
+      upsert_env OPENCLAW_DISCORD_REQUIRE_MENTION "$require_mention_choice" '.*'
+      ;;
+    *)
+      warn "Unknown choice '$require_mention_choice' — leaving OPENCLAW_DISCORD_REQUIRE_MENTION unset (patcher will use 'off' default)."
+      ;;
+  esac
+else
+  ok "OPENCLAW_DISCORD_REQUIRE_MENTION already set ($require_mention_existing) — preserved."
+fi
+
+# ----------------------------------------------------------------------------
 # 4. HuggingFace token
 # ----------------------------------------------------------------------------
 current_hf=$(grep -E '^HUGGING_FACE_HUB_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2-)

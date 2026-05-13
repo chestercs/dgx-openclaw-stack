@@ -375,7 +375,31 @@ OpenClaw splits its Discord slash surface across three feature buckets, and a sl
 
 **Thread bindings** — they're opt-in per-thread, not automatic per agent. After step 29 enables them, the operator creates a thread in a guild channel, types `/focus <agent-or-target>`, and from that point follow-up messages in the thread route to the bound session. `/unfocus` releases the binding; `/session idle 30m` auto-releases after inactivity; `/session max-age 4h` hard-expires regardless. `/agents` shows current bindings. Useful when you want one Discord channel to host multiple parallel agent conversations (e.g. a research session in thread A, a coding session in thread B).
 
-The patcher steps 20, 21, 22, 24, 24c, 25, 25c, 28, 29 collectively wire the Discord side from "out-of-the-box minimal" to "full-feature homelab assistant" — each step has a one-line console log when it writes, and `docker logs openclaw-config-init | grep '[patch-config]'` is the canonical way to confirm which features landed on a given install.
+The patcher steps 20, 21, 22, 24, 24c, 25, 25c, 28, 29, 30 collectively wire the Discord side from "out-of-the-box minimal" to "full-feature homelab assistant" — each step has a one-line console log when it writes, and `docker logs openclaw-config-init | grep '[patch-config]'` is the canonical way to confirm which features landed on a given install.
+
+### Discord guild mention requirement and the `/activation` slash-command trap
+
+`/activation mention|always` looks like the natural way to make the bot respond to every guild message without an @mention — the slash exists, the bot acks ("✅ Selected always" / "⚙️ Group activation set to always"), and the upstream docs even reference it. **It doesn't actually flip the preflight mention gate.** Verified by reading the bundled 2026.4.22 plugin source: `commands-handlers.runtime-DfQhZZft.js`'s `handleActivationCommand` only writes `sessionEntry.groupActivation = mode` (consumed by `buildGroupIntro` in `get-reply-CwuPJWAe.js` purely as an LLM-facing system-intro hint), while the gate that decides whether a message reaches the agent at all is `resolveDiscordShouldRequireMention` in `extensions/discord/allow-list-CuKLSnAf.js`:
+
+```js
+function resolveDiscordShouldRequireMention(params) {
+  if (!params.isGuildMessage) return false;
+  if (params.isAutoThreadOwnedByBot ?? isDiscordAutoThreadOwnedByBot(params)) return false;
+  return params.channelConfig?.requireMention ?? params.guildInfo?.requireMention ?? true;
+}
+```
+
+`groupActivation` is never consulted in that chain. Upstream issue #22172 ("Discord guild messages: /activation ignored …") tracks the gap; it was closed as "not planned" — the canonical documented path is the persistent `channels.discord.guilds.<id>.requireMention = false` config.
+
+**The wildcard `"*"` key in `guilds` is what makes this work in a public repo without baking operator snowflakes.** The bundled `resolveDiscordGuildEntry` function tries id-match → slug-match → `entries["*"]` fallback. So writing `channels.discord.guilds["*"].requireMention = false` covers every guild the bot is in without ever committing a guild ID. Per-guild overrides still win — an explicit `channels.discord.guilds.<id>.requireMention = true` set by the operator beats the wildcard, so you can keep the open default and selectively silence a noisy guild.
+
+Patcher step 30 writes the wildcard by default. Env knob `OPENCLAW_DISCORD_REQUIRE_MENTION`:
+- `off` (default) — write `guilds["*"].requireMention = false`. Bot responds to every guild message. Matches the rest of this stack's wide-open homelab defaults (open-guild authz, voice + threadBindings on, slash UX everywhere).
+- `on` — skip the step, preserve upstream mention-required default. Use on shared / multi-tenant / public deploys.
+
+The naming maps 1:1 to the schema field semantics — the env value IS the desired `requireMention` posture. User-managed protection: the patcher only writes when `guilds["*"].requireMention` is undefined; if you hand-set the wildcard entry (or any specific guild entry), the operator value survives.
+
+**Don't try to "fix" `/activation always` by patching the bundled plugin.** It would carry across image upgrades the bundle isn't expected to be forked over. The whole point of step 30 is to make the user-facing experience match the implied behavior of the slash command, without modifying upstream code. The slash itself still works as a session-hint helper — useful if you want the agent's reply tone to acknowledge "always-on" framing — it just isn't the gate.
 
 ### `openclaw-base-ext` is the local image extension layer
 

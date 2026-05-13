@@ -2105,6 +2105,69 @@ if (config.channels?.discord?.enabled === true) {
   }
 }
 
+// ─── 30. Discord wildcard guild requireMention default ─────────────────────
+// Upstream OpenClaw default: in a guild channel, the bot only processes a
+// message that explicitly @mentions it (or replies to one of its own
+// messages). The `/activation mention|always` slash command writes a session
+// hint that the LLM sees, but **does not actually gate the preflight check**
+// — verified by reading the bundled 2026.4.22 plugin source
+// (`extensions/discord/allow-list-CuKLSnAf.js` →
+// `resolveDiscordShouldRequireMention()` consults
+// `channelConfig?.requireMention ?? guildInfo?.requireMention ?? true`,
+// `groupActivation` from the session entry is not consulted). Upstream
+// closed the gap as "not planned" (issue #22172) — the documented official
+// path for "respond to every message in a guild" is the persistent
+// per-guild `requireMention: false` config.
+//
+// The bundled guild-entry resolver supports a wildcard key `"*"` that
+// matches any guild without an explicit entry (same file, function
+// `resolveDiscordGuildEntry()` — `entries["*"]` fallback after id + slug
+// match attempts). Writing `channels.discord.guilds["*"].requireMention =
+// false` is therefore the **guild-ID-free** way to make the bot respond
+// to every message in every guild it's a member of — exactly the slash-
+// UX-everywhere posture a single-operator homelab deploy wants, with zero
+// snowflakes baked into the public repo.
+//
+// Defaults: OPENCLAW_DISCORD_REQUIRE_MENTION=off → write
+// `guilds["*"].requireMention = false`. Operators on shared / multi-tenant
+// / public deploys should set OPENCLAW_DISCORD_REQUIRE_MENTION=on to skip
+// this step and preserve the upstream-conservative mention-required
+// default. The env value IS the desired `requireMention` posture, so the
+// naming maps 1:1 to the config field semantics.
+//
+// User-managed protection: only writes when `guilds["*"].requireMention`
+// is undefined. Operator-set explicit entries for specific guild IDs are
+// untouched — wildcard resolves last in `resolveDiscordGuildEntry()` so a
+// per-guild override always wins. An operator can keep this step active
+// (default-off) and still apply `requireMention: true` to a specific noisy
+// guild via `openclaw config set channels.discord.guilds.<id>.requireMention true`.
+if (config.channels?.discord?.enabled === true) {
+  const requireMentionRaw =
+    (process.env.OPENCLAW_DISCORD_REQUIRE_MENTION?.trim() || 'off').toLowerCase();
+  if (requireMentionRaw === 'on') {
+    // Operator wants upstream-default behavior (mention required) — skip.
+  } else if (requireMentionRaw !== 'off') {
+    console.warn(
+      `[patch-config] OPENCLAW_DISCORD_REQUIRE_MENTION=${JSON.stringify(requireMentionRaw)} ` +
+      `not in {on, off} — skipping wildcard requireMention substep.`,
+    );
+  } else {
+    config.channels.discord.guilds ??= {};
+    config.channels.discord.guilds['*'] ??= {};
+    if (config.channels.discord.guilds['*'].requireMention === undefined) {
+      config.channels.discord.guilds['*'].requireMention = false;
+      changed = true;
+      console.log(
+        `[patch-config] channels.discord.guilds["*"].requireMention = false ` +
+        `(bot responds to every guild message via wildcard fallback, no guild ` +
+        `IDs baked in — set OPENCLAW_DISCORD_REQUIRE_MENTION=on to preserve ` +
+        `upstream mention-required default)`,
+      );
+    }
+  }
+}
+
+
 // ─── 26. Workspace-discord AGENTS.md patcher-managed blocks ──────────────────
 // The discord-friend agent has its own workspace at
 // /home/node/.openclaw/workspace-discord/ (separate from main's
