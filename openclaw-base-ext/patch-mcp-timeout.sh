@@ -24,14 +24,22 @@ NEW_LITERAL="DEFAULT_REQUEST_TIMEOUT_MSEC = ${NEW_EXPR}"
 # Find every MCP SDK protocol.js (esm + cjs across both /app/node_modules
 # and /app/dist/extensions/.../node_modules locations). grep -l skips
 # non-text files cheaply; the redirect drops "permission denied" noise
-# on hidden directories we don't care about.
-matches=$(grep -rl "${OLD_LITERAL}" /app 2>/dev/null || true)
+# on hidden directories we don't care about. We also filter to `.js` so
+# the `.d.ts` declaration files (where the constant also appears) aren't
+# rewritten — they're TypeScript types that aren't executed but a stray
+# substitution that goes wrong there would be confusing during debug.
+matches=$(grep -rl --include='*.js' "${OLD_LITERAL}" /app 2>/dev/null || true)
 
+# IMPORTANT: sed's `s` command delimiter is `|` only if we use `|` —
+# but the replacement contains `||` (JS logical-or) which would be
+# misparsed as the end of the replacement followed by garbage flags.
+# Use `#` as the delimiter instead, since neither the pattern nor the
+# replacement contains `#`.
 if [ -z "${matches}" ]; then
     echo "[mcp-patch] no unpatched protocol.js found under /app (already patched, or upstream version changed)" >&2
 else
     for f in ${matches}; do
-        sed -i "s|${OLD_LITERAL}|${NEW_LITERAL}|" "${f}"
+        sed -i "s#${OLD_LITERAL}#${NEW_LITERAL}#" "${f}"
         echo "[mcp-patch] ${f}" >&2
     done
 fi
