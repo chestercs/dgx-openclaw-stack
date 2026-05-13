@@ -32,7 +32,7 @@ services:
   openclaw-image-comfyui:
     build:
       context: ./server
-    image: openclaw-image-comfyui:0.12.2
+    image: openclaw-image-comfyui:0.12.1
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
     hostname: openclaw-image-comfyui
     # `image-gen` profile gates this service so an absent --profile flag
@@ -112,15 +112,6 @@ services:
       # 0.21.1 doesn't auto-offload, so once warm stays warm. Set to
       # e.g. 1800 (30 min) if you observe offloads on your install.
       LTX_VIDEO_KEEPALIVE_S: ${LTX_VIDEO_KEEPALIVE_S:-0}
-      # v0.12.2+ — also pre-warm the IMAGE-gen default workflow at
-      # startup. Same cold-cache MCP timeout pattern hits image-gen
-      # when the operator's IMAGE_GEN_DEFAULT_WORKFLOW (FLUX-Krea-dev
-      # / SDXL / etc) hasn't been loaded yet: ComfyUI takes 60-90s to
-      # load the diffusion + clip + vae weights, MCP times out at
-      # 60s, render succeeds silently on disk while Discord sees the
-      # error. Default on. Skips cleanly if IMAGE_GEN_DEFAULT_WORKFLOW
-      # is unset or points at a missing workflow.
-      IMAGE_GEN_WARMUP_ON_STARTUP: ${IMAGE_GEN_WARMUP_ON_STARTUP:-true}
     volumes:
       # workflows/ is COPYed into the image AND bind-mounted ro so
       # operators can drop new templates without rebuilding. The bridge

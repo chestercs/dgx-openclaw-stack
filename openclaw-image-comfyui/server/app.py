@@ -119,7 +119,7 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.2"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.1"}
 
 # LTX-Video 2.3 knobs — only used when the operator has enabled the
 # video tool surface. Defaults survive a fresh install where the
@@ -164,18 +164,6 @@ LTX_VIDEO_WARMUP_PROMPT = os.environ.get("LTX_VIDEO_WARMUP_PROMPT", "a single st
 # ~115 GB resident across hours of bridge idle). Set to e.g. 1800
 # (30 minutes) on hosts where you've observed model offloading.
 LTX_VIDEO_KEEPALIVE_S = int(os.environ.get("LTX_VIDEO_KEEPALIVE_S", "0") or "0")
-
-# Same warmup pattern for image generation. The default-workflow image
-# model (FLUX-Krea-dev / SDXL / etc.) ALSO triggers cold-cache MCP
-# timeouts the first time it's used — verified live 2026-05-14: a
-# `flux-krea-2k` generate call after a comfyui restart took ~60s, the
-# MCP layer hit its 60s default just before the bridge could return.
-# The render itself succeeded silently on ComfyUI's side (PNG written
-# to disk) but Discord saw a timeout error. Same fix as the LTX
-# warmup: fire one minimal image render on startup to keep the model
-# resident in VRAM for subsequent user calls.
-IMAGE_GEN_WARMUP_ON_STARTUP = os.environ.get("IMAGE_GEN_WARMUP_ON_STARTUP", "true").strip().lower() not in ("", "0", "false", "no", "off")
-IMAGE_GEN_WARMUP_PROMPT = os.environ.get("IMAGE_GEN_WARMUP_PROMPT", "a uniform gray test gradient, abstract")
 
 
 TOOLS = [
@@ -1250,74 +1238,6 @@ async def _ltx_warmup_render() -> None:
         )
 
 
-async def _image_warmup_render() -> None:
-    """Same posture as `_ltx_warmup_render` but for the image-gen
-    default workflow (FLUX-Krea / SDXL / etc.). Fires one tiny render
-    on bridge startup so the next user generate call hits warm cache
-    and fits under MCP's hardcoded 60s timeout.
-
-    Uses the workflow named in `IMAGE_GEN_DEFAULT_WORKFLOW` (the same
-    knob `_tool_generate` reads as its workflow fallback). Skips
-    cleanly when:
-      - the env knob is unset (operator hasn't configured a default
-        image workflow)
-      - the named workflow isn't loaded
-      - the workflow isn't `kind="image"` (defensive — wouldn't
-        catch a `kind="video"` workflow that snuck into the slot)
-      - the workflow requires a checkpoint and no
-        `IMAGE_GEN_DEFAULT_CHECKPOINT` is set (placeholders would
-        fail the prompt-validate step)
-
-    Sequenced AFTER the LTX warmup (both run as background tasks but
-    ComfyUI's queue is FIFO, so they run one at a time). Total
-    startup-to-fully-warm: ~120s + ~60s = ~180s when both models are
-    cold. After that, both kinds of user renders hit warm VRAM."""
-    if not IMAGE_GEN_WARMUP_ON_STARTUP:
-        return
-    workflow_name = IMAGE_GEN_DEFAULT_WORKFLOW
-    if not workflow_name:
-        log.info("image warmup: skipped (IMAGE_GEN_DEFAULT_WORKFLOW unset)")
-        return
-    try:
-        workflow = loader.get(workflow_name)
-    except WorkflowError:
-        log.info("image warmup: skipped (workflow %r not loaded)", workflow_name)
-        return
-    if getattr(workflow, "kind", "image") != "image":
-        log.info(
-            "image warmup: skipped (workflow %r kind=%r, not image)",
-            workflow_name, workflow.kind,
-        )
-        return
-    try:
-        bind_args = {
-            "prompt": IMAGE_GEN_WARMUP_PROMPT,
-            "width": 256,
-            "height": 256,
-            "seed": 1,
-        }
-        # Only set checkpoint if both the workflow needs one AND we have
-        # a default. Otherwise the placeholder REPLACE_ME would fail.
-        if workflow.checkpoint_required and IMAGE_GEN_DEFAULT_CHECKPOINT:
-            bind_args["checkpoint"] = IMAGE_GEN_DEFAULT_CHECKPOINT
-        prompt_dict = workflow.bind(bind_args)
-        client_id = "bridge-img-warmup-" + uuid.uuid4().hex[:8]
-        started = time.monotonic()
-        log.info("image warmup: submitting minimal render (workflow=%s)", workflow_name)
-        prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
-        await comfy.wait_for_completion(prompt_id, timeout_s=600)
-        log.info(
-            "image warmup: done in %.1fs (prompt_id=%s)",
-            time.monotonic() - started, prompt_id,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "image warmup failed: %s — first image-gen call may hit cold cache "
-            "and exceed MCP's 60s timeout",
-            e,
-        )
-
-
 async def _ltx_keepalive_loop() -> None:
     """Periodic warmup — defends against ComfyUI model offload during
     long idle periods. Opt-in via LTX_VIDEO_KEEPALIVE_S > 0 in `.env`.
@@ -1340,17 +1260,12 @@ async def _ltx_keepalive_loop() -> None:
 @app.on_event("startup")
 async def _on_start() -> None:
     log.info(
-        "image-bridge starting; comfyui_url=%s default_timeout=%.0fs max_concurrency=%d "
-        "ltx_warmup=%s image_warmup=%s keepalive_s=%d",
+        "image-bridge starting; comfyui_url=%s default_timeout=%.0fs max_concurrency=%d warmup=%s keepalive_s=%d",
         COMFYUI_URL, DEFAULT_TIMEOUT_S, MAX_CONCURRENCY,
-        "on" if LTX_VIDEO_WARMUP_ON_STARTUP else "off",
-        "on" if IMAGE_GEN_WARMUP_ON_STARTUP else "off",
-        LTX_VIDEO_KEEPALIVE_S,
+        "on" if LTX_VIDEO_WARMUP_ON_STARTUP else "off", LTX_VIDEO_KEEPALIVE_S,
     )
     if LTX_VIDEO_WARMUP_ON_STARTUP:
         asyncio.create_task(_ltx_warmup_render())
-    if IMAGE_GEN_WARMUP_ON_STARTUP:
-        asyncio.create_task(_image_warmup_render())
     if LTX_VIDEO_KEEPALIVE_S > 0:
         asyncio.create_task(_ltx_keepalive_loop())
 
