@@ -151,9 +151,20 @@ done
 [[ -w "$BASEDIR" ]] || die "No write permission on $BASEDIR (run as the user that owns the install)."
 ok "Basedir layout looks like ComfyUI"
 
-# ─── Step 2: huggingface-cli ─────────────────────────────────────────
-if ! command -v huggingface-cli >/dev/null 2>&1; then
-    warn "huggingface-cli not found in PATH."
+# ─── Step 2: HuggingFace CLI ─────────────────────────────────────────
+# Prefer the new `hf` CLI from huggingface_hub 1.x. Fall back to the
+# legacy `huggingface-cli` for older installs (still works on
+# huggingface_hub 0.x; deprecated in 1.x and prints a warning on every
+# invocation in some intermediate releases). Tracked via the HF_BIN
+# variable used by every download below.
+if command -v hf >/dev/null 2>&1; then
+    HF_BIN="hf"
+    HF_VER=$(hf --version 2>&1 | head -1)
+elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_BIN="huggingface-cli"
+    HF_VER=$(huggingface-cli --version 2>&1 | head -1)
+else
+    warn "Neither `hf` nor `huggingface-cli` found in PATH."
     cat >&2 <<'EOF'
 
   Install with:
@@ -161,21 +172,24 @@ if ! command -v huggingface-cli >/dev/null 2>&1; then
       pipx install 'huggingface_hub[hf_transfer]'        # alternative
 
   The hf_transfer extra is strongly recommended — it parallelizes the
-  46 GB checkpoint download. Without it expect 3-5x slower transfers.
+  ~30 GB (fp8) or ~46 GB (bf16) checkpoint download. Without it expect
+  3-5x slower transfers.
 
 EOF
-    die "Cannot proceed without huggingface-cli."
+    die "Cannot proceed without HuggingFace CLI."
 fi
-ok "huggingface-cli present: $(huggingface-cli --version 2>&1 | head -1)"
+ok "HuggingFace CLI: ${HF_BIN} (${HF_VER})"
 
 # hf_transfer presence is best-effort detected; we still set the env
 # var unconditionally so a future pip-installed hf_transfer kicks in.
 export HF_HUB_ENABLE_HF_TRANSFER=1
 
 # ─── Step 3: auth ────────────────────────────────────────────────────
-# Gemma 3 12B is a gated repo. huggingface-cli's `auth whoami` returns
-# non-zero when not logged in, which is the gate we want.
-if [[ -z "${HF_TOKEN:-}" ]] && ! huggingface-cli whoami >/dev/null 2>&1 && ! hf auth whoami >/dev/null 2>&1; then
+# Gemma 3 12B is a gated repo. The CLI's `whoami` returns non-zero when
+# not logged in, which is the gate we want. `hf auth whoami` is the
+# new (huggingface_hub 1.x) form; `huggingface-cli whoami` is the
+# legacy form. We probe both.
+if [[ -z "${HF_TOKEN:-}" ]] && ! hf auth whoami >/dev/null 2>&1 && ! huggingface-cli whoami >/dev/null 2>&1; then
     warn "Not logged in to HuggingFace and HF_TOKEN is not set."
     cat >&2 <<'EOF'
 
@@ -224,7 +238,7 @@ mkdir -p "$CKPT_DIR" "$ENCODER_DIR"
 
 CKPT_SIZE_GB=$([[ "$VARIANT" == fp8-* ]] && echo "30" || echo "46")
 info "Downloading main checkpoint from ${CKPT_REPO}: ${CKPT_FILE} (~${CKPT_SIZE_GB} GB)"
-run "huggingface-cli download \"$CKPT_REPO\" \"$CKPT_FILE\" --local-dir \"$CKPT_DIR\""
+run "$HF_BIN download \"$CKPT_REPO\" \"$CKPT_FILE\" --local-dir \"$CKPT_DIR\""
 ok "Main checkpoint ready"
 
 info "Downloading Gemma 3 12B text encoder (~25 GB, gated repo)"
@@ -232,14 +246,14 @@ info "Downloading Gemma 3 12B text encoder (~25 GB, gated repo)"
 # up every file, so we mirror the upstream repo wholesale. Trying to
 # cherry-pick subfiles risks missing a tokenizer config or assistant
 # template.
-run "huggingface-cli download google/gemma-3-12b-it-qat-q4_0-unquantized --local-dir \"$ENCODER_DIR\""
+run "$HF_BIN download google/gemma-3-12b-it-qat-q4_0-unquantized --local-dir \"$ENCODER_DIR\""
 ok "Text encoder ready"
 
 if [[ $WITH_UPSCALERS -eq 1 ]]; then
     info "Downloading optional spatial + temporal upscalers (~1.3 GB)"
     mkdir -p "$UPSCALER_DIR"
-    run "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-spatial-upscaler-x2-1.1.safetensors --local-dir \"$UPSCALER_DIR\""
-    run "huggingface-cli download Lightricks/LTX-2.3 ltx-2.3-temporal-upscaler-x2-1.0.safetensors --local-dir \"$UPSCALER_DIR\""
+    run "$HF_BIN download Lightricks/LTX-2.3 ltx-2.3-spatial-upscaler-x2-1.1.safetensors --local-dir \"$UPSCALER_DIR\""
+    run "$HF_BIN download Lightricks/LTX-2.3 ltx-2.3-temporal-upscaler-x2-1.0.safetensors --local-dir \"$UPSCALER_DIR\""
     ok "Upscalers ready (operator must wire them into a two-stage workflow manually)"
 else
     info "Skipping upscalers (use --with-upscalers to fetch the ~1.3 GB optional set)"
