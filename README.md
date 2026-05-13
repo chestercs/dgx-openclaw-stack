@@ -86,47 +86,74 @@ Numbers come from a DGX Spark with 128 GB unified LPDDR5X. Single-prompt streami
 
 ## Quickstart
 
-Five commands. First-boot is two-phase by design (the gateway waits for explicit OpenClaw onboarding before applying the wiring); skip the heads-up below at your peril.
+Four shell commands plus one in-browser onboarding step — that's the minimal
+path to a working default-profile install. First-boot is **two-phase by
+design** (the gateway waits for explicit OpenClaw onboarding before applying
+the wiring); skip the heads-up below at your peril.
 
 ```bash
 git clone https://github.com/chestercs/dgx-openclaw-stack.git
 cd dgx-openclaw-stack
 
 ./bootstrap.sh                              # interactive, non-destructive, idempotent
-docker compose up -d                        # services start; gateway will crash-loop until step 5
-# 4. Open the OpenClaw Chrome extension or run `openclaw setup` on the host,
-#    pair it with `ws://<your-host>:18789` using the token printed by bootstrap.
+docker compose up -d                        # 10 default services; gateway will crash-loop
+                                            #   with "Missing config" until you onboard
+
+# Phase 2 — open the OpenClaw Chrome extension OR run `openclaw setup` in a
+# shell on the host, pair with `ws://<your-host>:18789` using the gateway
+# token printed by bootstrap. Onboarding writes openclaw.json.
+
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-That's it — the patcher applies all 15 steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+That's it — the patcher applies all wiring steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+
+This brings up the **10 default services** (LLM MoE + dense + embedding + gateway + cli + config-init + searxng + tts-en + tts-router + stt-whisper). Several capabilities are **opt-in profiles** that don't start with the default `up`:
+
+- `--profile hu` — Hungarian TTS (F5-TTS, CC-BY-NC weights — see [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc)).
+- `--profile browser` — Playwright Chromium for login-gated sites; per-credential 1× OAuth via the noVNC helper.
+- `--profile python` — Python code-execution sandbox (MCP).
+- **Image generation** lives in a [separate compose file](openclaw-image-comfyui/) and proxies to your existing ComfyUI install (the repo ships no model weights).
+- **Discord integration** is a separate operator-side flow (Developer Portal app → bot token → `openclaw channels add`). The patcher handles every Discord-related field automatically once you've created the channel; see [`docs/discord-bot-setup.md`](docs/discord-bot-setup.md) and [`docs/reference/discord-config.md`](docs/reference/discord-config.md).
+
+A more honest "what reproduces from a fresh clone vs what's manual" breakdown is in [§ Reproducibility from a fresh clone](#reproducibility-from-a-fresh-clone) below.
 
 ## Architecture at a glance
 
 ```
-    ┌────────────────────────────────────────────────────────────────┐
-    │  DGX Spark / ASUS GB10                                         │
-    │                                                                 │
-    │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────┐  │
-    │  ┌─────────────────┐  ┌─────────────────┐                       │
-    │  │ vllm-llm        │  │ vllm-llm-dense  │                       │
-    │  │ :8004 (internal)│  │ :8005 (internal)│                       │
-    │  │ Gemma 4 26B-A4B │  │ Gemma 4 31B IT  │                       │
-    │  │ MoE NVFP4, 256K │  │ dense NVFP4 256K│                       │
-    │  └────────▲────────┘  └────────▲────────┘                       │
-    │  ┌─────────────────┐  ┌─────────────────┐                       │
-    │  │ vllm-embedding  │  │ searxng         │                       │
-    │  │ :8005 (internal)│  │ :8080 (internal)│                       │
-    │  │ bge-m3 (567M)   │  │ privacy meta-   │                       │
-    │  │ 1024-dim, 8K ctx│  │ search (CPU)    │                       │
-    │  └────────▲────────┘  └────────▲────────┘                       │
-    │           │ compose DNS        │ compose DNS        │ compose DNS│
-    │  ┌────────┴────────────────────┴────────────────────┴────────┐  │
-    │  │ openclaw-gateway            :18789 (exposed)              │◀── Chrome ext.
-    │  │   └ openclaw-config-init    (one-shot)                    │◀── CLI
-    │  │   └ openclaw-cli            (always-up)                   │   │
-    │  └───────────────────────────────────────────────────────────┘  │
-    └────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │  DGX Spark / ASUS GB10                                               │
+    │                                                                       │
+    │  Default profile (10 services, all on the compose bridge network)    │
+    │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐       │
+    │  │ vllm-llm        │  │ vllm-llm-dense  │  │ vllm-embedding  │       │
+    │  │ :8004 (MoE 26B) │  │ :8005 (dense 31)│  │ :8005 (bge-m3)  │       │
+    │  └────────▲────────┘  └────────▲────────┘  └────────▲────────┘       │
+    │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐       │
+    │  │ searxng         │  │ openclaw-tts-en │  │ openclaw-tts-   │       │
+    │  │ :8080 privacy   │  │ Kokoro 82M EN   │  │ router :8090    │       │
+    │  │ meta-search     │  │ Apache 2.0      │  │ OAI-compat seam │       │
+    │  └────────▲────────┘  └────────▲────────┘  └────────▲────────┘       │
+    │  ┌─────────────────┐                                                 │
+    │  │ openclaw-stt-   │                                                 │
+    │  │ whisper :8093   │                                                 │
+    │  │ faster-whisper  │                                                 │
+    │  └────────▲────────┘                                                 │
+    │           │ compose DNS (service names)                              │
+    │  ┌────────┴──────────────────────────────────────────────────────┐   │
+    │  │ openclaw-gateway          :18789 (only published port)        │◀── Chrome ext.
+    │  │   ├ openclaw-config-init  (one-shot patcher, runs every up)   │◀── CLI
+    │  │   └ openclaw-cli          (always-up, shares gateway netns)   │   │
+    │  └───────────────────────────────────────────────────────────────┘   │
+    │                                                                       │
+    │  Opt-in profiles (parked unless explicitly enabled)                  │
+    │  ─ --profile hu       → openclaw-tts-f5hun (F5-TTS HU, CC-BY-NC)     │
+    │  ─ --profile browser  → openclaw-browser   (Chromium + noVNC)        │
+    │  ─ --profile python   → openclaw-python-sandbox (MCP exec)           │
+    │                                                                       │
+    │  Separate compose (proxies to operator-side ComfyUI on host)         │
+    │  ─ openclaw-image-comfyui/docker-compose.yml --profile image-gen     │
+    └──────────────────────────────────────────────────────────────────────┘
 ```
 
 All inter-container traffic is on the compose default bridge network; only port `18789` is published to the host. Put a reverse proxy (Nginx Proxy Manager, Caddy, Traefik, or a Cloudflared tunnel) in front for public access over `wss://`.
@@ -144,7 +171,8 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Privacy-respecting web search.** Self-hosted SearxNG wired into OpenClaw's native `webSearch` tool. No commercial search API, no query leak to Google / Bing / Yandex. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage + Wikipedia / Reddit / GitHub / arXiv).
 - **Bilingual self-hosted TTS.** Kokoro 82M (English, Apache 2.0) ships by default and runs alongside the LLM on the same GB10 GPU. Optional Hungarian (F5-TTS, opt-in via `--profile hu`) for fully local cross-language voice; details in [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc).
 - **Bilingual self-hosted STT.** `Systran/faster-whisper-large-v3` on a self-built CUDA 13 image (~150 LOC FastAPI wrapper — Blackwell compat ate the upstream speaches-ai image), autodetecting English and Hungarian (FLEURS HU WER 14.1%). ~3 GB VRAM at float16, wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads, Discord voice, VoiceCall CLI, and Talk/Voicewake nodes all transcribe through it. Details in [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md).
-- **Optional FLUX-Krea-dev image generation.** The `openclaw-image-comfyui` MCP bridge (opt-in via `--profile image-gen`) drives the operator's existing ComfyUI install through two single-stage `flux-krea-*` workflow templates: `flux-krea-2k` (SFW, 1280×720 default, any res up to 2048×2048) and `flux-krea-2k-adult` (same pipeline + flux-uncensored-v2 LoRA for explicit content). The bridge ships no model weights; the recommended ~35 GB download is documented in [`docs/reference/image-comfyui-bridge.md`](docs/reference/image-comfyui-bridge.md). For 4K output, render at 2K native and upscale externally with ESRGAN — diffusion-based upscalers (SUPIR, UltimateSDUpscale tile pass) were tried but produce visible tile-seam artifacts on FLUX latents and were dropped from the bundle.
+- **Optional FLUX-Krea-dev image generation.** The `openclaw-image-comfyui` MCP bridge (opt-in via `--profile image-gen`, separate compose file) drives the operator's existing ComfyUI install through `flux-krea-2k` (SFW, 1280×720 default) and `flux-krea-2k-adult` (same pipeline + flux-uncensored-v2 LoRA) workflow templates. The bridge ships no model weights; the recommended ~35 GB download is documented in [`docs/reference/image-comfyui-bridge.md`](docs/reference/image-comfyui-bridge.md). For 4K output, render at 2K native and upscale externally with ESRGAN — diffusion-based upscalers (SUPIR, UltimateSDUpscale tile pass) produce visible tile-seam artifacts on FLUX latents and were dropped.
+- **Discord-ready out of the box.** Once you create a bot in Discord's Developer Portal and run `openclaw channels add --channel discord`, the patcher writes 11 production-tested Discord overrides automatically (progressive streaming, slash-command authz for [issue #19310](https://github.com/openclaw/openclaw/issues/19310), tool-surface widening for the Discord-routed agent, cron + browser cheatsheets in the workspace). Every override is env-gated and individually disable-able — see [`docs/reference/discord-config.md`](docs/reference/discord-config.md) for the at-a-glance table.
 - **Long context, honest numbers.** 256K model max; realistic stable bands (per user count) are documented in the compose file.
 - **Idempotent configuration.** The patcher re-applies a known-good state on every `up`. Safe to run repeatedly.
 - **Reverse-proxy ready.** `gateway.trustedProxies` is pre-populated; add your LAN CIDR via `OPENCLAW_LAN_CIDR` if needed.
@@ -154,32 +182,36 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```
 dgx-openclaw-stack/
-├─ docker-compose.yml           # the whole stack (vllm-* + searxng + openclaw-* + tts-* + stt-* + browser)
-├─ patch-config.mjs             # idempotent OpenClaw config patcher (15 steps)
-├─ bootstrap.sh                 # non-destructive first-time setup
+├─ docker-compose.yml           # default + opt-in profiles (hu, browser, python)
+├─ patch-config.mjs             # idempotent OpenClaw config patcher (27+ steps,
+│                               #   header docblock indexes every one)
+├─ bootstrap.sh                 # non-destructive interactive first-time setup
+├─ bootstrap-browser-login.sh   # 1x OAuth onboarding helper (noVNC bridge)
+├─ rotate-secrets.sh            # rotate gateway / service tokens in place
 ├─ .env.example                 # documented env template (every tunable lives here)
 ├─ templates/
-│  └─ tool_chat_template_gemma4.jinja   # Gemma 4 tool-call chat template
+│  ├─ tool_chat_template_gemma4.jinja        # Gemma 4 tool-call chat template
+│  ├─ discord-text-agent/AGENTS.md.example   # discord-friend agent template
+│  └─ userscripts/                            # web chat UI userscripts (opt-in)
 ├─ searxng/
-│  └─ settings/
-│     └─ settings.yml           # SearxNG override: JSON API + strict engine whitelist
+│  └─ settings/settings.yml     # SearxNG override: JSON API + strict engine whitelist
+├─ vllm-llm/                    # custom vLLM image (gemma4 tool-call parser patch
+│                               #   for colon namespaces — see Dockerfile)
+├─ openclaw-base-ext/           # local extension of the openclaw image (adds ffmpeg)
 ├─ openclaw-tts-en/             # English TTS service (Kokoro 82M, Apache 2.0)
-│  └─ server/                   #   Dockerfile + FastAPI wrapper
-├─ openclaw-tts-router/         # OpenAI-compat TTS router (passthrough + ffmpeg transcode)
-│  └─ server/
-├─ openclaw-tts-f5hun/          # OPT-IN Hungarian TTS (CC-BY-NC model weights)
-│  ├─ server/                   #   Dockerfile + F5-TTS wrapper
-│  └─ voices/                   #   Bundled reference voice (Diana Majlinger, public domain)
-├─ openclaw-stt-whisper/        # Self-built CUDA 13 STT image (Blackwell compat)
-│  └─ server/                   #   Dockerfile + FastAPI wrapper around faster-whisper
-├─ openclaw-browser/            # OPT-IN browser automation — Playwright Chromium over CDP
-│  ├─ server/                   #   Dockerfile + FastAPI supervisor + login-helper
-│  └─ config/                   #   Domain blocklist + (placeholder) seccomp profile
-├─ bootstrap-browser-login.sh   # 1x OAuth onboarding helper (noVNC bridge)
+├─ openclaw-tts-router/         # OpenAI-compat TTS router (passthrough + ffmpeg)
+├─ openclaw-tts-f5hun/          # OPT-IN Hungarian TTS (--profile hu, CC-BY-NC weights)
+├─ openclaw-stt-whisper/        # Self-built CUDA 13 STT image (faster-whisper)
+├─ openclaw-browser/            # OPT-IN browser automation (--profile browser)
+├─ openclaw-python-sandbox/     # OPT-IN Python MCP exec sandbox (--profile python)
+├─ openclaw-image-comfyui/      # OPT-IN image-gen MCP bridge — SEPARATE compose file
+│                               #   (proxies to operator's existing ComfyUI install)
 ├─ docs/
 │  ├─ ARCHITECTURE.md           # service-by-service design rationale
 │  ├─ CUSTOMIZATION.md          # model swaps, remote backends, hardware retuning
-│  └─ TROUBLESHOOTING.md        # common failure modes and fixes
+│  ├─ TROUBLESHOOTING.md        # common failure modes and fixes
+│  ├─ discord-bot-setup.md      # zero-to-bot Discord Developer Portal walkthrough
+│  └─ reference/                # deeper reference docs (15+ files — see reference/README.md)
 ├─ README.md                    # you are here — pitch + quickstart
 ├─ SETUP.md                     # end-user first-boot walkthrough
 ├─ CHANGELOG.md                 # versioned release notes
@@ -187,6 +219,34 @@ dgx-openclaw-stack/
 ├─ CONTRIBUTING.md              # how to file issues + send PRs
 └─ LICENSE                      # MIT (model weights retain upstream licenses)
 ```
+
+## Reproducibility from a fresh clone
+
+Honest scope: a `git clone` + `./bootstrap.sh` + `docker compose up -d` followed
+by the onboarding handshake brings up the **10 default services and the full
+agent baseline** (Gemma 4 MoE + dense, embedding, gateway, web search, EN TTS,
+STT, hybrid memory, all 27+ patcher overrides). The advanced surfaces (Discord,
+image-gen, Hungarian TTS, browser automation) need explicit operator steps —
+each is documented but none is a one-command install. The table below is the
+honest answer to *"will my clone end up where the maintainer's deploy is?"*.
+
+| Layer | Reproduces from `compose up` alone? | What's needed beyond bootstrap |
+|---|---|---|
+| 10 default services (LLM MoE + dense, embedding, gateway, cli, config-init, searxng, tts-en, tts-router, stt-whisper) | ✅ after onboarding | Gateway is **expected to crash-loop** until you complete the Chrome-extension wizard or `openclaw onboard` — then re-run the patcher trio. SETUP.md §5–6b walks through this. |
+| Gemma 4 NVFP4 weights | ❌ | HF account, accept the [Gemma 4 license](https://huggingface.co/nvidia/Gemma-4-26B-A4B-NVFP4), put your `hf_…` token in `.env`. `bootstrap.sh` prompts for it. |
+| Hungarian TTS (F5-TTS) | ❌ | `--profile hu` + accept the [CC-BY-NC model license](https://huggingface.co/sarpba/F5-TTS_V1_hun_v2) at build time. See [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc). |
+| Browser automation | ❌ | `--profile browser`, then per-credential noVNC OAuth via `./bootstrap-browser-login.sh <profile>`. Each login is 1× manual (W3C origin-bound — passkeys don't work). |
+| Python sandbox | ❌ | `--profile python`, secrets generated by `bootstrap.sh`. |
+| Discord integration | ❌ | Discord Developer Portal (create app + bot token), `openclaw channels add --channel discord`, copy `templates/discord-text-agent/AGENTS.md.example` to `workspace-discord/AGENTS.md`. Walkthrough: [`docs/discord-bot-setup.md`](docs/discord-bot-setup.md). The 11 patcher overrides (steps 20-30) auto-apply once the channel exists; the operator-tunable env knobs are catalogued in [`docs/reference/discord-config.md`](docs/reference/discord-config.md). |
+| Image generation | ❌ | Separate compose at `openclaw-image-comfyui/docker-compose.yml` (`--profile image-gen`), **plus** your own ComfyUI install on `host.docker.internal:13036` (or LAN IP), **plus** model weights of your choice (FLUX Krea / SDXL fine-tunes). The repo ships no weights. See [`docs/reference/image-comfyui-bridge.md`](docs/reference/image-comfyui-bridge.md). |
+| Memory contents | ❌ (by design) | User's accumulated notes under `workspace/memory/*.md` are operator data, not code. Back up with `tar czf openclaw-$(date +%F).tar.gz -C $OPENCLAW_CONFIG_DIR .` |
+
+What the repo **does** guarantee: bit-stable wiring of every service it ships,
+deterministic patcher state on every `up`, pinned `OPENCLAW_IMAGE_REF` digest in
+`.env.example`, and idempotent secret generation in `bootstrap.sh`. The
+externals (HF model licences, Discord, browser OAuth, image-gen weights) are
+externalised precisely because they're decisions the operator must make — not
+oversights.
 
 ## Hungarian TTS opt-in (CC-BY-NC)
 
@@ -230,12 +290,13 @@ license. Details + voice catalog in
 Running a useful local (or hybrid) agent on top of OpenClaw + vLLM is trickier than the surface picture suggests:
 
 - The OpenClaw onboarding wizard doesn't register NVFP4 models against a self-hosted vLLM provider, leaves `memorySearch` disabled, ships an empty `gateway.trustedProxies`, and writes a placeholder API key — all of which silently break things later.
-- Gemma 4 tool calling requires a specific chat template that isn't in the official vLLM image.
+- Gemma 4 tool calling requires a specific chat template that isn't in the official vLLM image, **plus** a one-line fix to the upstream `gemma4` tool-call parser so colon namespaces like `discord:add_reaction` aren't rejected by the regex — both ship as part of the local `vllm-llm/` image build.
 - The bundled OpenClaw `searxng` plugin ships **default-disabled** — `webSearch` looks wired up but doesn't actually fire until you flip it on.
 - Hybrid (BM25 + vector) retrieval and MMR re-rank are native OpenClaw features but aren't on by default.
+- Discord slash commands [silently fail in guilds](https://github.com/openclaw/openclaw/issues/19310) because of an upstream dual-permission check; the auto-ack reaction has [a known cycle bug](https://github.com/openclaw/openclaw/issues/46024); the `coding` tool profile (default for non-main agents) excludes `browser`, `tts`, and `canvas` so a Discord-routed agent can't reach for half the tools the main agent uses. The patcher fixes all three by default — and every override is env-gated so you can disable any of them.
 - On GB10 specifically, unified-memory GPU budgeting between two concurrent vLLM processes needs care (`LLM_GPU_MEM_UTIL` vs `EMBED_GPU_MEM_UTIL`).
 
-This repo captures a known-good wiring for all of the above in a single deterministic `docker compose up`. The `patch-config.mjs` patcher re-applies it on every restart so the wiring survives onboarding-wizard reruns, image upgrades, and manual edits.
+This repo captures a known-good wiring for all of the above in a single deterministic `docker compose up`. The `patch-config.mjs` patcher re-applies its 27+ steps on every restart so the wiring survives onboarding-wizard reruns, image upgrades, and manual edits — every step is logged with a `[patch-config]` line and gated by user-managed protection (your hand-edits to `openclaw.json` are preserved).
 
 ## License
 

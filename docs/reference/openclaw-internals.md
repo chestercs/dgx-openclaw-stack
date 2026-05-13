@@ -22,9 +22,9 @@
 - `v0.4.1` (2026-04-22, `f87d3b0`) — Post-v0.4.0 polish batch: patcher **step 12** (`gateway.auth.token` → `gateway.remote.token` mirror, `bcea0a5`), patcher **step 13** (per-agent `auth-profiles.json` sync with `VLLM_API_KEY`, `dd935b0`), TTS enum normalization (`81f1fa4`), vLLM healthcheck `python3` fix (`fe6726d`), `.env` defaults convergence (`e132071`), drop `OPENCLAW_GATEWAY_TOKEN` from the CLI env (`644fe68`), `operator/` gitignore (`80a2412`), docs 11 → 13 step sync.
 - `v0.4.2` (2026-04-22) — Documentation release: publishes `docs/reference/` (six deep-dive files: LLM stack, TTS stack, Hungarian TTS research, OpenClaw internals, reusable patterns), declares an English-only documentation policy in `CLAUDE.md`, translates the new reference files to English, and renames the gitignored private-artifacts folder `operator/` → `private/`.
 
-### Current content (v0.4.2)
+### Snapshot at v0.4.2 (historical — kept for the release-history continuity above; current stack has grown considerably since)
 
-- **Stack:** `docker-compose.yml` (8 default services + 1 opt-in HU service via `profiles: ["hu"]`), `patch-config.mjs` (13-step idempotent patcher), `bootstrap.sh` (regex-gated secret rotation + HU TTS opt-in prompt), `templates/tool_chat_template_gemma4.jinja`, `searxng/settings/settings.yml`.
+- **Stack:** `docker-compose.yml` (8 default services + 1 opt-in HU service via `profiles: ["hu"]`), `patch-config.mjs` (13-step idempotent patcher), `bootstrap.sh` (regex-gated secret rotation + HU TTS opt-in prompt), `templates/tool_chat_template_gemma4.jinja`, `searxng/settings/settings.yml`. **Current state (post-v0.11):** 10 default services + 3 opt-in profiles + separate image-gen compose, 27+ patcher steps. See [`docs/reference/discord-config.md`](./discord-config.md) and the `patch-config.mjs` header docblock for the up-to-date inventory.
 - **TTS surface:** `openclaw-tts-en/` (Kokoro 82M, default), `openclaw-tts-router/` (FastAPI passthrough + ffmpeg), `openclaw-tts-f5hun/` (F5-TTS HU, opt-in via `profiles: ["hu"]`).
 - **Docs:** `README.md`, `SETUP.md`, `docs/{ARCHITECTURE,CUSTOMIZATION,TROUBLESHOOTING}.md`, `docs/reference/`, `CLAUDE.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `LICENSE` (MIT).
 - **GitHub meta:** `.github/FUNDING.yml`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`.
@@ -145,6 +145,29 @@ docker exec vllm-llm sh -c 'cat /proc/1/cmdline' | tr '\0' '\n' | awk '/^--api-k
 ### CLI agent runner behavior
 
 `openclaw agent --agent main` runs by default with **`runner: embedded`** (a loopback fast path, not a WS round-trip). The embedded runner reads the key from `auth-profiles.json`; the `OPENAI_API_KEY` env in the CLI container **does not** override it. That's why step 13 is required.
+
+### 4th store — per-agent `models.json` (stale-prone cache)
+
+The agent-tool surface for `image` / vision uses a SEPARATE provider catalog at `~/.openclaw/agents/<id>/agent/models.json` (written by `ensureOpenClawModelsJson()` in `image-2w3cApg7.js`). Text generation is unaffected — the text path reads `models.providers.*` from live `openclaw.json` directly, but the image / vision path consults this cached catalog to discover the right `baseUrl`, `apiKey`, and `input: ["text","image"]` capability flag.
+
+**Staleness gotcha (real incident 2026-05-13).** When `models.providers.vllm.baseUrl` changes (e.g. when the `vllm-llm-proxy` service was removed in v0.6.x and the URL flipped from `vllm-llm-proxy:8004` to `vllm-llm:8004`), the live config is updated but each agent's `models.json` keeps the OLD `baseUrl` because the regen logic only runs when the file is missing — config-edits don't invalidate it. Symptom: text generation works (uses live config), image / vision tool fails with `Image model failed (vllm/...): Connection error` (the stale `vllm-llm-proxy` host doesn't resolve). Sufficient hack on retry: agent reaches for `gpt-5.4-mini` openai fallback which also fails (`401 Incorrect API key`) because the stack has no real OpenAI key and the upstream catalog's `openai/gpt-5.4-mini` is registered against the openai cloud endpoint.
+
+**Fix recipe.** Delete the stale files; next image-tool call regenerates from current config:
+
+```bash
+docker exec openclaw-cli rm /home/node/.openclaw/agents/*/agent/models.json
+# next `openclaw agent ...` or Discord image attachment triggers regen
+```
+
+Run this whenever:
+
+- A provider's `baseUrl` changes (service rename, proxy removal, port move).
+- A new provider is added to `models.providers` and you want agents to see it.
+- The image tool errors with `Connection error` despite text generation working — that's the signature of a stale cache.
+
+**Why not auto-regenerate on every patcher run?** Considered, deferred: `ensureOpenClawModelsJson()` resolves auth profiles + envs + plugin overrides, so a force-rewrite at patcher time would either short-circuit the natural sync points or pull stale auth data. The current behaviour (regenerate-when-missing) is conservative; an explicit operator `rm` is the cheapest safe path until upstream adds a `models.json --refresh` CLI.
+
+The image-tool also has an `agents.defaults.imageModel` config (`{ primary, fallbacks: [] }`) that controls which model the tool tries first — but the primary's `baseUrl` is still resolved through this stale-prone `models.json` lookup, so setting `imageModel.primary` alone doesn't fix a stale `baseUrl`.
 
 The gateway WS route is used by the remote CLI and the Chrome extension — for them, `gateway.remote.token` (step 12) is what matters.
 

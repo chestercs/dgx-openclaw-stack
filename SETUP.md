@@ -154,10 +154,11 @@ docker compose up -d --force-recreate \
   openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-The `openclaw-config-init` container now finds `openclaw.json` and applies all
-14 patcher steps (vllm provider wiring, hybrid memory + MMR, SearxNG
-enablement, dreaming, trustedProxies, TTS provider, STT provider — see
-`patch-config.mjs`).
+The `openclaw-config-init` container now finds `openclaw.json` and applies the
+27+ patcher steps (vllm provider wiring, hybrid memory + MMR, SearxNG
+enablement, dreaming, trustedProxies, TTS provider, STT provider, MCP wiring
+for python-sandbox and image-comfyui, browser CDP profiles, 11 Discord
+overrides — see `patch-config.mjs` for the indexed list).
 You'll see `[patch-config]` lines for each change. The gateway restarts and
 picks up the patched config.
 
