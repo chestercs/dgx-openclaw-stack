@@ -9,6 +9,15 @@ Lives in a separate compose file
 This document explains the design choices, threat model, and the bits
 that bit somebody once and ended up shaping the architecture.
 
+> **Video extension (v0.12.0+):** the same bridge also serves
+> `comfyui_image__generate_video` once LTX-Video 2.3 is installed.
+> The video-specific bits — model bundle (~71 GB), audio handling,
+> quantization choice, web-chat degradation note, Discord auto-embed
+> limits — live in [`video-comfyui-bridge.md`](video-comfyui-bridge.md).
+> Everything in this file (MCP wire, host-gateway hop, workflow
+> `_metadata` schema, response envelope, capability-token canvas)
+> applies unchanged to video.
+
 ## Why a bridge — and why MCP
 
 OpenClaw exposes three integration paths an external image generator

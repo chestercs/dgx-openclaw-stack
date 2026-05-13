@@ -32,7 +32,7 @@ services:
   openclaw-image-comfyui:
     build:
       context: ./server
-    image: openclaw-image-comfyui:0.11.1
+    image: openclaw-image-comfyui:0.12.0
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
     hostname: openclaw-image-comfyui
     # `image-gen` profile gates this service so an absent --profile flag
@@ -91,6 +91,15 @@ services:
       # Explicit caller args still win. See .env.example for guidance.
       IMAGE_GEN_DEFAULT_WORKFLOW: ${IMAGE_GEN_DEFAULT_WORKFLOW:-}
       IMAGE_GEN_DEFAULT_CHECKPOINT: ${IMAGE_GEN_DEFAULT_CHECKPOINT:-}
+      # LTX-Video 2.3 (v0.12.0+) defaults — only consulted by the
+      # generate_video tool. Length / fps / audio enabled apply when
+      # the caller doesn't override per-call. Duration cap prevents
+      # an agent from asking for a 60-second render that blows past
+      # Discord's auto-embed envelope and the per-tool timeout.
+      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-96}
+      LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
+      LTX_VIDEO_DEFAULT_AUDIO: ${LTX_VIDEO_DEFAULT_AUDIO:-on}
+      LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}
     volumes:
       # workflows/ is COPYed into the image AND bind-mounted ro so
       # operators can drop new templates without rebuilding. The bridge
@@ -110,7 +119,12 @@ services:
     cap_drop: [ALL]
     security_opt:
       - "no-new-privileges:true"
-    mem_limit: 1024m
+    # Bumped 1024m → 1536m in v0.12.0 for the video extension. ffmpeg
+    # was added to the image (~50 MB resident), and mp4 byte buffers
+    # in the canvas-wrapper write path are larger than PNG. The bridge
+    # still has no GPU and never holds model weights in RAM — heavy
+    # lifting stays inside ComfyUI on the host.
+    mem_limit: 1536m
     cpus: 1
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9095/healthz"]

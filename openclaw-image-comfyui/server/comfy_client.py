@@ -4,8 +4,9 @@ ComfyUI's API surface used here is undocumented but stable across years
 of releases (Comfy-Org/ComfyUI):
 
   POST /prompt              — submit a workflow JSON, get back a prompt_id
+  POST /upload/image        — multipart upload to input/ (used for I2V)
   GET  /history/{prompt_id} — poll until the prompt has `outputs`
-  GET  /view                — fetch a saved image by filename + type
+  GET  /view                — fetch a saved image / video / audio by filename + type
   POST /queue               — `{delete: [prompt_id]}` cancels a queued job
   POST /interrupt           — interrupt the currently running prompt
 
@@ -155,7 +156,11 @@ class ComfyClient:
         self, filename: str, *, image_type: str = "output", subfolder: str = ""
     ) -> bytes:
         """Fetch a saved image by filename. ComfyUI's /view validates path
-        traversal server-side; we pass parameters as query string."""
+        traversal server-side; we pass parameters as query string.
+
+        Mode-agnostic despite the name: /view streams any output type
+        (image, video, audio). Kept named `fetch_image` for the existing
+        image-gen callers; video callers can use this just as well."""
         try:
             r = await self._client.get(
                 "/view",
@@ -168,6 +173,49 @@ class ComfyClient:
                 f"view fetch failed for {filename!r} (HTTP {r.status_code})"
             )
         return r.content
+
+    async def upload_image(
+        self,
+        data: bytes,
+        filename: str,
+        *,
+        image_type: str = "input",
+        subfolder: str = "",
+        overwrite: bool = True,
+    ) -> dict:
+        """Upload bytes to ComfyUI's input/ dir via multipart POST.
+
+        Used for image-to-video — the LTX-2.3 I2V workflow has a
+        `LoadImage` node whose `image` input expects a filename present
+        in ComfyUI's input/ tree. Without this method the bridge would
+        have no way to inject a caller-supplied reference frame.
+
+        Returns the JSON envelope ComfyUI emits — `{"name": "...",
+        "subfolder": "...", "type": "input"}` — which is exactly the
+        shape `LoadImage.inputs.image` expects (so a single dict slot
+        can be substituted directly).
+
+        Idempotency: `overwrite=True` (default) makes re-uploading the
+        same filename safe. ComfyUI mints a unique name if overwrite
+        is false AND the name already exists; we'd then need to read
+        the returned `name` to know which file was actually written —
+        which is why we read the response either way."""
+        files = {"image": (filename, data, "application/octet-stream")}
+        form = {
+            "type": image_type,
+            "subfolder": subfolder,
+            "overwrite": "true" if overwrite else "false",
+        }
+        try:
+            r = await self._client.post("/upload/image", files=files, data=form)
+        except httpx.RequestError as e:
+            raise ComfyUIError(f"upload failed (network): {type(e).__name__}: {e}") from e
+        if r.status_code != 200:
+            raise ComfyUIError(f"upload rejected (HTTP {r.status_code}): {r.text[:500]}")
+        try:
+            return r.json()
+        except Exception as e:  # noqa: BLE001
+            raise ComfyUIError(f"upload returned non-JSON body: {r.text[:200]}") from e
 
     async def cancel(self, prompt_id: str) -> dict:
         """Best-effort cancel: ask the queue to drop the prompt and, if
@@ -198,23 +246,59 @@ class ComfyClient:
         return r.json()
 
 
-def extract_image_outputs(history_entry: dict) -> list[dict]:
+def extract_media_outputs(history_entry: dict) -> list[dict]:
     """Walk a /history entry's outputs and produce a flat list of
-    {filename, subfolder, type, node_id} for every saved image. ComfyUI's
-    output shape is `{node_id: {"images": [{filename, subfolder, type}]}}`
-    keyed by SaveImage node id."""
+    {filename, subfolder, type, node_id, media_kind} for every saved
+    media file (images, videos, audio).
+
+    ComfyUI's output shape is `{node_id: {"<bucket>": [{filename,
+    subfolder, type}]}}` where `<bucket>` is one of:
+
+      - "images" — SaveImage, PreviewImage, and similar image-saving
+        nodes.
+      - "videos" — SaveVideo (the ComfyUI core video node added in
+        0.16.x for the day-0 LTX support).
+      - "gifs"   — VHS_VideoCombine (VideoHelperSuite custom node).
+        Despite the name, files in this bucket are usually mp4/webm,
+        not literal GIFs.
+      - "audio"  — SaveAudio. We don't surface these as standalone
+        outputs today (LTX-2.3 muxes audio into the video file via
+        CreateVideo + SaveVideo); a future audio-only workflow would
+        need a small extension of the caller's handling.
+
+    Each entry gets a `media_kind` tag (`"image"` / `"video"`) so the
+    caller can branch on it without parsing the filename extension:
+    a `.mp4` from a CreateVideo->SaveVideo chain belongs to "videos",
+    not "images", and the bridge's PIL probe must be skipped for
+    those (mp4 bytes are not a valid PIL.Image input).
+    """
     found: list[dict] = []
     outputs = history_entry.get("outputs") or {}
     for node_id, node_out in outputs.items():
-        for entry in (node_out or {}).get("images") or []:
-            if not entry.get("filename"):
-                continue
-            found.append(
-                {
-                    "node_id": node_id,
-                    "filename": entry["filename"],
-                    "subfolder": entry.get("subfolder", ""),
-                    "type": entry.get("type", "output"),
-                }
-            )
+        if not isinstance(node_out, dict):
+            continue
+        for bucket, kind in (
+            ("images", "image"),
+            ("videos", "video"),
+            ("gifs",   "video"),
+        ):
+            for entry in node_out.get(bucket) or []:
+                if not entry.get("filename"):
+                    continue
+                found.append(
+                    {
+                        "node_id": node_id,
+                        "filename": entry["filename"],
+                        "subfolder": entry.get("subfolder", ""),
+                        "type": entry.get("type", "output"),
+                        "media_kind": kind,
+                    }
+                )
     return found
+
+
+# Back-compat alias. The image-gen tool predates the video extension and
+# imported the function under its old name; the rename happens here
+# rather than at every import site to keep the diff small and reduce
+# the risk of a stale third-party fork breaking on update.
+extract_image_outputs = extract_media_outputs

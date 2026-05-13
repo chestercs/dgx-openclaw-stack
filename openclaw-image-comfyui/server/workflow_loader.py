@@ -35,6 +35,14 @@ log = logging.getLogger("workflow-loader")
 # class_type → default `inputs` field name we should write our value into.
 # Used as a fallback when a workflow's _metadata.targets is silent on a
 # given parameter. Prompt/negative are deliberately absent (ambiguous).
+#
+# Note on video workflows: image-side fallback class_types
+# (EmptyLatentImage, KSampler) don't exist in LTX-2.3 graphs —
+# `_find_node_by_class_type` returns None and the bind silently no-ops.
+# Video workflows MUST declare explicit targets in `_metadata.targets`
+# for every parameter they want the bridge to tune; the fallback below
+# only kicks in for the small subset of params that are unambiguous
+# across the LTX node pack.
 CLASS_TYPE_FALLBACK = {
     "checkpoint":  ("CheckpointLoaderSimple", "ckpt_name"),
     "width":       ("EmptyLatentImage",       "width"),
@@ -45,6 +53,11 @@ CLASS_TYPE_FALLBACK = {
     "cfg":         ("KSampler",               "cfg"),
     "sampler":     ("KSampler",               "sampler_name"),
     "scheduler":   ("KSampler",               "scheduler"),
+    # Video — these only fire if the workflow forgot to declare an
+    # explicit target. The LTX node pack ships exactly one EmptyLTXV-
+    # LatentVideo per graph, so the first-match lookup is safe.
+    "length":      ("EmptyLTXVLatentVideo",   "length"),
+    "init_image":  ("LoadImage",              "image"),
 }
 
 
@@ -64,6 +77,10 @@ class Workflow:
         self.checkpoint_required: bool = bool(meta.get("checkpoint_required", False))
         self.defaults: dict = dict(meta.get("defaults") or {})
         self.targets: dict = dict(meta.get("targets") or {})
+        # "image" (default) or "video". Surfaced by list_workflows so
+        # the agent can filter the list to the right tool. Doesn't
+        # affect bind() — every workflow is treated the same way.
+        self.kind: str = str(meta.get("kind") or "image").lower()
 
     def declared_overrides(self) -> list[str]:
         # Surface to the agent which params this workflow accepts. Useful
@@ -157,9 +174,18 @@ class Workflow:
         # Optional params — only write if the caller provided a value AND
         # the workflow has a target (explicit or fallback). Silently skip
         # otherwise; the workflow's baked-in default applies.
+        #
+        # Image-tool params: negative, checkpoint, width, height,
+        #     batch_size, seed, steps, cfg, sampler, scheduler.
+        # Video-tool extras: length (frames), fps, audio_enabled,
+        #     init_image (LoadImage filename for I2V). bind() doesn't
+        #     branch on which tool called it — every workflow declares
+        #     in `_metadata.targets` which keys are actually wired, and
+        #     unwired keys silently no-op (logged at INFO).
         for key in (
             "negative", "checkpoint", "width", "height", "batch_size",
             "seed", "steps", "cfg", "sampler", "scheduler",
+            "length", "fps", "audio_enabled", "init_image",
         ):
             value = args.get(key)
             if value is None:
@@ -285,6 +311,7 @@ class WorkflowLoader:
             {
                 "name": wf.name,
                 "description": wf.description,
+                "kind": wf.kind,
                 "checkpoint_required": wf.checkpoint_required,
                 "defaults": wf.defaults,
                 "declared_overrides": wf.declared_overrides(),

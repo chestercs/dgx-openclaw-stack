@@ -37,6 +37,7 @@ research rationale behind the chosen LLM / TTS stack, this is where to look.
 | [`browser-automation.md`](./browser-automation.md) | Playwright Chromium over CDP: port-per-profile, query-string token, noVNC bridge, threat model, `browser.act` parameter coaching |
 | [`python-sandbox.md`](./python-sandbox.md) | Python code-execution sandbox: MCP wiring, kernel pool, threat model, why not OpenClaw native or `agents.defaults.sandbox` |
 | [`image-comfyui-bridge.md`](./image-comfyui-bridge.md) | Image-generation MCP bridge → ComfyUI: cross-compose join, host-gateway hop, workflow template architecture, chat-side render limitations, threat model |
+| [`video-comfyui-bridge.md`](./video-comfyui-bridge.md) | Video-generation extension on the same bridge (LTX-Video 2.3, v0.12.0+): model bundle ~71 GB, native audio in a single pass, T2V + I2V tool, Discord auto-embed as the primary surface |
 | [`img-bash-command.md`](./img-bash-command.md) | `!~/.openclaw/bin/img` Discord bash bypass for image-gen — why it exists, how it's wired |
 | [`media-bridge-checklist.md`](./media-bridge-checklist.md) | End-to-end TTS / STT / image-gen pipeline verification checklist for new deploys |
 | [`chat-surface-capability-matrix.md`](./chat-surface-capability-matrix.md) | What renders where: Discord text vs Discord voice vs OpenClaw web chat vs CLI (markdown / images / TTS / shortcodes) |

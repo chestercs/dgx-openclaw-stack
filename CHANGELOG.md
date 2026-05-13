@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — LTX-Video 2.3 integration (image-comfyui bridge v0.12.0)
+
+New tool `comfyui_image__generate_video` on the existing image-gen
+bridge — same MCP server, same auth, same host-gateway hop. Supports
+text-to-video (T2V) and image-to-video (I2V) modes with **native
+synchronized audio** from LTX-Video 2.3's single-pass diffusion. The
+discord-routed agent gains the tool automatically (no profile change —
+`coding` already includes `video_generate`); the patcher writes a
+worked example into the discord-friend AGENTS.md when
+`LTX_VIDEO_ENABLED=1` is set.
+
+Activation is the same triple-gate as the FLUX-Krea bundle and the
+Python sandbox: env-token + compose profile + opt-in operator action.
+Bandwidth-large model download (~71 GB: 46 GB LTX-2.3 checkpoint + 25
+GB Gemma 3 12B text encoder) lives behind `scripts/install-ltx-video.sh
+--basedir /path/to/comfyui`, not behind a bootstrap auto-run.
+
+- **scripts/install-ltx-video.sh** — flag-gated installer
+  (`--variant dev|distilled|distilled-1.1`, `--with-upscalers`,
+  `--update`, `--dry-run`). Verifies basedir + auth before starting,
+  pulls the LTX node pack into custom_nodes/, downloads the chosen
+  checkpoint + Gemma encoder + optional upscalers. Idempotent.
+- **scripts/bench-ltx-video.sh** — runs T2V cold, T2V warm, I2V warm
+  on the bridge and appends the GB10 numbers + peak VRAM to
+  `docs/reference/ltx-video-bench.md`.
+- **docs/reference/video-comfyui-bridge.md** — model bundle recipe,
+  quantization trade-off, audio handling, Discord auto-embed limits,
+  web-chat degradation note (inline video render via `[embed]`
+  shortcode wrapper is UNVERIFIED for video — Discord is the
+  primary surface).
+- **openclaw-image-comfyui v0.12.0** — bridge image bumped:
+  - `comfy_client.py`: new `upload_image()` multipart POST to
+    `/upload/image` (powers I2V — bridge was strictly fetch-only
+    before). `extract_image_outputs` renamed →
+    `extract_media_outputs`; walks `images`, `videos`, `gifs` and
+    tags each entry with `media_kind`. Old name kept as alias.
+  - `workflow_loader.py`: bind keys extended with `length`, `fps`,
+    `audio_enabled`, `init_image`. `_metadata.kind` (`"image"` /
+    `"video"`) surfaced via `list_workflows`. New CLASS_TYPE_FALLBACK
+    entries for `length` (EmptyLTXVLatentVideo.length) and
+    `init_image` (LoadImage.image).
+  - `app.py`: `generate_video` tool with T2V/I2V auto-routing,
+    duration cap enforcement (LTX_VIDEO_MAX_DURATION_S), HTML
+    canvas-wrapper emission for the `[embed]` shortcode path.
+  - `Dockerfile`: ffmpeg installed (operator-debug ffprobe in
+    `docker exec`; bridge runtime doesn't invoke it). Image tag
+    `0.11.1` → `0.12.0`.
+  - `docker-compose.yml`: image tag bump, `mem_limit` 1024m →
+    1536m, new env passthroughs for `LTX_VIDEO_*`.
+- **patch-config.mjs** — new step 27b appends the LTX video
+  cheatsheet to the discord-friend AGENTS.md, env-gated on
+  `LTX_VIDEO_ENABLED`. Same marker-block idempotency as step 27.
+- **.env.example** — new "LTX-Video 2.3" block documenting all five
+  knobs (`LTX_VIDEO_ENABLED`, `_DEFAULT_LENGTH_FRAMES`,
+  `_DEFAULT_FPS`, `_DEFAULT_AUDIO`, `_MAX_DURATION_S`, `_QUANT`).
+- **bootstrap.sh** — new optional prompt 3h "Activate LTX-Video
+  2.3?". Env-presence guard skips on re-run.
+
+**Pre-reqs the installer doesn't verify automatically** (operator's
+responsibility): ComfyUI core ≥ 0.17.0 (LTX-2.3 primitive nodes landed
+in 0.16.x but the official Comfy-Org reference workflows use
+`ComfyMathExpression` from 0.17.0), HF auth (Gemma 3 is gated),
+~55-71 GB free disk on the ComfyUI basedir's filesystem (fp8 vs bf16
+variant).
+
+**Out of scope** (deferred): audio-to-video third mode; two-stage
+upscaler workflows (single-stage shipped, two-stage requires manual
+workflow authoring with the optional upscaler weights from
+`install-ltx-video.sh --with-upscalers`); web-chat inline video render
+end-to-end verification (Discord auto-embed is the verified surface).
+
 ### Verified — Discord smoke test 14/16 PASS (live, both routes)
 End-to-end smoke on the live GB10 stack 2026-05-07, real Discord client
 through the bot's mention surface. DM (`@ImbulClaw` direct) and guild

@@ -48,6 +48,91 @@ seam_fix mode. Operators who genuinely need 4K should render at
 ESRGAN (no diffusion, no tile artifacts). The four 4K workflows are
 removed in this revision.
 
+## LTX-Video 2.3 templates (v0.12.0+) — operator-assembled
+
+Two `.example` files ship with the bridge:
+
+| Template | Purpose | Routed when |
+|--|--|--|
+| `ltx-2.3-t2v.json.example` | Text-to-video + native audio | `comfyui_image__generate_video` called without an `init_image_*` arg |
+| `ltx-2.3-i2v.json.example` | Image-to-video + native audio | `comfyui_image__generate_video` called WITH `init_image_url` or `init_image_base64` |
+
+These ship as `.example` because the LTX-2.3 node graph is large (~25-50
+nodes per workflow) and the node input contracts are tied to the
+operator's exact ComfyUI / LTXVideo-pack version. Shipping a pre-built
+`.json` would bind brittle node IDs that may not match the operator's
+install. **The bridge's `workflow_loader` skips `.example` files at
+load time**, so this scaffolding is dormant until the operator opts in.
+
+### Activation recipe
+
+Operators who have run `scripts/install-ltx-video.sh` follow these
+steps once per workflow (T2V and I2V are independent):
+
+1. **Open ComfyUI's web UI** at your `COMFYUI_URL` (typically port 13036).
+2. **Load Lightricks' reference workflow.** Their published t2v / i2v
+   reference graphs live at
+   <https://github.com/Comfy-Org/workflow_templates/tree/main/templates>
+   (filenames `video_ltx2_3_t2v.json` and `video_ltx2_3_i2v.json`).
+   Drag-and-drop into the UI or `File → Load`.
+3. **Queue a test render** to confirm your install works end-to-end
+   before wiring the bridge. The reference workflow takes 2-10 minutes
+   on cold cache; a successful render writes an mp4 to `output/`.
+4. **Save (API Format)** from the queue panel (NOT the regular Save —
+   that emits the frontend graph, which `/prompt` does not accept).
+   You get a JSON file with `{<node_id>: {class_type, inputs}}` shape.
+5. **Copy the relevant `.example` file** to its active name:
+   - `cp ltx-2.3-t2v.json.example ltx-2.3-t2v.json`
+   - `cp ltx-2.3-i2v.json.example ltx-2.3-i2v.json`
+6. **Paste your API-format export** below the `_metadata` block,
+   replacing every `REPLACE_ME_*` placeholder.
+7. **Tune the `targets` table** so each entry's `node` matches the
+   right node ID in your export. The `//comment-*` keys inside
+   `_metadata` of the `.example` file describe what to look for:
+   - `prompt` → the positive `CLIPTextEncode` (the one whose CLIP
+     input traces back to `LTXAVTextEncoderLoader`)
+   - `negative` → the negative `CLIPTextEncode`
+   - `width` / `height` / `length` → `EmptyLTXVLatentVideo`
+   - `fps` → `LTXVConditioning.fps` (or `.frame_rate`, depending on
+     pack version)
+   - `seed` → `RandomNoise.noise_seed`
+   - `init_image` (I2V only) → `LoadImage.image`
+8. **Reload the bridge** so the new file gets picked up:
+   ```bash
+   docker compose -f openclaw-image-comfyui/docker-compose.yml \
+                  --profile image-gen restart openclaw-image-comfyui
+   ```
+   Watch the startup log for the `loaded N workflows:` line —
+   `ltx-2.3-t2v` and `ltx-2.3-i2v` should now be listed.
+9. **Smoke test** via the bridge:
+   ```bash
+   TOKEN=$(grep '^IMAGE_GEN_API_TOKEN=' .env | cut -d= -f2-)
+   curl -sS -X POST http://127.0.0.1:9095/mcp \
+     -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+          "params":{"name":"generate_video",
+                    "arguments":{"prompt":"a panda eating bamboo",
+                                 "length":48,"fps":24,"timeout_s":900}}}' \
+     | jq '.result.content[0].text' | jq -r . | jq '.workflow_used, .duration_s, .videos[0].fetch_url_path'
+   ```
+   Expect: `"ltx-2.3-t2v"`, `2.0`, `"/view?..."` after the render
+   completes (~2-10 min cold, ~30-90s warm on GB10).
+
+### Why we don't ship pre-built `.json` files
+
+We can't promise compatibility against an LTX-Video node pack version
+we haven't tested against. The `_metadata.targets` table binds node
+IDs (`"node": "29"`) that come from the operator's specific export,
+not from a canonical numbering. Shipping a pre-built workflow with
+fixed IDs would mean every operator's first `generate_video` call
+fails with `workflow refers to missing node id "29"` — and they'd
+debug that mystery instead of the install.
+
+The `.example` pattern keeps the scaffolding visible (so the operator
+knows what to assemble) but inert (so the bridge doesn't crash-loop
+on first start).
+
 ## Adding a custom workflow
 
 1. In ComfyUI, build the graph you want, then click **Save (API

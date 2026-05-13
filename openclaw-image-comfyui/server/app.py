@@ -39,6 +39,7 @@ import uuid
 from io import BytesIO
 from typing import Any, Optional
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -49,7 +50,7 @@ from comfy_client import (
     ComfyUIError,
     ComfyUIRestartedError,
     ComfyUITimeout,
-    extract_image_outputs,
+    extract_media_outputs,
 )
 from workflow_loader import WorkflowError, WorkflowLoader
 
@@ -118,7 +119,25 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.11.1"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.0"}
+
+# LTX-Video 2.3 knobs — only used when the operator has enabled the
+# video tool surface. Defaults survive a fresh install where the
+# operator hasn't yet run scripts/install-ltx-video.sh. The actual
+# tool registration is unconditional (the bridge always advertises
+# generate_video), but a workflow-not-found error surfaces cleanly
+# the first time a caller tries to use it without the workflows in
+# place.
+LTX_VIDEO_DEFAULT_LENGTH_FRAMES = int(os.environ.get("LTX_VIDEO_DEFAULT_LENGTH_FRAMES", "96"))
+LTX_VIDEO_DEFAULT_FPS = int(os.environ.get("LTX_VIDEO_DEFAULT_FPS", "24"))
+# `on` / `off` — controls the default audio state when the caller doesn't
+# pass audio_enabled. Workflows that don't support disabling audio (no
+# audio-disable target declared) ignore this knob.
+LTX_VIDEO_DEFAULT_AUDIO = os.environ.get("LTX_VIDEO_DEFAULT_AUDIO", "on").strip().lower()
+# Hard ceiling on video duration — guards against an agent asking for
+# 60-second clips that take 30+ minutes and blow past Discord's
+# auto-embed size cap. Bridge enforces seconds = length / fps <= cap.
+LTX_VIDEO_MAX_DURATION_S = float(os.environ.get("LTX_VIDEO_MAX_DURATION_S", "10"))
 
 
 TOOLS = [
@@ -211,6 +230,66 @@ TOOLS = [
             "type": "object",
             "properties": {},
             "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "generate_video",
+        "description": (
+            "Generate a short video clip (4-10 seconds, with native audio) "
+            "via the operator's ComfyUI install running LTX-Video 2.3. "
+            "Returns metadata (prompt_id, workflow, seed, elapsed_s, "
+            "per-video filename + size + width/height/duration) PLUS a "
+            "`display_markdown` field containing the chat-renderable URL "
+            "(Discord auto-embeds mp4 URLs inline; web chat surfaces the "
+            "URL as a plain link).\n\n"
+            "MANDATORY OUTPUT CONTRACT — your reply MUST start with the "
+            "EXACT verbatim contents of the `display_markdown` field, "
+            "INCLUDING ALL LINES of it. Copy character-for-character: do "
+            "not rewrap, do not wrap in code fences, do not summarize. "
+            "Add your Hungarian or English commentary AFTER the entire "
+            "paste on a new line. If you skip the URL line the user "
+            "sees ZERO video — describing what you generated in prose "
+            "is NOT a substitute.\n\n"
+            "Modes — pick by what the caller supplied:\n"
+            "  - TEXT-TO-VIDEO (T2V): pass only `prompt` (plus optional "
+            "knobs). Workflow defaults to `ltx-2.3-t2v` (set via "
+            "LTX_VIDEO_DEFAULT_WORKFLOW or per-call workflow=).\n"
+            "  - IMAGE-TO-VIDEO (I2V): pass `prompt` AND ONE of "
+            "`init_image_url` (an http(s) URL the bridge fetches) or "
+            "`init_image_base64` (raw base64 of the source frame). "
+            "Workflow auto-switches to `ltx-2.3-i2v` if either is "
+            "present and the caller didn't override `workflow=`.\n\n"
+            "Length is measured in frames; at the default 24 fps a 96-"
+            "frame clip is 4 seconds. The hard ceiling "
+            "(LTX_VIDEO_MAX_DURATION_S) protects against 60+ second "
+            "renders that blow past Discord's auto-embed cap (~50 MB) "
+            "and the agent's per-tool timeout. Bump timeout_s for any "
+            "call past the default — cold-cache renders take 3-10 "
+            "minutes on first call after a stack restart."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt":     {"type": "string", "description": "Positive prompt — what the video should depict and (if audio enabled) what should be audible."},
+                "workflow":   {"type": "string", "description": "Workflow template name. Default auto-picks ltx-2.3-i2v when init_image_* is set, otherwise ltx-2.3-t2v."},
+                "negative":   {"type": "string", "description": "Negative prompt (skipped silently if the workflow has no negative slot)."},
+                "width":      {"type": "integer", "description": "Output width in pixels. Default 512."},
+                "height":     {"type": "integer", "description": "Output height in pixels. Default 768."},
+                "length":     {"type": "integer", "description": f"Number of frames. Default {LTX_VIDEO_DEFAULT_LENGTH_FRAMES} (= 4 s @ {LTX_VIDEO_DEFAULT_FPS} fps)."},
+                "fps":        {"type": "integer", "description": f"Frames per second. Default {LTX_VIDEO_DEFAULT_FPS}."},
+                "audio_enabled": {"type": "boolean", "description": f"Mux LTX-2.3's generated audio track into the mp4. Default {LTX_VIDEO_DEFAULT_AUDIO} (set via LTX_VIDEO_DEFAULT_AUDIO env)."},
+                "seed":       {"type": "integer", "description": "RNG seed. -1 (default) mints a random one."},
+                "steps":      {"type": "integer", "description": "Sampler steps (workflow default if omitted; distilled checkpoints need fewer)."},
+                "cfg":        {"type": "number",  "description": "Classifier-free guidance scale (workflow default if omitted)."},
+                "checkpoint": {"type": "string",  "description": "Checkpoint filename inside basedir/models/checkpoints/."},
+                "init_image_url":    {"type": "string", "description": "I2V: an http(s) URL the bridge will fetch and upload as the reference frame."},
+                "init_image_base64": {"type": "string", "description": "I2V: raw base64 of the source frame. Alternative to init_image_url."},
+                "timeout_s":  {"type": "number",  "description": f"Max wall-clock seconds. Default {DEFAULT_TIMEOUT_S:.0f}. Use 900+ on cold cache."},
+                "include_base64": {"type": "boolean", "description": "Embed mp4 bytes as base64 in the response. Default false — mp4s are usually MB-scale, embedding would balloon the agent context.", "default": False},
+                "attach_image_content": {"type": "boolean", "description": "Add the mp4 bytes as MCP attachment alongside the metadata text. Default true.", "default": True},
+            },
+            "required": ["prompt"],
             "additionalProperties": False,
         },
     },
@@ -348,7 +427,9 @@ async def _tool_generate(args: dict) -> dict:
         except ComfyUITimeout:
             await comfy.cancel(prompt_id)
             raise
-        outputs = extract_image_outputs(entry)
+        # Image workflows only emit `images[]`; the filter is defensive
+        # against a future workflow accidentally chaining a video output.
+        outputs = [o for o in extract_media_outputs(entry) if o.get("media_kind") == "image"]
         if not outputs:
             raise ComfyUIError(
                 f"prompt {prompt_id} completed but produced no images "
@@ -541,10 +622,327 @@ async def _tool_generate(args: dict) -> dict:
         return await _run()
 
 
+async def _tool_generate_video(args: dict) -> dict:
+    """LTX-Video 2.3 T2V or I2V renderer. Parallel to _tool_generate but
+    talks to the `ltx-2.3-*` workflows, supports an optional init image
+    upload for I2V, and emits video-aware metadata in the response.
+
+    The split into two top-level tools (rather than threading a `kind=
+    video` flag through generate) buys two things:
+
+    1. Distinct MCP tool schemas — the agent's tool catalog surfaces
+       `length`/`fps`/`audio_enabled` only where they matter, instead of
+       polluting the image tool's parameter list with knobs that quietly
+       no-op there.
+    2. Distinct timeout / safety envelopes — video calls take 10x longer
+       and emit larger output bytes; this handler enforces the duration
+       cap (LTX_VIDEO_MAX_DURATION_S) before submitting the workflow,
+       saving the agent a 5-minute wait on an obviously-too-long ask."""
+    # Auto-pick workflow when caller didn't override:
+    #   - either init_image_* is set → I2V
+    #   - else → T2V
+    init_image_url = args.get("init_image_url")
+    init_image_b64 = args.get("init_image_base64")
+    is_i2v = bool(init_image_url or init_image_b64)
+    default_workflow = "ltx-2.3-i2v" if is_i2v else "ltx-2.3-t2v"
+    workflow_name = args.get("workflow") or default_workflow
+    try:
+        workflow = loader.get(workflow_name)
+    except WorkflowError as e:
+        raise ValueError(str(e)) from e
+
+    # Seed handling matches _tool_generate.
+    raw_seed = args.get("seed", -1)
+    try:
+        seed_val = int(raw_seed)
+    except (TypeError, ValueError):
+        seed_val = -1
+    if seed_val < 0:
+        seed_val = random.randint(0, 2**32 - 1)
+
+    # Length / fps with env defaults, then duration sanity check before
+    # the operator pays the 3-10 minute cold-cache wait. The error
+    # message names the actual cap so the agent can self-correct in a
+    # follow-up call.
+    try:
+        length_frames = int(args.get("length") or LTX_VIDEO_DEFAULT_LENGTH_FRAMES)
+    except (TypeError, ValueError):
+        length_frames = LTX_VIDEO_DEFAULT_LENGTH_FRAMES
+    try:
+        fps_val = int(args.get("fps") or LTX_VIDEO_DEFAULT_FPS)
+    except (TypeError, ValueError):
+        fps_val = LTX_VIDEO_DEFAULT_FPS
+    if length_frames < 8 or fps_val < 1:
+        raise ValueError(f"invalid length={length_frames} or fps={fps_val} (length >= 8, fps >= 1)")
+    duration_s = length_frames / fps_val
+    if duration_s > LTX_VIDEO_MAX_DURATION_S:
+        raise ValueError(
+            f"requested duration {duration_s:.1f}s exceeds LTX_VIDEO_MAX_DURATION_S "
+            f"({LTX_VIDEO_MAX_DURATION_S:.1f}s). Lower `length` or raise the env cap. "
+            f"At fps={fps_val} the max length is {int(LTX_VIDEO_MAX_DURATION_S * fps_val)} frames."
+        )
+
+    # Audio default — boolean, taken from env unless caller overrides.
+    if "audio_enabled" in args and args["audio_enabled"] is not None:
+        audio_on = bool(args["audio_enabled"])
+    else:
+        audio_on = LTX_VIDEO_DEFAULT_AUDIO != "off"
+
+    # I2V: fetch / decode the init image, upload to ComfyUI, get back
+    # a filename in input/ that the LoadImage node can use.
+    init_image_filename: Optional[str] = None
+    if is_i2v:
+        if init_image_url and init_image_b64:
+            raise ValueError("pass either init_image_url OR init_image_base64, not both")
+        try:
+            if init_image_url:
+                async with httpx.AsyncClient(timeout=30.0) as ic:
+                    r = await ic.get(init_image_url)
+                if r.status_code != 200:
+                    raise ValueError(f"init_image_url returned HTTP {r.status_code}")
+                ref_bytes = r.content
+                # ComfyUI ignores the upload's reported extension and
+                # sniffs the bytes, but the LoadImage node prefers a
+                # plausible name. Strip the URL's filename if present;
+                # fall back to a generic name.
+                from urllib.parse import urlsplit
+                url_path = urlsplit(init_image_url).path
+                base = os.path.basename(url_path) or "init.png"
+            else:
+                # init_image_base64 may include a data: URI prefix or be
+                # raw base64. Strip the prefix if present.
+                b64_text = init_image_b64
+                if "," in b64_text and b64_text.startswith("data:"):
+                    b64_text = b64_text.split(",", 1)[1]
+                try:
+                    ref_bytes = base64.b64decode(b64_text)
+                except Exception as e:
+                    raise ValueError(f"init_image_base64 not valid base64: {e}") from e
+                base = "init.png"
+        except httpx.RequestError as e:
+            raise ValueError(f"init_image_url fetch failed: {type(e).__name__}: {e}") from e
+
+        # Prefix with the bridge's prompt-id-equivalent so multiple
+        # in-flight I2V calls don't collide on the same input filename
+        # under ComfyUI's input/.
+        uniq = uuid.uuid4().hex[:8]
+        upload_name = f"openclaw-{uniq}-{base}"
+        upload_resp = await comfy.upload_image(ref_bytes, upload_name, image_type="input", overwrite=True)
+        # ComfyUI may rename on collision; use whatever name it
+        # actually wrote. Subfolder/type rarely matter for LoadImage
+        # but we keep them in case a workflow uses a custom subfolder.
+        init_image_filename = upload_resp.get("name", upload_name)
+
+    bind_args = {
+        "prompt":       args.get("prompt"),
+        "negative":     args.get("negative") or workflow.defaults.get("negative"),
+        "checkpoint":   args.get("checkpoint") or workflow.defaults.get("checkpoint"),
+        "width":        args.get("width") or workflow.defaults.get("width") or 512,
+        "height":       args.get("height") or workflow.defaults.get("height") or 768,
+        "seed":         seed_val,
+        "steps":        args.get("steps") or workflow.defaults.get("steps"),
+        "cfg":          args.get("cfg") or workflow.defaults.get("cfg"),
+        # Video-specific bind keys. workflow_loader.bind() picks them
+        # up from this dict and applies them via the workflow's
+        # `_metadata.targets` declarations. A workflow that doesn't
+        # declare a target for a key silently no-ops the override.
+        "length":       length_frames,
+        "fps":          fps_val,
+        "audio_enabled": audio_on,
+        "init_image":   init_image_filename,
+    }
+    try:
+        prompt_dict = workflow.bind(bind_args)
+    except WorkflowError as e:
+        raise ValueError(str(e)) from e
+
+    try:
+        timeout_s = float(args.get("timeout_s") or DEFAULT_TIMEOUT_S)
+    except (TypeError, ValueError):
+        timeout_s = DEFAULT_TIMEOUT_S
+
+    include_base64 = bool(args.get("include_base64", False))
+    attach_image_content = bool(args.get("attach_image_content", True))
+
+    client_id = uuid.uuid4().hex
+    started = time.monotonic()
+
+    async def _run() -> dict:
+        prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
+        try:
+            entry = await comfy.wait_for_completion(prompt_id, timeout_s)
+        except ComfyUITimeout:
+            await comfy.cancel(prompt_id)
+            raise
+        # Filter to video outputs only. Image-side outputs from auxiliary
+        # nodes (e.g., a PreviewImage debugging the spatial decode) are
+        # ignored here — the tool's contract is "deliver an mp4".
+        outputs = [o for o in extract_media_outputs(entry) if o.get("media_kind") == "video"]
+        if not outputs:
+            raise ComfyUIError(
+                f"prompt {prompt_id} completed but produced no video "
+                "(check the workflow has a SaveVideo or VHS_VideoCombine node)"
+            )
+
+        videos: list[dict] = []
+        total_bytes = 0
+        from urllib.parse import quote
+        for out in outputs:
+            data = await comfy.fetch_image(
+                out["filename"], image_type=out["type"], subfolder=out["subfolder"]
+            )
+            total_bytes += len(data)
+            if total_bytes > MAX_OUTPUT_BYTES:
+                raise ComfyUIError(
+                    f"video batch exceeded IMAGE_GEN_MAX_OUTPUT_BYTES "
+                    f"({MAX_OUTPUT_BYTES} B) — raise the cap or shorten the clip"
+                )
+            # Dimensions come from the bind args. Probing the mp4 with
+            # ffprobe would give exact post-encode numbers but adds a
+            # subprocess hop per call; the bind values are accurate
+            # enough for the agent's metadata reply.
+            b64 = base64.b64encode(data).decode("ascii") if (include_base64 or attach_image_content) else ""
+            view_qs = (
+                f"filename={quote(out['filename'], safe='')}"
+                f"&type={quote(out['type'], safe='')}"
+                f"&subfolder={quote(out['subfolder'], safe='')}"
+            )
+            if COMFYUI_VIEW_TOKEN:
+                view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
+            # Path A: write an HTML wrapper into the canvas dir. The
+            # iframe's src loads the wrapper; the wrapper's <video> tag
+            # references the mp4 via the same relative URL the chat
+            # session's capability token already gates. Unverified
+            # end-to-end (see docs/reference/video-comfyui-bridge.md
+            # "web chat (degraded)" section).
+            canvas_url_path: Optional[str] = None
+            if IMAGE_GEN_CANVAS_DIR:
+                base_name = f"ltxvideo-{prompt_id[:8]}-{out['filename']}"
+                mp4_target = os.path.join(IMAGE_GEN_CANVAS_DIR, base_name)
+                html_basename = (
+                    base_name[:-4] + ".html"
+                    if base_name.lower().endswith((".mp4", ".webm", ".mov"))
+                    else base_name + ".html"
+                )
+                html_target = os.path.join(IMAGE_GEN_CANVAS_DIR, html_basename)
+                wrapper_html = (
+                    "<!DOCTYPE html><meta charset=\"utf-8\">"
+                    "<style>"
+                    "html,body{margin:0;height:100%;background:#0a0a0a;}"
+                    "body{display:flex;align-items:center;justify-content:center;}"
+                    "video{max-width:100%;max-height:100%;display:block;}"
+                    "</style>"
+                    f"<video controls autoplay muted playsinline src=\"{base_name}\"></video>"
+                )
+                try:
+                    with open(mp4_target, "wb") as f:
+                        f.write(data)
+                    with open(html_target, "w", encoding="utf-8") as f:
+                        f.write(wrapper_html)
+                    canvas_url_path = f"/__openclaw__/canvas/{html_basename}"
+                except OSError as e:
+                    log.warning(
+                        "[path-a] canvas dir write failed for video (mp4=%s html=%s): %s — "
+                        "falling back to legacy display_markdown emission",
+                        mp4_target, html_target, e,
+                    )
+            entry_out = {
+                "format": (out["filename"].rsplit(".", 1)[-1] or "mp4").lower(),
+                "filename": out["filename"],
+                "subfolder": out["subfolder"],
+                "type": out["type"],
+                "node_id": out["node_id"],
+                "media_kind": "video",
+                "width": bind_args["width"],
+                "height": bind_args["height"],
+                "length_frames": length_frames,
+                "fps": fps_val,
+                "duration_s": round(duration_s, 3),
+                "audio_enabled": audio_on,
+                "byte_size": len(data),
+                "fetch_url_path": f"/view?{view_qs}",
+                "canvas_url_path": canvas_url_path,
+            }
+            if include_base64:
+                entry_out["base64"] = b64
+            if attach_image_content and b64:
+                entry_out["_b64_blob"] = b64
+            videos.append(entry_out)
+
+        attachments = []
+        if attach_image_content:
+            for v in videos:
+                blob = v.pop("_b64_blob", None)
+                if not blob:
+                    continue
+                # mime-type heuristic from filename extension. Most
+                # SaveVideo outputs are mp4 but VHS_VideoCombine can
+                # also emit webm; ComfyUI doesn't surface mime in the
+                # /history payload so we sniff the extension.
+                ext = v["format"]
+                mime = {
+                    "mp4":  "video/mp4",
+                    "webm": "video/webm",
+                    "mov":  "video/quicktime",
+                    "gif":  "image/gif",
+                }.get(ext, "video/mp4")
+                attachments.append({"mime_type": mime, "data": blob, "filename": v["filename"]})
+        else:
+            for v in videos:
+                v.pop("_b64_blob", None)
+
+        # display_markdown shape: line 1 the public mp4 URL (Discord
+        # auto-embeds), line 2 the [embed] shortcode if canvas dir is
+        # set (web-chat iframe — unverified for video, see doc). The
+        # agent's reply pastes both verbatim.
+        display_lines = []
+        for v in videos:
+            url = f"{COMFYUI_EXTERNAL_URL}{v['fetch_url_path']}"
+            display_lines.append(url)
+            if v.get("canvas_url_path"):
+                display_lines.append(f'[embed url="{v["canvas_url_path"]}" /]')
+        display_markdown = "\n\n".join(display_lines)
+
+        return {
+            "prompt_id": prompt_id,
+            "workflow_used": workflow_name,
+            "mode": "i2v" if is_i2v else "t2v",
+            "seed_used": seed_val,
+            "length_frames": length_frames,
+            "fps": fps_val,
+            "duration_s": round(duration_s, 3),
+            "audio_enabled": audio_on,
+            "init_image_used": init_image_filename,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "include_base64": include_base64,
+            "attach_image_content": attach_image_content,
+            "comfyui_base_url": COMFYUI_URL,
+            "comfyui_external_url": COMFYUI_EXTERNAL_URL,
+            "display_markdown": display_markdown,
+            "agent_hint": (
+                "MANDATORY: include the EXACT `display_markdown` value at "
+                "the START of your reply. The first line is a public mp4 "
+                "URL — Discord auto-embeds it inline so the user actually "
+                "sees the video. The second line (if present) is the "
+                "`[embed]` shortcode for the web-chat iframe surface. "
+                "Paste both verbatim, separated by the blank line. Add "
+                "your own commentary AFTER the paste."
+            ),
+            "videos": videos,
+            "_attachments": attachments,
+        }
+
+    if _gen_sem is None:
+        return await _run()
+    async with _gen_sem:
+        return await _run()
+
+
 TOOL_HANDLERS = {
-    "generate":       _tool_generate,
-    "list_workflows": _tool_list_workflows,
-    "cancel":         _tool_cancel,
+    "generate":        _tool_generate,
+    "generate_video":  _tool_generate_video,
+    "list_workflows":  _tool_list_workflows,
+    "cancel":          _tool_cancel,
 }
 
 

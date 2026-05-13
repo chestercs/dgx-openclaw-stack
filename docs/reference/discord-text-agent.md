@@ -299,5 +299,6 @@ Voice-channel agents (separate `/vc join`-driven deploy) typically stay on `alwa
 
 - [`discord-voice-agent.md`](./discord-voice-agent.md) — voice-channel deployment
 - [`image-comfyui-bridge.md`](./image-comfyui-bridge.md) — `comfyui_image__generate` tool surface
+- [`video-comfyui-bridge.md`](./video-comfyui-bridge.md) — `comfyui_image__generate_video` tool surface (LTX-Video 2.3). Note: same bridge / same MCP server as the image tool — the `coding` profile already includes `video_generate` (line 66 above), so no profile change is needed; the bot can call video as soon as the bridge is up and `LTX_VIDEO_ENABLED=1` is in `.env`.
 - [`chat-surface-capability-matrix.md`](./chat-surface-capability-matrix.md) — what renders where (Discord text vs web chat)
-- `patch-config.mjs` (top docblock) — numbered list of every patcher step, including 20 (ackReactionScope), 21 (actions.reactions), 22 (tools.alsoAllow)
+- `patch-config.mjs` (top docblock) — numbered list of every patcher step, including 20 (ackReactionScope), 21 (actions.reactions), 22 (tools.alsoAllow), 27b (LTX video cheatsheet)

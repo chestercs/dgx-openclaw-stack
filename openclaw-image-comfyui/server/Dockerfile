@@ -16,9 +16,16 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # tini = clean PID 1 + sigterm propagation; curl for the HEALTHCHECK probe.
+# ffmpeg is here as a future-use lever for the video extension (Path A
+# canvas wrapper: an mp4 stamped through a remux pass would be even more
+# reliably browser-playable). The bridge's video path today does NOT
+# invoke ffprobe/ffmpeg in the request path — bind-time width/height/
+# duration is accurate enough — but having the binary in the image
+# means an operator can debug a misbehaving mp4 with `docker exec` +
+# ffprobe without rebuilding. Adds ~50 MB to the image, worth it.
 # No build-essential needed — httpx + pillow ship wheels for ARM64 + amd64.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tini curl \
+    tini curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

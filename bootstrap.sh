@@ -411,6 +411,55 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 3h. Optional: LTX-Video 2.3 video generation opt-in (v0.12.0+)
+#
+# Same posture as 3d/3e — triple-gated, env-presence guarded against re-runs.
+# This step only flips the `LTX_VIDEO_ENABLED` knob (so the patcher surfaces
+# the cheatsheet) and prints the installer command; the actual ~71 GB model
+# download runs separately via `scripts/install-ltx-video.sh`. Bandwidth
+# this large warrants an explicit operator action, not a bootstrap auto-run.
+# ----------------------------------------------------------------------------
+ltx_existing=$(grep -E '^LTX_VIDEO_ENABLED=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
+if [[ -z "$ltx_existing" ]]; then
+  printf '\n%bOptional:%b LTX-Video 2.3 — text/image-to-video with native audio.\n' "$BOLD" "$RESET"
+  log "  Activates `comfyui_image__generate_video` on the existing image-gen bridge."
+  log "  Pre-req: image-gen bridge already activated (step 3e) AND your ComfyUI"
+  log "  install is on core ≥ 0.17.0. (LTX-2.3 primitive nodes landed in 0.16.x"
+  log "  but the official reference workflows use ComfyMathExpression from"
+  log "  0.17.0; loading them on 0.16.x warns 'Some nodes may not work"
+  log "  correctly'.)"
+  log ""
+  log "  WHAT THIS DOES:"
+  log "    Flips LTX_VIDEO_ENABLED=1 so the patcher surfaces the video"
+  log "    workflow picker on the discord-friend agent's AGENTS.md. The"
+  log "    bridge tool itself is always advertised — this knob just unlocks"
+  log "    the cheatsheet so the agent knows how to call it cleanly."
+  log ""
+  log "  WHAT YOU STILL NEED TO RUN MANUALLY:"
+  log "    ./scripts/install-ltx-video.sh --basedir /path/to/your/comfyui"
+  log ""
+  log "    Default: bf16 distilled-1.1 (~71 GB total). For tighter memory"
+  log "    (Gemma 4 dense + bge-m3 + upscaler co-resident on GB10), add"
+  log "    --variant fp8-distilled (~55 GB total, ~30 GB checkpoint vs 46 GB)."
+  log "    See docs/reference/video-comfyui-bridge.md for the full bundle"
+  log "    breakdown and the bf16 vs fp8 trade-off matrix."
+  printf '%bActivate LTX-Video 2.3 video generation now? [y/N]:%b ' "$BOLD" "$RESET"
+  read -r ltx_answer
+  if [[ "$ltx_answer" =~ ^[Yy]$ ]]; then
+    upsert_env LTX_VIDEO_ENABLED "1" '.*'
+    ok "LTX_VIDEO_ENABLED=1 set. Next steps:"
+    ok "  → ./scripts/install-ltx-video.sh --basedir /path/to/your/comfyui"
+    ok "  → docker compose -f openclaw-image-comfyui/docker-compose.yml --profile image-gen up -d --build"
+    ok "  → docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli"
+  else
+    log "Skipped — re-run bootstrap.sh later to enable, or set"
+    log "         LTX_VIDEO_ENABLED=1 in .env by hand AFTER running install-ltx-video.sh."
+  fi
+else
+  ok "LTX_VIDEO_ENABLED already set ($ltx_existing) — LTX video opt-in preserved."
+fi
+
+# ----------------------------------------------------------------------------
 # 4. HuggingFace token
 # ----------------------------------------------------------------------------
 current_hf=$(grep -E '^HUGGING_FACE_HUB_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2-)

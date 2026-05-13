@@ -176,6 +176,16 @@
 //      stays in AGENTS.md even if the env unsets (operator can delete
 //      manually) — same posture as the messaging in steps 16/17 (we
 //      don't strip user-visible markdown on env retraction).
+//  27b. Workspace-discord AGENTS.md LTX-Video 2.3 cheatsheet (v0.12.0+).
+//       Same marker-block pattern as step 27, separate markers
+//       (`patch-config:ltx-video-tools:start/end`) so video can be
+//       active independently of the image-gen cheatsheet. Env-gated
+//       by LTX_VIDEO_ENABLED — flipped by bootstrap.sh prompt 3h.
+//       Body covers T2V vs I2V routing, length/fps defaults, the
+//       LTX_VIDEO_MAX_DURATION_S hard cap, and the `display_markdown`
+//       paste contract (mp4 URL = Discord auto-embed). See
+//       docs/reference/video-comfyui-bridge.md for the full bridge
+//       architecture.
 //
 // Each step's inline comment below explains *why* (constraint, benchmark, or
 // schema gotcha). When adding a step, follow the same deep-merge pattern and
@@ -2249,6 +2259,44 @@ const IMAGE_GEN_CHEATSHEET_BODY =
   'elejére (image URL + `[embed]` shortcode, blank-line elválasztva), aztán\n' +
   'jöhet a kommentárod. A két sort a webchat ill. a Discord külön kezeli.\n';
 
+// Step 27b — LTX-Video 2.3 workflow picker. Same marker-block pattern as
+// the image-gen cheatsheet, separate markers so the two blocks can coexist
+// or be present independently (operator might run image-gen without video
+// or vice-versa). Env-gated on LTX_VIDEO_ENABLED so we don't surface a tool
+// that hasn't been activated.
+const LTX_VIDEO_CHEATSHEET_START = '<!-- patch-config:ltx-video-tools:start -->';
+const LTX_VIDEO_CHEATSHEET_END = '<!-- patch-config:ltx-video-tools:end -->';
+const LTX_VIDEO_ENABLED_ENV = (process.env.LTX_VIDEO_ENABLED || '').trim();
+const LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV = (process.env.LTX_VIDEO_DEFAULT_LENGTH_FRAMES || '96').trim();
+const LTX_VIDEO_DEFAULT_FPS_ENV = (process.env.LTX_VIDEO_DEFAULT_FPS || '24').trim();
+const LTX_VIDEO_MAX_DURATION_S_ENV = (process.env.LTX_VIDEO_MAX_DURATION_S || '10').trim();
+const LTX_VIDEO_CHEATSHEET_BODY =
+  '\n## Videógenerálás — `comfyui_image__generate_video` (LTX-Video 2.3)\n\n' +
+  'Ugyanaz a bridge, mint a képeknél, csak más tool. Két mód:\n\n' +
+  '- **T2V** (text-to-video): csak `prompt` kell, a többi default. A bridge\n' +
+  '  automatikusan az `ltx-2.3-t2v` workflow-t választja.\n' +
+  '- **I2V** (image-to-video): `prompt` + `init_image_url` (vagy\n' +
+  '  `init_image_base64`). Ha bármelyik be van állítva, a bridge automatikusan\n' +
+  '  az `ltx-2.3-i2v` workflow-ra vált.\n\n' +
+  'Tipikus paraméterek:\n\n' +
+  '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett\n' +
+  '  ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈ ' + (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + ' másodperc.\n' +
+  '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. Magasabb fps → simább, de hosszabb render.\n' +
+  '- `audio_enabled`: default `true` — LTX-2.3 natívan generál hangot is.\n' +
+  '  Néma klip: `audio_enabled=false`.\n' +
+  '- `timeout_s`: legalább 900 (15 perc). Cold-cache első hívás 3-10 perc.\n\n' +
+  'Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + ' másodperc (`LTX_VIDEO_MAX_DURATION_S`). Hosszabbra a\n' +
+  'Discord auto-embed ~50 MB cap miatt nem érdemes menni.\n\n' +
+  '**Felhasználói prompt → tool args fordítás:**\n\n' +
+  '- "csinálj egy videót egy [X]-ről" → T2V, `prompt="[X]"`.\n' +
+  '- "animáld ezt a képet" + attachment → I2V, `init_image_url=<attachment URL>`.\n' +
+  '- "8 másodperces klip" → `length=192` (24 fps × 8s), de marad a max-cap alatt.\n' +
+  '- "néma videó" / "ne legyen hangja" → `audio_enabled=false`.\n\n' +
+  'A `display_markdown` tool-output mező első sora a NYERS mp4 URL — ezt\n' +
+  'Discord automatikusan beágyazza inline (lejátszható közvetlenül a\n' +
+  'chatben). VERBATIM illeszd be a válaszod elejére, blank-line után jöhet\n' +
+  'a saját kommentárod magyarul.\n';
+
 // Idempotent upsert of a marker-delimited block. If the markers are not
 // present, append the block. If they are, swap the body in-place when it
 // has drifted from the canonical body (e.g. patcher upgrade ships an
@@ -2315,6 +2363,22 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       agentsMd = imageGenUpsert.content;
       mdChanged = true;
       console.log(`[patch-config] workspace-discord/AGENTS.md ${imageGenUpsert.label}`);
+    }
+  }
+  // Step 27b — LTX-Video cheatsheet. Gated on LTX_VIDEO_ENABLED so the
+  // marker block doesn't appear before the operator has run
+  // scripts/install-ltx-video.sh and flipped the env knob. The bridge's
+  // generate_video tool is always advertised, but the cheatsheet appears
+  // only on deploys that have actually completed the model download.
+  if (LTX_VIDEO_ENABLED_ENV && LTX_VIDEO_ENABLED_ENV !== '0' && LTX_VIDEO_ENABLED_ENV.toLowerCase() !== 'false') {
+    const ltxVideoUpsert = upsertMarkedBlock(
+      agentsMd, LTX_VIDEO_CHEATSHEET_START, LTX_VIDEO_CHEATSHEET_END,
+      LTX_VIDEO_CHEATSHEET_BODY, 'ltx-video-tools cheatsheet',
+    );
+    if (ltxVideoUpsert.changed) {
+      agentsMd = ltxVideoUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${ltxVideoUpsert.label}`);
     }
   }
   if (mdChanged) {
