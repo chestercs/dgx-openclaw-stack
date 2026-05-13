@@ -1325,6 +1325,16 @@ services:
       # value is also read by the bridge's app.py to fill the
       # comfyui_image__generate tool's default `workflow` arg.
       IMAGE_GEN_DEFAULT_WORKFLOW: ${IMAGE_GEN_DEFAULT_WORKFLOW:-}
+      # LTX-Video 2.3 cheatsheet gate (patcher step 27b, v0.12.0+). When
+      # set to a truthy value, the patcher appends the video workflow
+      # picker block to workspace-discord/AGENTS.md. Same idempotent
+      # marker-block pattern as IMAGE_GEN_DEFAULT_WORKFLOW (step 27);
+      # leave empty before LTX models are installed so the cheatsheet
+      # doesn't point at a tool that errors out on every call.
+      LTX_VIDEO_ENABLED: ${LTX_VIDEO_ENABLED:-}
+      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-96}
+      LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
+      LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}
       # vLLM idle watchdog timeout (patcher step 8). Default 600s gives
       # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
       # to 300 for fast-model-only deploys.
