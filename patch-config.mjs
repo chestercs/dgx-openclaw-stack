@@ -2348,28 +2348,34 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '- I2V default 1024×576: `{prompt: "...", init_image_url: "<path>"}`.\n' +
   '- I2V landscape kép HD-ban: `{prompt: "...", init_image_url: "<path>", width: 1280, height: 704}`.\n' +
   '- I2V portrait kép: `{prompt: "...", init_image_url: "<path>", width: 768, height: 1024}`.\n\n' +
-  '**FELBONTÁS-BIZTONSÁGI HÁLÓ (bridge v0.12.3 óta):** a bridge proxy\n' +
-  'oldalon **elemzi a `prompt` szöveget is**, és ha a user kérése\n' +
-  'tartalmaz `AxB` formátumot (pl. "1920x1088") vagy resolution-kulcsszót\n' +
-  '("fullhd", "1080p", "720p", "hd", "négyzet", "portrait" stb.), akkor a\n' +
-  'megfelelő (width, height) pár automatikusan az értelmezésnek megfelelő\n' +
-  'értéket veszi fel — még akkor is, ha te csak az egyiket küldted vagy\n' +
-  'egyiket sem. Ennek köszönhetően egy "csinálj fullhd videót" prompt\n' +
-  'mindenképpen 1920×1088 lesz, akár csak `prompt=`-tal hívod meg a tool-t,\n' +
-  'akár `{prompt, width:1920}`-szal.\n\n' +
-  'A precedencia: (1) explicit (width ÉS height) az args-ban → azt használja;\n' +
-  '(2) különben prompt-text parse → annak megfelelő dim; (3) különben\n' +
-  'default 1024×576. Tehát nem **kötelező** explicit dim-et küldeni, de\n' +
-  'ha explicit `width` ÉS `height` párt adsz, az MINDIG nyer a prompt-text\n' +
-  'parse fölött.\n\n' +
-  '**Best practice:** ha kifejezetten egy resolution-t akarsz biztosan,\n' +
-  'KÜLDD EXPLICIT a párt az args-ban. A prompt-parser egy biztonsági háló,\n' +
-  'nem a fő útvonal. Pl. `{prompt: "...", width: 1024, height: 1024}` még\n' +
-  'mindig a leggyorsabb és legmegbízhatóbb módja négyzetes videó kérésnek.\n\n' +
-  '**AxB formátum a prompt szövegében is működik:** ha a user "1024x1024 videót"\n' +
-  'kér, a prompt-ot is paste-olhatod változatlanul (`prompt: "1024x1024 videó\n' +
-  'egy macskáról"`) és a proxy felismeri. De ettől még jobb, ha az args-ban\n' +
-  'expliciten is megküldöd a párt — gyorsabb path és nincs félreértelmezés.\n\n' +
+  '**FELBONTÁS — `resolution` ARG A LEGFONTOSABB (v0.12.4 óta).** A\n' +
+  '`generate_video` tool új `resolution` arg-ot fogad, ami felülbírál mindent.\n' +
+  'Ha a user szövegében bármilyen resolution-kifejezést látsz (akár magyarul,\n' +
+  'akár angolul), a tool-hívás `resolution` arg-jába pontosan ezt a kifejezést\n' +
+  'tedd be — **akármi van a prompt szövegben**. Ez azért a legmegbízhatóbb\n' +
+  'útvonal, mert akkor is fennmarad ha te a prompt-ot átfogalmazod\n' +
+  'angolra/szebbre. Példák:\n\n' +
+  '- "csinálj fullhd videót..." → `{prompt: "...", resolution: "fullhd"}`\n' +
+  '- "1080p videó kell" → `{prompt: "...", resolution: "1080p"}`\n' +
+  '- "négyzet videó / square" → `{prompt: "...", resolution: "square"}`\n' +
+  '- "portrait / álló videó" → `{prompt: "...", resolution: "portrait"}`\n' +
+  '- "hd / 720p videó" → `{prompt: "...", resolution: "hd"}`\n' +
+  '- "4K videó" → `{prompt: "...", resolution: "4k"}`\n' +
+  '- "1024x1024 videót" → `{prompt: "...", resolution: "1024x1024"}`\n' +
+  '- "csinálj egy videót egy macskáról" (NINCS resolution szó) → ne adj át\n' +
+  '  `resolution`-t, a tool default 1024×576-ra esik.\n\n' +
+  '**Felismerendő kulcsszavak:** fullhd, full hd, fhd, 1080p, 4k, uhd, 2160p,\n' +
+  'qhd, 1440p, hd, 720p, mini-hd, square, négyzet, kocka, portrait, függőleges,\n' +
+  'álló, landscape, fekvő, szélesvásznú, VAGY explicit `AxB` formátum\n' +
+  '(pl. 1024x1024, 1920x1088).\n\n' +
+  '**Precedencia (a bridge milyen sorrendben dönt):**\n' +
+  '1. Explicit `width` ÉS `height` pair → az nyer (használd ha pontos dim kell)\n' +
+  '2. `resolution` arg → az alias-tábla alapján width+height\n' +
+  '3. Prompt szövegben AxB vagy keyword → safety-net parse\n' +
+  '4. Semmi → default 1024×576\n\n' +
+  '**Második legjobb path:** explicit `width` ÉS `height` pair. Pl.\n' +
+  '`{prompt: "...", width: 1024, height: 1024}`. Akkor használd, ha\n' +
+  'olyan custom dim-et kérsz amit nem fed le a `resolution` alias-tábla.\n\n' +
   'Egyéb tipikus paraméterek:\n\n' +
   '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
   LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +

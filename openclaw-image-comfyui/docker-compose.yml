@@ -32,7 +32,7 @@ services:
   openclaw-image-comfyui:
     build:
       context: ./server
-    image: openclaw-image-comfyui:0.12.3
+    image: openclaw-image-comfyui:0.12.4
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
     hostname: openclaw-image-comfyui
     # `image-gen` profile gates this service so an absent --profile flag

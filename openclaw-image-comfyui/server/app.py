@@ -120,7 +120,7 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.3"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.4"}
 
 # LTX-Video 2.3 knobs — only used when the operator has enabled the
 # video tool surface. Defaults survive a fresh install where the
@@ -359,8 +359,9 @@ TOOLS = [
                 "prompt":     {"type": "string", "description": "Positive prompt — what the video should depict and (if audio enabled) what should be audible."},
                 "workflow":   {"type": "string", "description": "Workflow template name. Default auto-picks ltx-2.3-i2v when init_image_* is set, otherwise ltx-2.3-t2v."},
                 "negative":   {"type": "string", "description": "Negative prompt (skipped silently if the workflow has no negative slot)."},
-                "width":      {"type": "integer", "description": "Output width in pixels. Default 1024 (16:9 with height 576). MUST be divisible by 32 (ComfyUI rounds otherwise). IF YOU SET THIS, YOU MUST ALSO SET `height` — passing only width while letting height default produces ultra-wide outputs (e.g. width=1920 + default height=576 = 30:9 ULTRA-wide instead of FullHD)."},
-                "height":     {"type": "integer", "description": "Output height in pixels. Default 576 (16:9 with width 1024). MUST be divisible by 32. IF YOU SET THIS, ALSO SET `width` — see width arg. The width+height pair is always a pair, never one without the other."},
+                "resolution": {"type": "string", "description": "RECOMMENDED for resolution intent. User-friendly resolution name OR explicit AxB. Examples: 'fullhd' / '1080p' / 'fhd' → 1920×1088; '4k' / 'uhd' / '2160p' → 3840×2176; 'hd' / '720p' → 1280×704; 'mini-hd' → 1024×576 (default 16:9); 'square' / 'négyzet' → 1024×1024; 'portrait' / 'függőleges' → 768×1024; 'landscape' / 'fekvő' → 1280×704; OR explicit dims like '1024x1024', '1920x1088'. When the USER mentions a resolution by name (e.g. asks for fullhd / 1080p / square / portrait), pass that EXACT keyword here — this is the most reliable way to convey resolution intent and is preserved even if you rewrite the prompt text. Explicit width+height args still win over this if both are set."},
+                "width":      {"type": "integer", "description": "Output width in pixels. Optional — prefer `resolution` arg when the user names a known resolution. Default 1024 (paired with height 576 for 16:9 MiniHD). MUST be divisible by 32. If you set width, ALSO set height — single-dim calls fall back to defaults."},
+                "height":     {"type": "integer", "description": "Output height in pixels. Optional — see `resolution` and `width` args. Default 576. MUST be divisible by 32. Always paired with width."},
                 "length":     {"type": "integer", "description": f"Number of frames. Default {LTX_VIDEO_DEFAULT_LENGTH_FRAMES} (= 4 s @ {LTX_VIDEO_DEFAULT_FPS} fps)."},
                 "fps":        {"type": "integer", "description": f"Frames per second. Default {LTX_VIDEO_DEFAULT_FPS}."},
                 "audio_enabled": {"type": "boolean", "description": f"Mux LTX-2.3's generated audio track into the mp4. Default {LTX_VIDEO_DEFAULT_AUDIO} (set via LTX_VIDEO_DEFAULT_AUDIO env)."},
@@ -860,47 +861,54 @@ async def _tool_generate_video(args: dict) -> dict:
         # cheatsheet for the named-resolution → explicit (width, height)
         # pairs the agent is supposed to send.
 
-    # Proxy-side resolution resolver. Three precedence tiers:
+    # Proxy-side resolution resolver. Four precedence tiers (most
+    # explicit first):
     #
-    #   1. The agent supplied BOTH `width` and `height` → flow them
-    #      through verbatim. The agent's explicit intent always wins.
-    #   2. The agent supplied at most one dim → parse the `prompt`
-    #      text for a resolution signal (AxB notation or a keyword
-    #      from RESOLUTION_ALIASES). If found, use that pair. This
-    #      catches the dominant Gemma-4 failure mode where the prompt
-    #      text correctly says "FullHD (1920x1088)" but the tool args
-    #      only carry `width=1920` (height defaulting to 576 →
-    #      ultra-wide).
-    #   3. Nothing recoverable → fall through to workflow defaults
-    #      (1024x576 MiniHD).
+    #   1. Explicit pair: BOTH `width` and `height` set → use verbatim.
+    #   2. `resolution` arg: a user-friendly keyword or AxB string
+    #      (added in v0.12.4 after the agent-rewrite failure mode —
+    #      the agent often translates the user's Hungarian prompt to
+    #      a polished English image-gen prompt and drops keywords
+    #      like "fullhd" in the process; the `resolution` arg is a
+    #      dedicated channel for resolution intent that survives any
+    #      prompt rewriting). Parsed via the same RESOLUTION_ALIASES
+    #      table as the prompt text.
+    #   3. Prompt-text parse: scan `prompt` for AxB or a keyword.
+    #      Useful when the user typed the resolution into the prompt
+    #      AND the agent preserved it.
+    #   4. Workflow defaults (1024×576 MiniHD).
     #
     # The parser is deterministic and explicit (a documented keyword
-    # table, not an LLM inference), so this is NOT auto-derive. It's
-    # a translation layer that bridges the gap between what the user
-    # typed and what the agent encoded in tool args. See the
-    # RESOLUTION_ALIASES table for the supported keywords; AxB is
-    # always tried first as the most-specific signal.
+    # table, not LLM inference), so this is NOT auto-derive. It's a
+    # translation layer from user-typed text → documented dim pair.
     caller_w = args.get("width")
     caller_h = args.get("height")
+    resolution_arg = (args.get("resolution") or "").strip()
     both_explicit = caller_w is not None and caller_h is not None
     if not both_explicit:
-        parsed = _resolve_dims_from_prompt(args.get("prompt") or "")
+        parsed = None
+        src = None
+        if resolution_arg:
+            parsed = _resolve_dims_from_prompt(resolution_arg)
+            if parsed:
+                src = f"resolution arg {resolution_arg!r}"
+        if not parsed:
+            parsed = _resolve_dims_from_prompt(args.get("prompt") or "")
+            if parsed:
+                src = "prompt text"
         if parsed:
             log.info(
-                "generate_video: resolved %dx%d from prompt text "
-                "(caller passed width=%s, height=%s)",
-                parsed[0], parsed[1], caller_w, caller_h,
+                "generate_video: resolved %dx%d from %s "
+                "(caller passed width=%s, height=%s, resolution=%s)",
+                parsed[0], parsed[1], src, caller_w, caller_h, resolution_arg or None,
             )
             args = {**args, "width": parsed[0], "height": parsed[1]}
         elif caller_w is not None or caller_h is not None:
-            # Single-dim call with no recoverable resolution signal in
-            # the prompt. Discard the lone dim instead of pairing it
-            # with a workflow default (would silently produce wrong
-            # aspect ratios). Falls through to default 1024x576 below.
+            # Single-dim call with no recoverable resolution signal.
             log.warning(
                 "generate_video: single-dim call (width=%s, height=%s) "
-                "with no AxB/keyword signal in prompt — falling back to "
-                "workflow defaults.",
+                "with no resolution arg or prompt-text signal — falling "
+                "back to workflow defaults.",
                 caller_w, caller_h,
             )
             args = {**args, "width": None, "height": None}
