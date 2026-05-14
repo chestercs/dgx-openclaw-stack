@@ -634,6 +634,38 @@ if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds)
   console.log(`[patch-config] agents.defaults.llm.idleTimeoutSeconds: ${prev ?? '(unset)'} -> ${desiredIdleTimeoutSeconds}`);
 }
 
+// (8b) Raise agents.defaults.bootstrapMaxChars beyond the 12000-char SDK
+//      default. Verified live 2026-05-14: the discord-friend workspace
+//      AGENTS.md grew to ~14k chars once the video cheatsheet block
+//      landed (resolution recipes + I2V routing examples + display_markdown
+//      contract) and openclaw started LOGGING "workspace bootstrap file
+//      AGENTS.md is 14359 chars (limit 12000); truncating in injected
+//      context" — the tail of the file got cut, so the agent never saw
+//      the I2V routing / resolution recipes / output-paste-contract
+//      additions. Symptom on Discord: the bot would T2V instead of I2V
+//      on attachments (vision-described the image instead of using
+//      init_image_url), insist "felbontás nem választható" when asked
+//      for FullHD, and silently skip the display_markdown paste.
+//
+//      Bumping to 20000 gives ~5k headroom over the current file size.
+//      Total bootstrap budget (DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS=60000)
+//      is also bumpable via `bootstrapTotalMaxChars`, but we don't need
+//      it: AGENTS.md is the only big bootstrap file.
+//
+//      Env knob: OPENCLAW_BOOTSTRAP_MAX_CHARS (default 20000). Bump
+//      further if you stuff more domain knowledge into AGENTS.md and
+//      see the truncation warning return in gateway logs.
+const desiredBootstrapMaxChars = parseInt(
+  process.env.OPENCLAW_BOOTSTRAP_MAX_CHARS?.trim() || '20000',
+  10,
+);
+if (config.agents.defaults.bootstrapMaxChars !== desiredBootstrapMaxChars) {
+  const prev = config.agents.defaults.bootstrapMaxChars;
+  config.agents.defaults.bootstrapMaxChars = desiredBootstrapMaxChars;
+  changed = true;
+  console.log(`[patch-config] agents.defaults.bootstrapMaxChars: ${prev ?? '(unset)'} -> ${desiredBootstrapMaxChars}`);
+}
+
 // (9) Ensure memorySearch hybrid (BM25 + vector) + MMR diversity rerank.
 //     - vectorWeight 0.7 / textWeight 0.3: vector dominates (semantic retrieval
 //       is the main use case on multilingual content with bge-m3); BM25

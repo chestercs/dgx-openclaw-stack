@@ -1339,6 +1339,17 @@ services:
       # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
       # to 300 for fast-model-only deploys.
       OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS: ${OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS:-600}
+      # Per-file char budget for workspace bootstrap files (AGENTS.md,
+      # USER.md, etc.) — written by patcher step 8b into
+      # agents.defaults.bootstrapMaxChars. Upstream SDK default is
+      # 12000; we bump to 20000 so the discord-friend agent's AGENTS.md
+      # (image cheatsheet + video cheatsheet + browser cheatsheet +
+      # cron cheatsheet, ~14k chars combined) fits without truncation.
+      # Without this bump the tail of AGENTS.md gets cut and the agent
+      # never sees the later cheatsheet blocks (verified live 2026-05-14:
+      # video cheatsheet additions were cut → bot defaulted to T2V on
+      # I2V intents).
+      OPENCLAW_BOOTSTRAP_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_MAX_CHARS:-20000}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
