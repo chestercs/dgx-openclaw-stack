@@ -1,7 +1,7 @@
 {
   "_metadata": {
-    "name": "ltx-2.3-t2v",
-    "description": "LTX-Video 2.3 distilled-fp8 text-to-video with native audio. Single-stage 8-step diffusion via SamplerEulerAncestral(eta=0,s_noise=1) + 9-value ManualSigmas (warmup-into-denoise curve from Lightricks' official 2.3 workflow). Pipes the SamplerCustomAdvanced `denoised_output` slot (index 1) into AV latent separation — the alternative `output` slot leaves residual noise that VAE-decodes into scattered dot/line artifacts (verified live 2026-05-14: artifact pattern reproduced on 4-step euler_cfg_pp + index 0, disappeared on this config). VAEDecodeTiled at tile=768/temporal=4096 to match the official decoder settings. Verified end-to-end on GB10 ~20s warm-cache.",
+    "name": "ltx-2.3-i2v",
+    "description": "LTX-Video 2.3 distilled-fp8 image-to-video with native audio. Single-image variant of Lightricks' official FLF2V (first-last frame to video) workflow — keeps only the first-frame guide chain since Discord/agent use-case is one attachment. Uses the same SamplerEulerAncestral + 9-step sigma schedule + denoised_output fix as the T2V sibling. The init image is uploaded by the bridge to ComfyUI's input/ dir via /upload/image; LoadImage binds the resulting filename, ImageScale resizes to match the target latent dims (center-crop, nearest-exact per the Lightricks reference), LTXVPreprocess compresses (img_compression=25), LTXVAddGuide injects the frame at index 0 with strength=0.7. After sampling, LTXVCropGuides strips the guide-frame artifacts from the video latent before VAEDecodeTiled.",
     "kind": "video",
     "checkpoint_required": false,
     "defaults": {
@@ -15,8 +15,14 @@
       "prompt":   { "node": "4",  "input": "text" },
       "negative": { "node": "5",  "input": "text" },
       "seed":     { "node": "10", "input": "noise_seed" },
-      "width":    { "node": "6",  "input": "width" },
-      "height":   { "node": "6",  "input": "height" },
+      "width": [
+        { "node": "6",  "input": "width" },
+        { "node": "31", "input": "width" }
+      ],
+      "height": [
+        { "node": "6",  "input": "height" },
+        { "node": "31", "input": "height" }
+      ],
       "length": [
         { "node": "6", "input": "length" },
         { "node": "7", "input": "frames_number" }
@@ -25,7 +31,8 @@
         { "node": "7",  "input": "frame_rate" },
         { "node": "9",  "input": "frame_rate" },
         { "node": "18", "input": "fps" }
-      ]
+      ],
+      "init_image": { "node": "30", "input": "image" }
     }
   },
 
@@ -36,16 +43,25 @@
   "5":  {"class_type": "CLIPTextEncode",          "inputs": {"text": "", "clip": ["2", 0]}},
   "6":  {"class_type": "EmptyLTXVLatentVideo",    "inputs": {"width": 512, "height": 768, "length": 97, "batch_size": 1}},
   "7":  {"class_type": "LTXVEmptyLatentAudio",    "inputs": {"frames_number": 97, "frame_rate": 24, "batch_size": 1, "audio_vae": ["3", 0]}},
-  "8":  {"class_type": "LTXVConcatAVLatent",      "inputs": {"video_latent": ["6", 0], "audio_latent": ["7", 0]}},
   "9":  {"class_type": "LTXVConditioning",        "inputs": {"positive": ["4", 0], "negative": ["5", 0], "frame_rate": 24.0}},
+
+  "30": {"class_type": "LoadImage",               "inputs": {"image": "REPLACE_AT_BIND_TIME"}},
+  "31": {"class_type": "ImageScale",              "inputs": {"image": ["30", 0], "upscale_method": "nearest-exact", "width": 512, "height": 768, "crop": "center"}},
+  "32": {"class_type": "LTXVPreprocess",          "inputs": {"image": ["31", 0], "img_compression": 25}},
+  "33": {"class_type": "LTXVAddGuide",            "inputs": {"positive": ["9", 0], "negative": ["9", 1], "vae": ["1", 2], "latent": ["6", 0], "image": ["32", 0], "frame_idx": 0, "strength": 0.7}},
+
+  "8":  {"class_type": "LTXVConcatAVLatent",      "inputs": {"video_latent": ["33", 2], "audio_latent": ["7", 0]}},
   "10": {"class_type": "RandomNoise",             "inputs": {"noise_seed": 42}},
   "11": {"class_type": "SamplerEulerAncestral",   "inputs": {"eta": 0.0, "s_noise": 1.0}},
   "12": {"class_type": "ManualSigmas",            "inputs": {"sigmas": "1., 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"}},
-  "13": {"class_type": "CFGGuider",               "inputs": {"model": ["1", 0], "positive": ["9", 0], "negative": ["9", 1], "cfg": 1.0}},
+  "13": {"class_type": "CFGGuider",               "inputs": {"model": ["1", 0], "positive": ["33", 0], "negative": ["33", 1], "cfg": 1.0}},
   "14": {"class_type": "SamplerCustomAdvanced",   "inputs": {"noise": ["10", 0], "guider": ["13", 0], "sampler": ["11", 0], "sigmas": ["12", 0], "latent_image": ["8", 0]}},
   "15": {"class_type": "LTXVSeparateAVLatent",    "inputs": {"av_latent": ["14", 1]}},
-  "16": {"class_type": "VAEDecodeTiled",          "inputs": {"samples": ["15", 0], "vae": ["1", 2], "tile_size": 768, "overlap": 64, "temporal_size": 4096, "temporal_overlap": 64}},
+
+  "34": {"class_type": "LTXVCropGuides",          "inputs": {"positive": ["33", 0], "negative": ["33", 1], "latent": ["15", 0]}},
+
+  "16": {"class_type": "VAEDecodeTiled",          "inputs": {"samples": ["34", 2], "vae": ["1", 2], "tile_size": 768, "overlap": 64, "temporal_size": 4096, "temporal_overlap": 64}},
   "17": {"class_type": "LTXVAudioVAEDecode",      "inputs": {"samples": ["15", 1], "audio_vae": ["3", 0]}},
   "18": {"class_type": "CreateVideo",             "inputs": {"images": ["16", 0], "fps": 24.0, "audio": ["17", 0]}},
-  "19": {"class_type": "SaveVideo",               "inputs": {"video": ["18", 0], "filename_prefix": "openclaw-bridge/ltx-2.3-t2v", "format": "auto", "codec": "auto"}}
+  "19": {"class_type": "SaveVideo",               "inputs": {"video": ["18", 0], "filename_prefix": "openclaw-bridge/ltx-2.3-i2v", "format": "auto", "codec": "auto"}}
 }
