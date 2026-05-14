@@ -2497,6 +2497,28 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
   );
 }
 
+// Step 27c — the LTX-Video cheatsheet ALSO lands in the main workspace
+// AGENTS.md so the CLI-routed `main` agent sees the same `resolution`
+// arg guidance as the Discord-routed `discord-friend`. Without this,
+// `openclaw agent --agent main --message "fullhd videó..."` falls back
+// to default 1024×576 (Gemma 4 rewrites the prompt and drops the
+// resolution keyword unless the cheatsheet explicitly teaches the
+// `resolution` arg). Same env gate as step 27b — only appears when the
+// operator has enabled the video tool.
+if (LTX_VIDEO_ENABLED_ENV && LTX_VIDEO_ENABLED_ENV !== '0' && LTX_VIDEO_ENABLED_ENV.toLowerCase() !== 'false') {
+  if (fs.existsSync(WORKSPACE_AGENTS_PATH)) {
+    const wsAgentsMd = fs.readFileSync(WORKSPACE_AGENTS_PATH, 'utf8');
+    const ltxVideoUpsert = upsertMarkedBlock(
+      wsAgentsMd, LTX_VIDEO_CHEATSHEET_START, LTX_VIDEO_CHEATSHEET_END,
+      LTX_VIDEO_CHEATSHEET_BODY, 'ltx-video-tools cheatsheet',
+    );
+    if (ltxVideoUpsert.changed) {
+      fs.writeFileSync(WORKSPACE_AGENTS_PATH, ltxVideoUpsert.content);
+      console.log(`[patch-config] workspace/AGENTS.md ${ltxVideoUpsert.label}`);
+    }
+  }
+}
+
 if (!changed) {
   console.log('[patch-config] no-op (openclaw.json already in the desired state).');
   process.exit(0);
