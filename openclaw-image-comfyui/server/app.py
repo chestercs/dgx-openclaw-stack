@@ -283,8 +283,8 @@ TOOLS = [
                 "steps":      {"type": "integer", "description": "Sampler steps (workflow default if omitted; distilled checkpoints need fewer)."},
                 "cfg":        {"type": "number",  "description": "Classifier-free guidance scale (workflow default if omitted)."},
                 "checkpoint": {"type": "string",  "description": "Checkpoint filename inside basedir/models/checkpoints/."},
-                "init_image_url":    {"type": "string", "description": "I2V: an http(s) URL the bridge will fetch and upload as the reference frame."},
-                "init_image_base64": {"type": "string", "description": "I2V: raw base64 of the source frame. Alternative to init_image_url."},
+                "init_image_url":    {"type": "string", "description": "I2V: source frame for image-to-video. Accepts THREE shapes: (a) an `http(s)://` URL the bridge fetches; (b) a `file://` URL pointing at a path the bridge can see; (c) a raw filesystem PATH starting with `/` — used by the OpenClaw Discord agent flow, where Discord attachments live at `/home/node/.openclaw/media/inbound/<uuid>.png` (bind-mounted into the bridge). Use the path as-is from the agent's media reference; the bridge reads it directly. Do NOT try to construct a `vision.<domain>/view?type=inbound&subfolder=media&...` URL — that's a ComfyUI /view endpoint that only knows about type=output|input|temp and will 400 on inbound media paths."},
+                "init_image_base64": {"type": "string", "description": "I2V: raw base64 of the source frame. Alternative to init_image_url. Most Discord-routed I2V flows should prefer the filesystem path via init_image_url since the agent already has the path from the attachment reference."},
                 "timeout_s":  {"type": "number",  "description": f"Max wall-clock seconds. Default {DEFAULT_TIMEOUT_S:.0f}. Use 900+ on cold cache."},
                 "include_base64": {"type": "boolean", "description": "Embed mp4 bytes as base64 in the response. Default false — mp4s are usually MB-scale, embedding would balloon the agent context.", "default": False},
                 "attach_image_content": {"type": "boolean", "description": "Add the mp4 bytes as MCP `image` content alongside the metadata text. Default FALSE for video — mp4 is not a valid image content type, and downstream LLMs that try PIL.Image.open() on it surface a `cannot identify image file` 400 error on the NEXT chat turn. Keep false unless you know your chat surface handles raw mp4 in MCP image slots (most don't).", "default": False},
@@ -690,24 +690,59 @@ async def _tool_generate_video(args: dict) -> dict:
 
     # I2V: fetch / decode the init image, upload to ComfyUI, get back
     # a filename in input/ that the LoadImage node can use.
+    #
+    # Three accepted shapes for the caller (in priority order):
+    #
+    #   1. `init_image_url` starting with `/` or `file://` — a filesystem
+    #      path. Read directly from disk. Used by the Discord agent
+    #      flow on OpenClaw: inbound attachments land at paths like
+    #      `/home/node/.openclaw/media/inbound/<uuid>.png` (verified
+    #      live 2026-05-14: agent tried this path, bridge previously
+    #      rejected with UnsupportedProtocol). The compose file binds
+    #      the gateway's inbound dir into the bridge container at the
+    #      SAME path so the agent's reference works verbatim.
+    #
+    #   2. `init_image_url` starting with `http://` or `https://` —
+    #      a real URL. httpx-fetched.
+    #
+    #   3. `init_image_base64` — raw base64 or a `data:image/...;base64,`
+    #      data URI.
+    #
+    # All three end at the same place: ref_bytes + base filename →
+    # upload to ComfyUI's input/ dir via /upload/image.
     init_image_filename: Optional[str] = None
     if is_i2v:
         if init_image_url and init_image_b64:
             raise ValueError("pass either init_image_url OR init_image_base64, not both")
         try:
             if init_image_url:
-                async with httpx.AsyncClient(timeout=30.0) as ic:
-                    r = await ic.get(init_image_url)
-                if r.status_code != 200:
-                    raise ValueError(f"init_image_url returned HTTP {r.status_code}")
-                ref_bytes = r.content
-                # ComfyUI ignores the upload's reported extension and
-                # sniffs the bytes, but the LoadImage node prefers a
-                # plausible name. Strip the URL's filename if present;
-                # fall back to a generic name.
-                from urllib.parse import urlsplit
-                url_path = urlsplit(init_image_url).path
-                base = os.path.basename(url_path) or "init.png"
+                src = init_image_url
+                if src.startswith("file://"):
+                    src = src[len("file://"):]
+                if src.startswith("/"):
+                    if not os.path.isfile(src):
+                        raise ValueError(
+                            f"init_image_url path doesn't exist inside the bridge "
+                            f"container: {src} (mount the source dir into the "
+                            "openclaw-image-comfyui compose volumes if you're "
+                            "passing a path the gateway can see)"
+                        )
+                    with open(src, "rb") as f:
+                        ref_bytes = f.read()
+                    base = os.path.basename(src) or "init.png"
+                else:
+                    async with httpx.AsyncClient(timeout=30.0) as ic:
+                        r = await ic.get(init_image_url)
+                    if r.status_code != 200:
+                        raise ValueError(f"init_image_url returned HTTP {r.status_code}")
+                    ref_bytes = r.content
+                    # ComfyUI ignores the upload's reported extension and
+                    # sniffs the bytes, but the LoadImage node prefers a
+                    # plausible name. Strip the URL's filename if present;
+                    # fall back to a generic name.
+                    from urllib.parse import urlsplit
+                    url_path = urlsplit(init_image_url).path
+                    base = os.path.basename(url_path) or "init.png"
             else:
                 # init_image_base64 may include a data: URI prefix or be
                 # raw base64. Strip the prefix if present.

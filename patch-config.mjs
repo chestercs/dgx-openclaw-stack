@@ -2307,10 +2307,16 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   'Ugyanaz a bridge, mint a képeknél, csak más tool. Két mód:\n\n' +
   '- **T2V** (text-to-video): csak `prompt` kell, a többi default. A bridge\n' +
   '  automatikusan az `ltx-2.3-t2v` workflow-t választja.\n' +
-  '- **I2V** (image-to-video): `prompt` + `init_image_url` (vagy\n' +
-  '  `init_image_base64`). Ha bármelyik be van állítva, a bridge automatikusan\n' +
-  '  az `ltx-2.3-i2v` workflow-ra vált. Discord attachment-ek URL-jét\n' +
-  '  passzold simán `init_image_url`-ként.\n\n' +
+  '- **I2V** (image-to-video): `prompt` + `init_image_url`. Ha be van\n' +
+  '  állítva, a bridge automatikusan az `ltx-2.3-i2v` workflow-ra vált.\n' +
+  '  **Discord attachment-ekre AZ ABSZOLÚT FILESYSTEM PATH-T** passzold,\n' +
+  '  ne URL-t. Az inbound attachment-ek itt vannak:\n' +
+  '  `/home/node/.openclaw/media/inbound/<uuid>.png`. Ez NEM URL hanem\n' +
+  '  in-container path — a bridge a saját volume mount-jából olvassa.\n' +
+  '  NE PRÓBÁLD https://vision.<domain>/view?type=inbound&...-szerű URL-t\n' +
+  '  konstruálni — az ComfyUI /view endpoint, csak `type=output|input|temp`-ot\n' +
+  '  ismer és 400-ozni fog. Példa helyes hívás:\n' +
+  '  `init_image_url="/home/node/.openclaw/media/inbound/abc-123.png"`.\n\n' +
   '**FELBONTÁS megadható** — `width` és `height` paraméterekkel, mindig\n' +
   'párban. SOHA ne mondd hogy "nem választható meg a felbontás" — DE-HOGY,\n' +
   'csak vannak hardware-limitek.\n\n' +

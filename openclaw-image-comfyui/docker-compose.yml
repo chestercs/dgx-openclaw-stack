@@ -106,6 +106,19 @@ services:
       # parses the directory at startup; restart the container to pick
       # up new files.
       - ./server/workflows:/app/workflows:ro
+      # Bind-mount the OpenClaw gateway's inbound media dir (where
+      # Discord attachment uploads land at /home/node/.openclaw/media/
+      # inbound/<uuid>.png) into the bridge at the SAME path. The
+      # discord-friend agent's I2V flow passes the in-container
+      # gateway-side path as `init_image_url`; the bridge then reads
+      # it from disk directly (no HTTP fetch needed). Without this
+      # mount the path doesn't exist inside the bridge container and
+      # the tool call surfaces `init_image_url path doesn't exist`.
+      # Read-only — the bridge never writes here, only reads attachment
+      # bytes. Verified live 2026-05-14: agent emits paths like
+      # `/home/node/.openclaw/media/inbound/3bb29588-accf-4f20-9218-
+      # 931d84d512c7.png`; this mount makes them resolvable bridge-side.
+      - ${OPENCLAW_CONFIG_DIR}/media/inbound:/home/node/.openclaw/media/inbound:ro
       # Path A bind-mount — uncomment to activate inline chat rendering.
       # The host path must be the gateway's canvas dir (typically
       # ${OPENCLAW_CONFIG_DIR}/canvas). The bridge runs as 1000:1000
