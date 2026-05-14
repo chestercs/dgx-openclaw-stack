@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import random
+import re
 import secrets
 import time
 import uuid
@@ -119,7 +120,7 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.2"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.3"}
 
 # LTX-Video 2.3 knobs — only used when the operator has enabled the
 # video tool surface. Defaults survive a fresh install where the
@@ -138,6 +139,90 @@ LTX_VIDEO_DEFAULT_AUDIO = os.environ.get("LTX_VIDEO_DEFAULT_AUDIO", "on").strip(
 # 60-second clips that take 30+ minutes and blow past Discord's
 # auto-embed size cap. Bridge enforces seconds = length / fps <= cap.
 LTX_VIDEO_MAX_DURATION_S = float(os.environ.get("LTX_VIDEO_MAX_DURATION_S", "10"))
+
+
+# ── Proxy-side resolution resolver ────────────────────────────────────
+#
+# Gemma 4 has a persistent failure mode: when the user asks for a non-
+# default resolution by name ("FullHD", "1080p", "négyzet"), the agent
+# transcribes the keyword into the prompt text correctly but emits the
+# tool call with only one of `width` / `height` set (verified live
+# 2026-05-14: "fullhd változatot" → tool args `{width: 1920}` with
+# `height` unset, producing 1920×576 ultra-wide instead of 1920×1088).
+#
+# Earlier attempts to fix this in the agent layer (cheatsheet rules,
+# stronger inputSchema descriptions, MCP-error reject) all failed:
+#   - v0.12.0: cheatsheet table — Gemma ignored it
+#   - v0.12.1: hard reject (MCP -32602) — openclaw retry loop blew up
+#   - v0.12.2: silent default fallback — user got 1024×576 when asking
+#              for FullHD (semantically wrong, just non-broken)
+#
+# v0.12.3 path: proxy-side resolution from the prompt text itself. The
+# prompt is the ONE field the agent reliably gets right — it's the
+# user's natural-language ask copied verbatim. We parse the prompt for
+# either explicit AxB notation (e.g. "1920x1088") or a known resolution
+# keyword and use the resulting (width, height) pair when the agent
+# didn't send both dims explicitly. This is NOT auto-derive (we don't
+# infer the missing dim from the supplied one — which depends on an
+# unknown target aspect ratio); it's a deterministic, documented
+# keyword→(w,h) lookup table that translates user intent to dims.
+#
+# Tuple order matters: most-specific patterns FIRST so e.g. "full hd"
+# wins over the substring "hd". Regex word boundaries (`\b`) prevent
+# false positives ("read" matching against "hd").
+RESOLUTION_AXB_RE = re.compile(r'\b(\d{3,4})\s*[x×*]\s*(\d{3,4})\b', re.IGNORECASE)
+RESOLUTION_ALIASES: list[tuple[str, tuple[int, int]]] = [
+    # (regex pattern, (width, height))
+    # FullHD — pixel count fits on GB10 with ~270s render.
+    (r"\bfull[\s\-]?hd\b",                  (1920, 1088)),
+    (r"\bfhd\b",                            (1920, 1088)),
+    (r"\b1080p\b",                          (1920, 1088)),
+    # 4K — ~115 GB peak, may OOM on busy stacks. Documented limit.
+    (r"\b4k\b",                             (3840, 2176)),
+    (r"\bultra[\s\-]?hd\b",                 (3840, 2176)),
+    (r"\buhd\b",                            (3840, 2176)),
+    (r"\b2160p\b",                          (3840, 2176)),
+    # 1440p
+    (r"\bqhd\b",                            (2560, 1440)),
+    (r"\b1440p\b",                          (2560, 1440)),
+    # 720p HD
+    (r"\b720p\b",                           (1280, 704)),
+    (r"\bhd\b",                             (1280, 704)),   # last among hd-bearing
+    # MiniHD (the default, but matches if a user explicitly asks for it)
+    (r"\bmini[\s\-]?hd\b",                  (1024, 576)),
+    # Aspect/shape keywords (Hungarian + English).
+    (r"\b(négyzet|square|kocka)\b",         (1024, 1024)),
+    (r"\b(portrait|függőleges|álló)\b",     (768, 1024)),
+    (r"\b(landscape|fekvő|szélesvásznú)\b", (1280, 704)),
+]
+
+
+def _resolve_dims_from_prompt(prompt: str) -> Optional[tuple[int, int]]:
+    """Parse `prompt` for an explicit AxB token or a known resolution
+    keyword. Returns the matching (width, height) pair or None if
+    nothing matched. AxB is tried first because it's the most specific
+    signal: a prompt containing "1920x1088" is unambiguous regardless
+    of any other keywords also present (e.g. "FullHD (1920x1088)").
+    """
+    if not prompt:
+        return None
+    m = RESOLUTION_AXB_RE.search(prompt)
+    if m:
+        try:
+            w, h = int(m.group(1)), int(m.group(2))
+        except ValueError:
+            w = h = 0
+        # Sanity-check the AxB hit — single-digit-range numbers like
+        # "10x10" come from frame counts, FPS, etc. and must not
+        # become render dims. Require both >= 256 (smallest sane LTX
+        # latent) and <= 4096 (above this VRAM blows up regardless).
+        if 256 <= w <= 4096 and 256 <= h <= 4096:
+            return (w, h)
+    p = prompt.lower()
+    for pattern, dims in RESOLUTION_ALIASES:
+        if re.search(pattern, p, re.IGNORECASE):
+            return dims
+    return None
 
 
 TOOLS = [
@@ -775,38 +860,50 @@ async def _tool_generate_video(args: dict) -> dict:
         # cheatsheet for the named-resolution → explicit (width, height)
         # pairs the agent is supposed to send.
 
-    # Width/height PAIR guard. Gemma 4 routinely interprets "FullHD"
-    # by sending only `width=1920` and dropping `height`, producing a
-    # 1920x576 ultra-wide instead of 1920x1088 (verified live
-    # 2026-05-14: history c92c3237 → EmptyLTXVLatentVideo.height=576
-    # from a "fullhd változatot" request).
+    # Proxy-side resolution resolver. Three precedence tiers:
     #
-    # First attempt (v0.12.1) was to raise ValueError on single-dim
-    # calls — but the openclaw MCP layer treats `-32602` (Invalid
-    # params) as retryable and looped the same broken call ~75 times
-    # in 10 minutes, each iteration uploading a fresh init image to
-    # ComfyUI. That cure was worse than the disease.
+    #   1. The agent supplied BOTH `width` and `height` → flow them
+    #      through verbatim. The agent's explicit intent always wins.
+    #   2. The agent supplied at most one dim → parse the `prompt`
+    #      text for a resolution signal (AxB notation or a keyword
+    #      from RESOLUTION_ALIASES). If found, use that pair. This
+    #      catches the dominant Gemma-4 failure mode where the prompt
+    #      text correctly says "FullHD (1920x1088)" but the tool args
+    #      only carry `width=1920` (height defaulting to 576 →
+    #      ultra-wide).
+    #   3. Nothing recoverable → fall through to workflow defaults
+    #      (1024x576 MiniHD).
     #
-    # v0.12.2 path instead: silent fallback. If the caller supplies
-    # exactly one of width/height, drop the lone dim and fall through
-    # to workflow defaults (1024x576 MiniHD) for both. This is NOT
-    # auto-derive — we don't infer the missing dim from the supplied
-    # one (which would silently turn "FullHD" into a guess). We
-    # discard the broken pair entirely and use the documented default.
-    # The cheatsheet still teaches the agent to send pairs explicitly,
-    # but when the agent ignores that teaching the user gets a sane
-    # 16:9 default instead of an ultra-wide and the retry loop is
-    # avoided (the tool returns success).
+    # The parser is deterministic and explicit (a documented keyword
+    # table, not an LLM inference), so this is NOT auto-derive. It's
+    # a translation layer that bridges the gap between what the user
+    # typed and what the agent encoded in tool args. See the
+    # RESOLUTION_ALIASES table for the supported keywords; AxB is
+    # always tried first as the most-specific signal.
     caller_w = args.get("width")
     caller_h = args.get("height")
-    if (caller_w is None) != (caller_h is None):
-        log.warning(
-            "generate_video: single-dim call (width=%s, height=%s) — "
-            "discarding the lone dim and using workflow defaults. "
-            "Agent should send width AND height together.",
-            caller_w, caller_h,
-        )
-        args = {**args, "width": None, "height": None}
+    both_explicit = caller_w is not None and caller_h is not None
+    if not both_explicit:
+        parsed = _resolve_dims_from_prompt(args.get("prompt") or "")
+        if parsed:
+            log.info(
+                "generate_video: resolved %dx%d from prompt text "
+                "(caller passed width=%s, height=%s)",
+                parsed[0], parsed[1], caller_w, caller_h,
+            )
+            args = {**args, "width": parsed[0], "height": parsed[1]}
+        elif caller_w is not None or caller_h is not None:
+            # Single-dim call with no recoverable resolution signal in
+            # the prompt. Discard the lone dim instead of pairing it
+            # with a workflow default (would silently produce wrong
+            # aspect ratios). Falls through to default 1024x576 below.
+            log.warning(
+                "generate_video: single-dim call (width=%s, height=%s) "
+                "with no AxB/keyword signal in prompt — falling back to "
+                "workflow defaults.",
+                caller_w, caller_h,
+            )
+            args = {**args, "width": None, "height": None}
 
     bind_args = {
         "prompt":       args.get("prompt"),

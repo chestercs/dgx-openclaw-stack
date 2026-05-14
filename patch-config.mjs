@@ -2348,22 +2348,28 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '- I2V default 1024×576: `{prompt: "...", init_image_url: "<path>"}`.\n' +
   '- I2V landscape kép HD-ban: `{prompt: "...", init_image_url: "<path>", width: 1280, height: 704}`.\n' +
   '- I2V portrait kép: `{prompt: "...", init_image_url: "<path>", width: 768, height: 1024}`.\n\n' +
-  '**ANTI-BUG SZABÁLY 1:** ha bármilyen NEM-default felbontást szeretnél,\n' +
-  '`width` ÉS `height` MINDKETTŐT EXPLICIT át kell adni. Ha csak az egyiket\n' +
-  'küldöd, a bridge v0.12.2 óta **eldobja a hiányos pár-t és a default\n' +
-  '1024×576 MiniHD-re esik vissza** (nem auto-derive). Tehát ha "fullhd"-t\n' +
-  'kérnek és csak width=1920-t küldesz, a videó NEM 1920×576 ultra-wide\n' +
-  'lesz, hanem default 1024×576 — ami nem fullhd, így a user csalódni fog.\n' +
-  'MINDIG küldd a párt együtt.\n\n' +
-  '**ANTI-BUG SZABÁLY 2 — AxB formátum parsolása:** ha a user `AxB` vagy\n' +
-  '`A×B` formátumban ad meg felbontást (pl. "1024x1024", "1280x720",\n' +
-  '"512x512"), MINDKÉT számot ki kell olvasnod és átadnod:\n' +
-  '- "csinálj 1024x1024 videót" → `{width: 1024, height: 1024}` (mindkettő!)\n' +
-  '- "1280x720 vidit kérek" → `{width: 1280, height: 720}` (ami round-ol 1280×704-re)\n' +
-  '- "512×512 négyzet" → `{width: 512, height: 512}`\n' +
-  'Az "x" / "×" a SZEPARÁTOR. Az első szám a width, a második a height.\n' +
-  'SOHA ne csak az egyiket vegyel át. Ha valamelyik nem step-32 (pl. 720),\n' +
-  'küldd úgy ahogy van, a ComfyUI rounddolja automatikusan.\n\n' +
+  '**FELBONTÁS-BIZTONSÁGI HÁLÓ (bridge v0.12.3 óta):** a bridge proxy\n' +
+  'oldalon **elemzi a `prompt` szöveget is**, és ha a user kérése\n' +
+  'tartalmaz `AxB` formátumot (pl. "1920x1088") vagy resolution-kulcsszót\n' +
+  '("fullhd", "1080p", "720p", "hd", "négyzet", "portrait" stb.), akkor a\n' +
+  'megfelelő (width, height) pár automatikusan az értelmezésnek megfelelő\n' +
+  'értéket veszi fel — még akkor is, ha te csak az egyiket küldted vagy\n' +
+  'egyiket sem. Ennek köszönhetően egy "csinálj fullhd videót" prompt\n' +
+  'mindenképpen 1920×1088 lesz, akár csak `prompt=`-tal hívod meg a tool-t,\n' +
+  'akár `{prompt, width:1920}`-szal.\n\n' +
+  'A precedencia: (1) explicit (width ÉS height) az args-ban → azt használja;\n' +
+  '(2) különben prompt-text parse → annak megfelelő dim; (3) különben\n' +
+  'default 1024×576. Tehát nem **kötelező** explicit dim-et küldeni, de\n' +
+  'ha explicit `width` ÉS `height` párt adsz, az MINDIG nyer a prompt-text\n' +
+  'parse fölött.\n\n' +
+  '**Best practice:** ha kifejezetten egy resolution-t akarsz biztosan,\n' +
+  'KÜLDD EXPLICIT a párt az args-ban. A prompt-parser egy biztonsági háló,\n' +
+  'nem a fő útvonal. Pl. `{prompt: "...", width: 1024, height: 1024}` még\n' +
+  'mindig a leggyorsabb és legmegbízhatóbb módja négyzetes videó kérésnek.\n\n' +
+  '**AxB formátum a prompt szövegében is működik:** ha a user "1024x1024 videót"\n' +
+  'kér, a prompt-ot is paste-olhatod változatlanul (`prompt: "1024x1024 videó\n' +
+  'egy macskáról"`) és a proxy felismeri. De ettől még jobb, ha az args-ban\n' +
+  'expliciten is megküldöd a párt — gyorsabb path és nincs félreértelmezés.\n\n' +
   'Egyéb tipikus paraméterek:\n\n' +
   '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
   LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +
