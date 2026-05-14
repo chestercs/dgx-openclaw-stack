@@ -2349,11 +2349,12 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '- I2V landscape kép HD-ban: `{prompt: "...", init_image_url: "<path>", width: 1280, height: 704}`.\n' +
   '- I2V portrait kép: `{prompt: "...", init_image_url: "<path>", width: 768, height: 1024}`.\n\n' +
   '**ANTI-BUG SZABÁLY 1:** ha bármilyen NEM-default felbontást szeretnél,\n' +
-  '`width` ÉS `height` MINDKETTŐT EXPLICIT át kell adni. **A bridge v0.12.1\n' +
-  'óta hibát dob** ha csak az egyiket küldöd: `video tool requires width\n' +
-  'AND height together`. Akkor a tool-hívást ÚJRA kell csinálnod a párral.\n' +
-  'Pl. 1920 width + default 576 height = 30:9 ULTRA-WIDE — a bridge ezt\n' +
-  'most blokkolja, ezért MINDIG küldd a párt együtt.\n\n' +
+  '`width` ÉS `height` MINDKETTŐT EXPLICIT át kell adni. Ha csak az egyiket\n' +
+  'küldöd, a bridge v0.12.2 óta **eldobja a hiányos pár-t és a default\n' +
+  '1024×576 MiniHD-re esik vissza** (nem auto-derive). Tehát ha "fullhd"-t\n' +
+  'kérnek és csak width=1920-t küldesz, a videó NEM 1920×576 ultra-wide\n' +
+  'lesz, hanem default 1024×576 — ami nem fullhd, így a user csalódni fog.\n' +
+  'MINDIG küldd a párt együtt.\n\n' +
   '**ANTI-BUG SZABÁLY 2 — AxB formátum parsolása:** ha a user `AxB` vagy\n' +
   '`A×B` formátumban ad meg felbontást (pl. "1024x1024", "1280x720",\n' +
   '"512x512"), MINDKÉT számot ki kell olvasnod és átadnod:\n' +

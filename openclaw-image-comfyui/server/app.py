@@ -119,7 +119,7 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.1"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.2"}
 
 # LTX-Video 2.3 knobs — only used when the operator has enabled the
 # video tool surface. Defaults survive a fresh install where the
@@ -779,23 +779,34 @@ async def _tool_generate_video(args: dict) -> dict:
     # by sending only `width=1920` and dropping `height`, producing a
     # 1920x576 ultra-wide instead of 1920x1088 (verified live
     # 2026-05-14: history c92c3237 → EmptyLTXVLatentVideo.height=576
-    # from a "fullhd változatot" request). The cheatsheet alone is
-    # not enough; reject the call with an explicit error so the agent
-    # retries WITH the pair instead of silently defaulting the missing
-    # dim. Both-None still falls through to workflow defaults below
-    # (default 1024x576 MiniHD); both-supplied flows verbatim. This
-    # is the bridge's ONLY validation — no auto-orient, no derive.
+    # from a "fullhd változatot" request).
+    #
+    # First attempt (v0.12.1) was to raise ValueError on single-dim
+    # calls — but the openclaw MCP layer treats `-32602` (Invalid
+    # params) as retryable and looped the same broken call ~75 times
+    # in 10 minutes, each iteration uploading a fresh init image to
+    # ComfyUI. That cure was worse than the disease.
+    #
+    # v0.12.2 path instead: silent fallback. If the caller supplies
+    # exactly one of width/height, drop the lone dim and fall through
+    # to workflow defaults (1024x576 MiniHD) for both. This is NOT
+    # auto-derive — we don't infer the missing dim from the supplied
+    # one (which would silently turn "FullHD" into a guess). We
+    # discard the broken pair entirely and use the documented default.
+    # The cheatsheet still teaches the agent to send pairs explicitly,
+    # but when the agent ignores that teaching the user gets a sane
+    # 16:9 default instead of an ultra-wide and the retry loop is
+    # avoided (the tool returns success).
     caller_w = args.get("width")
     caller_h = args.get("height")
     if (caller_w is None) != (caller_h is None):
-        raise ValueError(
-            f"video tool requires width AND height together "
-            f"(got width={caller_w}, height={caller_h}). "
-            "Common pairs: 1024x576 (default MiniHD 16:9 landscape), "
-            "1280x704 (HD landscape), 1920x1088 (FullHD landscape), "
-            "1024x1024 (square), 768x1024 (portrait 9:16). "
-            "Re-call passing BOTH width and height."
+        log.warning(
+            "generate_video: single-dim call (width=%s, height=%s) — "
+            "discarding the lone dim and using workflow defaults. "
+            "Agent should send width AND height together.",
+            caller_w, caller_h,
         )
+        args = {**args, "width": None, "height": None}
 
     bind_args = {
         "prompt":       args.get("prompt"),
