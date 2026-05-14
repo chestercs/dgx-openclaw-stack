@@ -119,7 +119,7 @@ IMAGE_GEN_DEFAULT_WORKFLOW = os.environ.get("IMAGE_GEN_DEFAULT_WORKFLOW", "").st
 IMAGE_GEN_DEFAULT_CHECKPOINT = os.environ.get("IMAGE_GEN_DEFAULT_CHECKPOINT", "").strip()
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.0"}
+SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.1"}
 
 # LTX-Video 2.3 knobs — only used when the operator has enabled the
 # video tool surface. Defaults survive a fresh install where the
@@ -774,6 +774,28 @@ async def _tool_generate_video(args: dict) -> dict:
         # missing dims; predictability over magic. See the patcher
         # cheatsheet for the named-resolution → explicit (width, height)
         # pairs the agent is supposed to send.
+
+    # Width/height PAIR guard. Gemma 4 routinely interprets "FullHD"
+    # by sending only `width=1920` and dropping `height`, producing a
+    # 1920x576 ultra-wide instead of 1920x1088 (verified live
+    # 2026-05-14: history c92c3237 → EmptyLTXVLatentVideo.height=576
+    # from a "fullhd változatot" request). The cheatsheet alone is
+    # not enough; reject the call with an explicit error so the agent
+    # retries WITH the pair instead of silently defaulting the missing
+    # dim. Both-None still falls through to workflow defaults below
+    # (default 1024x576 MiniHD); both-supplied flows verbatim. This
+    # is the bridge's ONLY validation — no auto-orient, no derive.
+    caller_w = args.get("width")
+    caller_h = args.get("height")
+    if (caller_w is None) != (caller_h is None):
+        raise ValueError(
+            f"video tool requires width AND height together "
+            f"(got width={caller_w}, height={caller_h}). "
+            "Common pairs: 1024x576 (default MiniHD 16:9 landscape), "
+            "1280x704 (HD landscape), 1920x1088 (FullHD landscape), "
+            "1024x1024 (square), 768x1024 (portrait 9:16). "
+            "Re-call passing BOTH width and height."
+        )
 
     bind_args = {
         "prompt":       args.get("prompt"),

@@ -2349,10 +2349,11 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '- I2V landscape kép HD-ban: `{prompt: "...", init_image_url: "<path>", width: 1280, height: 704}`.\n' +
   '- I2V portrait kép: `{prompt: "...", init_image_url: "<path>", width: 768, height: 1024}`.\n\n' +
   '**ANTI-BUG SZABÁLY 1:** ha bármilyen NEM-default felbontást szeretnél,\n' +
-  '`width` ÉS `height` MINDKETTŐT EXPLICIT át kell adni. Ha csak az egyiket\n' +
-  'küldöd, a másik az 1024×576 default-ról egyik értékét tartja és csúnya\n' +
-  'aspect-mismatch lesz (pl. 1024 width + default 576 height = 16:9 OK,\n' +
-  'de 1920 width + default 576 height = 30:9 ULTRA-WIDE — rossz).\n\n' +
+  '`width` ÉS `height` MINDKETTŐT EXPLICIT át kell adni. **A bridge v0.12.1\n' +
+  'óta hibát dob** ha csak az egyiket küldöd: `video tool requires width\n' +
+  'AND height together`. Akkor a tool-hívást ÚJRA kell csinálnod a párral.\n' +
+  'Pl. 1920 width + default 576 height = 30:9 ULTRA-WIDE — a bridge ezt\n' +
+  'most blokkolja, ezért MINDIG küldd a párt együtt.\n\n' +
   '**ANTI-BUG SZABÁLY 2 — AxB formátum parsolása:** ha a user `AxB` vagy\n' +
   '`A×B` formátumban ad meg felbontást (pl. "1024x1024", "1280x720",\n' +
   '"512x512"), MINDKÉT számot ki kell olvasnod és átadnod:\n' +
@@ -2373,12 +2374,13 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   'Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + ' másodperc (`LTX_VIDEO_MAX_DURATION_S`). Hosszabbra a\n' +
   'Discord auto-embed ~50 MB cap miatt nem érdemes menni.\n\n' +
   '**Felhasználói prompt → tool args fordítás:**\n\n' +
-  '- "csinálj egy videót egy [X]-ről" → T2V, `prompt="[X]"`.\n' +
-  '- "[X] HD-ban" / "[X] szélesvásznon" → T2V + `width=1280, height=720,\n' +
-  '  length=97` (HD-n csak 4s működik).\n' +
-  '- "[X] fullhd-ban" / "1080p-ben" → mondd meg hogy max HD megy.\n' +
-  '  Esetleg generálj HD-ban + jelezd a limitet, ne csak utasítsd el.\n' +
-  '- "animáld ezt a képet" + attachment → I2V, `init_image_url=<attachment URL>`.\n' +
+  '- "csinálj egy videót egy [X]-ről" → T2V, `prompt="[X]"` (default 1024×576).\n' +
+  '- "[X] HD-ban" / "720p / 16:9 HD" → `{prompt:"[X]", width:1280, height:704}`.\n' +
+  '- "[X] FullHD / 1080p" → `{prompt:"[X]", width:1920, height:1088, timeout_s:600}`.\n' +
+  '  Jelezd hogy ~4.5 perc a render — várjon türelemmel.\n' +
+  '- "[X] négyzet / square" → `{prompt:"[X]", width:1024, height:1024}`.\n' +
+  '- "[X] portrait / álló" → `{prompt:"[X]", width:768, height:1024}`.\n' +
+  '- "animáld ezt a képet" + attachment → I2V, `init_image_url=<filesystem path>`.\n' +
   '- "8 másodperces klip" → már default. Hosszabb mint 8s `length=`-tel.\n' +
   '- "néma videó" / "ne legyen hangja" → `audio_enabled=false`.\n\n' +
   '**KÖTELEZŐ válasz-struktúra:** a `display_markdown` tool-output mező\n' +
