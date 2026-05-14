@@ -2326,26 +2326,42 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '**Felbontás-recipek — pontosan ezeket a (width, height) PÁROKAT küldd:**\n\n' +
   '| User kérése                     | width | height | Render-idő (6s)|\n' +
   '|---------------------------------|-------|--------|----------------|\n' +
-  '| Default / "kép" / "rövid videó" | 512   | 768    | ~40 sec        |\n' +
-  '| "fekvő" / "wide" / "landscape"  | 768   | 512    | ~40 sec        |\n' +
-  '| "négyzet" / "square"            | 640   | 640    | ~45 sec        |\n' +
+  '| **Default / "kép" / "rövid videó" / 16:9** | **1024** | **576** | **~55 sec** |\n' +
+  '| "portrait" / "függőleges" / "álló" | 768   | 1024   | ~55 sec        |\n' +
+  '| Kis portrait (default volt)     | 512   | 768    | ~40 sec        |\n' +
+  '| "fekvő kicsi" / kis landscape   | 768   | 512    | ~40 sec        |\n' +
+  '| "négyzet" / "square" / "kocka"  | 1024  | 1024   | ~95 sec        |\n' +
   '| "HD" / "720p" / "16:9 HD"       | 1280  | 704    | ~90 sec        |\n' +
   '| "FullHD" / "1080p" / "16:9 FHD" | 1920  | 1088   | **~270 sec**   |\n\n' +
-  'VRAM peak gyakorlatilag KONSTANS ~116 GB minden felbontáson — a tile-as\n' +
+  'VRAM peak gyakorlatilag KONSTANS ~115 GB minden felbontáson — a tile-as\n' +
   'VAE decode + fix-cost stack dominál. **Wall-clock erősen skálázódik**\n' +
   'a pixel-számmal — FullHD ~4.5 PERCBE telik 6 másodperc clip. Jelezd\n' +
   'a usernek hogy várnia kell, ne tagadd meg.\n\n' +
-  '**Konkrét tool-hívás példák** (ezeket a formákat használd):\n\n' +
-  '- T2V default: `comfyui_image__generate_video(prompt="...")` —\n' +
-  '  workflow defaults adják a 512×768-at.\n' +
-  '- T2V landscape: `prompt="...", width=768, height=512`.\n' +
-  '- T2V HD: `prompt="...", width=1280, height=704`.\n' +
-  '- T2V FullHD: `prompt="...", width=1920, height=1088, timeout_s=600`.\n' +
-  '- I2V default (portrait orientation): `prompt="...", init_image_url="<path>"`.\n' +
-  '- I2V landscape source: `prompt="...", init_image_url="<path>", width=768, height=512`.\n' +
-  '  **HA a csatolt kép landscape (szélesebb mint magas), MINDIG küldj**\n' +
-  '  **landscape (`width=768, height=512`) dim-eket!** A default 512×768\n' +
-  '  portrait crop-pal levágja a landscape oldalakat.\n\n' +
+  '**Konkrét tool-hívás példák** — ezeket a JSON arg-formákat MÁSOLD\n' +
+  'pontosan, MINDKÉT (width ÉS height) értéket átadva:\n\n' +
+  '- T2V default 1024×576 16:9: `comfyui_image__generate_video(prompt="...")` —\n' +
+  '  a workflow defaults adják ezt. Nem kell width/height-ot megadnod.\n' +
+  '- T2V négyzet 1024×1024: `{prompt: "...", width: 1024, height: 1024}`.\n' +
+  '- T2V HD 1280×704: `{prompt: "...", width: 1280, height: 704}`.\n' +
+  '- T2V FullHD 1920×1088: `{prompt: "...", width: 1920, height: 1088, timeout_s: 600}`.\n' +
+  '- T2V portrait 768×1024: `{prompt: "...", width: 768, height: 1024}`.\n' +
+  '- I2V default 1024×576: `{prompt: "...", init_image_url: "<path>"}`.\n' +
+  '- I2V landscape kép HD-ban: `{prompt: "...", init_image_url: "<path>", width: 1280, height: 704}`.\n' +
+  '- I2V portrait kép: `{prompt: "...", init_image_url: "<path>", width: 768, height: 1024}`.\n\n' +
+  '**ANTI-BUG SZABÁLY 1:** ha bármilyen NEM-default felbontást szeretnél,\n' +
+  '`width` ÉS `height` MINDKETTŐT EXPLICIT át kell adni. Ha csak az egyiket\n' +
+  'küldöd, a másik az 1024×576 default-ról egyik értékét tartja és csúnya\n' +
+  'aspect-mismatch lesz (pl. 1024 width + default 576 height = 16:9 OK,\n' +
+  'de 1920 width + default 576 height = 30:9 ULTRA-WIDE — rossz).\n\n' +
+  '**ANTI-BUG SZABÁLY 2 — AxB formátum parsolása:** ha a user `AxB` vagy\n' +
+  '`A×B` formátumban ad meg felbontást (pl. "1024x1024", "1280x720",\n' +
+  '"512x512"), MINDKÉT számot ki kell olvasnod és átadnod:\n' +
+  '- "csinálj 1024x1024 videót" → `{width: 1024, height: 1024}` (mindkettő!)\n' +
+  '- "1280x720 vidit kérek" → `{width: 1280, height: 720}` (ami round-ol 1280×704-re)\n' +
+  '- "512×512 négyzet" → `{width: 512, height: 512}`\n' +
+  'Az "x" / "×" a SZEPARÁTOR. Az első szám a width, a második a height.\n' +
+  'SOHA ne csak az egyiket vegyel át. Ha valamelyik nem step-32 (pl. 720),\n' +
+  'küldd úgy ahogy van, a ComfyUI rounddolja automatikusan.\n\n' +
   'Egyéb tipikus paraméterek:\n\n' +
   '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
   LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +

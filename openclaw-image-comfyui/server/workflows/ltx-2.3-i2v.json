@@ -5,9 +5,9 @@
     "kind": "video",
     "checkpoint_required": false,
     "defaults": {
-      "width": 512,
-      "height": 768,
-      "length": 97,
+      "width": 1024,
+      "height": 576,
+      "length": 145,
       "fps": 24,
       "negative": ""
     },
@@ -41,12 +41,12 @@
   "3":  {"class_type": "LTXVAudioVAELoader",      "inputs": {"ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"}},
   "4":  {"class_type": "CLIPTextEncode",          "inputs": {"text": "REPLACE_AT_BIND_TIME", "clip": ["2", 0]}},
   "5":  {"class_type": "CLIPTextEncode",          "inputs": {"text": "", "clip": ["2", 0]}},
-  "6":  {"class_type": "EmptyLTXVLatentVideo",    "inputs": {"width": 512, "height": 768, "length": 97, "batch_size": 1}},
-  "7":  {"class_type": "LTXVEmptyLatentAudio",    "inputs": {"frames_number": 97, "frame_rate": 24, "batch_size": 1, "audio_vae": ["3", 0]}},
+  "6":  {"class_type": "EmptyLTXVLatentVideo",    "inputs": {"width": 1024, "height": 576, "length": 145, "batch_size": 1}},
+  "7":  {"class_type": "LTXVEmptyLatentAudio",    "inputs": {"frames_number": 145, "frame_rate": 24, "batch_size": 1, "audio_vae": ["3", 0]}},
   "9":  {"class_type": "LTXVConditioning",        "inputs": {"positive": ["4", 0], "negative": ["5", 0], "frame_rate": 24.0}},
 
   "30": {"class_type": "LoadImage",               "inputs": {"image": "REPLACE_AT_BIND_TIME"}},
-  "31": {"class_type": "ImageScale",              "inputs": {"image": ["30", 0], "upscale_method": "nearest-exact", "width": 512, "height": 768, "crop": "center"}},
+  "31": {"class_type": "ImageScale",              "inputs": {"image": ["30", 0], "upscale_method": "nearest-exact", "width": 1024, "height": 576, "crop": "center"}},
   "32": {"class_type": "LTXVPreprocess",          "inputs": {"image": ["31", 0], "img_compression": 25}},
   "33": {"class_type": "LTXVAddGuide",            "inputs": {"positive": ["9", 0], "negative": ["9", 1], "vae": ["1", 2], "latent": ["6", 0], "image": ["32", 0], "frame_idx": 0, "strength": 0.7}},
 
