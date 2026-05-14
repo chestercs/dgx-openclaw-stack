@@ -2277,25 +2277,51 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '  automatikusan az `ltx-2.3-t2v` workflow-t választja.\n' +
   '- **I2V** (image-to-video): `prompt` + `init_image_url` (vagy\n' +
   '  `init_image_base64`). Ha bármelyik be van állítva, a bridge automatikusan\n' +
-  '  az `ltx-2.3-i2v` workflow-ra vált.\n\n' +
-  'Tipikus paraméterek:\n\n' +
-  '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett\n' +
-  '  ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈ ' + (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + ' másodperc.\n' +
+  '  az `ltx-2.3-i2v` workflow-ra vált. Discord attachment-ek URL-jét\n' +
+  '  passzold simán `init_image_url`-ként.\n\n' +
+  '**FELBONTÁS megadható** — `width` és `height` paraméterekkel, mindig\n' +
+  'párban. SOHA ne mondd hogy "nem választható meg a felbontás" — DE-HOGY,\n' +
+  'csak vannak hardware-limitek.\n\n' +
+  'Felbontás-recipek GB10-en (user szóhasználata → `width × height`):\n\n' +
+  '- Default / "kép" / "rövid videó" → 512×768 (portrait, 4:6) — 8 sec\n' +
+  '  alatt is befér (verifikálva 116 GB VRAM peak).\n' +
+  '- "fekvő" / "wide" / "landscape" → 768×512 (landscape, 6:4) — ugyanaz\n' +
+  '  a pixel-szám, ugyanaz a memory.\n' +
+  '- "HD" / "720p" / "16:9" → 1280×720 (HD landscape, 16:9) — **CSAK 4\n' +
+  '  másodperces** clipekre (`length=97`). HD-ban hosszabb klipnél OOM\n' +
+  '  (verifikálva 117 GB peak 4s @ HD-n).\n' +
+  '- "FullHD" / "1080p" / "1920x1080" → **NEM TÁMOGATOTT** ezen a\n' +
+  '  hardveren. Mondd meg neki hogy max HD (720p) megy. Magyarázd el\n' +
+  '  hogy 121 GB unified memory nem elég 1080p-hez. Javasolj 720p-t\n' +
+  '  helyette.\n' +
+  '- "négyzet" / "square" → 640×640 (közbenső felbontás, kisebb peak).\n\n' +
+  '**Felbontás × hossz korlát**: 8 sec MAX a default 512×768-on, 4 sec\n' +
+  'MAX a HD-n (1280×720). Ennél hosszabb + nagyobb = OOM kockázat.\n\n' +
+  'Egyéb tipikus paraméterek:\n\n' +
+  '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
+  LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +
+  '  ' + (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + ' másodperc. **MUST** `8k+1` (1, 9, 17, ..., 97, ..., 193, 201, ...).\n' +
   '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. Magasabb fps → simább, de hosszabb render.\n' +
   '- `audio_enabled`: default `true` — LTX-2.3 natívan generál hangot is.\n' +
   '  Néma klip: `audio_enabled=false`.\n' +
-  '- `timeout_s`: legalább 900 (15 perc). Cold-cache első hívás 3-10 perc.\n\n' +
+  '- `timeout_s`: legalább 600. Cold-cache első hívás 3-10 perc.\n\n' +
   'Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + ' másodperc (`LTX_VIDEO_MAX_DURATION_S`). Hosszabbra a\n' +
   'Discord auto-embed ~50 MB cap miatt nem érdemes menni.\n\n' +
   '**Felhasználói prompt → tool args fordítás:**\n\n' +
   '- "csinálj egy videót egy [X]-ről" → T2V, `prompt="[X]"`.\n' +
+  '- "[X] HD-ban" / "[X] szélesvásznon" → T2V + `width=1280, height=720,\n' +
+  '  length=97` (HD-n csak 4s működik).\n' +
+  '- "[X] fullhd-ban" / "1080p-ben" → mondd meg hogy max HD megy.\n' +
+  '  Esetleg generálj HD-ban + jelezd a limitet, ne csak utasítsd el.\n' +
   '- "animáld ezt a képet" + attachment → I2V, `init_image_url=<attachment URL>`.\n' +
-  '- "8 másodperces klip" → `length=192` (24 fps × 8s), de marad a max-cap alatt.\n' +
+  '- "8 másodperces klip" → már default. Hosszabb mint 8s `length=`-tel.\n' +
   '- "néma videó" / "ne legyen hangja" → `audio_enabled=false`.\n\n' +
-  'A `display_markdown` tool-output mező első sora a NYERS mp4 URL — ezt\n' +
-  'Discord automatikusan beágyazza inline (lejátszható közvetlenül a\n' +
-  'chatben). VERBATIM illeszd be a válaszod elejére, blank-line után jöhet\n' +
-  'a saját kommentárod magyarul.\n';
+  '**KÖTELEZŐ válasz-struktúra:** a `display_markdown` tool-output mező\n' +
+  'első sora a NYERS mp4 URL — VERBATIM illeszd be a válaszod elejére\n' +
+  'első sorként. Discord automatikusan inline beágyazza (lejátszható\n' +
+  'közvetlenül a chatben). Blank-line után jöhet a saját kommentárod\n' +
+  'magyarul. SOHA ne hagyd ki a URL paste-et — anélkül a user 0 videót\n' +
+  'lát, csak szöveget, ami garantáltan rossz UX.\n';
 
 // Idempotent upsert of a marker-delimited block. If the markers are not
 // present, append the block. If they are, swap the body in-place when it
