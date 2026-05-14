@@ -128,7 +128,7 @@ SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.0"}
 # generate_video), but a workflow-not-found error surfaces cleanly
 # the first time a caller tries to use it without the workflows in
 # place.
-LTX_VIDEO_DEFAULT_LENGTH_FRAMES = int(os.environ.get("LTX_VIDEO_DEFAULT_LENGTH_FRAMES", "96"))
+LTX_VIDEO_DEFAULT_LENGTH_FRAMES = int(os.environ.get("LTX_VIDEO_DEFAULT_LENGTH_FRAMES", "193"))
 LTX_VIDEO_DEFAULT_FPS = int(os.environ.get("LTX_VIDEO_DEFAULT_FPS", "24"))
 # `on` / `off` — controls the default audio state when the caller doesn't
 # pass audio_enabled. Workflows that don't support disabling audio (no

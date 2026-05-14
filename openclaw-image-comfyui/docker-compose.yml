@@ -96,7 +96,7 @@ services:
       # the caller doesn't override per-call. Duration cap prevents
       # an agent from asking for a 60-second render that blows past
       # Discord's auto-embed envelope and the per-tool timeout.
-      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-96}
+      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-193}
       LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
       LTX_VIDEO_DEFAULT_AUDIO: ${LTX_VIDEO_DEFAULT_AUDIO:-on}
       LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}

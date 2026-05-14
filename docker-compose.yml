@@ -1332,7 +1332,7 @@ services:
       # leave empty before LTX models are installed so the cheatsheet
       # doesn't point at a tool that errors out on every call.
       LTX_VIDEO_ENABLED: ${LTX_VIDEO_ENABLED:-}
-      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-96}
+      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-193}
       LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
       LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}
       # vLLM idle watchdog timeout (patcher step 8). Default 600s gives

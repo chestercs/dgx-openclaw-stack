@@ -289,7 +289,7 @@ ${BOLD}Next steps:${RESET}
          LTX_VIDEO_ENABLED=1
          # Pick defaults — see .env.example "LTX video" section for the
          # full set with explanations.
-         LTX_VIDEO_DEFAULT_LENGTH_FRAMES=96
+         LTX_VIDEO_DEFAULT_LENGTH_FRAMES=193
          LTX_VIDEO_DEFAULT_FPS=24
          LTX_VIDEO_DEFAULT_AUDIO=on
 
