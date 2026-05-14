@@ -2330,7 +2330,7 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '| "portrait" / "függőleges" / "álló" | 768   | 1024   | ~55 sec        |\n' +
   '| Kis portrait (default volt)     | 512   | 768    | ~40 sec        |\n' +
   '| "fekvő kicsi" / kis landscape   | 768   | 512    | ~40 sec        |\n' +
-  '| "négyzet" / "square" / "kocka"  | 1024  | 1024   | ~95 sec        |\n' +
+  '| "négyzet" / "square" / "kocka"  | 1024  | 1024   | ~105 sec       |\n' +
   '| "HD" / "720p" / "16:9 HD"       | 1280  | 704    | ~90 sec        |\n' +
   '| "FullHD" / "1080p" / "16:9 FHD" | 1920  | 1088   | **~270 sec**   |\n\n' +
   'VRAM peak gyakorlatilag KONSTANS ~115 GB minden felbontáson — a tile-as\n' +
