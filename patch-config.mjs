@@ -2318,23 +2318,35 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '  ismer és 400-ozni fog. Példa helyes hívás:\n' +
   '  `init_image_url="/home/node/.openclaw/media/inbound/abc-123.png"`.\n\n' +
   '**FELBONTÁS megadható** — `width` és `height` paraméterekkel, mindig\n' +
-  'párban. SOHA ne mondd hogy "nem választható meg a felbontás" — DE-HOGY,\n' +
-  'csak vannak hardware-limitek.\n\n' +
-  'Felbontás-recipek GB10-en (user szóhasználata → `width × height`):\n\n' +
-  '- Default / "kép" / "rövid videó" → 512×768 (portrait, 4:6) — 8 sec\n' +
-  '  alatt is befér (verifikálva 116 GB VRAM peak).\n' +
-  '- "fekvő" / "wide" / "landscape" → 768×512 (landscape, 6:4) — ugyanaz\n' +
-  '  a pixel-szám, ugyanaz a memory.\n' +
-  '- "HD" / "720p" / "16:9" → 1280×720 (HD landscape, 16:9) — **CSAK 4\n' +
-  '  másodperces** clipekre (`length=97`). HD-ban hosszabb klipnél OOM\n' +
-  '  (verifikálva 117 GB peak 4s @ HD-n).\n' +
-  '- "FullHD" / "1080p" / "1920x1080" → **NEM TÁMOGATOTT** ezen a\n' +
-  '  hardveren. Mondd meg neki hogy max HD (720p) megy. Magyarázd el\n' +
-  '  hogy 121 GB unified memory nem elég 1080p-hez. Javasolj 720p-t\n' +
-  '  helyette.\n' +
-  '- "négyzet" / "square" → 640×640 (közbenső felbontás, kisebb peak).\n\n' +
-  '**Felbontás × hossz korlát**: 8 sec MAX a default 512×768-on, 4 sec\n' +
-  'MAX a HD-n (1280×720). Ennél hosszabb + nagyobb = OOM kockázat.\n\n' +
+  'párban. SOHA ne mondd hogy "nem választható meg a felbontás" — DE-HOGY.\n' +
+  'Width és height MINDIG **step 32**-nek osztható kell legyen (ComfyUI\n' +
+  'EmptyLTXVLatentVideo követelmény). 720 → 704-re, 1080 → 1088-ra\n' +
+  'roundolódik automatikusan.\n\n' +
+  'Felbontás-mátrix GB10-en 6 sec-es clipekre (empirikusan mérve\n' +
+  '2026-05-14):\n\n' +
+  '| Kérés                | Tényleges  | Render-idő   | VRAM peak |\n' +
+  '|----------------------|------------|--------------|-----------|\n' +
+  '| Default portrait     | 512×768    | ~40 sec      | 116 GB    |\n' +
+  '| Default landscape    | 768×512    | ~40 sec      | 116 GB    |\n' +
+  '| HD / 720p            | 1280×704   | ~90 sec      | 116 GB    |\n' +
+  '| FullHD / 1080p       | 1920×1088  | **~270 sec** | 117 GB    |\n' +
+  '| Négyzet / square     | 640×640    | ~45 sec      | 116 GB    |\n\n' +
+  'A VRAM peak gyakorlatilag KONSTANS minden felbontásnál (a tile-as\n' +
+  'VAE decode + a fix-cost stack dominál). A wall-clock viszont\n' +
+  '**erősen skálázódik** a pixel-számmal.\n\n' +
+  'Felbontás-recipek (user szóhasználata → `width × height`):\n\n' +
+  '- Default / "kép" / "rövid videó" → 512×768 (portrait).\n' +
+  '- "fekvő" / "wide" / "landscape" → 768×512.\n' +
+  '- "HD" / "720p" / "16:9" → 1280×720 (round to 1280×704 ComfyUI side).\n' +
+  '- "FullHD" / "1080p" / "1920x1080" → 1920×1080 (round 1920×1088).\n' +
+  '  **MŰKÖDIK** de ~4.5 PERCBE telik 6 másodperc clip. Jelezd a usernek\n' +
+  '  hogy várnia kell. Ne tagadd meg.\n' +
+  '- "négyzet" / "square" → 640×640.\n\n' +
+  '**I2V auto-orient:** ha a user csatol egy képet és nem ad meg expli-\n' +
+  'cit width/height-ot, a bridge AUTOMATIKUSAN a kép aspect ratio-jához\n' +
+  'igazítja a target latent-et (landscape input → landscape output,\n' +
+  'portrait input → portrait output, 393K pixel-budget az ~40 sec\n' +
+  'render-idő tartásához). Az explicit width/height felülírja ezt.\n\n' +
   'Egyéb tipikus paraméterek:\n\n' +
   '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
   LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +
