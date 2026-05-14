@@ -2317,36 +2317,35 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '  konstruálni — az ComfyUI /view endpoint, csak `type=output|input|temp`-ot\n' +
   '  ismer és 400-ozni fog. Példa helyes hívás:\n' +
   '  `init_image_url="/home/node/.openclaw/media/inbound/abc-123.png"`.\n\n' +
-  '**FELBONTÁS megadható** — `width` és `height` paraméterekkel, mindig\n' +
-  'párban. SOHA ne mondd hogy "nem választható meg a felbontás" — DE-HOGY.\n' +
-  'Width és height MINDIG **step 32**-nek osztható kell legyen (ComfyUI\n' +
-  'EmptyLTXVLatentVideo követelmény). 720 → 704-re, 1080 → 1088-ra\n' +
-  'roundolódik automatikusan.\n\n' +
-  'Felbontás-mátrix GB10-en 6 sec-es clipekre (empirikusan mérve\n' +
-  '2026-05-14):\n\n' +
-  '| Kérés                | Tényleges  | Render-idő   | VRAM peak |\n' +
-  '|----------------------|------------|--------------|-----------|\n' +
-  '| Default portrait     | 512×768    | ~40 sec      | 116 GB    |\n' +
-  '| Default landscape    | 768×512    | ~40 sec      | 116 GB    |\n' +
-  '| HD / 720p            | 1280×704   | ~90 sec      | 116 GB    |\n' +
-  '| FullHD / 1080p       | 1920×1088  | **~270 sec** | 117 GB    |\n' +
-  '| Négyzet / square     | 640×640    | ~45 sec      | 116 GB    |\n\n' +
-  'A VRAM peak gyakorlatilag KONSTANS minden felbontásnál (a tile-as\n' +
-  'VAE decode + a fix-cost stack dominál). A wall-clock viszont\n' +
-  '**erősen skálázódik** a pixel-számmal.\n\n' +
-  'Felbontás-recipek (user szóhasználata → `width × height`):\n\n' +
-  '- Default / "kép" / "rövid videó" → 512×768 (portrait).\n' +
-  '- "fekvő" / "wide" / "landscape" → 768×512.\n' +
-  '- "HD" / "720p" / "16:9" → 1280×720 (round to 1280×704 ComfyUI side).\n' +
-  '- "FullHD" / "1080p" / "1920x1080" → 1920×1080 (round 1920×1088).\n' +
-  '  **MŰKÖDIK** de ~4.5 PERCBE telik 6 másodperc clip. Jelezd a usernek\n' +
-  '  hogy várnia kell. Ne tagadd meg.\n' +
-  '- "négyzet" / "square" → 640×640.\n\n' +
-  '**I2V auto-orient:** ha a user csatol egy képet és nem ad meg expli-\n' +
-  'cit width/height-ot, a bridge AUTOMATIKUSAN a kép aspect ratio-jához\n' +
-  'igazítja a target latent-et (landscape input → landscape output,\n' +
-  'portrait input → portrait output, 393K pixel-budget az ~40 sec\n' +
-  'render-idő tartásához). Az explicit width/height felülírja ezt.\n\n' +
+  '**FELBONTÁS — `width` ÉS `height` MINDIG EGYÜTT, párban.** Ha csak az\n' +
+  'egyiket küldöd, a másik a 768 (portrait default) marad — pl. 1920×768\n' +
+  'ultra-wide lesz a FullHD helyett. A bridge NEM derive-olja a hiányzó\n' +
+  'dimenziót. Mindkettőt EXPLICIT küldeni kell.\n\n' +
+  'Width és height step 32-nek osztható (EmptyLTXVLatentVideo követelmény):\n' +
+  '720 → 704, 1080 → 1088 automatikus rounding ComfyUI side.\n\n' +
+  '**Felbontás-recipek — pontosan ezeket a (width, height) PÁROKAT küldd:**\n\n' +
+  '| User kérése                     | width | height | Render-idő (6s)|\n' +
+  '|---------------------------------|-------|--------|----------------|\n' +
+  '| Default / "kép" / "rövid videó" | 512   | 768    | ~40 sec        |\n' +
+  '| "fekvő" / "wide" / "landscape"  | 768   | 512    | ~40 sec        |\n' +
+  '| "négyzet" / "square"            | 640   | 640    | ~45 sec        |\n' +
+  '| "HD" / "720p" / "16:9 HD"       | 1280  | 704    | ~90 sec        |\n' +
+  '| "FullHD" / "1080p" / "16:9 FHD" | 1920  | 1088   | **~270 sec**   |\n\n' +
+  'VRAM peak gyakorlatilag KONSTANS ~116 GB minden felbontáson — a tile-as\n' +
+  'VAE decode + fix-cost stack dominál. **Wall-clock erősen skálázódik**\n' +
+  'a pixel-számmal — FullHD ~4.5 PERCBE telik 6 másodperc clip. Jelezd\n' +
+  'a usernek hogy várnia kell, ne tagadd meg.\n\n' +
+  '**Konkrét tool-hívás példák** (ezeket a formákat használd):\n\n' +
+  '- T2V default: `comfyui_image__generate_video(prompt="...")` —\n' +
+  '  workflow defaults adják a 512×768-at.\n' +
+  '- T2V landscape: `prompt="...", width=768, height=512`.\n' +
+  '- T2V HD: `prompt="...", width=1280, height=704`.\n' +
+  '- T2V FullHD: `prompt="...", width=1920, height=1088, timeout_s=600`.\n' +
+  '- I2V default (portrait orientation): `prompt="...", init_image_url="<path>"`.\n' +
+  '- I2V landscape source: `prompt="...", init_image_url="<path>", width=768, height=512`.\n' +
+  '  **HA a csatolt kép landscape (szélesebb mint magas), MINDIG küldj**\n' +
+  '  **landscape (`width=768, height=512`) dim-eket!** A default 512×768\n' +
+  '  portrait crop-pal levágja a landscape oldalakat.\n\n' +
   'Egyéb tipikus paraméterek:\n\n' +
   '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
   LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +
