@@ -128,7 +128,7 @@ SERVER_INFO = {"name": "openclaw-image-comfyui", "version": "0.12.0"}
 # generate_video), but a workflow-not-found error surfaces cleanly
 # the first time a caller tries to use it without the workflows in
 # place.
-LTX_VIDEO_DEFAULT_LENGTH_FRAMES = int(os.environ.get("LTX_VIDEO_DEFAULT_LENGTH_FRAMES", "193"))
+LTX_VIDEO_DEFAULT_LENGTH_FRAMES = int(os.environ.get("LTX_VIDEO_DEFAULT_LENGTH_FRAMES", "145"))
 LTX_VIDEO_DEFAULT_FPS = int(os.environ.get("LTX_VIDEO_DEFAULT_FPS", "24"))
 # `on` / `off` — controls the default audio state when the caller doesn't
 # pass audio_enabled. Workflows that don't support disabling audio (no
@@ -767,6 +767,49 @@ async def _tool_generate_video(args: dict) -> dict:
         # actually wrote. Subfolder/type rarely matter for LoadImage
         # but we keep them in case a workflow uses a custom subfolder.
         init_image_filename = upload_resp.get("name", upload_name)
+
+        # Auto-orient the latent dims to match the input image's
+        # aspect ratio, UNLESS the caller passed explicit width/height
+        # overrides. Without this, the workflow's ImageScale center-
+        # crops a landscape input (e.g. 1920x1080) down to the bridge's
+        # portrait default 512x768 and the user sees a vertical video
+        # that doesn't match the source composition (verified live
+        # 2026-05-14 by user feedback: "a felbontás mindig álló
+        # videó"). The 393216-pixel budget here (= 512×768) matches the
+        # 8s/512x768 envelope we already verified at 116 GB VRAM peak,
+        # so any aspect rotation within that pixel count stays in the
+        # same memory budget. Step 32 alignment is REQUIRED by
+        # EmptyLTXVLatentVideo.width/height (verified via /object_info
+        # 2026-05-13: min=64 step=32). Caller's explicit width/height
+        # win — see bind_args below.
+        if args.get("width") is None and args.get("height") is None:
+            try:
+                with Image.open(BytesIO(ref_bytes)) as probe:
+                    input_w, input_h = probe.size
+                target_pixels = 512 * 768
+                aspect = input_w / max(input_h, 1)
+                # Solve w/h = aspect AND w*h = target_pixels → h = sqrt(target/aspect)
+                h_raw = (target_pixels / aspect) ** 0.5
+                # Snap to step 32, clamp to safe bounds (256-1024 covers
+                # everything from square-ish to mild wide; we cap below
+                # 1280 to stay under the HD-4s envelope which is a
+                # separate budget).
+                h_target = max(256, min(1024, round(h_raw / 32) * 32))
+                w_target = max(256, min(1024, round((h_target * aspect) / 32) * 32))
+                if (w_target, h_target) != (512, 768):
+                    log.info(
+                        "i2v auto-orient: input %dx%d (aspect %.2f) -> latent %dx%d",
+                        input_w, input_h, aspect, w_target, h_target,
+                    )
+                    # Wire the resolved dims back through bind_args.
+                    args = dict(args)
+                    args["width"] = w_target
+                    args["height"] = h_target
+            except Exception as e:  # noqa: BLE001
+                # Probe failed → fall through to defaults. Don't kill
+                # the render over a metadata-read hiccup; user gets
+                # the historical 512x768 portrait.
+                log.warning("i2v auto-orient: image probe failed (%s); keeping portrait defaults", e)
 
     bind_args = {
         "prompt":       args.get("prompt"),
