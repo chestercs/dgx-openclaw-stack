@@ -8,9 +8,10 @@ A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatib
 (Gemma 4 26B-A4B MoE NVFP4 on `vllm-llm:8004` and Gemma 4 31B IT NVFP4 dense on
 `vllm-llm-dense:8005` running side by side; pick either via the OpenClaw UI), a
 multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first
-SearxNG meta-search backend, a bilingual TTS surface (Kokoro 82M English by default,
-opt-in F5-TTS Hungarian, fronted by an OpenAI-compat router), and a Whisper STT
-backend (`faster-whisper` large-v3, EN + HU autodetect). Calibrated for NVIDIA GB10
+SearxNG meta-search backend, a multilingual TTS surface (Fish Audio S2 Pro on
+`openclaw-tts-fish:8080`, served by SGLang-Omni, 80+ languages including EN+HU with
+voice cloning from mounted reference clips), and a Whisper STT backend
+(`faster-whisper` turbo CT2, EN + HU autodetect). Calibrated for NVIDIA GB10
 (DGX Spark / ASUS Ascent), portable to other hardware via documented `.env` overrides.
 
 The repo's value proposition is the **wiring**, not any individual component:
@@ -25,7 +26,7 @@ The repo's value proposition is the **wiring**, not any individual component:
 ## Repo layout
 
 ```
-docker-compose.yml             # default + opt-in profiles (hu, browser, dense)
+docker-compose.yml             # default + opt-in profiles (browser, python, dense)
 patch-config.mjs               # idempotent openclaw.json patcher (init container)
 bootstrap.sh                   # first-time setup: secrets, .env, host dirs
 bootstrap-browser-login.sh     # 1x OAuth onboarding helper (noVNC)
@@ -33,10 +34,9 @@ rotate-secrets.sh              # rotate gateway / service tokens
 .env.example                   # tunables, every knob commented
 templates/                     # vLLM tool-calling chat template (gemma4)
 searxng/settings/              # SearxNG override settings (privacy posture)
-openclaw-tts-en/               # Kokoro 82M (Apache 2.0)            — default
-openclaw-tts-router/           # OpenAI-compat /v1/audio/speech router
-openclaw-tts-f5hun/            # F5-TTS HU (CC-BY-NC)               — profile=hu
-openclaw-stt-whisper/          # faster-whisper large-v3 (CUDA 13)
+openclaw-tts-fish/             # Fish Audio S2 Pro (Research License, non-commercial)
+                               #   SGLang-Omni serving fishaudio/s2-pro on CUDA 13
+openclaw-stt-whisper/          # faster-whisper turbo CT2 (CUDA 13)
 openclaw-browser/              # Playwright Chromium over CDP       — profile=browser
 openclaw-python-sandbox/       # Python MCP exec sandbox
 openclaw-image-comfyui/        # ComfyUI MCP bridge (separate compose)
@@ -247,25 +247,46 @@ file before changing the area.
 - Multi-step tool-call runs need `--timeout 600` — default 60s trips on cold cache.
   Always document tool-using examples with `--timeout 600`.
 
-**TTS surface (Kokoro EN + F5-TTS HU + router)** → [`docs/reference/tts-stack.md`](docs/reference/tts-stack.md)
+**TTS surface (Fish Audio S2 Pro + SGLang-Omni)** → [`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md)
 
-- Three services wired through one OpenAI-compat seam (router on 8090).
-- Hungarian opt-in uses a triple gate: compose profile + env-token + bootstrap prompt
-  — repo ships no CC-BY-NC content in the default code path.
-- TTS ports are published but loopback-only by default
-  (`TTS_*_BIND=127.0.0.1`).
-- Patcher step 11 writes three things: top-level `messages.tts.{enabled,auto,mode}`,
-  `providers.openai`, and `voiceAliases`. Without the top-level switches, voice
-  surfaces silently treat TTS as off.
-- Web chat UI uses the browser's native `speechSynthesis` and does NOT call this
-  router (upstream limitation).
+- ONE container with two processes: a FastAPI shim on `:8080` (auth +
+  voice→references mapping + onset silence pad) wrapping the SGLang-Omni
+  native HTTP server on loopback `:9090`. Replaces the legacy 3-service
+  Kokoro EN + F5-TTS HU + router pipeline (whose reference doc is now
+  SUPERSEDED — see [`docs/reference/tts-stack.md`](docs/reference/tts-stack.md)).
+- Loader is `sgl-project/sglang-omni`, NOT the legacy `fishaudio/fish-speech`
+  `tools/api_server.py` (which targets the 1.x LLaMA2 arch and does NOT load
+  the s2-pro Qwen3-omni checkpoint).
+- Upstream `frankleeeee/sglang-omni:dev` is amd64-only — we build a custom
+  image on `nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04` so sgl-kernel can
+  compile from source on aarch64 + sm_120.
+- Voice cloning is via mounted file paths, **NOT inline base64** (SGLang-Omni
+  upstream schema accepts `references[].audio_path`). The shim resolves the
+  OpenAI-style `voice` field to `/app/voices/<voice>.{wav,txt}` at request
+  time. `docker cp <name>.{wav,txt}` adds a voice without restart.
+- License: **Fish Audio Research License — non-commercial**. The image bake
+  downloads `fishaudio/s2-pro` weights (~11 GB) and constitutes acceptance.
+  Wrapper code in `openclaw-tts-fish/server/` is MIT.
+- Patcher step 11 writes three things: top-level
+  `messages.tts.{enabled,auto,mode}`, `providers.openai`, and `voiceAliases`.
+  Without the top-level switches, voice surfaces silently treat TTS as off.
+- Web chat UI uses the browser's native `speechSynthesis` and does NOT call
+  the shim (upstream OpenClaw limitation).
+- `TTS_FISH_LEADING_SILENCE_MS=300` defends against the Whisper STT onset
+  clip ("Szia" → "Zia"). Done in-process via soundfile + numpy WAV splice,
+  no ffmpeg shell-out in the hot path.
 
-**STT (Whisper)** → [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md)
+**STT (Whisper turbo)** → [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md)
 
-- One service (`openclaw-stt-whisper`), self-built CUDA 13 image, ~150 LOC FastAPI
-  wrapper around `faster-whisper` large-v3.
-- Wired via `tools.media.audio.models[]` (NOT `messages.stt` — that schema name
-  doesn't exist in OpenClaw). Auth lives in per-entry `headers.Authorization`.
+- One service (`openclaw-stt-whisper`), self-built CUDA 13 image, ~150 LOC
+  FastAPI wrapper around `faster-whisper`. Default model is
+  `deepdml/faster-whisper-large-v3-turbo-ct2` (~8× faster than vanilla
+  large-v3, pruned 4-layer decoder, ~1.6 GB VRAM). Swap to
+  `Trendency/whisper-large-v3-hu` via `STT_WHISPER_MODEL` for the HU finetune
+  (slower, higher accuracy on noisy HU mic input).
+- Wired via `tools.media.audio.models[]` (NOT `messages.stt` — that schema
+  name doesn't exist in OpenClaw). Auth lives in per-entry
+  `headers.Authorization`.
 - Whisper autodetects language per request — no router needed.
 
 **Browser automation** → [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md)

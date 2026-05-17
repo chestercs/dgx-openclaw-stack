@@ -350,15 +350,13 @@ Set both in every sibling stack's `.env`. The bind-mount makes them physically s
 
 ## TTS port exposure
 
-The three TTS services publish to `${TTS_*_BIND:-127.0.0.1}:${TTS_*_PORT:-…}` — loopback by default so `curl 127.0.0.1:8092/healthz` works without `docker exec` while keeping LAN clients out. To expose on the LAN:
+The Fish Audio TTS service publishes to `${TTS_FISH_BIND:-127.0.0.1}:${TTS_FISH_PORT:-8091}` — loopback by default so `curl 127.0.0.1:8091/healthz` works without `docker exec` while keeping LAN clients out. To expose on the LAN:
 
 ```dotenv
-TTS_ROUTER_BIND=0.0.0.0    # exposes openclaw-tts-router on LAN
-TTS_EN_BIND=0.0.0.0        # exposes openclaw-tts-en (Kokoro EN backend)
-TTS_F5HUN_BIND=0.0.0.0     # exposes openclaw-tts-f5hun (HU backend, profile=hu only)
+TTS_FISH_BIND=0.0.0.0    # exposes openclaw-tts-fish on LAN
 ```
 
-All three are Bearer-token-protected via the existing TTS tokens (`OPENCLAW_TTS_ROUTER_API_KEY`, `TTS_API_TOKEN`, `F5HUN_API_TOKEN`), but a leaked token is still a leaked token — keep loopback unless you have a reason to expose. Sibling containers continue to use bridge DNS regardless of the binding.
+Bearer-token-protected via `TTS_API_TOKEN`, but a leaked token is still a leaked token — keep loopback unless you have a reason to expose. The OpenClaw gateway always reaches the service via bridge DNS regardless of the binding.
 
 ## TTS auto-attach mode (`OPENCLAW_TTS_AUTO`)
 
@@ -400,27 +398,42 @@ See [`docs/reference/tts-stack.md`](./reference/tts-stack.md) →
 
 Two-step opt-out:
 
-1. In `.env`, leave `OPENCLAW_TTS_ROUTER_API_KEY` empty. The patcher's step 11 detects this and skips cleanly — `messages.tts.providers.openai` stays untouched.
-2. Park the two default TTS services with `profiles: ["never"]` in `docker-compose.yml` so `docker compose up -d` doesn't start them:
+1. In `.env`, leave `OPENCLAW_TTS_FISH_API_KEY` empty. The patcher's step 11 detects this and skips cleanly — `messages.tts.providers.openai` stays untouched.
+2. Park the Fish Audio TTS service with `profiles: ["never"]` in `docker-compose.yml` so `docker compose up -d` doesn't start it:
 
     ```yaml
-    openclaw-tts-en:
-      profiles: ["never"]    # add this one line
-      # …rest unchanged…
-
-    openclaw-tts-router:
+    openclaw-tts-fish:
       profiles: ["never"]    # add this one line
       # …rest unchanged…
     ```
 
-The HU service is opt-in (`profiles: ["hu"]`) so it's already off by default — no extra step needed.
+## Add custom TTS voices (Fish Audio voice cloning)
+
+Voice cloning happens at request time from mounted reference files — no fine-tune, no rebuild:
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+# Drop a 10-30 s clean mono WAV + a verbatim transcript into /app/voices/:
+docker cp myvoice.wav ${PROJ}openclaw-tts-fish:/app/voices/
+docker cp myvoice.txt ${PROJ}openclaw-tts-fish:/app/voices/
+
+# Request it (no restart needed):
+curl -H "Authorization: Bearer $TTS_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"input":"Sample text.","voice":"myvoice"}' \
+     http://127.0.0.1:8091/v1/audio/speech --output out.wav
+```
+
+To make `myvoice` the gateway default, set `OPENCLAW_TTS_DEFAULT_VOICE=myvoice` in `.env` and re-run the patcher trio. Optional: extend the `voiceAliases` map in `patch-config.mjs` step 11 so agents can address the voice with a friendly name (`english`, `narrator`, etc.).
+
+To swap the Fish Audio checkpoint for a different multilingual TTS (e.g. a commercially-licensed alternative), set `FISH_REPO=<your/repo>` as a build arg and rebuild: `docker compose build --no-cache openclaw-tts-fish`. The shim is model-agnostic as long as the SGLang-Omni config recognizes the new checkpoint.
 
 ## Swap the Whisper STT model
 
-The default `Systran/faster-whisper-large-v3` (MIT) is the accuracy-first choice — FLEURS Hungarian WER 14.1% and ~3 GB VRAM at float16. Two alternates are worth knowing:
+The default `deepdml/faster-whisper-large-v3-turbo-ct2` (MIT) is the latency-first choice — ~1.6 GB VRAM at float16, ~8× faster than vanilla large-v3 (pruned 4-layer decoder), MIT-licensed, near-equal English WER. Two alternates are worth knowing:
 
-- **Turbo (speed):** `STT_WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2`. 8× faster inference at ~1.6 GB VRAM. ~equal English WER, but Hungarian WER is NOT independently published — run your own HU samples through both before flipping in production. Especially noticeable on short utterances where the large-v3 prefill cost dominates end-to-end latency.
-- **VRAM-tight (compute_type):** `STT_WHISPER_COMPUTE_TYPE=int8_float16` on either model. Halves VRAM to ~1.5 GB at a 5-10% WER increase. Safe fallback when the LLM + TTS squeeze the GPU budget, or if a Blackwell sm_120 numerical-stability issue turns up.
+- **HU accuracy (finetune):** `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu`. Apache-2.0 Hungarian fine-tune, ~3 GB VRAM, ~3pp lower HU WER than turbo on noisy/phone-grade mic input. Slower (full 32-layer decoder) and ~3 min CT2 conversion on first boot.
+- **VRAM-tight (compute_type):** `STT_WHISPER_COMPUTE_TYPE=int8_float16` on either model. Halves VRAM at a 5-10% WER increase. Safe fallback when the LLM + Fish TTS squeeze the GPU budget, or if a Blackwell sm_120 numerical-stability issue turns up.
 
 Either change is a one-line `.env` edit plus `docker compose up -d --force-recreate openclaw-stt-whisper`. The patcher leaves the existing `tools.media.audio.models[]` entry intact and only rewrites `baseUrl`/`headers` when they drift.
 
@@ -698,7 +711,7 @@ bridge; the operator brings it up explicitly.
 > licenses (FLUX Dev's research-use terms, Pony Diffusion XL's
 > CC-BY-NC-style restrictions, vendor-specific clauses on Illustrious /
 > RealVisXL / etc.) — are entirely the operator's responsibility. Same
-> posture as the F5-TTS HU opt-in.
+> posture as the Fish Audio S2 Pro Research-License opt-in.
 
 ### Activation
 
@@ -877,7 +890,7 @@ Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by
 - A Discord account with a server (guild) you administer.
 - OpenClaw gateway image dated **2026.4.15 or newer** — older images don't speak the `/vc` slash-command protocol. Check with `docker image inspect ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest} --format '{{.Created}}'`; upgrade first via the runbook below if you're behind.
 
-> **Text-channel agents — TTS-attachment now works** (v0.11.0+). The default `OPENCLAW_TTS_AUTO=always` (set by patcher step 11 when `OPENCLAW_TTS_ROUTER_API_KEY` is configured) attaches a TTS audio file alongside every final reply on the Discord text channel. The v0.11.0 release ships an ffmpeg-augmented gateway image (`openclaw-base-ext/Dockerfile`) that fixes the `ffmpeg not found in trusted system directories` crash present in earlier deploys. If you're stuck on a pre-v0.11.0 deploy, keep the old workaround `OPENCLAW_TTS_AUTO=tagged` until you can rebuild — see [`docs/reference/tts-stack.md`](./reference/tts-stack.md) "Pre-v0.11.0 workaround" for the migration steps. Voice-channel agents (`/vc join`-driven) and VoiceCall stayed on `always` throughout.
+> **Text-channel agents — TTS-attachment now works** (v0.11.0+). The default `OPENCLAW_TTS_AUTO=always` (set by patcher step 11 when `OPENCLAW_TTS_FISH_API_KEY` is configured) attaches a TTS audio file alongside every final reply on the Discord text channel. The v0.11.0 release ships an ffmpeg-augmented gateway image (`openclaw-base-ext/Dockerfile`) that fixes the `ffmpeg not found in trusted system directories` crash present in earlier deploys. If you're stuck on a pre-v0.11.0 deploy, set `OPENCLAW_TTS_AUTO=tagged` until you can rebuild. Voice-channel agents (`/vc join`-driven) and VoiceCall stayed on `always` throughout.
 
 > **Reaction-cycle defence (patcher step 20)**: the Discord plugin auto-fires an "I see your message" emoji-ack lifecycle (👀 / 🤔 / 👍 / 🔥) on inbound mentions. Upstream issue [#46024](https://github.com/openclaw/openclaw/issues/46024) documents a stale-queue replay bug — after heartbeat / cron cycles, the delivery queue resends buffered ack-reaction events, so the bot rapidly cycles 3–5 emojis on the user's message *without the agent having any tool-call awareness of doing it* (it's NOT a Gemma reasoning loop; the agent's session log shows zero `react` calls). Patcher step 20 defends by setting `channels.discord.ackReactionScope = "off"` automatically when the channel is configured — the auto-ack pipeline is silenced and the queue has nothing to replay. Override with `OPENCLAW_DISCORD_ACK_REACTION_SCOPE=group-mentions` (or any of the enum values) in `.env` if you actually want the lifecycle feedback and accept the cycling. The agent can still emit `add_reaction` explicitly via tool call when it really means to react.
 
@@ -1125,7 +1138,7 @@ Use `./rotate-secrets.sh` to overwrite the auto-generated secrets in `.env` with
 
 - **Routine hygiene / post-suspected-leak**: rotate one or more keys, recreate the affected services, verify.
 - **Fresh install without the bootstrap prompt dance**: `cp .env.example .env && ./rotate-secrets.sh --all` fills every placeholder in one shot.
-- **Selective, e.g. just the TTS surface**: `./rotate-secrets.sh TTS_API_TOKEN OPENCLAW_TTS_ROUTER_API_KEY`.
+- **Selective, e.g. just the TTS surface**: `./rotate-secrets.sh TTS_API_TOKEN OPENCLAW_TTS_FISH_API_KEY`.
 
 ```bash
 ./rotate-secrets.sh --help          # full flag list + default set
@@ -1134,9 +1147,9 @@ Use `./rotate-secrets.sh` to overwrite the auto-generated secrets in `.env` with
 ./rotate-secrets.sh VLLM_API_KEY    # rotate just this key
 ```
 
-The default set (`--all`): `VLLM_API_KEY`, `SEARXNG_SECRET`, `OPENCLAW_TTS_ROUTER_API_KEY`, `TTS_API_TOKEN`, `STT_API_TOKEN`, plus `F5HUN_API_TOKEN` only if it is already non-empty (empty = HU TTS opted out of the CC-BY-NC model; `--all` respects that). `OPENCLAW_GATEWAY_TOKEN` is opt-in via `--include-gateway-token` — post-onboarding the real gateway auth lives in `openclaw.json`'s `gateway.auth.token` (picked by the onboarding wizard), so rotating the env var alone is a near no-op. `HUGGING_FACE_HUB_TOKEN` is out of scope (user-owned; can't be generated).
+The default set (`--all`): `VLLM_API_KEY`, `SEARXNG_SECRET`, `OPENCLAW_TTS_FISH_API_KEY`, `TTS_API_TOKEN`, `STT_API_TOKEN`, `BROWSER_API_TOKEN`, `BROWSER_VNC_PASSWORD`, plus `PYTHON_SANDBOX_API_TOKEN` / `IMAGE_GEN_API_TOKEN` only if already non-empty (empty = opt-in declined; `--all` respects that). `OPENCLAW_GATEWAY_TOKEN` is opt-in via `--include-gateway-token` — post-onboarding the real gateway auth lives in `openclaw.json`'s `gateway.auth.token` (picked by the onboarding wizard), so rotating the env var alone is a near no-op. `HUGGING_FACE_HUB_TOKEN` is out of scope (user-owned; can't be generated).
 
-Before every change the script writes a timestamped `.env.backup-YYYYMMDD-HHMMSS` (mode 600), does an atomic write (temp file + `mv`), and runs `docker compose config --quiet` post-write. If the config validation fails, the backup is restored automatically. The script does NOT restart services — it prints the exact `docker compose up -d --force-recreate <services>` command for the services that read each rotated key, and you pick the moment (in-flight agent requests). HU rotations auto-append `--profile hu`.
+Before every change the script writes a timestamped `.env.backup-YYYYMMDD-HHMMSS` (mode 600), does an atomic write (temp file + `mv`), and runs `docker compose config --quiet` post-write. If the config validation fails, the backup is restored automatically. The script does NOT restart services — it prints the exact `docker compose up -d --force-recreate <services>` command for the services that read each rotated key, and you pick the moment (in-flight agent requests).
 
 The 3-store credential layout `openclaw.json` ↔ per-agent `auth-profiles.json` ↔ `.env` is kept in sync on the next `up` by `patch-config.mjs` steps 2 / 4 / 11 / 13, so the recreate command is all you need after rotation. See `docs/reference/openclaw-internals.md` → "v0.4.x credential layout" for the full invariant.
 

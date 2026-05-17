@@ -218,9 +218,51 @@ curl -s http://127.0.0.1:8093/health | jq .
 curl -sS -X POST http://127.0.0.1:8093/v1/audio/transcriptions \
   -H "Authorization: Bearer $STT_KEY" \
   -F file=@/path/to/hu_sample.wav \
-  -F model=Systran/faster-whisper-large-v3 \
+  -F model=deepdml/faster-whisper-large-v3-turbo-ct2 \
   -F response_format=verbose_json | jq '.language, .text'
 # → "hu" + accurate transcript
+```
+
+Spot-check the Fish Audio TTS backend directly:
+
+```bash
+TTS_KEY=$(grep '^TTS_API_TOKEN=' .env | cut -d= -f2-)
+curl -s http://127.0.0.1:8091/healthz | jq .
+# → {"status": "ok", "engine_ready": true, "voices_available": ["default_en","default_hu"], ...}
+
+# English smoke (writes a WAV to /tmp/test_en.wav):
+curl -sS -X POST http://127.0.0.1:8091/v1/audio/speech \
+  -H "Authorization: Bearer $TTS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello world, this is a test.","voice":"default_en"}' \
+  --output /tmp/test_en.wav
+# Hungarian smoke:
+curl -sS -X POST http://127.0.0.1:8091/v1/audio/speech \
+  -H "Authorization: Bearer $TTS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Szia, ez egy teszt.","voice":"default_hu"}' \
+  --output /tmp/test_hu.wav
+file /tmp/test_en.wav /tmp/test_hu.wav  # → RIFF (little-endian) data, WAVE audio
+```
+
+### Add a custom voice (any language)
+
+Voice cloning happens at request time — no fine-tune, no rebuild:
+
+```bash
+# 1. Prepare a 10-30 s mono WAV + a verbatim transcript:
+#       myclone.wav   (16-bit PCM mono, no music/noise/echo)
+#       myclone.txt   (exactly what was said in myclone.wav)
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker cp myclone.wav ${PROJ}openclaw-tts-fish:/app/voices/
+docker cp myclone.txt ${PROJ}openclaw-tts-fish:/app/voices/
+
+# 2. Use it (no restart needed):
+curl -sS -X POST http://127.0.0.1:8091/v1/audio/speech \
+  -H "Authorization: Bearer $TTS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Sample text.","voice":"myclone"}' \
+  --output /tmp/clone.wav
 ```
 
 ## 8. (Optional) Enable browser automation

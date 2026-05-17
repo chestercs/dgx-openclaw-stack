@@ -7,6 +7,145 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — TTS migrated to Fish Audio S2 Pro; STT default flipped to Whisper turbo
+
+The 3-service TTS pipeline (Kokoro 82M EN + F5-TTS HU + OpenAI-compat router)
+is replaced by a single self-hosted **Fish Audio S2 Pro** service
+(`openclaw-tts-fish`) backed by SGLang-Omni. The same image covers 80+
+languages (EN + HU both supported as built-in) and adds reference-audio
+voice cloning — `docker cp <name>.{wav,txt}` into the container's
+`/app/voices/`, no restart. The legacy Hungarian opt-in (`--profile hu` +
+`F5HUN_*` env triad) is **removed**; Hungarian is now built into the
+default profile.
+
+The Whisper STT default flips from `Trendency/whisper-large-v3-hu`
+(HU-finetune, ~3 GB VRAM, full 32-layer decoder) to
+`deepdml/faster-whisper-large-v3-turbo-ct2` (turbo, ~1.6 GB VRAM, pruned
+4-layer decoder, ~8× faster at near-equal EN WER). Picked for voice-chat
+latency (Fish Audio S2 Pro → LLM → STT roundtrip on Discord voice channels).
+Swap back to Trendency via `STT_WHISPER_MODEL` for accuracy-first HU on
+noisy mic input.
+
+**LICENSE NOTE.** Fish Audio S2 Pro weights are distributed under the
+**Fish Audio Research License — non-commercial use only**. Building the
+`openclaw-tts-fish` image pulls the ~11 GB checkpoint from
+`fishaudio/s2-pro` on HuggingFace and constitutes acceptance of the
+upstream license. Wrapper code (`openclaw-tts-fish/server/`) is MIT.
+Commercial deployments need either a separate license from Fish Audio
+(`business@fish.audio`) or a swap of the `FISH_REPO` build arg to a
+commercially-licensed checkpoint.
+
+#### Files added
+
+- `openclaw-tts-fish/server/Dockerfile` — CUDA 13 devel aarch64 base,
+  cu130 torch + torchaudio, git clone + `uv pip install ".[s2pro]"`
+  against `sgl-project/sglang-omni`, `huggingface-cli download
+  fishaudio/s2-pro` at build time (~11 GB), shim deps + app.py copy.
+  First build ~15-30 min on aarch64 (sgl-kernel compiles from source).
+- `openclaw-tts-fish/server/app.py` — FastAPI shim on `:8080` that supervises
+  SGLang-Omni as a child process on loopback `:9090`. Three jobs: Bearer
+  auth (TTS_API_TOKEN), voice→references mapping (resolves OpenAI `voice`
+  field to `/app/voices/<voice>.{wav,txt}` and rewrites the upstream
+  payload), optional onset silence pad (in-process via soundfile + numpy,
+  defends against the Whisper STT first-phoneme clip). Pattern lifted from
+  `openclaw-stt-whisper/server/app.py`.
+- `openclaw-tts-fish/server/fetch_default_voices.py` — bakes default_en
+  (LibriSpeech / LibriVox PD) and default_hu (Diana Majlinger / "Egri
+  csillagok", LibriVox PD) into `/app/voices_seed/` at build time. Shim
+  copies them into `/app/voices/` on first start without overwriting
+  user-mounted voices.
+- `openclaw-tts-fish/server/requirements.txt` — shim-only deps (fastapi,
+  uvicorn, httpx, soundfile, numpy). SGLang-Omni's deps install from the
+  cloned repo via `.[s2pro]` extra.
+- `openclaw-tts-fish/README.md` — service doc with prominent license
+  callout, voice cloning workflow, env vars, endpoint reference,
+  troubleshooting.
+
+#### Files removed
+
+- `openclaw-tts-en/` (Kokoro 82M EN wrapper, Apache 2.0).
+- `openclaw-tts-f5hun/` (F5-TTS HU wrapper, CC-BY-NC opt-in).
+- `openclaw-tts-router/` (OpenAI-compat router with diacritic autoroute
+  and ffmpeg transcoding).
+
+#### Migration runbook (live deploy)
+
+The migration requires a rebuild on the GB10 host (~15-30 min) plus a brief
+ComfyUI stop to free VRAM for the first Fish S2 Pro load. Steps:
+
+1. `git pull` (this commit).
+2. Backup `.env` to `.env.bak`.
+3. **On the GB10 host, stop ComfyUI first** to free VRAM for the s2-pro
+   weight load (~11 GB resident). The Fish + ComfyUI co-existence under
+   load has not been benchmarked — leaving ComfyUI up risks an OOM on the
+   first build/start.
+
+    ```bash
+    cd /path/to/openclaw-image-comfyui   # or wherever the comfyui compose lives
+    docker compose down
+    nvidia-smi                            # confirm GPU idle before proceeding
+    ```
+
+4. `./bootstrap.sh` — generates a new `OPENCLAW_TTS_FISH_API_KEY` (the
+   existing `TTS_API_TOKEN` is reused for the shim layer).
+5. `docker compose down openclaw-tts-en openclaw-tts-router openclaw-tts-f5hun`
+   (services no longer in compose — no-op or compose warning).
+6. `docker compose build openclaw-tts-fish` — **first build ~15-30 min**
+   on aarch64 (sgl-kernel from source + 11 GB model download).
+7. `docker compose up -d openclaw-tts-fish openclaw-config-init openclaw-gateway openclaw-cli`.
+8. Smoke: `curl -H "Authorization: Bearer $TTS_API_TOKEN" http://127.0.0.1:8091/healthz`
+   — `engine_ready: true` after the SGLang-Omni cold load completes (can
+   take several minutes on first start).
+9. End-to-end smoke (writes WAVs to /tmp):
+
+    ```bash
+    curl -H "Authorization: Bearer $TTS_API_TOKEN" \
+         -H "Content-Type: application/json" \
+         -d '{"input":"Hello world.","voice":"default_en"}' \
+         http://127.0.0.1:8091/v1/audio/speech --output /tmp/test_en.wav
+    curl -H "Authorization: Bearer $TTS_API_TOKEN" \
+         -H "Content-Type: application/json" \
+         -d '{"input":"Szia, ez egy teszt.","voice":"default_hu"}' \
+         http://127.0.0.1:8091/v1/audio/speech --output /tmp/test_hu.wav
+    file /tmp/test_en.wav /tmp/test_hu.wav  # → RIFF (little-endian) data, WAVE audio
+    ```
+
+10. Clean up old volumes: `docker volume rm dgx-openclaw-tts-en-hf-cache
+    dgx-openclaw-tts-f5hun-hf-cache dgx-openclaw-tts-f5hun-voices`.
+11. STT auto-switches to turbo on next container restart (no rebuild —
+    same image, just a different env default). First request triggers a
+    ~1.6 GB HF download.
+12. **Once Fish stack is healthy and verified, optionally bring ComfyUI
+    back**: `cd openclaw-image-comfyui && docker compose up -d`. Watch
+    `nvidia-smi` during a Discord TTS request + an LTX video generation;
+    Fish + ComfyUI co-existence is unsmoke-tested and may need explicit
+    GPU memory budgeting later.
+
+#### Risks & known limitations
+
+- **R1 — aarch64 SGLang-Omni build (highest risk, unverified on GB10
+  sm_120).** The migration's success rides on `uv pip install ".[s2pro]"`
+  working inside a CUDA 13 devel aarch64 base. If sgl-kernel fails to
+  compile, fallback options are: (a) build sgl-kernel manually with
+  `TORCH_CUDA_ARCH_LIST="12.0"`, (b) try an L4T/Jetson base image, (c)
+  fall back to OpenAudio S1-mini on fish-speech `tools/api_server`
+  (smaller model, voice cloning still works, loses the 80-lang advantage).
+- **R2 — Hungarian voice fidelity.** S2 Pro lists Hungarian as Tier 3
+  (vs the prior F5-TTS native-HU model which was Tier 1). Mitigation:
+  the bundled `default_hu.wav` is a clean Diana Majlinger LibriVox PD
+  reference, and voice cloning with a clean reference dramatically
+  improves Tier-3 language fidelity. If HU quality is unacceptable after
+  smoke, consider parking a fallback F5-TTS service (re-add the legacy
+  `openclaw-tts-f5hun/` dir + compose block under
+  `profiles: ["hu-fallback"]`).
+- **R3 — Fish + ComfyUI VRAM co-existence (unverified).** The pre-deploy
+  ComfyUI stop above handles the build/first-load OOM. Steady-state Fish
+  (~11 GB s2-pro weights resident) + ComfyUI (LTX-Video workflows can
+  spike 30+ GB) on the same 128 GB GB10 unified-memory pool has not been
+  benchmarked. After the migration lands and the operator wants both up,
+  watch `nvidia-smi` during a Discord TTS request + an LTX video
+  generation.
+
 ### Added — LTX-Video 2.3 integration (image-comfyui bridge v0.12.0)
 
 New tool `comfyui_image__generate_video` on the existing image-gen

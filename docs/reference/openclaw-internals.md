@@ -25,7 +25,7 @@
 ### Snapshot at v0.4.2 (historical — kept for the release-history continuity above; current stack has grown considerably since)
 
 - **Stack:** `docker-compose.yml` (8 default services + 1 opt-in HU service via `profiles: ["hu"]`), `patch-config.mjs` (13-step idempotent patcher), `bootstrap.sh` (regex-gated secret rotation + HU TTS opt-in prompt), `templates/tool_chat_template_gemma4.jinja`, `searxng/settings/settings.yml`. **Current state (post-v0.11):** 10 default services + 3 opt-in profiles + separate image-gen compose, 27+ patcher steps. See [`docs/reference/discord-config.md`](./discord-config.md) and the `patch-config.mjs` header docblock for the up-to-date inventory.
-- **TTS surface:** `openclaw-tts-en/` (Kokoro 82M, default), `openclaw-tts-router/` (FastAPI passthrough + ffmpeg), `openclaw-tts-f5hun/` (F5-TTS HU, opt-in via `profiles: ["hu"]`).
+- **TTS surface:** `openclaw-tts-fish/` (Fish Audio S2 Pro via SGLang-Omni; multilingual incl. EN + HU; voice cloning via mounted reference clips; Fish Audio Research License — non-commercial). Replaced the historical 3-service Kokoro EN + F5-TTS HU + router pipeline.
 - **Docs:** `README.md`, `SETUP.md`, `docs/{ARCHITECTURE,CUSTOMIZATION,TROUBLESHOOTING}.md`, `docs/reference/`, `CLAUDE.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `LICENSE` (MIT).
 - **GitHub meta:** `.github/FUNDING.yml`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`.
 
@@ -48,8 +48,8 @@ The trio (`config-init + gateway + cli`) must be recreated **together** — if t
 
 - `CONTAINER_NAME_PREFIX=dgx-` — container-name prefix; set empty for bare names (`vllm-llm`, etc.). Bridge DNS reachability is unaffected (services resolve by compose service name + `hostname:`).
 - `VLLM_HF_CACHE_VOLUME_NAME=dgx-openclaw-hf-cache` — Docker volume label.
-- `TTS_{EN,F5HUN,ROUTER}_BIND=127.0.0.1` — loopback-only bind default.
-- `TTS_{EN,F5HUN,ROUTER}_PORT=8091/8090/8092` — host-port override.
+- `TTS_FISH_BIND=127.0.0.1` — loopback-only bind default.
+- `TTS_FISH_PORT=8091` — host-port override.
 
 ### How to contribute
 
@@ -103,7 +103,7 @@ OpenClaw works with three separate credential stores. **After a `.env` secret ro
 - `agents.defaults.memorySearch.remote.apiKey` — patcher step 4 writes it.
 - `gateway.auth.token` — written by the onboarding wizard (different from the env token!).
 - `gateway.remote.token` — mirrored from `gateway.auth.token` by patcher step 12.
-- `messages.tts.providers.openai.apiKey` — patcher step 11 writes it from `OPENCLAW_TTS_ROUTER_API_KEY`.
+- `messages.tts.providers.openai.apiKey` — patcher step 11 writes it from `OPENCLAW_TTS_FISH_API_KEY`.
 - `authProfiles.{name}` — metadata only (`{provider, mode}`), NOT the actual key.
 
 #### 3. `~/.openclaw/agents/{agent}/agent/auth-profiles.json` (per-agent credential store)
@@ -199,7 +199,7 @@ The v0.4.x patcher has **13 steps** (6 base + 7 higher; steps 7–13 cover trust
 8. **idleTimeout** — `agents.defaults.llm.idleTimeoutSeconds = 300`. The default 120s is too tight for 31B + reasoning + multi-tool chains.
 9. **hybrid + MMR** — `memorySearch.query.hybrid` block (BM25 + vector + MMR re-rank). Native OpenClaw feature, upgrade-safe.
 10. **SearxNG enable** — `tools.web.search.provider = searxng` + `plugins.entries.searxng.enabled = true`. The bundled SearxNG plugin ships disabled by default.
-11. **TTS wiring** — env-gated (`OPENCLAW_TTS_ROUTER_API_KEY`). Detailed spec (enum values, `voiceAliases`, top-level switches): `tts-stack.md` → "v0.4.x `messages.tts` schema enums" + "Patcher step 11 writes three things".
+11. **TTS wiring** — env-gated (`OPENCLAW_TTS_FISH_API_KEY`). Writes top-level `messages.tts.{enabled,auto,mode}` switches + `providers.openai.{baseUrl,apiKey,model,voiceId}` pointing at `openclaw-tts-fish` + `voiceAliases` (`english`/`narrator` → `default_en`, `magyar`/`hungarian` → `default_hu`). Historical spec for the legacy 3-service stack: `tts-stack.md` (SUPERSEDED).
 12. **gateway.remote.token mirror** — `gateway.auth.token` → `gateway.remote.token`. Otherwise the loopback CLI WS-connect hits a "gateway token mismatch" and silently falls back to the embedded runner (a side-car path, not the production agent route).
 
     ```

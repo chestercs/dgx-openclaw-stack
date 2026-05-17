@@ -24,7 +24,7 @@
 //   8. Ensure agents.defaults.llm.idleTimeoutSeconds (default 600, env-tunable).
 //   9. Ensure memorySearch hybrid (BM25 + vector) retrieval with MMR re-rank.
 //  10. Ensure webSearch provider = searxng + enable the bundled searxng plugin.
-//  11. Ensure messages.tts wiring — env-gated by OPENCLAW_TTS_ROUTER_API_KEY.
+//  11. Ensure messages.tts wiring — env-gated by OPENCLAW_TTS_FISH_API_KEY.
 //  12. Mirror gateway.auth.token into gateway.remote.token so the loopback CLI
 //      can WS-connect without hitting "gateway token mismatch" and silently
 //      falling back to an embedded runner.
@@ -755,27 +755,29 @@ for (const [k, v] of Object.entries(desiredWebSearch)) {
   }
 }
 
-// (11) Ensure messages.tts.providers.openai points at the openclaw-tts-router.
-//      Env-gated: when OPENCLAW_TTS_ROUTER_API_KEY is unset, leave the openai
+// (11) Ensure messages.tts.providers.openai points at the openclaw-tts-fish
+//      service (Fish Audio S2 Pro via SGLang-Omni).
+//      Env-gated: when OPENCLAW_TTS_FISH_API_KEY is unset, leave the openai
 //      TTS provider untouched. This lets users opt out of TTS by simply not
-//      setting the var (and parking the openclaw-tts-en / openclaw-tts-router
-//      services with `profiles: ["never"]` in the compose file).
+//      setting the var (and parking the openclaw-tts-fish service with
+//      `profiles: ["never"]` in the compose file).
 //
-//      The router exposes the OpenAI Audio API shape on
-//      `${OPENCLAW_TTS_ROUTER_URL}/audio/speech` and accepts the same model /
-//      voice fields. The gateway sends `model` opaquely (the router ignores
-//      it), and the `voiceId` we set is what the TTS surface picks when an
-//      agent doesn't override. voiceAliases give the agent (and human users)
-//      friendly names like `english`, `narrator`, `male` instead of Kokoro's
-//      `af_heart` / `bf_emma` / `am_michael`.
+//      The shim exposes the OpenAI Audio API shape on
+//      `${OPENCLAW_TTS_FISH_URL}/audio/speech` and accepts the same input /
+//      voice / response_format / speed fields. The gateway sends `model`
+//      opaquely (the shim ignores it but logs it for debugging), and the
+//      `voiceId` we set is what the TTS surface picks when an agent doesn't
+//      override. voiceAliases give the agent (and human users) friendly
+//      names like `english` / `magyar` instead of having to remember which
+//      reference clip is mounted.
 //
-//      Hungarian aliases (`magyar`, `hungarian`) are written unconditionally
-//      so the alias surface stays stable; the router itself decides whether
-//      `default_hu` is a live voice (it is only when F5HUN_URL +
-//      F5HUN_API_TOKEN are set on the router service). Without HU wired, the
-//      router's HU autodetect is a no-op and `default_hu` returns 404 — that
-//      is the user's signal that they need to bring an F5-TTS HU backend.
-const ttsRouterKey = process.env.OPENCLAW_TTS_ROUTER_API_KEY?.trim();
+//      Voice catalog is operator-defined: the shim resolves a voice id to
+//      /app/voices/<id>.{wav,txt} at request time. Aliases below map to the
+//      two voices the image seeds by default (default_en + default_hu).
+//      To add richer palettes, drop more <name>.{wav,txt} pairs into the
+//      tts-fish-voices volume and either extend desiredAliases here or
+//      reference the voice id directly from agent prompts.
+const ttsRouterKey = process.env.OPENCLAW_TTS_FISH_API_KEY?.trim();
 if (ttsRouterKey) {
   config.messages ??= {};
   config.messages.tts ??= {};
@@ -797,8 +799,7 @@ if (ttsRouterKey) {
   // text-channel deploys must set OPENCLAW_TTS_AUTO=tagged: with `always`,
   // the Discord plugin tries to attach a TTS audio file to every final reply
   // and shells out to ffmpeg for waveform/Opus transcoding — but the
-  // `ghcr.io/openclaw/openclaw` gateway image ships without ffmpeg (the
-  // bundled ffmpeg lives only inside the openclaw-tts-router image), so the
+  // `ghcr.io/openclaw/openclaw` gateway image ships without ffmpeg, so the
   // attachment pipeline fails silently with `[discord] final reply failed:
   // Error: ffmpeg not found in trusted system directories` and the bot's
   // text payload never lands on the channel (typing indicator + emoji
@@ -823,10 +824,10 @@ if (ttsRouterKey) {
   const tts = config.messages.tts.providers.openai;
 
   const desiredTts = {
-    baseUrl: process.env.OPENCLAW_TTS_ROUTER_URL || 'http://openclaw-tts-router:8080/v1',
+    baseUrl: process.env.OPENCLAW_TTS_FISH_URL || 'http://openclaw-tts-fish:8080/v1',
     apiKey: ttsRouterKey,
-    model: 'openclaw-tts',
-    voiceId: process.env.OPENCLAW_TTS_DEFAULT_VOICE || 'af_heart',
+    model: 'fish-s2-pro',
+    voiceId: process.env.OPENCLAW_TTS_DEFAULT_VOICE || 'default_en',
   };
   for (const [k, v] of Object.entries(desiredTts)) {
     if (tts[k] !== v) {
@@ -838,11 +839,14 @@ if (ttsRouterKey) {
   }
 
   tts.voiceAliases ??= {};
+  // Fish Audio S2 Pro voice palette is operator-defined (one file pair per
+  // voice in tts-fish-voices). The seed image ships default_en + default_hu;
+  // these aliases let agents reference them by language without remembering
+  // the file basenames. Add more aliases here when bundling more voice
+  // references (or rely on the agent passing the raw voice id).
   const desiredAliases = {
-    english:   'af_heart',
-    narrator:  'bf_emma',
-    male:      'am_michael',
-    female:    'af_bella',
+    english:   'default_en',
+    narrator:  'default_en',
     magyar:    'default_hu',
     hungarian: 'default_hu',
   };
@@ -854,7 +858,7 @@ if (ttsRouterKey) {
     }
   }
 } else {
-  console.log('[patch-config] OPENCLAW_TTS_ROUTER_API_KEY not set — skipping messages.tts.* (TTS opt-out).');
+  console.log('[patch-config] OPENCLAW_TTS_FISH_API_KEY not set — skipping messages.tts.* (TTS opt-out).');
 }
 
 // (12) Mirror gateway.auth.token into gateway.remote.token.
@@ -971,7 +975,7 @@ if (sttToken) {
   // memorySearch). Append one if the env var omits it, so either form works.
   const sttBaseUrl = (process.env.OPENCLAW_STT_BASE_URL || 'http://openclaw-stt-whisper:8080/v1')
     .replace(/\/?$/, '/');
-  const sttModel = process.env.OPENCLAW_STT_MODEL || 'Trendency/whisper-large-v3-hu';
+  const sttModel = process.env.OPENCLAW_STT_MODEL || 'deepdml/faster-whisper-large-v3-turbo-ct2';
   const sttLanguage = process.env.OPENCLAW_STT_LANGUAGE?.trim();
 
   const desiredEntry = {
@@ -2032,8 +2036,8 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
 // Voice mode picker (channels.discord.voice.mode):
 //
 //   "stt-tts"      — batch STT + TTS pipeline. Pairs cleanly with this
-//                    stack's self-hosted faster-whisper (port 8093) +
-//                    Kokoro / F5-TTS via the TTS router (port 8090).
+//                    stack's self-hosted faster-whisper turbo (port 8093) +
+//                    Fish Audio S2 Pro (openclaw-tts-fish, port 8091).
 //                    DEFAULT on this stack because the wiring already
 //                    exists for both halves (patcher step 11 + step 14).
 //                    Higher latency than realtime, but works fully offline.
@@ -2109,7 +2113,7 @@ if (config.channels?.discord?.enabled === true) {
       console.log(
         `[patch-config] channels.discord.voice.enabled = true ` +
         `(registers /vc join|leave|status; implicit STT-TTS via this stack's ` +
-        `faster-whisper + Kokoro/F5-TTS — set OPENCLAW_DISCORD_VOICE=off to skip)`,
+        `faster-whisper turbo + Fish Audio S2 Pro — set OPENCLAW_DISCORD_VOICE=off to skip)`,
       );
     }
   } else {

@@ -18,8 +18,8 @@ research rationale behind the chosen LLM / TTS stack, this is where to look.
 | File | Topic |
 |---|---|
 | [`llm-stack.md`](./llm-stack.md) | Gemma 4 NVFP4 (MoE + dense) + bge-m3 embedding stack architecture, GB10 benchmarks, remote-backend swap |
-| [`tts-stack.md`](./tts-stack.md) | Bilingual TTS (Kokoro EN + F5-TTS HU + router), schema enums, `OPENCLAW_TTS_AUTO` knob, web chat limitation |
-| [`tts-research-hungarian.md`](./tts-research-hungarian.md) | Hungarian TTS open-source landscape (F5-TTS, XTTS, Piper, tier list) |
+| [`tts-stack.md`](./tts-stack.md) | **SUPERSEDED** (Kokoro EN + F5-TTS HU + router era — preserved for historical context). Current TTS is Fish Audio S2 Pro, see [`openclaw-tts-fish/README.md`](../../openclaw-tts-fish/README.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md) § "TTS subsystem" |
+| [`tts-research-hungarian.md`](./tts-research-hungarian.md) | **SUPERSEDED** Hungarian TTS open-source landscape (F5-TTS, XTTS, Piper, tier list) — research notes from the pre-Fish-Audio era |
 | [`stt-stack.md`](./stt-stack.md) | Whisper large-v3 self-built CUDA 13 image: three voice surfaces, CTranslate2 on Blackwell notes |
 
 ## Discord integration

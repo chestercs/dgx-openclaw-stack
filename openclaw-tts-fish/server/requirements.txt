@@ -1,0 +1,8 @@
+# Shim-only Python deps. SGLang-Omni installs from the cloned repo via the
+# `.[s2pro]` extra in the Dockerfile — do NOT duplicate its deps here (version
+# drift risk between the shim's pin and the upstream resolver).
+fastapi>=0.115
+uvicorn[standard]>=0.34
+httpx>=0.28
+soundfile>=0.12
+numpy<2.0

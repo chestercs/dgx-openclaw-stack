@@ -45,8 +45,6 @@ err()  { printf '%b[err ]%b %s\n'  "$RED"    "$RESET" "$*" >&2; }
 # DEFAULT_KEYS: added to --all and to the interactive menu.
 # GATEWAY_KEY:  only rotated with --include-gateway-token (inert post-onboarding
 #               — the real gateway auth is openclaw.json's gateway.auth.token).
-# F5HUN_KEY:    default set includes it ONLY if already non-empty. Explicit
-#               positional arg still rotates it regardless — operator intent.
 #
 # The restart matrix (key → affected compose services) is maintained by hand
 # below in services_for(). The matching compose-file line references are in
@@ -55,21 +53,20 @@ err()  { printf '%b[err ]%b %s\n'  "$RED"    "$RESET" "$*" >&2; }
 DEFAULT_KEYS=(
   VLLM_API_KEY
   SEARXNG_SECRET
-  OPENCLAW_TTS_ROUTER_API_KEY
+  OPENCLAW_TTS_FISH_API_KEY
   TTS_API_TOKEN
   STT_API_TOKEN
   BROWSER_API_TOKEN
   BROWSER_VNC_PASSWORD
 )
-F5HUN_KEY=F5HUN_API_TOKEN
 PYTHON_SANDBOX_KEY=PYTHON_SANDBOX_API_TOKEN
 IMAGE_GEN_KEY=IMAGE_GEN_API_TOKEN
 GATEWAY_KEY=OPENCLAW_GATEWAY_TOKEN
 
-# F5HUN_KEY, PYTHON_SANDBOX_KEY, and IMAGE_GEN_KEY are conditional: --all
-# auto-includes them only when already set (an empty value = the user opted
-# out, and auto-generating one would re-enable a service they declined).
-ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$F5HUN_KEY" "$PYTHON_SANDBOX_KEY" "$IMAGE_GEN_KEY" "$GATEWAY_KEY")
+# PYTHON_SANDBOX_KEY and IMAGE_GEN_KEY are conditional: --all auto-includes
+# them only when already set (an empty value = the user opted out, and
+# auto-generating one would re-enable a service they declined).
+ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$PYTHON_SANDBOX_KEY" "$IMAGE_GEN_KEY" "$GATEWAY_KEY")
 
 # Map a rotated key to the space-separated compose service list that reads it.
 # Keep this aligned with docker-compose.yml — see plan for line-number refs.
@@ -77,10 +74,9 @@ services_for() {
   case "$1" in
     VLLM_API_KEY)                echo "vllm-llm vllm-embedding openclaw-config-init openclaw-gateway openclaw-cli" ;;
     SEARXNG_SECRET)              echo "searxng" ;;
-    OPENCLAW_TTS_ROUTER_API_KEY) echo "openclaw-config-init openclaw-gateway openclaw-cli openclaw-tts-router" ;;
-    TTS_API_TOKEN)               echo "openclaw-tts-en openclaw-tts-router" ;;
+    OPENCLAW_TTS_FISH_API_KEY)   echo "openclaw-config-init openclaw-gateway openclaw-cli openclaw-tts-fish" ;;
+    TTS_API_TOKEN)               echo "openclaw-tts-fish" ;;
     STT_API_TOKEN)               echo "openclaw-stt-whisper openclaw-config-init openclaw-gateway openclaw-cli" ;;
-    F5HUN_API_TOKEN)             echo "openclaw-tts-f5hun openclaw-tts-router" ;;
     BROWSER_API_TOKEN)           echo "openclaw-browser openclaw-config-init openclaw-gateway openclaw-cli" ;;
     PYTHON_SANDBOX_API_TOKEN)    echo "openclaw-python-sandbox openclaw-config-init openclaw-gateway openclaw-cli" ;;
     IMAGE_GEN_API_TOKEN)         echo "openclaw-image-comfyui openclaw-config-init openclaw-gateway openclaw-cli" ;;
@@ -118,21 +114,18 @@ Flags:
   -h, --help                   Show this help.
 
 Default set (rotated by --all or the interactive menu):
-  VLLM_API_KEY, SEARXNG_SECRET, OPENCLAW_TTS_ROUTER_API_KEY, TTS_API_TOKEN,
+  VLLM_API_KEY, SEARXNG_SECRET, OPENCLAW_TTS_FISH_API_KEY, TTS_API_TOKEN,
   STT_API_TOKEN, BROWSER_API_TOKEN, BROWSER_VNC_PASSWORD
-  (+ F5HUN_API_TOKEN if it is already set in .env — empty F5HUN = opted out
-  of the CC-BY-NC Hungarian TTS, and --all respects that.
-  + PYTHON_SANDBOX_API_TOKEN under the same conditional rule — empty token
+  (+ PYTHON_SANDBOX_API_TOKEN if it is already set in .env — empty token
   means the sandbox opt-in was declined and --all does not silently re-enable it.
   + IMAGE_GEN_API_TOKEN under the same conditional rule — empty token means
   the ComfyUI bridge opt-in was declined; --all does not regenerate it.)
 
 Explicit positional args rotate any rotatable key regardless of current
-value, including F5HUN_API_TOKEN, PYTHON_SANDBOX_API_TOKEN,
-IMAGE_GEN_API_TOKEN, and OPENCLAW_GATEWAY_TOKEN:
+value, including PYTHON_SANDBOX_API_TOKEN, IMAGE_GEN_API_TOKEN, and
+OPENCLAW_GATEWAY_TOKEN:
 
   ./rotate-secrets.sh VLLM_API_KEY TTS_API_TOKEN
-  ./rotate-secrets.sh F5HUN_API_TOKEN
   ./rotate-secrets.sh PYTHON_SANDBOX_API_TOKEN
   ./rotate-secrets.sh IMAGE_GEN_API_TOKEN
 
@@ -213,9 +206,9 @@ fp() {
 
 # ----------------------------------------------------------------------------
 # Decide the rotation set.
-#   1. Explicit positional args always win, even for F5HUN / gateway.
-#   2. --all adds the default set + F5HUN (only if already set) + gateway
-#      (only with --include-gateway-token).
+#   1. Explicit positional args always win, even for gateway.
+#   2. --all adds the default set + PYTHON_SANDBOX / IMAGE_GEN (only if
+#      already set) + gateway (only with --include-gateway-token).
 #   3. No args + no --all → interactive per-key prompt.
 # ----------------------------------------------------------------------------
 declare -A ROTATE_MAP  # key → 1
@@ -233,14 +226,8 @@ done
 
 if (( ROTATE_ALL )); then
   for k in "${DEFAULT_KEYS[@]}"; do add_key "$k"; done
-  # F5HUN auto-include only if a non-empty value is already present. Empty =
-  # HU TTS opted out (CC-BY-NC model); auto-generating would be user-hostile
-  # — half of a 3-lever opt-in materializes silently.
-  if [[ -n "$(current_value "$F5HUN_KEY")" ]]; then
-    add_key "$F5HUN_KEY"
-  fi
-  # Same logic for the Python sandbox: empty token = the user declined the
-  # opt-in, --all should not silently re-enable it by generating one.
+  # Python sandbox: empty token = the user declined the opt-in, --all should
+  # not silently re-enable it by generating one.
   if [[ -n "$(current_value "$PYTHON_SANDBOX_KEY")" ]]; then
     add_key "$PYTHON_SANDBOX_KEY"
   fi
@@ -267,15 +254,6 @@ if (( ${#ROTATE_MAP[@]} == 0 )); then
     read -r ans
     [[ "$ans" =~ ^[Yy]$ ]] && add_key "$k"
   done
-
-  # F5HUN only offered if already set. No accidental CC-BY-NC opt-in via
-  # an interactive "yes to everything" habit.
-  if [[ -n "$(current_value "$F5HUN_KEY")" ]]; then
-    printf '  %s — fp=%s\n' "$F5HUN_KEY" "$(fp "$(current_value "$F5HUN_KEY")")"
-    printf '    Rotate? [y/N]: '
-    read -r ans
-    [[ "$ans" =~ ^[Yy]$ ]] && add_key "$F5HUN_KEY"
-  fi
 
   # Python sandbox: same conditional logic — only offered if already set.
   if [[ -n "$(current_value "$PYTHON_SANDBOX_KEY")" ]]; then
@@ -335,7 +313,6 @@ for k in "${ALL_ROTATABLE[@]}"; do
   [[ -n "${ROTATE_MAP[$k]:-}" ]] && ROTATE_ORDER+=("$k")
 done
 
-HU_TOUCHED=0
 BROWSER_TOUCHED=0
 PYTHON_SANDBOX_TOUCHED=0
 IMAGE_GEN_TOUCHED=0
@@ -362,7 +339,6 @@ for key in "${ROTATE_ORDER[@]}"; do
   for s in $svcs; do
     SERVICE_SET[$s]=1
   done
-  [[ "$key" == "$F5HUN_KEY" ]] && HU_TOUCHED=1
   [[ "$key" == "BROWSER_API_TOKEN" ]] && BROWSER_TOUCHED=1
   [[ "$key" == "$PYTHON_SANDBOX_KEY" ]] && PYTHON_SANDBOX_TOUCHED=1
   [[ "$key" == "$IMAGE_GEN_KEY" ]] && IMAGE_GEN_TOUCHED=1
@@ -383,9 +359,7 @@ SERVICE_ORDER=(
   vllm-llm
   vllm-embedding
   searxng
-  openclaw-tts-en
-  openclaw-tts-f5hun
-  openclaw-tts-router
+  openclaw-tts-fish
   openclaw-stt-whisper
   openclaw-browser
   openclaw-python-sandbox
@@ -399,9 +373,6 @@ for s in "${SERVICE_ORDER[@]}"; do
 done
 
 compose_cmd="docker compose"
-if (( HU_TOUCHED )); then
-  compose_cmd+=" --profile hu"
-fi
 if (( BROWSER_TOUCHED )); then
   compose_cmd+=" --profile browser"
 fi
@@ -462,8 +433,8 @@ trap cleanup_tmp EXIT
 
 # Walk existing .env line by line. For every rotated key whose uncommented
 # KEY= line exists, replace its value in place. Keys that don't have an
-# uncommented line yet (e.g., F5HUN_API_TOKEN shipped commented in
-# .env.example and never enabled) get appended at the end. A commented
+# uncommented line yet (e.g., PYTHON_SANDBOX_API_TOKEN shipped commented
+# in .env.example and never enabled) get appended at the end. A commented
 # reference line stays as-is — it's documentation.
 declare -A WROTE  # key → 1 once replaced in the stream
 : > "$TMP_FILE"

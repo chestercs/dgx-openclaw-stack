@@ -129,7 +129,7 @@ log "Checking secrets…"
 VLLM_API_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 GATEWAY_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 SEARXNG_SECRET_NEW="$(openssl rand -base64 64 | tr -d '\n')"
-TTS_ROUTER_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
+TTS_FISH_KEY_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 TTS_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 STT_API_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
 # 48 bytes (64 base64 chars) is enough for the browser API. The token also
@@ -145,50 +145,19 @@ BROWSER_VNC_PASSWORD_NEW="$(openssl rand -base64 24 | tr -d '\n=+/' | head -c 32
 upsert_env VLLM_API_KEY                "$VLLM_API_KEY_NEW"    '^CHANGE_ME'
 upsert_env OPENCLAW_GATEWAY_TOKEN      "$GATEWAY_TOKEN_NEW"   '^CHANGE_ME'
 upsert_env SEARXNG_SECRET              "$SEARXNG_SECRET_NEW"  '^CHANGE_ME'
-upsert_env OPENCLAW_TTS_ROUTER_API_KEY "$TTS_ROUTER_KEY_NEW"  '^CHANGE_ME'
+upsert_env OPENCLAW_TTS_FISH_API_KEY   "$TTS_FISH_KEY_NEW"    '^CHANGE_ME'
 upsert_env TTS_API_TOKEN               "$TTS_API_TOKEN_NEW"   '^CHANGE_ME'
 upsert_env STT_API_TOKEN               "$STT_API_TOKEN_NEW"   '^CHANGE_ME'
 upsert_env BROWSER_API_TOKEN           "$BROWSER_API_TOKEN_NEW" '^CHANGE_ME'
 upsert_env BROWSER_VNC_PASSWORD        "$BROWSER_VNC_PASSWORD_NEW" '^CHANGE_ME'
 
 # ----------------------------------------------------------------------------
-# 3b. Optional: Hungarian TTS opt-in (CC-BY-NC model weights)
-#
-# Asked once. If the user has already set F5HUN_API_TOKEN (any non-empty
-# value), we treat that as "already opted in" and skip the prompt — re-runs
-# never re-ask.
+# 3b. (Reserved) — Hungarian TTS is now built into the unified Fish Audio S2
+# Pro service (openclaw-tts-fish). The legacy F5HUN_API_TOKEN / F5HUN_URL /
+# COMPOSE_PROFILES=hu triad has been retired. To add a custom magyar voice,
+# `docker cp <name>.{wav,txt}` into the openclaw-tts-fish container's
+# /app/voices/ — see openclaw-tts-fish/README.md.
 # ----------------------------------------------------------------------------
-hu_token_existing=$(grep -E '^F5HUN_API_TOKEN=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
-if [[ -z "$hu_token_existing" ]]; then
-  printf '\n%bOptional:%b Hungarian TTS (F5-TTS) — opt-in.\n' "$BOLD" "$RESET"
-  log "  Wrapper code is MIT, but the model weights pulled at build time"
-  log "  (sarpba/F5-TTS_V1_hun_v2) are CC-BY-NC-4.0 — non-commercial use only."
-  log "  See openclaw-tts-f5hun/README.md for license details and how to swap"
-  log "  the checkpoint if you need commercial use."
-  printf '%bActivate Hungarian TTS now? [y/N]:%b ' "$BOLD" "$RESET"
-  read -r hu_answer
-  if [[ "$hu_answer" =~ ^[Yy]$ ]]; then
-    F5HUN_TOKEN_NEW="$(openssl rand -base64 64 | tr -d '\n')"
-    upsert_env F5HUN_API_TOKEN "$F5HUN_TOKEN_NEW" '.*'
-    upsert_env F5HUN_URL       "http://openclaw-tts-f5hun:8080/v1/audio/speech" '.*'
-    # COMPOSE_PROFILES may already exist with other profiles; only set when
-    # missing or empty. Users who already use this var should add `hu` by hand.
-    cp_existing=$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2-)
-    if [[ -z "$cp_existing" ]]; then
-      upsert_env COMPOSE_PROFILES "hu" '.*'
-    elif [[ ! "$cp_existing" =~ (^|,)hu(,|$) ]]; then
-      warn "COMPOSE_PROFILES is already set to '$cp_existing' — add 'hu' to it manually."
-    else
-      ok "COMPOSE_PROFILES already contains 'hu'."
-    fi
-    ok "Hungarian TTS opt-in: secrets set. The HU model (~5 GB) downloads on first build."
-    ok "  → docker compose --profile hu up -d --build openclaw-tts-f5hun"
-  else
-    log "Skipped — re-run bootstrap.sh later to enable, or edit .env by hand."
-  fi
-else
-  ok "F5HUN_API_TOKEN already present — Hungarian TTS opt-in preserved."
-fi
 
 # ----------------------------------------------------------------------------
 # 3c. Optional: browser automation opt-in
@@ -525,10 +494,12 @@ printf 'complete onboarding (Chrome extension or `openclaw onboard …`), then\n
 printf 'you re-run the patcher to pick up the new openclaw.json. Full walkthrough:\n\n'
 printf '    %bSETUP.md%b — step-by-step first-boot guide\n' "$BOLD" "$RESET"
 printf '    %bdocs/TROUBLESHOOTING.md%b — common failure modes\n\n' "$BOLD" "$RESET"
-printf 'Hungarian TTS (F5-TTS, CC-BY-NC): opt-in via --profile hu or\n'
-printf 'COMPOSE_PROFILES=hu in .env — see openclaw-tts-f5hun/README.md.\n\n'
-printf 'Whisper STT (EN + HU autodetect) is enabled by default. Test with:\n\n'
-printf '    %bcurl -F file=@sample.wav -F model=Systran/faster-whisper-large-v3 \\\n        -H "Authorization: Bearer $STT_API_TOKEN" \\\n        http://127.0.0.1:8093/v1/audio/transcriptions%b\n\n' "$BOLD" "$RESET"
+printf 'TTS (Fish Audio S2 Pro, multilingual incl. EN + HU) is enabled by default.\n'
+printf 'Add a custom voice with:\n\n'
+printf '    %bdocker cp myvoice.wav ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish:/app/voices/\n    docker cp myvoice.txt ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish:/app/voices/%b\n\n' "$BOLD" "$RESET"
+printf 'Whisper STT defaults to deepdml/faster-whisper-large-v3-turbo-ct2\n'
+printf '(8× faster than vanilla large-v3, ~1.6 GB VRAM). Test with:\n\n'
+printf '    %bcurl -F file=@sample.wav \\\n        -H "Authorization: Bearer $STT_API_TOKEN" \\\n        http://127.0.0.1:8093/v1/audio/transcriptions%b\n\n' "$BOLD" "$RESET"
 printf 'Browser automation (opt-in via --profile browser): after first boot,\n'
 printf 'onboard each credential once via the noVNC helper:\n\n'
 printf '    %b./bootstrap-browser-login.sh github-user1%b\n\n' "$BOLD" "$RESET"

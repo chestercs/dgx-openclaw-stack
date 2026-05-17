@@ -47,11 +47,11 @@ If `ffmpeg -version` reports `command not found`, you're on a pre-v0.11.0 deploy
 
 - **Recommended (upgrade)**: `git pull && docker compose build openclaw-config-init && docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`. The v0.11.0 release ships `openclaw-base-ext/Dockerfile` that wraps the upstream gateway image and apt-installs ffmpeg. After recreate, `ffmpeg -version` should print `ffmpeg version 5.1.x-...`.
 
-- **Workaround (stay on the old image)**: set `OPENCLAW_TTS_AUTO=tagged` in `.env` and force-recreate the same three services. Patcher step 11 honors the override; the agent then only TTS-tags replies when the LLM explicitly marks them, leaving normal text flow uncluttered. See `docs/reference/tts-stack.md` for the full enum.
+- **Workaround (stay on the old image)**: set `OPENCLAW_TTS_AUTO=tagged` in `.env` and force-recreate the same three services. Patcher step 11 honors the override; the agent then only TTS-tags replies when the LLM explicitly marks them, leaving normal text flow uncluttered.
 
 ### "Web chat 'Read aloud' button speaks bad Hungarian"
 
-The chat bundle is hard-wired to the browser's `speechSynthesis` API. The OS default Hungarian voice is poor on most platforms. Mitigation: a Tampermonkey userscript that monkey-patches `speechSynthesis.speak()` to fetch from the openclaw-tts-router instead (HU autoroute via diacritic detection, plays via `new Audio(blob)`). See `docs/reference/tts-stack.md` "Web chat workaround" and `templates/userscripts/openclaw-chat-hu-tts.user.js`.
+The chat bundle is hard-wired to the browser's `speechSynthesis` API. The OS default Hungarian voice is poor on most platforms. Mitigation: a Tampermonkey userscript that monkey-patches `speechSynthesis.speak()` to fetch from the openclaw-tts-fish endpoint instead and plays the returned WAV via `new Audio(blob)`. See `templates/userscripts/openclaw-chat-hu-tts.user.js` (if present in your checkout) and adapt the endpoint URL to `http://<host>:8091/v1/audio/speech` with the `default_hu` voice id.
 
 If something here doesn't match your symptom, the most productive next step is:
 
@@ -233,7 +233,7 @@ Impossible with this stack — the CLI shares the gateway's network namespace an
 
 That's Node.js module-loading cold start. It's not your infra — every invocation spins up a fresh Node process inside the container. Not fixable from this stack. For high-frequency scripted use, consider calling the gateway's HTTP API directly.
 
-## TTS (openclaw-tts-router / -en / -f5hun)
+## TTS (openclaw-tts-fish — Fish Audio S2 Pro)
 
 ### Discord/voice surfaces are silent even though the gateway accepted the message
 
@@ -250,7 +250,7 @@ docker exec ${PROJ}openclaw-cli cat /home/node/.openclaw/openclaw.json \
 Expected output:
 
 ```json
-{ "enabled": true, "auto": true, "mode": "openai", "provider": "http://openclaw-tts-router:8080/v1" }
+{ "enabled": true, "auto": "always", "mode": "final", "provider": "http://openclaw-tts-fish:8080/v1" }
 ```
 
 If `enabled` / `auto` / `mode` are missing or false, re-run the patcher:
@@ -259,87 +259,117 @@ If `enabled` / `auto` / `mode` are missing or false, re-run the patcher:
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-### `OPENCLAW_TTS_ROUTER_API_KEY not set — skipping TTS provider config`
+### `OPENCLAW_TTS_FISH_API_KEY not set — skipping messages.tts.*`
 
 Patcher step 11 logs this and exits cleanly when the env var is missing. By
 design — TTS is opt-in. If you wanted TTS, set the var in `.env` and re-run
 the patcher trio (see above). If you didn't, ignore; the rest of the stack is
 unaffected.
 
-### `openclaw-tts-f5hun` doesn't start
+### `voice 'X' not found at /app/voices/X.wav`
 
-The Hungarian backend is profile-gated. Plain `docker compose up -d` won't
-start it. Either:
-
-- One-shot: `docker compose --profile hu up -d`.
-- Persistent: add `COMPOSE_PROFILES=hu` to `.env`, then plain
-  `docker compose up -d` brings it up.
-
-Once running, the router auto-detects it via `F5HUN_URL` + `F5HUN_API_TOKEN`
-in the router's environment — no separate router restart needed.
-
-### Router returns 502 on HU requests but EN works
-
-`F5HUN_URL` or `F5HUN_API_TOKEN` is set on the router but the f5hun service
-itself is unreachable (not started, wrong network, healthcheck failing).
-Check:
+The shim resolves the OpenAI `voice` field to `/app/voices/<voice>.{wav,txt}`
+on the mounted `tts-fish-voices` volume. A 404 means the file pair isn't there.
+Check what's mounted:
 
 ```bash
-docker compose ps openclaw-tts-f5hun       # should be Up (healthy)
-docker exec ${PROJ}openclaw-tts-router curl -sS http://openclaw-tts-f5hun:8080/healthz
+docker exec ${PROJ}openclaw-tts-fish ls -la /app/voices/
 ```
 
-### TTS backend container crash-loops with `torch wheel was built without sm_NNN kernels`
+The seed defaults (`default_en.wav` + `default_hu.wav` and their `.txt`
+transcripts) should be present after first start. If they're missing (e.g.
+the `fetch_default_voices.py` build-time fetcher failed on the HF dataset),
+add a voice manually:
 
-Visible in `docker compose logs openclaw-tts-en` (or `openclaw-tts-f5hun`) as a
-`RuntimeError` from `_verify_gpu_compat()` naming the missing compute
+```bash
+docker cp myvoice.wav ${PROJ}openclaw-tts-fish:/app/voices/
+docker cp myvoice.txt ${PROJ}openclaw-tts-fish:/app/voices/
+```
+
+No restart needed — the shim resolves at request time.
+
+### `voice 'X' is missing its transcript at /app/voices/X.txt`
+
+Voice cloning requires BOTH files — the WAV and a verbatim transcript. The
+transcript can be a single sentence ("Hello, this is a test.") if it matches
+exactly what's said in the WAV.
+
+### Healthz reports `engine_ready: false` / `upstream_health: unreachable` for >5 minutes
+
+SGLang-Omni cold-load takes several minutes on first start (~11 GB s2-pro
+weights load + JIT kernel compile). Watch the engine progress:
+
+```bash
+docker compose logs -f openclaw-tts-fish
+```
+
+Look for `sglang_omni` startup messages — model load, kernel build, "ready"
+on `:9090`. If the child process exits with `no kernel for sm_NNN`, see the
+next entry. If it hangs on `Downloading shards`, the model bake at image build
+time failed and runtime is re-downloading — kill the container, rebuild with
+`docker compose build --no-cache openclaw-tts-fish`.
+
+### TTS container crash-loops with `torch wheel was built without sm_NNN kernels`
+
+Visible in `docker compose logs openclaw-tts-fish` as a `RuntimeError` (or a
+`gpu_compat: missing (...)` line in `/healthz`) naming the missing compute
 capability. Means the cu130 torch wheel baked into the image predates your
 GPU's arch (e.g. sm_120 on GB10 before Blackwell-ready cu130 wheels shipped).
 Rebuild with a fresh wheel pull:
 
 ```bash
-# EN backend
-docker compose build --no-cache openclaw-tts-en
-# HU backend (requires the `hu` profile flag)
-docker compose --profile hu build --no-cache openclaw-tts-f5hun
-# Then recreate
-docker compose --profile hu up -d --force-recreate openclaw-tts-en openclaw-tts-f5hun
+docker compose build --no-cache openclaw-tts-fish
+docker compose up -d --force-recreate openclaw-tts-fish
 ```
 
-Confirm the fix via the backend's healthz — the `gpu_compat` field now reports
-`ok (sm_XXX; arch_list=[...])`:
+Confirm the fix via the shim's healthz — the `gpu_compat` field now reports
+`ok exact (sm_XXX; arch_list=[...])` or `ok ptx-fwd (sm_XXX via sm_YYY JIT)`:
 
 ```bash
-curl -sS http://127.0.0.1:8091/healthz | jq '{device, gpu_compat}'
-curl -sS http://127.0.0.1:8090/healthz | jq '{device, gpu_compat}'  # f5hun
+curl -sS http://127.0.0.1:8091/healthz | jq '{device, gpu_compat, engine_ready}'
 ```
 
-If you can't rebuild right now, set `KOKORO_DEVICE=cpu` (EN) and
-`F5HUN_DEVICE=cpu` (HU) in `.env`, then recreate — CPU is slower (EN ~5-6s
-first request, HU ~30-100s per clip) but functional.
+If you can't rebuild right now, set `TTS_FISH_DEVICE=cpu` in `.env` and
+recreate — CPU is very slow (10-30s per short clip) but functional for smoke.
+
+### Hungarian sounds wrong / garbled
+
+S2 Pro is multilingual but Hungarian is "Tier 3". The bundled
+`default_hu.wav` (Diana Majlinger / LibriVox PD) is a clean reference and
+should produce intelligible HU. If quality is poor on a custom voice, try:
+
+- Better reference clip: 10-30 s, single speaker, no music/noise/echo, 16-24 kHz
+  mono. Voice cloning quality dominates Hungarian fidelity on Tier-3 langs.
+- Verify the transcript matches the WAV word-for-word (Fish Audio aligns
+  prosody to the transcript during cloning).
+- For accuracy-first HU production work, consider keeping a parked F5-TTS HU
+  fallback service (re-add the legacy `openclaw-tts-f5hun` dir + compose
+  block under `profiles: ["hu-fallback"]`).
 
 ### `openclaw infer tts convert` returns success but `provider=microsoft` instead of `openai`
 
-Symptom chain: router returned 500 to the OpenAI-compat provider, OpenClaw
-fell through its provider chain, and Microsoft Edge TTS (built-in, cloud,
-free-tier) answered. User-visible outcome: wrong accent / wrong voice.
-Diagnose with `--json`:
+Symptom chain: openclaw-tts-fish returned 500/timeout to the OpenAI-compat
+provider, OpenClaw fell through its provider chain, and Microsoft Edge TTS
+(built-in, cloud, free-tier) answered. User-visible outcome: wrong accent /
+wrong voice. Diagnose with `--json`:
 
 ```bash
 docker exec ${PROJ}openclaw-cli openclaw infer tts convert \
-  --text "probe" --voice af_heart --output /tmp/t.mp3 --json
+  --text "probe" --voice default_en --output /tmp/t.wav --json
 ```
 
 Look at `attempts[]` — the `openai` entry will show `outcome: "failed"` with
 a `reasonCode` and error string. Common reasons:
 
-- `provider_error` with `500 Internal Server Error` → backend crashed. See
-  preceding entry (rebuild) or `docker logs openclaw-tts-en`.
-- `provider_error` with `401` → `OPENCLAW_TTS_ROUTER_API_KEY` in `.env`
-  doesn't match `TTS_API_TOKEN` the router is enforcing.
-- `timeout` → backend alive but slow (CPU fallback mid-synthesis).
+- `provider_error` with `500 Internal Server Error` → SGLang-Omni child
+  crashed. Check `docker compose logs openclaw-tts-fish` and rebuild.
+- `provider_error` with `401` → `OPENCLAW_TTS_FISH_API_KEY` in `.env`
+  doesn't match `TTS_API_TOKEN` the shim is enforcing. They MUST be equal —
+  `bootstrap.sh` sets both to the same generated secret.
+- `provider_error` with `404` → bad `voice` id; see "voice not found" above.
+- `timeout` → SGLang-Omni alive but slow (CPU fallback mid-synthesis).
 
-The provider chain with a healthy local router should always land `openai` as
+The provider chain with a healthy local Fish service should always land `openai` as
 the successful attempt; seeing `microsoft` is a signal that something upstream
 needs fixing — not an acceptable steady state.
 

@@ -14,7 +14,7 @@ Discord voice servers
 openclaw-gateway (our container, via the bot gateway websocket)
    │  VAD-chunked utterances, re-encoded to wav via bundled ffmpeg
    ▼  POST multipart /v1/audio/transcriptions
-openclaw-stt-whisper (Trendency/whisper-large-v3-hu, faster-whisper, float16)
+openclaw-stt-whisper (deepdml/faster-whisper-large-v3-turbo-ct2, faster-whisper, float16)
    │  transcript
    ▼
 openclaw-gateway (agent dispatch — routed to the bound `discord-voice` agent)
@@ -23,8 +23,8 @@ openclaw-gateway (agent dispatch — routed to the bound `discord-voice` agent)
    ▼
 vllm-llm (Gemma 4 31B NVFP4) + tool runtime
    │  final assistant message
-   ▼  POST /v1/audio/speech (router → Kokoro EN / F5-TTS HU based on diacritics)
-openclaw-tts-router → openclaw-tts-en / openclaw-tts-f5hun
+   ▼  POST /v1/audio/speech (Fish Audio S2 Pro, multilingual, voice cloning)
+openclaw-tts-fish (SGLang-Omni serving fishaudio/s2-pro)
    │  Opus stream
    ▼
 Discord voice servers → user hears the reply

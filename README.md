@@ -48,8 +48,8 @@ A fully local agent platform (or local-plus-cloud-LLM hybrid — your choice), w
 | **bge-m3 embeddings** | BAAI/bge-m3 multilingual dense embeddings via vLLM. 100+ languages, 1024-dim, 8K context, EN↔HU cosine ≈ 0.88. |
 | **SearxNG meta-search** | Self-hosted, privacy-respecting web search backend wired into OpenClaw's native `webSearch` provider. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage, Wikipedia family, Reddit, GitHub, arXiv) — queries never reach Google / Bing / Yandex / Yahoo / Baidu. |
 | **OpenClaw gateway** | The open-source agent runtime: Chrome extension UI, CLI, persistent memory, heartbeat, multi-agent world-building. |
-| **Bilingual TTS surface** | OpenAI-compatible `/v1/audio/speech` router fronting Kokoro 82M (English, Apache 2.0, ~500 MB-1 GB VRAM, ships by default) and an opt-in F5-TTS Hungarian backend (CC-BY-NC model weights — see below). Wired into OpenClaw via the sanctioned `messages.tts.providers.openai` baseUrl override. Diacritic-based autodetect re-routes Hungarian-text requests to the HU backend transparently when both are active. |
-| **Whisper STT (EN + HU)** | OpenAI-compatible `/v1/audio/transcriptions` via `Systran/faster-whisper-large-v3` on a self-built CUDA 13 image (~150 LOC FastAPI wrapper around `faster-whisper` — the upstream speaches image rejects Blackwell tensor-core compute types on sm_120, so we self-build to match the `vllm-llm` / `openclaw-tts-en` wheel pattern). ~3 GB VRAM, autodetects language (FLEURS Hungarian WER 14.1%). Wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads in the Control UI chat, Discord voice channels, the VoiceCall CLI, and Talk / Voicewake nodes all transcribe through this service. MIT wrapper + MIT Whisper weights. |
+| **Multilingual TTS (Fish Audio S2 Pro)** | Single self-hosted OpenAI-compatible `/v1/audio/speech` service backed by `fishaudio/s2-pro` (5B param Qwen3-omni) served via SGLang-Omni on a custom CUDA 13 aarch64 image. 80+ languages from one checkpoint (English + Hungarian both supported), voice cloning from any 10-30 s mounted reference WAV+transcript, ~11 GB weights baked at build time. Wired into OpenClaw via `messages.tts.providers.openai`. **License: Fish Audio Research License — non-commercial only.** Wrapper code MIT. |
+| **Whisper STT (EN + HU, turbo)** | OpenAI-compatible `/v1/audio/transcriptions` via `deepdml/faster-whisper-large-v3-turbo-ct2` on a self-built CUDA 13 image (~150 LOC FastAPI wrapper around `faster-whisper` — the upstream speaches image rejects Blackwell tensor-core compute types on sm_120, so we self-build to match the `vllm-llm` / `openclaw-tts-fish` wheel pattern). ~1.6 GB VRAM at float16, ~8× faster than vanilla large-v3 (pruned 4-layer decoder), autodetects language. Wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads in the Control UI chat, Discord voice channels, the VoiceCall CLI, and Talk / Voicewake nodes all transcribe through this service. MIT wrapper + MIT Whisper weights. Swap to `Trendency/whisper-large-v3-hu` via `STT_WHISPER_MODEL` for the HU-finetune (slower, more robust on noisy mic input). |
 | **Browser automation (opt-in)** | OpenClaw's built-in `browser` tool attaches to a self-hosted Playwright Chromium cluster over Chrome DevTools Protocol — one warm Chromium per onboarded credential. 1x manual OAuth onboarding per service via a noVNC bridge (`./bootstrap-browser-login.sh github-user1`); afterwards the agent reaches authenticated content with no per-call re-auth until the upstream session expires (~14d GitHub, ~30d Notion, etc.). Activate via `--profile browser`. Apache 2.0. Limitation: passkey-only auth flows don't work over noVNC by W3C origin-bound spec — use password+TOTP or API tokens for those. Details in [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md). |
 | **Idempotent config patcher** | A small Node script that makes your OpenClaw config deterministic — runs on every `up`, never clobbers onboarding choices it shouldn't. Wires hybrid (BM25 + vector) retrieval with MMR re-rank on top of `memorySearch`, flips the bundled SearxNG plugin on, points the openai TTS provider at the bundled router, upserts the STT entry into `tools.media.audio.models[]`, and writes one `browser.profiles.<name>.cdpUrl` per registered Chromium profile. |
 
@@ -108,9 +108,8 @@ docker compose up -d --force-recreate openclaw-config-init openclaw-gateway open
 
 That's it — the patcher applies all wiring steps and the gateway goes healthy. **Two-phase fresh-install onboarding** (gateway crash-loop → onboarding → patcher applies wiring) is the OpenClaw security model, not a bug; details in [SETUP.md](SETUP.md). If anything goes sideways, the symptoms map directly onto entries in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
-This brings up the **10 default services** (LLM MoE + dense + embedding + gateway + cli + config-init + searxng + tts-en + tts-router + stt-whisper). Several capabilities are **opt-in profiles** that don't start with the default `up`:
+This brings up the **9 default services** (LLM MoE + dense + embedding + gateway + cli + config-init + searxng + tts-fish + stt-whisper). Hungarian TTS is now built into the Fish Audio S2 Pro service — no separate `--profile hu` opt-in. Several capabilities are **opt-in profiles** that don't start with the default `up`:
 
-- `--profile hu` — Hungarian TTS (F5-TTS, CC-BY-NC weights — see [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc)).
 - `--profile browser` — Playwright Chromium for login-gated sites; per-credential 1× OAuth via the noVNC helper.
 - `--profile python` — Python code-execution sandbox (MCP).
 - **Image generation** lives in a [separate compose file](openclaw-image-comfyui/) and proxies to your existing ComfyUI install (the repo ships no model weights).
@@ -130,15 +129,11 @@ A more honest "what reproduces from a fresh clone vs what's manual" breakdown is
     │  │ :8004 (MoE 26B) │  │ :8005 (dense 31)│  │ :8005 (bge-m3)  │       │
     │  └────────▲────────┘  └────────▲────────┘  └────────▲────────┘       │
     │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐       │
-    │  │ searxng         │  │ openclaw-tts-en │  │ openclaw-tts-   │       │
-    │  │ :8080 privacy   │  │ Kokoro 82M EN   │  │ router :8090    │       │
-    │  │ meta-search     │  │ Apache 2.0      │  │ OAI-compat seam │       │
+    │  │ searxng         │  │ openclaw-tts-   │  │ openclaw-stt-   │       │
+    │  │ :8080 privacy   │  │ fish :8091      │  │ whisper :8093   │       │
+    │  │ meta-search     │  │ Fish S2 Pro     │  │ faster-whisper  │       │
+    │  │                 │  │ (multilingual)  │  │ turbo CT2       │       │
     │  └────────▲────────┘  └────────▲────────┘  └────────▲────────┘       │
-    │  ┌─────────────────┐                                                 │
-    │  │ openclaw-stt-   │                                                 │
-    │  │ whisper :8093   │                                                 │
-    │  │ faster-whisper  │                                                 │
-    │  └────────▲────────┘                                                 │
     │           │ compose DNS (service names)                              │
     │  ┌────────┴──────────────────────────────────────────────────────┐   │
     │  │ openclaw-gateway          :18789 (only published port)        │◀── Chrome ext.
@@ -147,7 +142,6 @@ A more honest "what reproduces from a fresh clone vs what's manual" breakdown is
     │  └───────────────────────────────────────────────────────────────┘   │
     │                                                                       │
     │  Opt-in profiles (parked unless explicitly enabled)                  │
-    │  ─ --profile hu       → openclaw-tts-f5hun (F5-TTS HU, CC-BY-NC)     │
     │  ─ --profile browser  → openclaw-browser   (Chromium + noVNC)        │
     │  ─ --profile python   → openclaw-python-sandbox (MCP exec)           │
     │                                                                       │
@@ -169,8 +163,8 @@ Deep dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Multilingual RAG built in.** bge-m3 gives you high-quality cross-lingual embeddings for `memorySearch` out of the box.
 - **Hybrid retrieval + MMR.** `memorySearch` runs BM25 (SQLite FTS5) alongside vector similarity and re-ranks the candidate set with MMR for diversity — exact-keyword / ID matches stop falling through the cracks of pure cosine search.
 - **Privacy-respecting web search.** Self-hosted SearxNG wired into OpenClaw's native `webSearch` tool. No commercial search API, no query leak to Google / Bing / Yandex. Strict engine whitelist (DuckDuckGo, Brave, Mojeek, Qwant, Startpage + Wikipedia / Reddit / GitHub / arXiv).
-- **Bilingual self-hosted TTS.** Kokoro 82M (English, Apache 2.0) ships by default and runs alongside the LLM on the same GB10 GPU. Optional Hungarian (F5-TTS, opt-in via `--profile hu`) for fully local cross-language voice; details in [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc).
-- **Bilingual self-hosted STT.** `Systran/faster-whisper-large-v3` on a self-built CUDA 13 image (~150 LOC FastAPI wrapper — Blackwell compat ate the upstream speaches-ai image), autodetecting English and Hungarian (FLEURS HU WER 14.1%). ~3 GB VRAM at float16, wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads, Discord voice, VoiceCall CLI, and Talk/Voicewake nodes all transcribe through it. Details in [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md).
+- **Multilingual self-hosted TTS.** Fish Audio S2 Pro (`fishaudio/s2-pro`) via SGLang-Omni in one container — 80+ languages from one checkpoint (EN + HU both supported), voice cloning from any 10-30 s mounted reference clip + transcript, ~11 GB weights baked at build time. **Fish Audio Research License — non-commercial only** (wrapper code MIT); see [Fish Audio license note](#fish-audio-license-note) for commercial path.
+- **Bilingual self-hosted STT.** `deepdml/faster-whisper-large-v3-turbo-ct2` (turbo, ~8× faster than vanilla large-v3) on a self-built CUDA 13 image (~150 LOC FastAPI wrapper — Blackwell compat ate the upstream speaches-ai image), autodetecting English and Hungarian. ~1.6 GB VRAM at float16, wired into OpenClaw's `tools.media.audio` pipeline — voice-note uploads, Discord voice, VoiceCall CLI, and Talk/Voicewake nodes all transcribe through it. Swap to `Trendency/whisper-large-v3-hu` via `STT_WHISPER_MODEL` for the accuracy-first HU finetune. Details in [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md).
 - **Optional FLUX-Krea-dev image generation.** The `openclaw-image-comfyui` MCP bridge (opt-in via `--profile image-gen`, separate compose file) drives the operator's existing ComfyUI install through `flux-krea-2k` (SFW, 1280×720 default) and `flux-krea-2k-adult` (same pipeline + flux-uncensored-v2 LoRA) workflow templates. The bridge ships no model weights; the recommended ~35 GB download is documented in [`docs/reference/image-comfyui-bridge.md`](docs/reference/image-comfyui-bridge.md). For 4K output, render at 2K native and upscale externally with ESRGAN — diffusion-based upscalers (SUPIR, UltimateSDUpscale tile pass) produce visible tile-seam artifacts on FLUX latents and were dropped.
 - **Discord-ready out of the box.** Once you create a bot in Discord's Developer Portal and run `openclaw channels add --channel discord`, the patcher writes 11 production-tested Discord overrides automatically (progressive streaming, slash-command authz for [issue #19310](https://github.com/openclaw/openclaw/issues/19310), tool-surface widening for the Discord-routed agent, cron + browser cheatsheets in the workspace). Every override is env-gated and individually disable-able — see [`docs/reference/discord-config.md`](docs/reference/discord-config.md) for the at-a-glance table.
 - **Long context, honest numbers.** 256K model max; realistic stable bands (per user count) are documented in the compose file.
@@ -198,10 +192,9 @@ dgx-openclaw-stack/
 ├─ vllm-llm/                    # custom vLLM image (gemma4 tool-call parser patch
 │                               #   for colon namespaces — see Dockerfile)
 ├─ openclaw-base-ext/           # local extension of the openclaw image (adds ffmpeg)
-├─ openclaw-tts-en/             # English TTS service (Kokoro 82M, Apache 2.0)
-├─ openclaw-tts-router/         # OpenAI-compat TTS router (passthrough + ffmpeg)
-├─ openclaw-tts-f5hun/          # OPT-IN Hungarian TTS (--profile hu, CC-BY-NC weights)
-├─ openclaw-stt-whisper/        # Self-built CUDA 13 STT image (faster-whisper)
+├─ openclaw-tts-fish/           # Multilingual TTS (Fish Audio S2 Pro, SGLang-Omni)
+│                               #   Fish Audio Research License (non-commercial)
+├─ openclaw-stt-whisper/        # Self-built CUDA 13 STT image (faster-whisper turbo)
 ├─ openclaw-browser/            # OPT-IN browser automation (--profile browser)
 ├─ openclaw-python-sandbox/     # OPT-IN Python MCP exec sandbox (--profile python)
 ├─ openclaw-image-comfyui/      # OPT-IN image-gen MCP bridge — SEPARATE compose file
@@ -232,9 +225,9 @@ honest answer to *"will my clone end up where the maintainer's deploy is?"*.
 
 | Layer | Reproduces from `compose up` alone? | What's needed beyond bootstrap |
 |---|---|---|
-| 10 default services (LLM MoE + dense, embedding, gateway, cli, config-init, searxng, tts-en, tts-router, stt-whisper) | ✅ after onboarding | Gateway is **expected to crash-loop** until you complete the Chrome-extension wizard or `openclaw onboard` — then re-run the patcher trio. SETUP.md §5–6b walks through this. |
+| 9 default services (LLM MoE + dense, embedding, gateway, cli, config-init, searxng, tts-fish, stt-whisper) | ✅ after onboarding | Gateway is **expected to crash-loop** until you complete the Chrome-extension wizard or `openclaw onboard` — then re-run the patcher trio. SETUP.md §5–6b walks through this. |
 | Gemma 4 NVFP4 weights | ❌ | HF account, accept the [Gemma 4 license](https://huggingface.co/nvidia/Gemma-4-26B-A4B-NVFP4), put your `hf_…` token in `.env`. `bootstrap.sh` prompts for it. |
-| Hungarian TTS (F5-TTS) | ❌ | `--profile hu` + accept the [CC-BY-NC model license](https://huggingface.co/sarpba/F5-TTS_V1_hun_v2) at build time. See [Hungarian TTS opt-in](#hungarian-tts-opt-in-cc-by-nc). |
+| Fish Audio S2 Pro weights | ❌ | Pulled automatically at build time from [fishaudio/s2-pro](https://huggingface.co/fishaudio/s2-pro). Building the image constitutes acceptance of the **Fish Audio Research License (non-commercial)** — see [Fish Audio license note](#fish-audio-license-note). |
 | Browser automation | ❌ | `--profile browser`, then per-credential noVNC OAuth via `./bootstrap-browser-login.sh <profile>`. Each login is 1× manual (W3C origin-bound — passkeys don't work). |
 | Python sandbox | ❌ | `--profile python`, secrets generated by `bootstrap.sh`. |
 | Discord integration | ❌ | Discord Developer Portal (create app + bot token), `openclaw channels add --channel discord`, copy `templates/discord-text-agent/AGENTS.md.example` to `workspace-discord/AGENTS.md`. Walkthrough: [`docs/discord-bot-setup.md`](docs/discord-bot-setup.md). The 11 patcher overrides (steps 20-30) auto-apply once the channel exists; the operator-tunable env knobs are catalogued in [`docs/reference/discord-config.md`](docs/reference/discord-config.md). |
@@ -248,42 +241,52 @@ externals (HF model licences, Discord, browser OAuth, image-gen weights) are
 externalised precisely because they're decisions the operator must make — not
 oversights.
 
-## Hungarian TTS opt-in (CC-BY-NC)
+## Fish Audio license note
 
-The English TTS surface (Kokoro 82M, Apache 2.0) ships in the default profile
-and is safe for any usage. Hungarian TTS is **opt-in** because the only
-production-grade open-weights Hungarian TTS at the time of writing — the
-`sarpba/F5-TTS_V1_hun_v2` fine-tune of F5-TTS — is distributed under
-**CC-BY-NC-4.0** (Creative Commons, **non-commercial only**).
+The TTS surface uses **Fish Audio S2 Pro** (`fishaudio/s2-pro`, 5B param
+Qwen3-omni architecture). The model is distributed under the **Fish Audio
+Research License — non-commercial use only**. Building the
+`openclaw-tts-fish` image pulls the ~11 GB checkpoint from HuggingFace and
+constitutes acceptance of the upstream license.
 
-The wrapper code in `openclaw-tts-f5hun/` is MIT (matches the rest of this
-repo). The model weights are pulled from HuggingFace at build time — by
-building the image you accept the upstream model license. This repo ships
-no model weights of any kind.
+The wrapper code in `openclaw-tts-fish/` is MIT (matches the rest of this
+repo). This repo ships no model weights of any kind — they download at build
+time.
 
-**To activate Hungarian TTS, the easiest path is to re-run `bootstrap.sh`** —
-it now prompts to opt in, generates `F5HUN_API_TOKEN`, sets `F5HUN_URL` to the
-in-compose service, and adds `COMPOSE_PROFILES=hu` to `.env`. Then:
+**For commercial deployments**, either contact Fish Audio (`business@fish.audio`)
+for a commercial license, or swap the `FISH_REPO` build arg in
+`openclaw-tts-fish/server/Dockerfile` to point at a checkpoint you have a
+commercial license to. Wrapper architecture is model-agnostic — the shim
+expects any SGLang-Omni-compatible TTS checkpoint with the same `references[]`
+voice-cloning schema.
+
+### Adding a custom voice (any language)
+
+Voice cloning happens at request time from mounted reference files — no
+fine-tune, no re-build:
 
 ```bash
-docker compose --profile hu up -d --build openclaw-tts-f5hun
+# 1. Record 10-30 s of clean mono speech (16/24 kHz preferred), write the
+#    verbatim transcript to a sibling .txt:
+#       myvoice.wav   (16-bit PCM mono, no music/noise, no echo)
+#       myvoice.txt   (UTF-8 text, exactly what was said in the wav)
+#
+# 2. Drop both into the openclaw-tts-fish container's voice mount:
+docker cp myvoice.wav ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish:/app/voices/
+docker cp myvoice.txt ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish:/app/voices/
+
+# 3. Request it (no restart needed):
+curl -H "Authorization: Bearer $TTS_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"input":"Hello world.","voice":"myvoice"}' \
+     http://127.0.0.1:8091/v1/audio/speech --output out.wav
 ```
 
-Or by hand: uncomment the three lines in the "Optional: Hungarian TTS" block
-in `.env.example`, fill in `F5HUN_API_TOKEN` (`openssl rand -base64 64`), and
-either set `COMPOSE_PROFILES=hu` in `.env` or pass `--profile hu` on the
-docker compose command line.
-
-Once active, the router exposes `default_hu` / `hu_diana` voice ids, and the
-diacritic-based autodetect silently re-routes Hungarian-text requests
-(detected by `áéíóöőúüű`) to the HU backend even when OpenClaw asks for an
-English default voice like `coral`. The autodetect is a no-op when the HU
-profile is not active.
-
-For commercial Hungarian deployments, override `F5_CHECKPOINT` / `F5_VOCAB`
-on the `openclaw-tts-f5hun` service to point at a checkpoint with a fitting
-license. Details + voice catalog in
-[`openclaw-tts-f5hun/README.md`](openclaw-tts-f5hun/README.md).
+Default voices shipped: `default_en` (LibriSpeech / LibriVox PD) and
+`default_hu` (Diana Majlinger / "Egri csillagok", LibriVox PD). Both are
+seeded from the image's `/app/voices_seed/` on first start without
+overwriting user voices. Details + endpoint reference in
+[`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md).
 
 ## Why this stack
 
@@ -304,13 +307,12 @@ This repo captures a known-good wiring for all of the above in a single determin
 
 - Gemma 4: **Apache 2.0**
 - bge-m3: **MIT**
-- Kokoro 82M (English TTS, default): **Apache 2.0**
-- F5-TTS Hungarian (`sarpba/F5-TTS_V1_hun_v2`, opt-in): **CC-BY-NC-4.0** —
-  non-commercial use only. The HU service block is parked behind a Docker
-  Compose profile and does not start by default; building it triggers the
-  weight download and constitutes acceptance of the upstream model license.
-  See [`openclaw-tts-f5hun/README.md`](openclaw-tts-f5hun/README.md) for
-  details on swapping the checkpoint for one with a commercial license.
+- Whisper turbo (`deepdml/faster-whisper-large-v3-turbo-ct2`): **MIT**
+- Fish Audio S2 Pro (`fishaudio/s2-pro`): **Fish Audio Research License** —
+  non-commercial use only. Building `openclaw-tts-fish` triggers the
+  ~11 GB weight download from HuggingFace and constitutes acceptance of the
+  upstream license. See [Fish Audio license note](#fish-audio-license-note)
+  for the commercial path and the `FISH_REPO` build-arg override.
 
 ## Contributing
 

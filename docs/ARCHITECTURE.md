@@ -241,44 +241,104 @@ Standard OpenClaw gateway. The two things worth noting:
 
 The entrypoint is just `sleep infinity`. The container exists to keep a stable Node.js environment hot so `docker exec openclaw-cli openclaw <cmd>` starts in ~5s cold (Node module loading baseline), instead of spinning up a fresh container every time.
 
-## TTS subsystem (3 services)
+## TTS subsystem (1 service)
 
 ### Layout
 
 ```
-                           ┌──────────────────────────────┐
-   gateway.openai TTS ────▶│ openclaw-tts-router          │
-   provider.baseUrl        │  127.0.0.1:8092 (loopback)   │
-   = http://openclaw-      │  ~150 LOC FastAPI + ffmpeg   │
-     tts-router:8080/v1    └──┬───────────────────────┬───┘
-                              │                       │
-            (always wired) ◀──┘                       └──▶ (only when HU profile + token)
-              │                                               │
-   ┌──────────▼──────────┐                       ┌────────────▼────────────┐
-   │ openclaw-tts-en     │                       │ openclaw-tts-f5hun       │
-   │  127.0.0.1:8091     │                       │  127.0.0.1:8090          │
-   │  Kokoro 82M (EN)    │                       │  F5-TTS HU (CC-BY-NC)   │
-   │  Apache 2.0         │                       │  profiles: ["hu"]        │
-   └─────────────────────┘                       └─────────────────────────┘
+                           ┌─────────────────────────────────────┐
+   gateway.openai TTS ────▶│ openclaw-tts-fish                    │
+   provider.baseUrl        │  127.0.0.1:8091 (loopback publish)  │
+   = http://openclaw-      │                                      │
+     tts-fish:8080/v1      │  ┌────────────────────────────────┐ │
+                           │  │ FastAPI shim (:8080)            │ │
+                           │  │  - Bearer auth (TTS_API_TOKEN)  │ │
+                           │  │  - voice → references mapping   │ │
+                           │  │  - onset silence pad (in-proc)  │ │
+                           │  └──────────────┬─────────────────┘ │
+                           │                 │ loopback :9090     │
+                           │  ┌──────────────▼─────────────────┐ │
+                           │  │ SGLang-Omni native HTTP server  │ │
+                           │  │  python -m sglang_omni.cli.cli  │ │
+                           │  │  serve fishaudio/s2-pro          │ │
+                           │  └──────────────┬─────────────────┘ │
+                           │                 │                    │
+                           │   /app/voices/<name>.{wav,txt}      │
+                           │   (mounted volume tts-fish-voices)  │
+                           └─────────────────────────────────────┘
 ```
 
-Three loosely-coupled FastAPI services. `openclaw-tts-router` is the OpenAI-compatible seam that the OpenClaw gateway hits via the `messages.tts.providers.openai.baseUrl` override (sanctioned per closed upstream issues #13907 / #29224). The router fronts the EN backend (mandatory) and optionally the HU backend (opt-in via `--profile hu` + `F5HUN_API_TOKEN` + `F5HUN_URL`).
+One container, two processes. The FastAPI shim does three jobs: Bearer auth
+(SGLang-Omni ships no auth), voice→references mapping (SGLang-Omni accepts
+`references[].audio_path`, not the OpenAI `voice` string — so the shim
+resolves `voice: "default_en"` to `references: [{audio_path: "/app/voices/
+default_en.wav", text: <transcript>}]`), and optional onset silence pad
+(prepended in-process via soundfile + numpy — defends against the Whisper
+STT first-phoneme clip observed in the F5-TTS-era benchmark).
 
-### Why a router instead of direct provider wiring
+### Why one service replaces the legacy 3-service stack
 
-The OpenClaw `openai` TTS provider accepts exactly **one** `baseUrl`. To support multiple language backends behind one logical provider, we need a fronting service. The router is ~150 lines of FastAPI + httpx, no GPU, and its second job is transcoding the backend's wav into mp3/opus/aac on the fly via bundled ffmpeg — necessary because the OpenClaw openai TTS provider asks for mp3 by default and content-type sniffing on the voice surfaces is finicky.
+Previously, the TTS surface was three services (Kokoro EN + F5-TTS HU + an
+OpenAI-compat router with diacritic autoroute and ffmpeg transcoding). Fish
+Audio S2 Pro is multilingual (80+ languages from one checkpoint, EN + HU
+both supported) and supports reference-audio voice cloning, so one service
+covers what previously required three. The legacy reference doc at
+[`docs/reference/tts-stack.md`](reference/tts-stack.md) is preserved with a
+SUPERSEDED banner for historical context.
 
-### Hungarian autodetect
+### Why SGLang-Omni instead of fish-speech `tools/api_server.py`
 
-When the HU backend is wired AND the gateway sends one of the OpenAI default voices (`alloy`, `coral`, `shimmer`, …) AND the input contains Hungarian diacritics (`áéíóöőúüű`), the router silently re-routes the request to the HU backend so the agent doesn't need to know HU voice ids to get correct pronunciation. No-op when the HU profile is not active.
+`fishaudio/s2-pro` is a Qwen3-omni architecture (5B params, ~11 GB weights)
+that requires the `sgl-project/sglang-omni` inference engine to load. The
+legacy `fishaudio/fish-speech` repo's `tools/api_server.py` targets the
+older 1.x LLaMA2-based architecture and does NOT load the s2-pro checkpoint.
+The upstream reference Docker image (`frankleeeee/sglang-omni:dev`) is
+amd64-only, so we build a custom image on `nvidia/cuda:13.0.0-cudnn-devel-
+ubuntu24.04` and let SGLang-Omni compile `sgl-kernel` from source against
+the cu130 torch wheels. First build is long (~15-30 min including model
+download); subsequent builds hit the layer cache.
+
+### Voice cloning workflow
+
+Reference audio lives at `/app/voices/<name>.{wav,txt}` (mounted volume
+`tts-fish-voices`). The shim resolves the OpenAI `voice` field to the file
+pair at request time — no restart required to add a voice:
+
+```bash
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+docker cp myclone.wav ${PROJ}openclaw-tts-fish:/app/voices/
+docker cp myclone.txt ${PROJ}openclaw-tts-fish:/app/voices/
+```
+
+Default voices shipped: `default_en` (LibriSpeech / LibriVox PD) and
+`default_hu` (Diana Majlinger / "Egri csillagok", LibriVox PD). Both are
+seeded from `/app/voices_seed/` baked into the image; the shim copies them
+into `/app/voices/` on first start without overwriting user voices.
+
+### License
+
+Fish Audio S2 Pro weights are distributed under the **Fish Audio Research
+License — non-commercial use only**. Building the `openclaw-tts-fish` image
+pulls the ~11 GB checkpoint from `fishaudio/s2-pro` on HuggingFace and
+constitutes acceptance of the upstream license. Wrapper code in
+`openclaw-tts-fish/server/` is MIT. For commercial deployments, contact
+`business@fish.audio` or swap `FISH_REPO` in the Dockerfile to a
+checkpoint with a commercial license.
 
 ### Port publishing posture
 
-All three TTS services publish to `${TTS_*_BIND:-127.0.0.1}:${TTS_*_PORT:-…}` — loopback by default. This differs from the vLLM services (which don't publish at all) for one reason: TTS services are commonly debugged with `curl <port>/healthz` from the host, and a loopback bind covers that without exposing them on the LAN. To bind on the LAN, set `TTS_*_BIND=0.0.0.0` in `.env` (Bearer-token-protected via the existing `TTS_API_TOKEN` / `F5HUN_API_TOKEN` / `OPENCLAW_TTS_ROUTER_API_KEY`).
+`${TTS_FISH_BIND:-127.0.0.1}:${TTS_FISH_PORT:-8091}:8080` — loopback by
+default, consistent with the STT service. `curl 127.0.0.1:8091/healthz`
+works without `docker exec` gymnastics. Set `TTS_FISH_BIND=0.0.0.0` in
+`.env` to expose on the LAN (Bearer-protected via `TTS_API_TOKEN`).
 
 ### Web chat UI limitation
 
-The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis` API — it does NOT call the configured `messages.tts.providers.openai`. Voice surfaces that go through the gateway's TTS pipeline (Discord channel, agent `tts` skill) DO use this router. This is an upstream OpenClaw limitation.
+The OpenClaw web chat UI is hard-wired to the browser's native
+`speechSynthesis` API — it does NOT call the configured
+`messages.tts.providers.openai`. Voice surfaces that go through the
+gateway's TTS pipeline (Discord channel, agent `tts` skill) DO use this
+service. This is an upstream OpenClaw limitation.
 
 ## STT subsystem (1 service)
 
@@ -290,7 +350,7 @@ The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis`
       │   tools.media.audio.models[0]                   │
       │     provider: "openai"                          │
       │     baseUrl:  http://openclaw-stt-whisper:8080/v1/ │
-      │     model:    Systran/faster-whisper-large-v3   │
+      │     model:    deepdml/faster-whisper-large-v3-turbo-ct2 │
       │     headers:  Authorization: Bearer $STT_API_TOKEN │
       └─────────────────────┬──────────────────────────┘
                             │ (bridge DNS, POST multipart)
@@ -299,14 +359,14 @@ The OpenClaw web chat UI is hard-wired to the browser's native `speechSynthesis`
          │ openclaw-stt-whisper                 │
          │  127.0.0.1:8093 (loopback publish)  │
          │  self-built: CUDA 13 + faster-whisper│
-         │  Whisper large-v3 (MIT) @ float16   │
-         │  ~3 GB VRAM, autodetect EN + HU     │
+         │  Whisper turbo CT2 (MIT) @ float16  │
+         │  ~1.6 GB VRAM, autodetect EN + HU   │
          └─────────────────────────────────────┘
 ```
 
 Single service. Built from `./openclaw-stt-whisper/server/` on a CUDA 13 base with a ~150 LOC FastAPI wrapper around `faster-whisper`. Exposes OpenAI-compatible `/v1/audio/transcriptions`, `/v1/audio/translations`, `/v1/models`, `/health` endpoints. Whisper autodetects the input language per request, so no bilingual router is needed (contrast with TTS, which needs one backend per language).
 
-The original 2026-04-23 plan pointed at `ghcr.io/speaches-ai/speaches` upstream (zero custom code), but its latest published CUDA tag (12.6.3) rejects every low-precision CT2 compute type on Blackwell sm_120 and destabilizes on `float32`. The CUDA 13 + cu130 PyTorch wheel pattern that `vllm-llm` and `openclaw-tts-en` already use on GB10 is the proven path. The wrapper retires trivially when speaches upstream publishes a Blackwell-tensor-core image (swap `build:` back to `image:` in `docker-compose.yml`).
+The original 2026-04-23 plan pointed at `ghcr.io/speaches-ai/speaches` upstream (zero custom code), but its latest published CUDA tag (12.6.3) rejects every low-precision CT2 compute type on Blackwell sm_120 and destabilizes on `float32`. The CUDA 13 + cu130 PyTorch wheel pattern that `vllm-llm` and `openclaw-tts-fish` already use on GB10 is the proven path. The wrapper retires trivially when speaches upstream publishes a Blackwell-tensor-core image (swap `build:` back to `image:` in `docker-compose.yml`).
 
 ### Three voice surfaces, one backend
 
@@ -318,9 +378,18 @@ The STT service backs two of OpenClaw's three voice-input paths:
 
 Paths 2 and 3 converge on the single `tools.media.audio.models[]` entry written by patcher step 14.
 
-### Why Whisper large-v3 as default
+### Why Whisper turbo CT2 as default
 
-FLEURS Hungarian WER 14.1% (best validated number among the OpenAI-compatible candidates as of 2026-04). MIT weights + MIT upstream server → no opt-in profile gate needed, ships in the default profile. The alternatives evaluated: NVIDIA Parakeet/Canary (no OpenAI-compat server → requires wrapper code we'd have to maintain), Microsoft Phi-4 Multimodal (Hungarian audio explicitly unsupported), Distil-Whisper (English-only). See `docs/reference/stt-stack.md` for the full comparison matrix.
+`deepdml/faster-whisper-large-v3-turbo-ct2` is a pre-converted CT2 build of
+the turbo Whisper variant (4-layer pruned decoder, ~8× faster than vanilla
+large-v3 at near-equal WER on EN). MIT weights, ~1.6 GB VRAM at float16,
+multilingual including EN + HU autodetect. Picked as the default because
+voice-chat latency (Discord voice channel: Fish Audio S2 Pro → LLM → STT
+roundtrip) matters more than the last percentage point of HU WER. For
+accuracy-first Hungarian workloads on noisy mic input, swap to
+`Trendency/whisper-large-v3-hu` via `STT_WHISPER_MODEL` (slower, full
+32-layer decoder, ~3 GB VRAM, ~3pp lower HU WER on phone-grade audio).
+See `docs/reference/stt-stack.md` for the full comparison matrix.
 
 ### Auth isolation via per-entry `headers`
 
@@ -335,8 +404,8 @@ The OpenClaw audio schema resolves provider auth through the standard chain — 
 - `hf-cache` (named volume, bound to `$VLLM_HF_CACHE_DIR`) is shared by both vLLM services so the bge-m3 weights live next to the Gemma 4 weights in the same HF cache structure. Both services get `volumes: - hf-cache:/root/.cache/huggingface`. The Docker volume label is `${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}` — change this if a sibling LLM stack on the same host bind-mounts the same `VLLM_HF_CACHE_DIR` and you want one consistent label in `docker volume ls`.
 - `$OPENCLAW_CONFIG_DIR` is bind-mounted into the config-init, gateway, and cli services — they all read/write the same `openclaw.json`, memory/, heartbeat journal.
 - `$OPENCLAW_WORKSPACE_DIR` is bind-mounted into the gateway and cli services — the agent's writable working directory.
-- `tts-en-hf-cache`, `tts-f5hun-hf-cache`, `tts-f5hun-voices` — Docker named volumes (no host bind). Hold runtime HF downloads + user-supplied reference voices for the F5-TTS HU service.
-- `stt-whisper-hf-cache` — Docker named volume for the faster-whisper CT2 weights (~3 GB large-v3 by default). Survives `docker compose down` so the next boot doesn't re-download. No host bind.
+- `tts-fish-hf-cache`, `tts-fish-voices` — Docker named volumes (no host bind). `tts-fish-hf-cache` holds runtime HF downloads from SGLang-Omni; `tts-fish-voices` is the user-overridable `/app/voices/` reference-voice directory for Fish Audio S2 Pro voice cloning.
+- `stt-whisper-hf-cache` — Docker named volume for the faster-whisper CT2 weights (~1.6 GB turbo CT2 by default). Survives `docker compose down` so the next boot doesn't re-download. No host bind.
 - `browser-storage` — Docker named volume for `openclaw-browser`'s per-profile Chromium user-data-dirs. Cookies + localStorage + IndexedDB persist across container restarts so a 1x manual login holds for the upstream session lifetime (~14d GitHub, ~30d Notion, etc.). Treat backups as secret-equivalent — the contents include live session tokens.
 - `browser-diagnostics` — Docker named volume for failure screenshots + HAR captures from `openclaw-browser`. Diagnostic-only; safe to delete.
 
@@ -568,8 +637,8 @@ Two reasons:
 2. License isolation. The bridge ships no model weights — operators
    pick checkpoints (FLUX Dev / Schnell, SDXL fine-tunes, Pony XL,
    Illustrious, RealVisXL, …) under whichever upstream license they
-   accept; this stack stays content-agnostic. Same posture as F5-TTS
-   HU's CC-BY-NC opt-in.
+   accept; this stack stays content-agnostic. Same posture as Fish
+   Audio S2 Pro's Research-License opt-in.
 
 ### Concurrency: single-flight by default
 

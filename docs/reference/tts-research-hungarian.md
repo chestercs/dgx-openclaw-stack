@@ -1,5 +1,11 @@
 # Hungarian TTS open-source landscape — research (2026-04-22)
 
+> **SUPERSEDED.** The stack moved to **Fish Audio S2 Pro** for the
+> multilingual TTS surface — see the [Unreleased] entry in `CHANGELOG.md`
+> and `openclaw-tts-fish/README.md`. The research notes below are
+> preserved for historical context and as a reference if a future
+> commercial-license-friendly Hungarian-finetune swap becomes necessary.
+
 > Reference material: research.
 
 **Key finding:** there is no perfect Hungarian TTS anywhere — not even ElevenLabs is fully native-perfect (accent, stress).
