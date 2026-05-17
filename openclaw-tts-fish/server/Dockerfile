@@ -56,9 +56,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # uv + HF CLI. We use uv for the SGLang-Omni install (it's what the upstream
 # cookbook recommends and resolves the s2pro extras faster than vanilla pip).
+# huggingface_hub >=1.0 renamed the CLI from `huggingface-cli` to `hf` and
+# the old name is a stub that prints a deprecation note and exits 1 — we
+# call the new name explicitly here and at the model download step below.
 RUN pip install "uv>=0.5" "huggingface_hub[cli]>=0.26" \
     && uv --version \
-    && huggingface-cli --version
+    && hf --version
 
 WORKDIR /app
 
@@ -96,7 +99,7 @@ RUN git clone --depth 1 https://github.com/sgl-project/sglang-omni.git ${SGLANG_
 ARG HUGGING_FACE_HUB_TOKEN=
 ENV HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
 RUN mkdir -p ${FISH_CHECKPOINT_DIR} \
-    && huggingface-cli download ${FISH_REPO} \
+    && hf download ${FISH_REPO} \
         --local-dir ${FISH_CHECKPOINT_DIR} \
         --include "*.safetensors" "*.json" "*.txt" "*.jinja" "tokenizer*" "*.pth" "config*" \
     && ls -la ${FISH_CHECKPOINT_DIR}/ \
