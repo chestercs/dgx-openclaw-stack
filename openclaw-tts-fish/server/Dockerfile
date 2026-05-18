@@ -89,7 +89,7 @@ print('torch', torch.__version__, 'cuda_built', torch.version.cuda, \
 #    confuse "is it hung or just busy" diagnostics).
 RUN git clone --depth 1 https://github.com/sgl-project/sglang-omni.git ${SGLANG_OMNI_DIR} \
     && cd ${SGLANG_OMNI_DIR} \
-    && uv pip install --system --no-build-isolation -v ".[s2pro]" \
+    && uv pip install --system --break-system-packages --no-build-isolation -v ".[s2pro]" \
     && python -c "import sglang_omni; print('sglang_omni loaded from', sglang_omni.__file__)"
 
 # 3) Bake s2-pro weights at build time (~11 GB: 2 safetensors shards + codec.pth
