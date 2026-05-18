@@ -125,10 +125,21 @@ def fetch_default_en() -> bool:
 
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    ok_en = fetch_default_en()
-    ok_hu = fetch_default_hu()
-    # Soft-fail: a missing default voice is recoverable (operator can
-    # `docker cp` one in later). Build progresses regardless.
+    # Each fetch is wrapped because the underlying datasets lib can crash
+    # with anything from ImportError (missing torchcodec on aarch64) to
+    # network 5xx or a renamed dataset. Soft-fail to a warning so the
+    # build never stops here — operator drops voices via docker cp at
+    # runtime if the bundled fetch ate it.
+    try:
+        ok_en = fetch_default_en()
+    except Exception as e:
+        _log(f"default_en fetch crashed: {type(e).__name__}: {e}")
+        ok_en = False
+    try:
+        ok_hu = fetch_default_hu()
+    except Exception as e:
+        _log(f"default_hu fetch crashed: {type(e).__name__}: {e}")
+        ok_hu = False
     if not ok_en:
         _log("WARNING: default_en not bundled. Add one manually with docker cp.")
     if not ok_hu:

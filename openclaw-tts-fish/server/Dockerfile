@@ -109,10 +109,17 @@ RUN mkdir -p ${FISH_CHECKPOINT_DIR} \
 #    /app/voices_seed/; the runtime shim copies any missing files into
 #    /app/voices/ on first start (without overwriting user-mounted voices
 #    on the tts-fish-voices volume).
+#
+#    Soft-fail by design: the HuggingFace datasets library on aarch64 may
+#    not have a working audio-decode backend (torchcodec) and the streaming
+#    fetcher can also fail if a dataset is gated, renamed, or temporarily
+#    unreachable. Build progresses regardless; the operator can drop voice
+#    pairs into /app/voices/ at runtime via `docker cp`.
 COPY fetch_default_voices.py /app/fetch_default_voices.py
 RUN mkdir -p ${VOICES_SEED_DIR} \
-    && VOICES_DIR=${VOICES_SEED_DIR} python /app/fetch_default_voices.py \
-    && ls -la ${VOICES_SEED_DIR}/
+    && (VOICES_DIR=${VOICES_SEED_DIR} python /app/fetch_default_voices.py \
+        || echo "[fetch] build-time voice seeding failed — operator must docker cp <name>.{wav,txt} into /app/voices/ at runtime") \
+    && ls -la ${VOICES_SEED_DIR}/ 2>&1
 
 # 5) Shim deps + app source.
 COPY requirements.txt /app/requirements.txt
