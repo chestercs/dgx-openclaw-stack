@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 python3.12-dev python3-pip \
         ffmpeg libsndfile1 \
         ninja-build build-essential cmake pybind11-dev \
+        portaudio19-dev libasound2-dev \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
