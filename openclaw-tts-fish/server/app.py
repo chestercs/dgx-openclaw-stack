@@ -226,10 +226,15 @@ _engine_ready: bool = False
 def start_engine() -> None:
     """Spawn SGLang-Omni's TTS server as a child process. The shim's lifecycle
     binds to this process — if the child dies, the readiness flag flips and
-    /healthz starts reporting `upstream_health: false`."""
+    /healthz starts reporting `upstream_health: false`.
+
+    Uses the `sgl-omni` console-script entry point installed by the SGLang-Omni
+    package (not `python -m sglang_omni.cli.cli` — that path doesn't resolve
+    because `sglang_omni.cli` is the module and `app` is the Typer entry, not
+    `.cli.cli`)."""
     global _engine_proc
     cmd = [
-        sys.executable, "-m", "sglang_omni.cli.cli", "serve",
+        "sgl-omni", "serve",
         "--model-path", str(CHECKPOINT_DIR),
         "--config", str(S2PRO_CONFIG),
         "--port", str(UPSTREAM_PORT),
