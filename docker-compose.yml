@@ -240,7 +240,7 @@ services:
       --tool-call-parser gemma4
       --chat-template /templates/tool_chat_template_gemma4.jinja
       --enable-auto-tool-choice
-      --limit-mm-per-prompt '{"image":4,"audio":0}'
+      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-2},"audio":0}'
       --mm-processor-kwargs '{"max_soft_tokens":280}'
       --enable-prefix-caching
       --enable-chunked-prefill
@@ -325,7 +325,7 @@ services:
       --tool-call-parser gemma4
       --chat-template /templates/tool_chat_template_gemma4.jinja
       --enable-auto-tool-choice
-      --limit-mm-per-prompt '{"image":4,"audio":0}'
+      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-2},"audio":0}'
       --mm-processor-kwargs '{"max_soft_tokens":280}'
       --enable-prefix-caching
       --enable-chunked-prefill
@@ -1186,6 +1186,29 @@ services:
       # belt-and-braces if a tighter profile is chosen later. Set empty
       # to skip the step.
       OPENCLAW_DISCORD_AGENT_ALSO_ALLOW: ${OPENCLAW_DISCORD_AGENT_ALSO_ALLOW:-group:messaging,browser,tts,canvas,cron}
+      # Discord-friend agent UX cheatsheet blocks in workspace-discord/AGENTS.md
+      # (patcher step XXa/b/c, added 2026-06-06 in response to Reverend Green's
+      # review). Each independently env-gated so the operator can A/B individual
+      # rules without redeploying the patcher.
+      OPENCLAW_DISCORD_AGENT_FORMAT_RULES: ${OPENCLAW_DISCORD_AGENT_FORMAT_RULES:-}
+      OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE: ${OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE:-}
+      OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET: ${OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET:-}
+      OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION: ${OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION:-}
+      OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET: ${OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET:-}
+      # 2026-06-06 — Active Memory plugin (bundled, default-off). On enable,
+      # injects relevant long-term memory chunks into every reply context on
+      # the discord-friend agent — so the bot "remembers" cross-channel.
+      OPENCLAW_ACTIVE_MEMORY: ${OPENCLAW_ACTIVE_MEMORY:-}
+      # 2026-06-06 — Block F: deep agentic multi-step task decomposition rule
+      # in workspace-discord/AGENTS.md (env-gated, opt-in). Teaches the bot to
+      # chain 5-15+ tool calls on real tasks. Paired with idleTimeout=1800s.
+      OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC: ${OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC:-}
+      # 2026-06-07 — Block G: anti-hallucination honesty rule. Forbids the bot
+      # from inventing "subagent" tool-calls or promising background work the
+      # bot has no runtime to perform. Surfaced after a 01:40 incident where
+      # Gemma 4 fabricated "Code Architect / Asset Designer" subagents and
+      # claimed to "work overnight" — neither is true.
+      OPENCLAW_DISCORD_AGENT_HONESTY: ${OPENCLAW_DISCORD_AGENT_HONESTY:-}
       # Discord-routed agent thinkingDefault (patcher step 25c). Default
       # `minimal` — Gemma 4 NVFP4 needs reasoning to surface structured
       # tool-calls. Empty disables.
@@ -1251,7 +1274,10 @@ services:
       # vLLM idle watchdog timeout (patcher step 8). Default 600s gives
       # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
       # to 300 for fast-model-only deploys.
-      OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS: ${OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS:-600}
+      # Default empty for 2026.6.1+ — the patcher skips agents.defaults.llm writes
+      # when this is empty/'skip'/'off' (schema reject on 2026.6.1+). On 2026.4.x
+      # an operator can set a numeric value to restore the legacy 600s ceiling.
+      OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS: ${OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS-}
       # Per-file char budget for workspace bootstrap files (AGENTS.md,
       # USER.md, etc.) — written by patcher step 8b into
       # agents.defaults.bootstrapMaxChars. Upstream SDK default is
@@ -1262,7 +1288,26 @@ services:
       # never sees the later cheatsheet blocks (verified live 2026-05-14:
       # video cheatsheet additions were cut → bot defaulted to T2V on
       # I2V intents).
-      OPENCLAW_BOOTSTRAP_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_MAX_CHARS:-20000}
+      # Default bumped 20000 → 60000 (2026-06-07) once AGENTS.md grew past
+      # 30 KB with Block G honesty + Block F deep-agentic + LTX-video etc.
+      # Plus total-cap raised: per-file 60k, total 80k.
+      OPENCLAW_BOOTSTRAP_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_MAX_CHARS:-60000}
+      OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS:-80000}
+      # 2026.6.1+ sandbox-browser enable for `browser` tool target="sandbox".
+      OPENCLAW_SANDBOX_BROWSER: ${OPENCLAW_SANDBOX_BROWSER:-on}
+      # Default CDP profile when `browser` tool called without explicit profile.
+      OPENCLAW_BROWSER_DEFAULT_PROFILE: ${OPENCLAW_BROWSER_DEFAULT_PROFILE:-self-hosted}
+      # 2026.6.1 regression-fix: Discord plugin default suppressEmbeds=true
+      # kills auto-embed on every URL. Default off here = explicit `false` in
+      # config = auto-embed restored.
+      OPENCLAW_DISCORD_SUPPRESS_EMBEDS: ${OPENCLAW_DISCORD_SUPPRESS_EMBEDS:-off}
+      # Slash-command + elevated-tool authz wildcards (default "*" = open to
+      # everyone). Narrow these to comma-separated Discord snowflakes (as
+      # STRINGS — JS Number precision rounds 19-digit IDs and the equality
+      # check fails) if you want owner-only command surfaces.
+      OPENCLAW_DISCORD_COMMANDS_ALLOW: ${OPENCLAW_DISCORD_COMMANDS_ALLOW:-*}
+      OPENCLAW_DISCORD_COMMAND_OWNERS: ${OPENCLAW_DISCORD_COMMAND_OWNERS:-*}
+      OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW: ${OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW:-*}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
@@ -1337,6 +1382,17 @@ services:
     # up the new tag automatically on the next `up -d --force-recreate`.
     image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.1}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-gateway
+    # Explicit public DNS — the Docker daemon's default 127.0.0.11 forwarder
+    # works for `curl` but the Node.js DNS-resolver retry strategy used by
+    # `npm install` (during plugin install via `openclaw plugins install`)
+    # hits EAI_AGAIN on it (verified 2026-06-07 during 2026.6.1 upgrade
+    # attempt — the gateway curl reached registry.npmjs.org with HTTP 200
+    # while npm errored EAI_AGAIN on the same hostname). Forcing 8.8.8.8 /
+    # 1.1.1.1 on the gateway container also fixes openclaw-cli which shares
+    # this network namespace via network_mode: service:openclaw-gateway.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_GATEWAY_CONTROL_PORT:-18790}:18790"

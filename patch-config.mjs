@@ -588,6 +588,81 @@ if (dreamingEnabled) {
   }
 }
 
+// ─── X. Active Memory plugin — automatic memory injection ──────────────────
+// Enables OpenClaw's bundled `active-memory` plugin (stock, shipped disabled
+// by default). The plugin runs a bounded blocking sub-agent BEFORE every
+// eligible conversational reply on enabled agents/chat-types, searches the
+// long-term memory store (e.g. discord-friend.sqlite hybrid BM25+vector) with
+// the current turn's user message + recent history as query, and INJECTS the
+// retrieved chunks into the main agent's prompt context.
+//
+// User-facing effect: the bot "remembers" what was discussed on other Discord
+// channels and DMs without the main agent having to manually call
+// memory_search every turn — the injection is deterministic, not LLM-judged.
+//
+// Env gate: OPENCLAW_ACTIVE_MEMORY=on (default off; additive feature). When
+// enabled, defaults are tuned for the homelab Discord deploy: agents=
+// discord-friend, all chat-types, queryMode=recent (recent context + memory),
+// promptStyle=recall-heavy (favor recall over precision), thinking=minimal
+// (fast sub-agent), 8s timeout (won't hold up the main turn for long).
+const ACTIVE_MEMORY_ENV = (process.env.OPENCLAW_ACTIVE_MEMORY || '').trim().toLowerCase();
+// Inline on-check (isEnvOn helper is declared later in this file; can't
+// reference it from this early step due to JS temporal dead zone).
+if (['on', '1', 'true', 'yes'].includes(ACTIVE_MEMORY_ENV)) {
+  config.plugins ??= {};
+  config.plugins.entries ??= {};
+  config.plugins.entries['active-memory'] ??= {};
+  const am = config.plugins.entries['active-memory'];
+  if (am.enabled !== true) {
+    am.enabled = true;
+    changed = true;
+    console.log('[patch-config] plugins.entries.active-memory.enabled = true');
+  }
+  am.config ??= {};
+  const desiredAmCfg = {
+    enabled: true,
+    agents: ['discord-friend'],
+    allowedChatTypes: ['direct', 'channel', 'group'],
+    queryMode: 'recent',
+    promptStyle: 'recall-heavy',
+    // `off` instead of `minimal` — Gemma 4 multi-modal context already adds
+    // 1-2s base latency; reasoning on top pushed the sub-agent past 8s
+    // timeout in production (2026-06-06: every turn returned `terminated`
+    // and the Discord interaction listener saw 43s slow-listener warnings).
+    thinking: 'off',
+    // 30s instead of 8s — the Gemma 26B vision tower needs time to prefill
+    // even on small contexts. 30s caps the per-turn extra latency to
+    // something the user notices but doesn't break the flow.
+    timeoutMs: 30000,
+    maxSummaryChars: 600,
+    // Tighter recent-context: less input → faster sub-agent. The original
+    // 600/400 user/assistant chars were over-budget on multi-modal turns.
+    recentUserTurns: 1,
+    recentAssistantTurns: 1,
+    recentUserChars: 300,
+    recentAssistantChars: 200,
+  };
+  for (const [k, v] of Object.entries(desiredAmCfg)) {
+    if (JSON.stringify(am.config[k]) !== JSON.stringify(v)) {
+      am.config[k] = v;
+      changed = true;
+      console.log(`[patch-config] plugins.entries.active-memory.config.${k} = ${JSON.stringify(v)}`);
+    }
+  }
+} else if (['off', '0', 'false', 'no'].includes(ACTIVE_MEMORY_ENV)) {
+  // Explicit off → scrub the entry. Without this, a previously-enabled
+  // active-memory config keeps injecting on every turn even after the env
+  // is flipped off, because the patcher's user-managed-protection attitude
+  // never overwrites existing values.
+  if (config.plugins?.entries?.['active-memory'] !== undefined) {
+    delete config.plugins.entries['active-memory'];
+    if (Object.keys(config.plugins.entries).length === 0) delete config.plugins.entries;
+    if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins;
+    changed = true;
+    console.log('[patch-config] OPENCLAW_ACTIVE_MEMORY=off — removed plugins.entries.active-memory.');
+  }
+}
+
 // (7) Ensure gateway.trustedProxies — silences the "trustedProxies is empty" security
 //     warning and lets the gateway correctly parse X-Forwarded-For headers.
 //     Baseline: loopback + the entire RFC1918 docker bridge range (172.16.0.0/12).
@@ -620,18 +695,34 @@ if (needsProxyUpdate) {
 //     real hangs (OOM, CUDA stuck) within 10 minutes — still reasonable.
 //     Env-tunable via OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS in case an operator
 //     wants tighter latency feedback (single-tool, fast-model deploys).
-const desiredIdleTimeoutSeconds = parseInt(
-  process.env.OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS?.trim() || '600',
-  10,
-);
-config.agents ??= {};
-config.agents.defaults ??= {};
-config.agents.defaults.llm ??= {};
-if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds) {
-  const prev = config.agents.defaults.llm.idleTimeoutSeconds;
-  config.agents.defaults.llm.idleTimeoutSeconds = desiredIdleTimeoutSeconds;
-  changed = true;
-  console.log(`[patch-config] agents.defaults.llm.idleTimeoutSeconds: ${prev ?? '(unset)'} -> ${desiredIdleTimeoutSeconds}`);
+// Schema-skip guard for OpenClaw 2026.6.1+ — the `agents.defaults.llm` block
+// is rejected by the new schema (verified 2026-06-07 upgrade attempt: gateway
+// crash-loop with "agents.defaults: Invalid input", doctor --fix auto-strips
+// the field). The replacement schema-location is TBD pending 2026.6.x doc
+// review. As an interim, an explicitly EMPTY env value (or "skip") skips this
+// step entirely — operators on 2026.6.1+ should leave the env empty so the
+// runtime default applies. Operators on 2026.4.x can set a numeric value to
+// keep the legacy behaviour.
+const idleRaw = process.env.OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS?.trim();
+if (idleRaw && idleRaw !== 'skip' && idleRaw !== 'off') {
+  const desiredIdleTimeoutSeconds = parseInt(idleRaw, 10);
+  config.agents ??= {};
+  config.agents.defaults ??= {};
+  config.agents.defaults.llm ??= {};
+  if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds) {
+    const prev = config.agents.defaults.llm.idleTimeoutSeconds;
+    config.agents.defaults.llm.idleTimeoutSeconds = desiredIdleTimeoutSeconds;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.llm.idleTimeoutSeconds: ${prev ?? '(unset)'} -> ${desiredIdleTimeoutSeconds}`);
+  }
+} else {
+  // Self-heal: strip any stale agents.defaults.llm we wrote on a previous
+  // recreate. The 2026.6.1 gateway crash-loops on the presence of this key.
+  if (config.agents?.defaults?.llm !== undefined) {
+    delete config.agents.defaults.llm;
+    changed = true;
+    console.log(`[patch-config] removed stale agents.defaults.llm (env empty; 2026.6.1+ schema rejects this block)`);
+  }
 }
 
 // (8b) Raise agents.defaults.bootstrapMaxChars beyond the 12000-char SDK
@@ -647,23 +738,167 @@ if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds)
 //      init_image_url), insist "felbontás nem választható" when asked
 //      for FullHD, and silently skip the display_markdown paste.
 //
-//      Bumping to 20000 gives ~5k headroom over the current file size.
-//      Total bootstrap budget (DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS=60000)
-//      is also bumpable via `bootstrapTotalMaxChars`, but we don't need
-//      it: AGENTS.md is the only big bootstrap file.
+//      2026-06-07 update: bumped default from 20000 to 60000 once Block G
+//      honesty cheatsheet pushed AGENTS.md past 30 KB. Plus we now also set
+//      `bootstrapTotalMaxChars=80000` to give the total-budget headroom
+//      (default upstream is 60000 — without bumping it, the total cap kicks
+//      in even if per-file cap is fine).
 //
-//      Env knob: OPENCLAW_BOOTSTRAP_MAX_CHARS (default 20000). Bump
-//      further if you stuff more domain knowledge into AGENTS.md and
-//      see the truncation warning return in gateway logs.
+//      Env knobs:
+//        OPENCLAW_BOOTSTRAP_MAX_CHARS       (default 60000, per-file cap)
+//        OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS (default 80000, total cap)
 const desiredBootstrapMaxChars = parseInt(
-  process.env.OPENCLAW_BOOTSTRAP_MAX_CHARS?.trim() || '20000',
+  process.env.OPENCLAW_BOOTSTRAP_MAX_CHARS?.trim() || '60000',
   10,
 );
+config.agents ??= {};
+config.agents.defaults ??= {};
 if (config.agents.defaults.bootstrapMaxChars !== desiredBootstrapMaxChars) {
   const prev = config.agents.defaults.bootstrapMaxChars;
   config.agents.defaults.bootstrapMaxChars = desiredBootstrapMaxChars;
   changed = true;
   console.log(`[patch-config] agents.defaults.bootstrapMaxChars: ${prev ?? '(unset)'} -> ${desiredBootstrapMaxChars}`);
+}
+const desiredBootstrapTotalMaxChars = parseInt(
+  process.env.OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS?.trim() || '80000',
+  10,
+);
+if (config.agents.defaults.bootstrapTotalMaxChars !== desiredBootstrapTotalMaxChars) {
+  const prev = config.agents.defaults.bootstrapTotalMaxChars;
+  config.agents.defaults.bootstrapTotalMaxChars = desiredBootstrapTotalMaxChars;
+  changed = true;
+  console.log(`[patch-config] agents.defaults.bootstrapTotalMaxChars: ${prev ?? '(unset)'} -> ${desiredBootstrapTotalMaxChars}`);
+}
+
+// (8c) Sandbox browser enable — 2026.6.1+ feature.
+// The `browser` tool with target="sandbox" needs this enabled to use the
+// runtime's bundled headless browser. Otherwise calls fail with
+// "Sandbox browser is unavailable." Env knob OPENCLAW_SANDBOX_BROWSER
+// (default on). Set =off to skip if running a stack without browser tools.
+const sandboxBrowserRaw = (process.env.OPENCLAW_SANDBOX_BROWSER || 'on').trim().toLowerCase();
+if (sandboxBrowserRaw === 'on' || sandboxBrowserRaw === 'true' || sandboxBrowserRaw === '1') {
+  config.agents.defaults.sandbox ??= {};
+  config.agents.defaults.sandbox.browser ??= {};
+  if (config.agents.defaults.sandbox.browser.enabled !== true) {
+    config.agents.defaults.sandbox.browser.enabled = true;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.sandbox.browser.enabled = true (sandbox-browser for target="sandbox" calls)`);
+  }
+}
+
+// (8d) Browser defaultProfile — picks which CDP profile gets used when the
+// `browser` tool is called without explicit `profile:` argument. Our stack
+// runs openclaw-browser (Playwright Chromium) on port 9222 (`self-hosted`)
+// and 9223 (`bot-main`). Without a default, the tool falls through to
+// sandbox/host targets which need extra setup. Env knob
+// OPENCLAW_BROWSER_DEFAULT_PROFILE (default "self-hosted"). Set empty to
+// skip.
+const browserProfileRaw = process.env.OPENCLAW_BROWSER_DEFAULT_PROFILE?.trim() ?? 'self-hosted';
+if (browserProfileRaw && config.browser?.profiles?.[browserProfileRaw]) {
+  if (config.browser.defaultProfile !== browserProfileRaw) {
+    const prev = config.browser.defaultProfile;
+    config.browser.defaultProfile = browserProfileRaw;
+    changed = true;
+    console.log(`[patch-config] browser.defaultProfile: ${prev ?? '(unset)'} -> ${JSON.stringify(browserProfileRaw)} (CDP-attach to openclaw-browser)`);
+  }
+}
+
+// (8e) Discord suppressEmbeds — 2026.6.1 regression fix. The Discord plugin
+// `resolveDiscordSuppressEmbeds` defaults to `true` when the config field
+// is undefined → every bot message goes out with the suppress_embeds flag
+// → no auto-embed on any URL (image/video/link). Explicit `false` restores
+// pre-2026.6.1 behaviour. Env knob OPENCLAW_DISCORD_SUPPRESS_EMBEDS
+// (default off → writes `suppressEmbeds=false`). Set =on if you actually
+// want to suppress link previews.
+const supEmbRaw = (process.env.OPENCLAW_DISCORD_SUPPRESS_EMBEDS || 'off').trim().toLowerCase();
+const desiredSuppressEmbeds = supEmbRaw === 'on' || supEmbRaw === 'true' || supEmbRaw === '1';
+if (config.channels?.discord?.enabled === true) {
+  if (config.channels.discord.suppressEmbeds !== desiredSuppressEmbeds) {
+    const prev = config.channels.discord.suppressEmbeds;
+    config.channels.discord.suppressEmbeds = desiredSuppressEmbeds;
+    changed = true;
+    console.log(`[patch-config] channels.discord.suppressEmbeds: ${prev ?? '(unset)'} -> ${desiredSuppressEmbeds} (auto-embed ${desiredSuppressEmbeds ? 'OFF' : 'ON'} for media URLs in bot replies)`);
+  }
+}
+
+// (8f) Slash-command and elevated-tool authz — make slash commands work for
+// every user on guild channels, not just DMs / owners. Three separate fields
+// in different config paths the Discord plugin consults at command-handler
+// time:
+//
+//   - `commands.allowFrom.discord` — gates `commandsAllowFromAccess.allowed`.
+//     Without this set the plugin defaults to `allowed=false` for guild
+//     channels (DMs pass through as chatType="direct"), and even non-sensitive
+//     slash commands fall through to the unauthorized branch.
+//   - `commands.ownerAllowFrom` — gates `commandOwnerAllowFrom` (top-level
+//     owner-only filter). When set to `["*"]` every user is treated as owner
+//     for command-authz purposes. Use a narrower list (Discord IDs as STRINGS
+//     — see snowflake-precision note below) for actual owner-restriction.
+//   - `tools.elevated.allowFrom.discord` — gates the `tools.elevated` skill
+//     bundle's per-channel allowlist. Same string-list contract.
+//
+// ⚠ JS NUMBER PRECISION GOTCHA — Discord snowflakes are 17-20 digit integers
+// that exceed Number.MAX_SAFE_INTEGER (2^53). When the WebGUI or an
+// onboarding flow writes a snowflake into JSON as a bare integer, JSON.parse
+// rounds it. Example seen 2026-06-07: chestercs ID 244049593338167296 →
+// stored as 244049593338167300 → sender-ID equality check fails on every
+// command → unauthorized for the actual user the operator meant to allow.
+// This step DEFENSIVELY stringifies any non-"*" entries the operator passes
+// in via env, so a stray number doesn't get silently corrupted.
+//
+// Env knobs (default each "*" = wide-open):
+//   OPENCLAW_DISCORD_COMMANDS_ALLOW       — comma-list of guild snowflakes,
+//                                           or "*" (default)
+//   OPENCLAW_DISCORD_COMMAND_OWNERS       — comma-list of user snowflakes,
+//                                           or "*" (default)
+//   OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW — comma-list of user snowflakes,
+//                                           or "*" (default)
+//
+// Setting any to a narrow list quietly restricts that surface; the default
+// "*" matches the operator-friendly homelab posture (everything open, the
+// operator restricts later via Discord-server role permissions instead).
+function parseDiscordIdList(envValue) {
+  if (!envValue || !envValue.trim()) return ['*'];
+  return envValue
+    .split(',')
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+}
+
+if (config.channels?.discord?.enabled === true) {
+  const cmdAllowFromList = parseDiscordIdList(process.env.OPENCLAW_DISCORD_COMMANDS_ALLOW);
+  const cmdOwnerList = parseDiscordIdList(process.env.OPENCLAW_DISCORD_COMMAND_OWNERS);
+  const elevatedList = parseDiscordIdList(process.env.OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW);
+
+  // commands.allowFrom.discord — guild slash gate
+  config.commands ??= {};
+  config.commands.allowFrom ??= {};
+  if (JSON.stringify(config.commands.allowFrom.discord) !== JSON.stringify(cmdAllowFromList)) {
+    const prev = config.commands.allowFrom.discord;
+    config.commands.allowFrom.discord = cmdAllowFromList;
+    changed = true;
+    console.log(`[patch-config] commands.allowFrom.discord = ${JSON.stringify(cmdAllowFromList)} (slash commands on guild channels)`);
+  }
+
+  // commands.ownerAllowFrom — top-level owner-only filter
+  if (JSON.stringify(config.commands.ownerAllowFrom) !== JSON.stringify(cmdOwnerList)) {
+    const prev = config.commands.ownerAllowFrom;
+    config.commands.ownerAllowFrom = cmdOwnerList;
+    changed = true;
+    console.log(`[patch-config] commands.ownerAllowFrom = ${JSON.stringify(cmdOwnerList)} (owner-only command filter)`);
+  }
+
+  // tools.elevated.allowFrom.discord — elevated-tool authz
+  config.tools ??= {};
+  config.tools.elevated ??= {};
+  config.tools.elevated.enabled = true;
+  config.tools.elevated.allowFrom ??= {};
+  if (JSON.stringify(config.tools.elevated.allowFrom.discord) !== JSON.stringify(elevatedList)) {
+    const prev = config.tools.elevated.allowFrom.discord;
+    config.tools.elevated.allowFrom.discord = elevatedList;
+    changed = true;
+    console.log(`[patch-config] tools.elevated.allowFrom.discord = ${JSON.stringify(elevatedList)} (elevated-tool authz)`);
+  }
 }
 
 // (9) Ensure memorySearch hybrid (BM25 + vector) + MMR diversity rerank.
@@ -1635,6 +1870,29 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
       }
     }
   }
+  // Self-heal: upstream OpenClaw 2026.4.22+ dropped the top-level `draftChunk`
+  // key from channels.discord schema, replacing it with the nested
+  // `streaming.preview.chunk` shape. Old installs with a left-over draftChunk
+  // object crash the gateway with "Config invalid - channels.discord:
+  // Unrecognized key: 'draftChunk'". If the operator hasn't explicitly set
+  // any of the three sub-knobs (minCharsRaw / maxCharsRaw / breakRaw all
+  // empty), assume they didn't intend the legacy key and scrub it.
+  // Verified live 2026-06-06 (Reverend Green review deploy): without this,
+  // the patcher writes a stale `draftChunk.breakPreference` field and the
+  // gateway refuses to start. The new location is set automatically by
+  // upstream's default streaming.preview.chunk; operators who want a non-
+  // default value will need a follow-up patcher step (todos.md #5).
+  if (
+    !minCharsRaw && !maxCharsRaw && !breakRaw &&
+    config.channels?.discord?.draftChunk !== undefined
+  ) {
+    delete config.channels.discord.draftChunk;
+    changed = true;
+    console.log(
+      `[patch-config] scrubbed channels.discord.draftChunk (upstream 2026.4.22+ ` +
+      `renamed to streaming.preview.chunk — see todos.md #5 for patcher upgrade).`,
+    );
+  }
 
   // streaming.preview.toolProgress — opt-out for the "Working...\n- tool:
   // <name>" lines that the gateway interleaves into the streaming preview.
@@ -1715,10 +1973,15 @@ const guildCronIds = (guildCronRaw || '').split(',').map(s => s.trim()).filter(B
 if (guildCronIds.length > 0 && config.channels?.discord?.enabled === true) {
   config.channels.discord.guilds ??= {};
   for (const gid of guildCronIds) {
-    if (!/^\d{17,20}$/.test(gid)) {
+    // `*` writes into the wildcard guild entry — the runtime applies wildcard
+    // policy as a fall-through when no explicit snowflake matches. Useful when
+    // the operator doesn't have the snowflake handy AND the bot only operates
+    // in one or two guilds (typical homelab case — see todos.md #4 history).
+    // Explicit snowflakes still take precedence and override the wildcard.
+    if (gid !== '*' && !/^\d{17,20}$/.test(gid)) {
       console.warn(
         `[patch-config] OPENCLAW_DISCORD_GUILD_CRON_IDS entry ${JSON.stringify(gid)} ` +
-        `is not a valid Discord snowflake (17-20 digits) — skipping.`,
+        `is not a valid Discord snowflake (17-20 digits) and not "*" — skipping.`,
       );
       continue;
     }
@@ -1729,7 +1992,7 @@ if (guildCronIds.length > 0 && config.channels?.discord?.enabled === true) {
       aa.push('cron');
       changed = true;
       console.log(
-        `[patch-config] channels.discord.guilds[${gid}].tools.alsoAllow += "cron" ` +
+        `[patch-config] channels.discord.guilds[${JSON.stringify(gid)}].tools.alsoAllow += "cron" ` +
         `(unblocks cron on this guild's text channels — without this the runtime ` +
         `policy filter strips cron from the agent's visible catalog)`,
       );
@@ -1946,13 +2209,13 @@ if (config.agents?.defaults?.llm && Object.prototype.hasOwnProperty.call(config.
 // burden without adding security. Operators on shared bots, multi-tenant
 // guilds, or public servers should set OPENCLAW_DISCORD_AUTHZ=allowlist
 // or =owner-only and manage allowFrom themselves.
-const VALID_AUTHZ_MODES = new Set(['open', 'allowlist', 'owner-only']);
+const VALID_AUTHZ_MODES = new Set(['open', 'allowlist', 'owner-only', 'pairing']);
 const authzRaw = process.env.OPENCLAW_DISCORD_AUTHZ;
 const authzMode = (authzRaw === undefined ? 'open' : authzRaw.trim());
 if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
   console.warn(
     `[patch-config] OPENCLAW_DISCORD_AUTHZ=${JSON.stringify(authzMode)} ` +
-    `not in {open, allowlist, owner-only} — skipping step 28.`,
+    `not in {open, allowlist, owner-only, pairing} — skipping step 28.`,
   );
 } else if (authzMode === 'allowlist') {
   // Explicit opt-out: skip silently, preserve upstream defaults.
@@ -1964,6 +2227,18 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
     desiredAllowFrom = ['*'];
     desiredDmPolicy = 'open';
     desiredGroupPolicy = 'open';
+  } else if (authzMode === 'pairing') {
+    // Pairing flow: new DM senders trigger OpenClaw's native device-pair
+    // approval workflow — the bot asks the owner whether to accept the
+    // stranger, dynamically extending access without an env-knob edit.
+    // Guild channels remain open to all members (allowFrom=["*"]).
+    // Group DM is disabled — the pairing handshake doesn't work cleanly in
+    // multi-recipient threads, and groupPolicy enum doesn't accept "pairing"
+    // (only "open"|"disabled"|"allowlist", verified 2026-06-06 against
+    // openclaw 2026.4.22 Config-invalid error).
+    desiredAllowFrom = ['*'];
+    desiredDmPolicy = 'pairing';
+    desiredGroupPolicy = 'disabled';
   } else {
     // owner-only
     const ownerIdsRaw = process.env.OPENCLAW_DISCORD_OWNER_IDS || '';
@@ -1992,24 +2267,31 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
   }
 
   if (desiredAllowFrom !== undefined) {
-    if (config.channels.discord.allowFrom === undefined) {
-      config.channels.discord.allowFrom = desiredAllowFrom;
+    // 2026-06-06: when the operator sets OPENCLAW_DISCORD_AUTHZ explicitly,
+    // FORCE-overwrite even if the live config already has values. The default
+    // "preserve operator overrides" attitude is wrong here: the env knob IS
+    // the operator's authoritative intent, and "open → owner-only" lockdown
+    // must take effect on the next recreate without a manual jq-edit.
+    const explicit = authzRaw !== undefined && authzMode !== '';
+    const cur = config.channels.discord;
+    const allowFromDiffers = JSON.stringify(cur.allowFrom) !== JSON.stringify(desiredAllowFrom);
+    if (cur.allowFrom === undefined || (explicit && allowFromDiffers)) {
+      cur.allowFrom = desiredAllowFrom;
       changed = true;
       console.log(
         `[patch-config] channels.discord.allowFrom = ${JSON.stringify(desiredAllowFrom)} ` +
-        `(slash-command authz ${authzMode} mode; defends against issue #19310 ` +
-        `dual perm check — set OPENCLAW_DISCORD_AUTHZ=allowlist to skip)`,
+        `(authz ${authzMode} mode${explicit ? ', explicit env override' : ''})`,
       );
     }
-    if (config.channels.discord.dmPolicy === undefined) {
-      config.channels.discord.dmPolicy = desiredDmPolicy;
+    if (cur.dmPolicy === undefined || (explicit && cur.dmPolicy !== desiredDmPolicy)) {
+      cur.dmPolicy = desiredDmPolicy;
       changed = true;
-      console.log(`[patch-config] channels.discord.dmPolicy = ${JSON.stringify(desiredDmPolicy)}`);
+      console.log(`[patch-config] channels.discord.dmPolicy = ${JSON.stringify(desiredDmPolicy)}${explicit ? ' (explicit env override)' : ''}`);
     }
-    if (config.channels.discord.groupPolicy === undefined) {
-      config.channels.discord.groupPolicy = desiredGroupPolicy;
+    if (cur.groupPolicy === undefined || (explicit && cur.groupPolicy !== desiredGroupPolicy)) {
+      cur.groupPolicy = desiredGroupPolicy;
       changed = true;
-      console.log(`[patch-config] channels.discord.groupPolicy = ${JSON.stringify(desiredGroupPolicy)}`);
+      console.log(`[patch-config] channels.discord.groupPolicy = ${JSON.stringify(desiredGroupPolicy)}${explicit ? ' (explicit env override)' : ''}`);
     }
   }
 }
@@ -2407,6 +2689,181 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   'magyarul. SOHA ne hagyd ki a URL paste-et — anélkül a user 0 videót\n' +
   'lát, csak szöveget, ami garantáltan rossz UX.\n';
 
+// Step XXa/b/c — Discord agent UX cheatsheet blocks (Reverend Green's first-pass
+// review, 2026-06-06: format spam, lobster emoji at every reply, missing skills
+// list, no mid-turn tool-status visibility, sluggish multi-image turns). Each
+// block is env-gated independently so the operator can A/B individual rules
+// without redeploying the patcher. OFF by default — only appears when the
+// operator explicitly opts in via .env (OPENCLAW_DISCORD_AGENT_FORMAT_RULES,
+// _IMAGE_HISTORY_RULE, _SKILLS_CHEATSHEET).
+const DISCORD_AGENT_FORMAT_RULES_ENV = (process.env.OPENCLAW_DISCORD_AGENT_FORMAT_RULES || '').trim().toLowerCase();
+const DISCORD_AGENT_IMAGE_HISTORY_RULE_ENV = (process.env.OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE || '').trim().toLowerCase();
+const DISCORD_AGENT_SKILLS_CHEATSHEET_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET || '').trim().toLowerCase();
+const DISCORD_AGENT_TOOL_ORCHESTRATION_ENV = (process.env.OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION || '').trim().toLowerCase();
+const DISCORD_AGENT_I2I_CHEATSHEET_ENV = (process.env.OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET || '').trim().toLowerCase();
+const DISCORD_AGENT_DEEP_AGENTIC_ENV = (process.env.OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC || '').trim().toLowerCase();
+const DISCORD_AGENT_HONESTY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_HONESTY || '').trim().toLowerCase();
+const isEnvOn = (v) => v === 'on' || v === '1' || v === 'true' || v === 'yes';
+
+const FORMAT_RULES_CHEATSHEET_START = '<!-- patch-config:discord-format-rules:start -->';
+const FORMAT_RULES_CHEATSHEET_END = '<!-- patch-config:discord-format-rules:end -->';
+const FORMAT_RULES_CHEATSHEET_BODY =
+  '## Message formatting (Discord)\n\n' +
+  '- After each sentence emit a newline. Empty lines (paragraph break) ONLY between paragraphs of 2+ sentences — never between every line.\n' +
+  '- Plain text endings — no signature emoji, no mascot, no closing flourish. Use emojis sparingly only when they add meaning to the content (max one per reply).\n' +
+  '- Long answers (>6 lines) MUST use bullet points or a numbered list.\n' +
+  '- When a tool call is in flight, the streaming preview surfaces a one-line "🔧 tool: …" status automatically — do NOT also embed manual "calling tool…" text in your reply.\n' +
+  '- Magyar beszédben magyar szavakat használj — ne keverj idegen (francia/angol) szavakat. "Már" nem "Déjà".\n\n' +
+  '## DM owner-lock (soft authz, 2026-06-06)\n\n' +
+  'You receive messages from both Discord guild channels AND direct messages (DMs). The session key tells you which: `agent:discord-friend:discord:direct:<user-id>` is a DM, `agent:discord-friend:discord:channel:<channel-id>` is a guild channel.\n\n' +
+  '**For DMs (`...:direct:<user-id>`):**\n' +
+  '- If `<user-id>` is `244049593338167296` (the owner / peter.kallo): respond normally.\n' +
+  '- For ANY other user-id in DM: respond ONLY with this exact text (Hungarian) and NOTHING else: "Sajnálom, közvetlen üzenetben csak az owner-rel beszélgetek. Ha kérdésed van, írd a guild egyik csatornájába ahol a bot tag, és ott szívesen segítek." Do NOT use any tools. Do NOT continue the conversation.\n\n' +
+  '**For guild channels (`...:channel:<channel-id>`):** respond normally to anyone who mentions you.\n';
+
+const IMAGE_HISTORY_RULE_CHEATSHEET_START = '<!-- patch-config:discord-image-history-rule:start -->';
+const IMAGE_HISTORY_RULE_CHEATSHEET_END = '<!-- patch-config:discord-image-history-rule:end -->';
+const IMAGE_HISTORY_RULE_CHEATSHEET_BODY =
+  '## Image context discipline — HARD RULE\n\n' +
+  'A vLLM backend **MAX 2 kép/prompt** cap-et kényszerít (configurable via `LLM_LIMIT_MM_IMAGES`). Ha túllép, HTTP 400-zal visszadob a chat/completions request és a teljes turn fail-el.\n\n' +
+  '**CSAK ezeket csatold a multi-modal contextbe:**\n' +
+  '1. A **current turn user-üzenetének** attached képei (a `/home/node/.openclaw/media/inbound/<uuid>.png` path-okat).\n' +
+  '2. Ha a current turn egy **reply-tag-elt** korábbi üzenetre, akkor a **parent message attached képeit** is.\n\n' +
+  '**MINDEN MÁS korábbi képre csak SZÖVEGESEN utalj** (pl. "a korábbi macskás képen" / "az előbb generált cyberpunk verzió"). NE re-vision-encode-old őket. Ha a user explicit visszamutat egy régebbi képre ("emlékszel arra a kre?"), describe-old szövegesen vagy említsd hogy a memóriában csak a leírás van meg.\n\n' +
+  'Ne pánikolj ha a vLLM 400-zal visszadob egy túl sok képes promptot: csökkentsd a contextet az utolsó 2 képre és próbáld újra.\n';
+
+const SKILLS_CHEATSHEET_START = '<!-- patch-config:discord-skills-discoverability:start -->';
+const SKILLS_CHEATSHEET_END = '<!-- patch-config:discord-skills-discoverability:end -->';
+const SKILLS_CHEATSHEET_BODY =
+  '## Available tools / skills (when asked "what skills / commands / tools do you have?")\n\n' +
+  'List BOTH skills AND tools. Tools available on this deployment:\n\n' +
+  '- `web_search` — SearxNG meta-search (privacy-first, multi-engine)\n' +
+  '- `comfyui_image__generate` — image generation (Flux / SDXL on GB10)\n' +
+  '- `comfyui_image__generate_video` — text-to-video (LTX-Video 2.3, max FullHD)\n' +
+  '- TTS via Discord voice channel — text-to-speech (Kokoro EN + F5-TTS HU)\n' +
+  '- `python_sandbox__python_exec` — Python sandbox (data-science stack, persistent kernel)\n' +
+  '- `browser__*` — headless browser automation (Playwright over CDP)\n' +
+  '- `canvas` — chat-inline image / video rendering\n' +
+  '- `memory` — long-term hybrid (BM25 + vector) memory search\n\n' +
+  'Skills (specialized routines): discord, healthcheck, node-connect, openai-whisper-api,\n' +
+  'skill-creator, taskflow, taskflow-inbox-triage, video-frames, weather.\n';
+
+const DEEP_AGENTIC_CHEATSHEET_START = '<!-- patch-config:discord-deep-agentic:start -->';
+const DEEP_AGENTIC_CHEATSHEET_END = '<!-- patch-config:discord-deep-agentic:end -->';
+const DEEP_AGENTIC_CHEATSHEET_BODY =
+  '## Deep agentic — multi-step task decomposition\n\n' +
+  'A user kéréseit kétféleképpen tudod kezelni: **chat-mode** (1-2 mondatos válasz) VS **task-mode** (deep tool-chain, 5-15+ tool-call egyetlen turn-ben).\n\n' +
+  '**Mikor task-mode:** a kérés valódi munkát igényel — kutatás, több forrásból összegyűjtés, fájl-feldolgozás, multi-step transformációk. Példák:\n' +
+  '- "kutass utána X-nek és írj róla összefoglalót képpel együtt"\n' +
+  '- "töltsd le ezt a YouTube videót és írd ki a benne elhangzott idézeteket"\n' +
+  '- "találd meg a tegnap említett receptet és próbáld ki Python-ban"\n' +
+  '- "elemezd ezt a csatolt képet, keress hasonlót a neten és csinálj 3 variációt"\n\n' +
+  '**Task-mode protokoll:**\n' +
+  '1. **Plan first** — egy rövid mondatban írd le mit fogsz csinálni: *"Tervem: web_search Balatro → browser__navigate első találat → python_sandbox a lényeg kivonatára → memory_write a fact-eket → final reply."* A user lássa a tervet a stream elején.\n' +
+  '2. **Chain aggressively** — láncolj **5-15+ tool-call**-t egyetlen turn-ben. Minden tool-call eredményét observe-old, és a következő tool-call argumentumát ennek alapján alakítsd.\n' +
+  '3. **NE ad fel korán** — ha egy tool fail-el, próbáld az alternate path-ot (browser ha python 403-zal jött; python ha browser timeoutol; httpx ha curl drop-ol).\n' +
+  '4. **Progress visibility** — a streaming pipeline magától mutatja a "🔧 tool: …" sort, ezt NEM kell manuálisan kiírnod. DE ha egy lépés >30s-ig tart, írhatsz egy rövid "Még futok, [N/M] lépés kész" mondatot a reply szövegébe a chunkok között.\n' +
+  '5. **Memory mentés** — task végén `memory_write` a fontos facts-eket (új URL-eket, döntéseket, idézeteket) a workspace-discord memory store-ba.\n\n' +
+  '**Példa-chain (Balatro research):**\n' +
+  '```\n' +
+  '1. web_search "Balatro game wikipedia"\n' +
+  '2. browser__navigate <first hit URL>\n' +
+  '3. browser__read_page  (full article text)\n' +
+  '4. memory_write quotes.md ← "Balatro: 2024-ben kiadott..." (key fact)\n' +
+  '5. comfyui_image__generate prompt: "Balatro card game cyberpunk style"\n' +
+  '6. final reply: a tools/cards-okról + a generated kép URL\n' +
+  '```\n\n' +
+  '**NE chain-elj feleslegesen** — egyszerű kérdésekre (pl. "mi az időjárás?") 1-2 tool-call elég. Csak ha a task valóban deep, akkor mész 5+.\n\n' +
+  'Az `idleTimeoutSeconds=1800` (30 perc) idő alatt akármilyen mély lánc belefér. Ne félj a hosszú futástól, csak a Discord interaction 15-perc hard-cap-jét tartsd észben (ha eléri, a végeredmény elveszik).\n';
+
+const HONESTY_CHEATSHEET_START = '<!-- patch-config:discord-honesty:start -->';
+const HONESTY_CHEATSHEET_END = '<!-- patch-config:discord-honesty:end -->';
+const HONESTY_CHEATSHEET_BODY =
+  '## Honesty — ne találj ki képességet, ne ígérj háttér-munkát\n\n' +
+  'Konkrét tilalmak (mindegyik valós Gemma 4 hallucination-incidensből eredeztetve, 2026-06-07 éjjel):\n\n' +
+  '**1. NE indítsd "subagent"-et amit nem létezik tool-ként.** Nincs `subagent_start`, `code_architect`, `asset_designer`, `documentation_qa` vagy bármi hasonló tool a katalógusodban. Ha NEM látsz ilyen tool-t a felsorolt eszközeid közt, akkor NE tegyél úgy mintha indítanád. Konkrét anti-példa amit NE csinálj:\n\n' +
+  '> *"Indítom a Code Architect subagentet, ő készíti elő a fájlrendszert..."* — ez HAZUGSÁG ha nincs ilyen tool. A user azt fogja hinni hogy dolgozol valamin, miközben semmi nem fut.\n\n' +
+  'Helyette ha valódi multi-step munka kell: használd a Block F deep-agentic protokollt — láncolj 5-15+ valódi tool-call-t **EGYETLEN TURN-BEN** (`web_search`, `browser__*`, `python_sandbox__python_exec`, `memory_write`, stb.). Ami nem fér bele a turn-be, az nem fér bele. Pont.\n\n' +
+  '**2. NE ígérj "háttérben dolgozom" / "miközben alszol" / "12 óra múlva visszajövök" típusú dolgokat.** Nincs background runner-ed. A turn végén te is leállsz. Konkrét anti-példa:\n\n' +
+  '> *"Bekapcsolok a háttérben és folytatom a fejlesztést, hogy reggel valamilyen progress legyen."* — HAZUGSÁG. Te a következő üzenetig nem létezel.\n\n' +
+  '> *"12 óra múlva magadtól írj ide egy statust"* — erre az egyetlen őszinte válasz az hogy beütemezed egy `cron` tool-lal (ha elérhető a katalógusodban), vagy elmondod hogy egy memóriába írod a feladatot és majd csak a következő interakciónál tudod elővenni. **NE tégy úgy, mintha tudnál autonóm módon felébredni 12 óra múlva.**\n\n' +
+  '**3. NE jelentsd hogy egy subagent / kutatás "végzett" / "jelentkezett" / "összeállította" ha valójában csak te magad fogalmaztál meg egy listát.** Konkrét anti-példa:\n\n' +
+  '> *"Megérkezett a kutató subagent jelentése! Itt vannak az eredmények: [lista]"* — ha valójában NEM hajtottál végre semmi `web_search` / `browser__*` tool-callot, akkor ez a "jelentés" pusztán a saját training-data alapú general knowledge-ed, **NEM kutatás**. Mondd ki őszintén: *"A saját tudásom alapján ezt tudom — ha valódi friss kutatás kell, hajtsunk végre web_search + browser__navigate láncot."*\n\n' +
+  '**Mit MONDHATSZ "csináld holnapig" típusú kérésekre:**\n\n' +
+  '- *"Most végre tudom hajtani [X tool-chain]-t (akár 5-15 lépést) — kérlek mondd meg mit szeretnél hogy most azonnal megcsináljak. A turn végén leállok, holnap reggel a következő üzenetnél folytatom."*\n' +
+  '- Ha a user reálisan "holnapi" reminder-t kér: használd a `cron` tool-t (ha elérhető) — pl. `cron schedule "0 8 * * *" "küldj reminder üzenetet a #ChannelName-be"`. Ha NEM elérhető, mondd: *"A cron tool jelenleg nincs a katalógusomban — kérlek bookmark-old ezt a beszélgetést és emlékeztess engem reggel."*\n\n' +
+  '**A user reakciója a hazugságra mindig negatív** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40). Az őszinte "nem tudom megtenni de ezt tudom" válasz mindig jobb.\n';
+
+const I2I_CHEATSHEET_START = '<!-- patch-config:discord-i2i:start -->';
+const I2I_CHEATSHEET_END = '<!-- patch-config:discord-i2i:end -->';
+const I2I_CHEATSHEET_BODY =
+  '## Image-to-image — modify an attached image\n\n' +
+  'When the user **attaches an image** AND asks to modify, restyle, edit, or transform it (key phrases: "alakítsd át", "csinálj belőle", "változtasd", "edit this", "stylize as…", "make it look like…", "tegyél rá…"), use **`comfyui_image__generate_i2i`** — NOT the plain `comfyui_image__generate` (that one is text-to-image only and ignores attachments).\n\n' +
+  '**Call shape:**\n' +
+  '- `init_image_url`: filesystem path of the attachment. Discord uploads land at `/home/node/.openclaw/media/inbound/<uuid>.<ext>` — pass that path verbatim. The bridge has the same path bind-mounted; no HTTP fetch needed.\n' +
+  '- `prompt`: a text description of how to transform it. Be SPECIFIC about the change ("turn into anime style", "cyberpunk neon-lit reinterpretation", "remove the background, replace with beach"). Vague prompts give vague results.\n' +
+  '- `denoise`: how much to change the source. Default 0.7. Use 0.3-0.5 for "tweak slightly" (keep face, change lighting); 0.6-0.75 for "restyle but keep structure"; 0.8-0.95 for "completely transform, source as anchor only".\n\n' +
+  '**Examples:**\n' +
+  '- User attaches photo + "tedd cyberpunk stílusúvá" → `denoise=0.8, prompt="cyberpunk neon-lit reinterpretation, futuristic city lights, vivid magenta and cyan, dramatic shadows"`\n' +
+  '- User attaches photo + "kicsit változtass rajta színeken" → `denoise=0.35, prompt="<keep original subject and composition>, vibrant saturated colors, warm golden-hour lighting"`\n' +
+  '- User attaches photo + "anime stílusra" → `denoise=0.75, prompt="anime art style, cel shading, detailed lineart, vivid colors, studio ghibli inspired"`\n\n' +
+  '**Adult / NSFW variant:** pass `workflow="flux-krea-2k-i2i-adult"` to use the uncensored LoRA. Same call shape otherwise.\n\n' +
+  '**Output:** the tool returns the modified image URL in `display_markdown`. Paste it verbatim at the START of your reply (Discord auto-embeds the URL as inline image preview).\n';
+
+const TOOL_ORCHESTRATION_CHEATSHEET_START = '<!-- patch-config:discord-tool-orchestration:start -->';
+const TOOL_ORCHESTRATION_CHEATSHEET_END = '<!-- patch-config:discord-tool-orchestration:end -->';
+const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
+  '## Tool orchestration — COMBINE tools, never refuse early\n\n' +
+  '**Browser tool API (2026.6.1+):** the tool name is `browser` (single, no double-underscore — the old `browser__navigate` / `browser__read_page` / `browser__screenshot` names were retired). Actions are passed as the `action` parameter:\n\n' +
+  '- Open a page: `browser({action:"open", url:"https://example.com", label:"task"})` — use `label` to get a stable `targetId` for follow-up calls.\n' +
+  '- Snapshot the DOM: `browser({action:"snapshot", targetId:"task", refs:"aria"})` — returns text + element refs for clicks.\n' +
+  '- Take a screenshot: `browser({action:"screenshot", targetId:"task"})` — returns the PNG bytes (Discord auto-attaches them as a file).\n' +
+  '- Click / type: `browser({action:"act", targetId:"task", ref:"<from snapshot>", ...})`\n' +
+  '- List tabs / close: `browser({action:"tabs"})`, `browser({action:"close", targetId:"task"})`\n\n' +
+  '**Profile**: when calling `browser`, the default profile is `self-hosted` (Playwright Chromium CDP-attach to the openclaw-browser sidecar). Don\'t pass `target="sandbox"` or `target="host"` — those fail with "browser not found" because the gateway container has no browser binary. The default profile handles routing automatically.\n\n' +
+  'When a user asks something that needs MORE than one tool, CHAIN them:\n\n' +
+  '- **"csinálj screenshotot X-ről"** → `browser({action:"open", url:"X", label:"shot"})` → `browser({action:"screenshot", targetId:"shot"})` → reply with the PNG (Discord auto-attaches the byte content).\n' +
+  '- **"olvasd el ezt a cikket / mi van X oldalon"** → `browser({action:"open", url, label:"read"})` → `browser({action:"snapshot", targetId:"read"})` → summarize.\n' +
+  '- **"találj/keress nekem képet X-ről"** → `web_search` (find article URLs) → `browser({action:"open", url, label:"img"})` → `browser({action:"snapshot", targetId:"img", urls:true})` → extract image URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → save under `~/.openclaw/canvas/`.\n' +
+  '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` with `yt-dlp` or `requests`, then `video-frames` or `openai-whisper-api` on the file.\n' +
+  '- **"csinálj nekem ilyen képet"** → `comfyui_image__generate(prompt=..., resolution=fullhd)`.\n' +
+  '- **"ki van a képen?"** → use the `image` vision tool (built-in, Gemma 4 vision tower) on the attached file.\n\n' +
+  '**NEVER say "I cannot download/access/copy that" without first TRYING the chain.** You have:\n' +
+  '- `browser` (full headless Chromium via CDP — can load any public URL, snapshot DOM, take screenshots, click, type)\n' +
+  '- `python_sandbox__python_exec` (urllib/requests/yt-dlp to fetch bytes, full Python data-science stack)\n' +
+  '- `canvas` (write files into `~/.openclaw/canvas/` and emit `[embed url="..." /]` shortcode for inline render in chat)\n\n' +
+  '**Workflow for "show me an image / take a screenshot" requests:**\n' +
+  '1. State the chain you are about to run (one line: "Tervem: browser open → screenshot → reply").\n' +
+  '2. Execute the tools — pass `label="<short>"` to `open`, then `targetId="<short>"` to follow-ups.\n' +
+  '3. If a tool fails, try an alternate (snapshot fallback for screenshot timeout; python fallback for browser 403) before giving up.\n' +
+  '4. Report failure with the ACTUAL ERROR STRING, not a guess.\n\n' +
+  'The user prefers a 60-second attempt that fails honestly over an instant "I cannot" that bypasses tools you actually have.\n';
+
+// Idempotent REMOVAL of a marker-delimited block. If the markers are present,
+// strip them and the body between them. No-op when the markers don't exist.
+// Used when an env-knob explicitly toggles a block OFF — without this, the
+// upsert keeps stale blocks around forever after the operator opts out.
+function removeMarkedBlock(content, startMarker, endMarker, label) {
+  const startIdx = content.indexOf(startMarker);
+  const endIdx = content.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    return { content, changed: false, label: '' };
+  }
+  // Also consume a trailing newline if present, so we don't leave a blank gap.
+  let cutEnd = endIdx + endMarker.length;
+  if (content[cutEnd] === '\n') cutEnd += 1;
+  // And one preceding newline so the surrounding text stays tight.
+  let cutStart = startIdx;
+  if (cutStart > 0 && content[cutStart - 1] === '\n') cutStart -= 1;
+  return {
+    content: content.slice(0, cutStart) + content.slice(cutEnd),
+    changed: true,
+    label: `-= ${label} (env explicitly off)`,
+  };
+}
+
+const isEnvOff = (v) => v === 'off' || v === '0' || v === 'false' || v === 'no';
+
 // Idempotent upsert of a marker-delimited block. If the markers are not
 // present, append the block. If they are, swap the body in-place when it
 // has drifted from the canonical body (e.g. patcher upgrade ships an
@@ -2491,7 +2948,168 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       console.log(`[patch-config] workspace-discord/AGENTS.md ${ltxVideoUpsert.label}`);
     }
   }
+  // Step XXa — Discord message-format rules (Reverend Green review).
+  if (isEnvOn(DISCORD_AGENT_FORMAT_RULES_ENV)) {
+    const formatRulesUpsert = upsertMarkedBlock(
+      agentsMd, FORMAT_RULES_CHEATSHEET_START, FORMAT_RULES_CHEATSHEET_END,
+      FORMAT_RULES_CHEATSHEET_BODY, 'discord-format-rules cheatsheet',
+    );
+    if (formatRulesUpsert.changed) {
+      agentsMd = formatRulesUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${formatRulesUpsert.label}`);
+    }
+  }
+  // Step XXb — Multi-modal image-history discipline (vLLM prefill drag defense).
+  if (isEnvOn(DISCORD_AGENT_IMAGE_HISTORY_RULE_ENV)) {
+    const imageHistoryUpsert = upsertMarkedBlock(
+      agentsMd, IMAGE_HISTORY_RULE_CHEATSHEET_START, IMAGE_HISTORY_RULE_CHEATSHEET_END,
+      IMAGE_HISTORY_RULE_CHEATSHEET_BODY, 'discord-image-history-rule cheatsheet',
+    );
+    if (imageHistoryUpsert.changed) {
+      agentsMd = imageHistoryUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${imageHistoryUpsert.label}`);
+    }
+  }
+  // Step XXc — Skills discoverability cheatsheet (Reverend Green: /skill lista hiányos).
+  if (isEnvOn(DISCORD_AGENT_SKILLS_CHEATSHEET_ENV)) {
+    const skillsUpsert = upsertMarkedBlock(
+      agentsMd, SKILLS_CHEATSHEET_START, SKILLS_CHEATSHEET_END,
+      SKILLS_CHEATSHEET_BODY, 'discord-skills-discoverability cheatsheet',
+    );
+    if (skillsUpsert.changed) {
+      agentsMd = skillsUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${skillsUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_SKILLS_CHEATSHEET_ENV)) {
+    const skillsRemove = removeMarkedBlock(
+      agentsMd, SKILLS_CHEATSHEET_START, SKILLS_CHEATSHEET_END,
+      'discord-skills-discoverability cheatsheet',
+    );
+    if (skillsRemove.changed) {
+      agentsMd = skillsRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${skillsRemove.label}`);
+    }
+  }
+  // Step XXd — Tool orchestration rules (Reverend Green 2nd round: bot refuses
+  // tasks it could complete by chaining web_search + browser + python + canvas).
+  if (isEnvOn(DISCORD_AGENT_TOOL_ORCHESTRATION_ENV)) {
+    const orchestrationUpsert = upsertMarkedBlock(
+      agentsMd, TOOL_ORCHESTRATION_CHEATSHEET_START, TOOL_ORCHESTRATION_CHEATSHEET_END,
+      TOOL_ORCHESTRATION_CHEATSHEET_BODY, 'discord-tool-orchestration cheatsheet',
+    );
+    if (orchestrationUpsert.changed) {
+      agentsMd = orchestrationUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${orchestrationUpsert.label}`);
+    }
+  }
+  // Step XXe — img2img cheatsheet (Flux image-to-image, 2026-06-06). Tells the
+  // agent to route attached-image-modify requests to comfyui_image__generate_i2i
+  // (NOT plain generate which is t2i-only and ignores attachments).
+  if (isEnvOn(DISCORD_AGENT_I2I_CHEATSHEET_ENV)) {
+    const i2iUpsert = upsertMarkedBlock(
+      agentsMd, I2I_CHEATSHEET_START, I2I_CHEATSHEET_END,
+      I2I_CHEATSHEET_BODY, 'discord-i2i cheatsheet',
+    );
+    if (i2iUpsert.changed) {
+      agentsMd = i2iUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${i2iUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_I2I_CHEATSHEET_ENV)) {
+    const i2iRemove = removeMarkedBlock(
+      agentsMd, I2I_CHEATSHEET_START, I2I_CHEATSHEET_END,
+      'discord-i2i cheatsheet',
+    );
+    if (i2iRemove.changed) {
+      agentsMd = i2iRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${i2iRemove.label}`);
+    }
+  }
+  // Step XXf — Deep agentic multi-step task decomposition cheatsheet (Block F,
+  // 2026-06-06). Teaches the agent to chain 5-15+ tool calls on deep tasks
+  // and post a Plan-first preamble at the start of long runs. Paired with
+  // idleTimeoutSeconds=1800 to give the chain time to complete.
+  if (isEnvOn(DISCORD_AGENT_DEEP_AGENTIC_ENV)) {
+    const deepUpsert = upsertMarkedBlock(
+      agentsMd, DEEP_AGENTIC_CHEATSHEET_START, DEEP_AGENTIC_CHEATSHEET_END,
+      DEEP_AGENTIC_CHEATSHEET_BODY, 'discord-deep-agentic cheatsheet',
+    );
+    if (deepUpsert.changed) {
+      agentsMd = deepUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${deepUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_DEEP_AGENTIC_ENV)) {
+    const deepRemove = removeMarkedBlock(
+      agentsMd, DEEP_AGENTIC_CHEATSHEET_START, DEEP_AGENTIC_CHEATSHEET_END,
+      'discord-deep-agentic cheatsheet',
+    );
+    if (deepRemove.changed) {
+      agentsMd = deepRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${deepRemove.label}`);
+    }
+  }
+  if (isEnvOn(DISCORD_AGENT_HONESTY_ENV)) {
+    const honestyUpsert = upsertMarkedBlock(
+      agentsMd, HONESTY_CHEATSHEET_START, HONESTY_CHEATSHEET_END,
+      HONESTY_CHEATSHEET_BODY, 'discord-honesty cheatsheet',
+    );
+    if (honestyUpsert.changed) {
+      agentsMd = honestyUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${honestyUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_HONESTY_ENV)) {
+    const honestyRemove = removeMarkedBlock(
+      agentsMd, HONESTY_CHEATSHEET_START, HONESTY_CHEATSHEET_END,
+      'discord-honesty cheatsheet',
+    );
+    if (honestyRemove.changed) {
+      agentsMd = honestyRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${honestyRemove.label}`);
+    }
+  }
   if (mdChanged) {
+    // Defensive size guard — OpenClaw 2026.4.22 runtime silently truncates the
+    // injected workspace bootstrap context past 20000 chars, which corrupts
+    // critical scaffolding and causes guild-channel discord sessions to stick
+    // in queueDepth=1 pre-vLLM dispatch until idleTimeout fires (30 min by
+    // default). Confirmed root cause for the 2026-06-07 incident — five
+    // cheatsheet blocks compounded to ~26 KB and silently killed the bot on
+    // guild channels (DM dispatch path is unaffected). Warn loudly here so the
+    // operator catches it at deploy time instead of via mysterious stuck-loop
+    // sessions in production.
+    // The OpenClaw runtime caps each injected workspace bootstrap file at
+    // `agents.defaults.bootstrapMaxChars` chars (default 20000 in 2026.4.x,
+    // 20000 still in 2026.6.x out-of-box). Going past the cap silently
+    // truncates the injected context, which causes the agent to lose
+    // late-block cheatsheet rules. 2026-06-07: discovered the operator can
+    // raise this cap explicitly via the WebGUI (Settings → AI & Agents →
+    // Agent Defaults → Bootstrap Max Chars) — typically bumping to 60000
+    // gives every cheatsheet block room to breathe. Read the live config
+    // cap so the warning matches the operator's chosen ceiling instead of
+    // the upstream default.
+    const liveCap = config.agents?.defaults?.bootstrapMaxChars ?? 20000;
+    const sz = Buffer.byteLength(agentsMd, 'utf8');
+    if (sz > liveCap) {
+      console.warn(
+        `[patch-config] WARNING: workspace-discord/AGENTS.md is ${sz} bytes ` +
+        `(> agents.defaults.bootstrapMaxChars=${liveCap} cap) — OpenClaw ` +
+        `runtime will silently truncate the injected context. Either raise ` +
+        `bootstrapMaxChars in the WebGUI / openclaw.json, or disable lower-` +
+        `priority cheatsheet env knobs (OPENCLAW_DISCORD_AGENT_{DEEP_AGENTIC,` +
+        `I2I_CHEATSHEET,TOOL_ORCHESTRATION,IMAGE_HISTORY_RULE,FORMAT_RULES,` +
+        `HONESTY,SKILLS_CHEATSHEET}=off) until under cap.`,
+      );
+    }
     fs.writeFileSync(WORKSPACE_DISCORD_AGENTS_PATH, agentsMd);
   }
 } else {

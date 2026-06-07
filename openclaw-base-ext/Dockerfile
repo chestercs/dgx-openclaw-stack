@@ -26,8 +26,65 @@ FROM ${OPENCLAW_BASE}
 
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends \
+       ffmpeg \
+       build-essential procps file curl ca-certificates git sudo \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Homebrew (Linuxbrew) so the WebUI's "manual MCP install" buttons
+# can shell out to `brew install <pkg>` in the gateway / cli containers.
+# Without it, the WebUI shows skills as "blocked: brew not installed" for
+# every Homebrew-only CLI dep (gog/gogcli, plus any other tap-distributed
+# tool the operator wants).
+#
+# NONINTERACTIVE=1 + CI=1 skip the brew install script's TTY prompts.
+# The script auto-creates a `linuxbrew` user and unpacks into
+# `/home/linuxbrew/.linuxbrew/`. We then symlink the `brew` binary into
+# `/usr/local/bin/` (already on PATH for the node user) so skills don't
+# need to know the brew home path.
+#
+# Size cost: ~400 MB extra layer (brew core + ruby + the cellar
+# bootstrap). Cached after first build, so subsequent
+# `docker compose build --no-cache openclaw-config-init` rebuilds re-use
+# this layer unless this RUN changes.
+RUN useradd -m -s /bin/bash linuxbrew \
+    && echo "linuxbrew ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+USER linuxbrew
+RUN NONINTERACTIVE=1 CI=1 /bin/bash -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+USER root
+# Install the brew wrapper at /usr/local/bin/brew (NOT a symlink — a symlink
+# would make Homebrew detect /usr/local as its prefix and abort on aarch64
+# with "Intel default prefix" error). The wrapper sets HOMEBREW_PREFIX
+# explicitly and adds steipete/tap → openclaw/tap migration fallback for
+# OpenClaw skill installs with stale formula paths.
+COPY brew-wrapper.sh /usr/local/bin/brew
+RUN chmod +x /usr/local/bin/brew \
+    && ln -sf /home/linuxbrew/.linuxbrew/Homebrew/Library /home/linuxbrew/.linuxbrew/Library \
+    && chmod -R o+rx /home/linuxbrew \
+    && usermod -aG linuxbrew node \
+    && chmod -R g+rwx /home/linuxbrew/.linuxbrew \
+    && find /home/linuxbrew/.linuxbrew -type d -exec chmod g+s {} \;
+
+# Pre-tap both repos at image-build time so the first WebGUI install doesn't
+# pay the tap-clone cost (~5 s each) and `brew search` works immediately.
+USER linuxbrew
+RUN /home/linuxbrew/.linuxbrew/bin/brew tap openclaw/tap \
+    && /home/linuxbrew/.linuxbrew/bin/brew tap steipete/tap \
+    && /home/linuxbrew/.linuxbrew/bin/brew --version
+
+USER root
+# HOMEBREW_PREFIX must be on the runtime env too — some skill install scripts
+# spawn brew without inheriting from the wrapper's exec env. Belt-and-braces.
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}" \
+    HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
+    HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
+    HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew \
+    HOMEBREW_NO_ANALYTICS=1 \
+    HOMEBREW_NO_AUTO_UPDATE=1 \
+    HOMEBREW_NO_ENV_HINTS=1
 
 # Patch the MCP SDK's hardcoded 60-second default request timeout.
 #

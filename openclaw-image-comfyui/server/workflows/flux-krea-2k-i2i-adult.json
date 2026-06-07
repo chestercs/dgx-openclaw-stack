@@ -1,0 +1,118 @@
+{
+  "_metadata": {
+    "name": "flux-krea-2k-i2i-adult",
+    "description": "Adult-content variant of flux-krea-2k-i2i. FLUX.1-Krea-dev + flux-uncensored-v2 LoRA at strength 1.5 (same LoRA + strength as flux-krea-2k-adult T2I). Image-to-image: source image + text prompt → modified image, with the LoRA unlocking explicit/NSFW content the base model safety-aligns against. Default 1280x720 + denoise 0.7. NOTE: flux-uncensored-v2 weights ship under a non-commercial license; the bridge ships no weights — the operator owns the license posture (see openclaw-image-comfyui/README.md → 'Content & license posture'). Use this when the user wants explicit/adult modifications on a source image; use plain flux-krea-2k-i2i when SFW.",
+    "checkpoint_required": false,
+    "defaults": {
+      "steps": 30,
+      "cfg": 3.5,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "width": 1280,
+      "height": 720,
+      "denoise": 0.7,
+      "negative": ""
+    },
+    "targets": {
+      "prompt":     {"node": "10", "input": "text"},
+      "negative":   {"node": "11", "input": "text"},
+      "width":      {"node": "21", "input": "width"},
+      "height":     {"node": "21", "input": "height"},
+      "seed":       {"node": "30", "input": "noise_seed"},
+      "steps":      {"node": "31", "input": "steps"},
+      "cfg":        {"node": "12", "input": "guidance"},
+      "sampler":    {"node": "32", "input": "sampler_name"},
+      "scheduler":  {"node": "31", "input": "scheduler"},
+      "init_image": {"node": "60", "input": "image"},
+      "denoise":    {"node": "31", "input": "denoise"}
+    }
+  },
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {"unet_name": "flux1-krea-dev.safetensors", "weight_dtype": "fp8_e4m3fn"}
+  },
+  "2": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "t5xxl_fp16.safetensors",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "5": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {"model": ["1", 0], "lora_name": "flux-uncensored-v2.safetensors", "strength_model": 1.5}
+  },
+  "10": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "11": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "12": {
+    "class_type": "FluxGuidance",
+    "inputs": {"guidance": 3.5, "conditioning": ["10", 0]}
+  },
+  "13": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {"conditioning": ["11", 0]}
+  },
+  "21": {
+    "class_type": "ModelSamplingFlux",
+    "inputs": {
+      "model": ["5", 0],
+      "max_shift": 1.15,
+      "base_shift": 0.5,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "30": {
+    "class_type": "RandomNoise",
+    "inputs": {"noise_seed": 0}
+  },
+  "31": {
+    "class_type": "BasicScheduler",
+    "inputs": {"scheduler": "simple", "steps": 30, "denoise": 0.7, "model": ["21", 0]}
+  },
+  "32": {
+    "class_type": "KSamplerSelect",
+    "inputs": {"sampler_name": "euler"}
+  },
+  "33": {
+    "class_type": "BasicGuider",
+    "inputs": {"model": ["21", 0], "conditioning": ["12", 0]}
+  },
+  "34": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise":         ["30", 0],
+      "guider":        ["33", 0],
+      "sampler":       ["32", 0],
+      "sigmas":        ["31", 0],
+      "latent_image":  ["61", 0]
+    }
+  },
+  "40": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["34", 0], "vae": ["3", 0]}
+  },
+  "50": {
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "openclaw-bridge/flux-krea-2k-i2i-adult", "images": ["40", 0]}
+  },
+  "60": {
+    "class_type": "LoadImage",
+    "inputs": {"image": "REPLACE_AT_BIND.png", "upload": "image"}
+  },
+  "61": {
+    "class_type": "VAEEncode",
+    "inputs": {"pixels": ["60", 0], "vae": ["3", 0]}
+  }
+}
