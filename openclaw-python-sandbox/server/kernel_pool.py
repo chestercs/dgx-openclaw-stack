@@ -43,6 +43,7 @@ _KERNEL_ENV_DENYLIST = {
     "STT_API_TOKEN",
     "HUGGING_FACE_HUB_TOKEN",
     "HF_TOKEN",
+    "GITHUB_TOKEN",  # 2026-06-09 — git_push tool holds the PAT server-side
 }
 
 

@@ -966,6 +966,17 @@ services:
       # Cap on the audio file size transcribe_audio will POST (guards the STT
       # container from an OOM on a multi-GB file). Default 200 MB.
       STT_MAX_FILE_BYTES: ${STT_MAX_FILE_BYTES:-209715200}
+      # git_push tool (2026-06-09): the agent can commit+push a local repo to ONE
+      # preconfigured GitHub repo. The PAT lives ONLY here (uvicorn env) — kernel_pool
+      # strips GITHUB_TOKEN from user kernels, and the tool feeds it to git via
+      # GIT_ASKPASS (never argv/.git/config). Set a FINE-GRAINED PAT scoped to the one
+      # repo with Contents:read+write. Empty token → the tool returns "not configured".
+      # GITHUB_REPO is owner/repo; the agent can ONLY push there (cannot target others).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      GIT_DEFAULT_BRANCH: ${GIT_DEFAULT_BRANCH:-main}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-ImbulClaw}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-bot@petyuspolisz.com}
     volumes:
       # /workspace is the canonical place for the agent to read/write files.
       # Bind-mounted from the host so files persist across recreates and so

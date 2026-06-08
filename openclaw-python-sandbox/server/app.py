@@ -67,6 +67,19 @@ STT_MODEL = os.environ.get("STT_MODEL", "deepdml/faster-whisper-large-v3-turbo-c
 STT_MAX_FILE_BYTES = int(os.environ.get("STT_MAX_FILE_BYTES", str(200 * 1024 * 1024)))  # 200 MB
 STT_REQUEST_TIMEOUT_S = float(os.environ.get("STT_REQUEST_TIMEOUT_S", "600"))  # 10 min
 
+# ── GitHub push bridge (git_push tool) ────────────────────────────────
+# A fine-grained PAT (Contents: read+write, scoped to GITHUB_REPO ONLY) lives
+# in this (uvicorn) process env. kernel_pool strips it from child kernels, and
+# the tool feeds it to git via GIT_ASKPASS — never in argv (ps) or .git/config —
+# so user-submitted python_exec code cannot read it. The tool can ONLY push to
+# GITHUB_REPO (the agent cannot target another repo), and never force-pushes.
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "").strip()  # "owner/repo"
+GIT_PUSH_TIMEOUT_S = float(os.environ.get("GIT_PUSH_TIMEOUT_S", "120"))
+GIT_DEFAULT_BRANCH = os.environ.get("GIT_DEFAULT_BRANCH", "main").strip() or "main"
+GIT_AUTHOR_NAME = os.environ.get("GIT_AUTHOR_NAME", "ImbulClaw").strip() or "ImbulClaw"
+GIT_AUTHOR_EMAIL = os.environ.get("GIT_AUTHOR_EMAIL", "bot@petyuspolisz.com").strip() or "bot@petyuspolisz.com"
+
 # Protocol version we advertise to the client. Matches the MCP spec
 # revision we implement; clients that understand a newer revision will
 # negotiate down to this one in the initialize handshake.
@@ -168,6 +181,46 @@ TOOLS = [
                 },
             },
             "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "git_push",
+        "description": (
+            "Commit (optionally) and push a LOCAL git repo to the operator's "
+            "preconfigured GitHub repository. The repo, the GitHub token, and the "
+            "auth are all held server-side — you never see or handle credentials. "
+            "Typical flow: build a project (e.g. in /home/node/.openclaw/canvas/<name>), "
+            "`git init` it via python_exec, then call git_push with repo_path=<that dir> "
+            "and a commit_message. It pushes ONLY to the configured repo (you cannot "
+            "target a different one) and never force-pushes. Returns the GitHub URL on "
+            "success. If the server has no GITHUB_TOKEN/GITHUB_REPO set, it returns a "
+            "clear 'not configured' error — tell the user the operator must wire those."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the local git repo (must contain a .git dir; "
+                        "run `git init` first). Must be under /workspace or "
+                        "/home/node/.openclaw/canvas."
+                    ),
+                },
+                "commit_message": {
+                    "type": "string",
+                    "description": (
+                        "Optional. If given, `git add -A` + commit ALL current changes "
+                        "before pushing. Omit to push already-committed work only."
+                    ),
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Optional target branch. Default 'main'.",
+                },
+            },
+            "required": ["repo_path"],
             "additionalProperties": False,
         },
     },
@@ -276,10 +329,103 @@ async def _tool_transcribe_audio(args: dict) -> dict:
     return await asyncio.to_thread(_transcribe_sync, path, language)
 
 
+def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Optional[str]) -> dict:
+    """Blocking git commit+push — run via asyncio.to_thread. The PAT lives only in
+    this process env; we hand it to git via a transient GIT_ASKPASS helper so it
+    never lands in argv (ps) or .git/config, and we only ever push to GITHUB_REPO."""
+    import subprocess
+    import tempfile
+
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        raise RuntimeError(
+            "git_push is not configured: the operator must set GITHUB_TOKEN (a "
+            "fine-grained PAT with Contents:read+write on the repo) and GITHUB_REPO "
+            "(owner/repo) in docker-compose for the sandbox."
+        )
+    real = os.path.realpath(repo_path)
+    if not os.path.isdir(real):
+        raise ValueError(f"repo path not found or not a directory: {repo_path}")
+    allowed_roots = ("/workspace", "/home/node/.openclaw/canvas")
+    if not any(real == r or real.startswith(r + "/") for r in allowed_roots):
+        raise ValueError(f"repo path must be under {' or '.join(allowed_roots)} (got {real})")
+    if not os.path.isdir(os.path.join(real, ".git")):
+        raise ValueError(f"not a git repo (no .git dir): {real}. Run `git init` first via python_exec.")
+    target_branch = (branch or GIT_DEFAULT_BRANCH).strip() or GIT_DEFAULT_BRANCH
+
+    # GIT_ASKPASS shim: git invokes it for the password and we echo the token from
+    # an env var scoped to this subprocess only. Keeps the token out of argv.
+    askpass = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, dir="/tmp")
+    askpass.write("#!/bin/sh\nexec printf '%s' \"$GIT_PUSH_TOKEN\"\n")
+    askpass.close()
+    os.chmod(askpass.name, 0o700)
+    env = dict(os.environ)
+    env["GIT_PUSH_TOKEN"] = GITHUB_TOKEN
+    env["GIT_ASKPASS"] = askpass.name
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    remote = f"https://x-access-token@github.com/{GITHUB_REPO}.git"
+
+    def _git(*argv: str):
+        return subprocess.run(
+            ["git", "-C", real, *argv],
+            env=env, capture_output=True, text=True,
+            timeout=GIT_PUSH_TIMEOUT_S,
+        )
+
+    def _redact(s: str) -> str:
+        return (s or "").replace(GITHUB_TOKEN, "***")
+
+    try:
+        # Commit identity (idempotent; ignore failures — repo may already have it).
+        _git("config", "user.name", GIT_AUTHOR_NAME)
+        _git("config", "user.email", GIT_AUTHOR_EMAIL)
+        committed = False
+        commit_out = ""
+        if commit_message:
+            _git("add", "-A")
+            status = _git("status", "--porcelain")
+            if status.stdout.strip():
+                cr = _git("commit", "-m", commit_message)
+                commit_out = _redact(cr.stdout + cr.stderr)
+                committed = cr.returncode == 0
+        pr = _git("push", remote, f"HEAD:{target_branch}")
+    finally:
+        try:
+            os.unlink(askpass.name)
+        except OSError:
+            pass
+
+    push_out = _redact(pr.stdout + pr.stderr)
+    if pr.returncode != 0:
+        raise RuntimeError(f"git push failed (exit {pr.returncode}): {push_out[:800]}")
+    return {
+        "ok": True,
+        "repo": GITHUB_REPO,
+        "branch": target_branch,
+        "committed": committed,
+        "url": f"https://github.com/{GITHUB_REPO}",
+        "commit_output": commit_out[-400:],
+        "push_output": push_out[-600:],
+    }
+
+
+async def _tool_git_push(args: dict) -> dict:
+    repo_path = args.get("repo_path")
+    if not isinstance(repo_path, str) or not repo_path:
+        raise ValueError("`repo_path` is required and must be a non-empty string")
+    commit_message = args.get("commit_message") or None
+    if commit_message is not None and not isinstance(commit_message, str):
+        raise ValueError("`commit_message` must be a string when provided")
+    branch = args.get("branch") or None
+    if branch is not None and not isinstance(branch, str):
+        raise ValueError("`branch` must be a string when provided")
+    return await asyncio.to_thread(_git_push_sync, repo_path, commit_message, branch)
+
+
 TOOL_HANDLERS = {
     "python_exec": _tool_python_exec,
     "python_session_reset": _tool_python_session_reset,
     "transcribe_audio": _tool_transcribe_audio,
+    "git_push": _tool_git_push,
 }
 
 
