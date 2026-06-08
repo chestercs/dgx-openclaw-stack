@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-08
+
+### Added — Discord media pipeline: download → transcribe → attach
+
+The Discord agent can now download a video/audio source, transcribe it, and
+send the audio back as a real file attachment — end to end, all self-hosted.
+
+- **`python-sandbox` gains `yt-dlp` + `ffmpeg`** (baked into the image). The
+  agent downloads media in `python_exec`; YouTube works from the datacenter IP
+  via yt-dlp's android-vr client.
+- **`transcribe_audio` MCP tool** (new, in the sandbox server) wraps the
+  Whisper STT backend. The bearer token lives ONLY in the sandbox server
+  process — `kernel_pool` strips `STT_API_TOKEN` / `HF` / sandbox tokens from
+  the user kernel environment, so arbitrary `python_exec` code cannot read them
+  via `os.environ`. The agent passes a file path; the server does the
+  token-authenticated POST.
+- **Shared `canvas` mount** binds the canvas dir at the *same path* the gateway
+  sees (`/home/node/.openclaw/canvas`), so the Discord **`upload-file`** action
+  can attach sandbox-produced media by local path (the canvas dir is in the
+  agent's media-local-roots). `upload-file`'s `media` param also accepts a
+  public HTTP URL — so a ComfyUI image/video fetch URL can be sent as a real
+  attachment, not just an embed link.
+- **Block D recipe** documents the chain and mandates a **fixed ASCII
+  `yt-dlp -o` filename** — the default `%(title)s` template writes fullwidth
+  `？` (U+FF1F) to disk, which the agent cannot reconstruct for the upload path
+  (→ `file not found`).
+
+### Changed — Gemma 4 thinking default `minimal` → `high`; provider `reasoning` enabled
+
+At `minimal`, Gemma 4 26B-A4B NVFP4 routinely *skips* structured tool-calls and
+fabricates a "I searched / I couldn't find it" reply with no tool ever invoked
+(confirmed in trajectories: zero `web_search` events on a search request). At
+`high` the tool-discipline path fires reliably. The Discord-routed agent's
+`thinkingDefault` now defaults to `high` (`OPENCLAW_DISCORD_AGENT_THINKING`),
+and the provider model entries set `reasoning: true` (`LLM_REASONING_ENABLED`)
+to match the live vLLM `--reasoning-parser gemma4`. The thinking enum is
+extended to the 2026.6.x 8-tier set (adds `adaptive`, `max`). Block D adds a
+verbatim `display_markdown` contract for media tools, "MUST call web_search"
+trigger phrases, and a Hungarian `szám`=song disambiguation; Block G bans
+refusing a search as "too general" before actually calling `web_search`.
+
+### Changed — Browser per-action CDP timeout 30s → 60s
+
+Heavy JS pages (YouTube, sites with many ad-iframes) blow past 30s building the
+ARIA accessibility tree for a `snapshot` action — the agent saw
+`browser failed: timed out` on a YouTube snapshot even though the page loaded.
+`BROWSER_DEFAULT_TIMEOUT_MS` now defaults to 60000.
+
 ### Changed — TTS migrated to Fish Audio S2 Pro; STT default flipped to Whisper turbo
 
 The 3-service TTS pipeline (Kokoro 82M EN + F5-TTS HU + OpenAI-compat router)
