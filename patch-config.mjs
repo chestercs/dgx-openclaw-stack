@@ -962,6 +962,49 @@ if (a2aEnabled) {
   console.log('[patch-config] removed tools.agentToAgent (env off)');
 }
 
+// (8h) Agentic capability toggles captured from the live 2026.6.1 WebGUI (the schema
+//      oracle): the experimental structured-plan tool (`update_plan` — helps the model
+//      track non-trivial multi-step work) and tool-loop detection (repetitive
+//      tool-call circuit breaker — autonomy safety so a long agentic / sub-agent chain
+//      can't spin forever). Both are simple booleans; the GUI persists them at
+//      tools.experimental.planTool and tools.loopDetection.enabled. Env-gated, default
+//      on; off/0/false removes the key (self-heal).
+//      Footguns DELIBERATELY left off (would break/endanger this multi-user Discord
+//      bot): tools.codeMode (hides normal tools behind an exec-only QuickJS bridge →
+//      no image/browser/etc), and exec security/mode "full" (removes approval gates →
+//      arbitrary host commands from any Discord sender).
+config.tools ??= {};
+const planToolEnabled = !['off', '0', 'false', 'no'].includes(
+  (process.env.OPENCLAW_TOOLS_PLAN_TOOL || 'on').trim().toLowerCase(),
+);
+if (planToolEnabled) {
+  config.tools.experimental ??= {};
+  if (config.tools.experimental.planTool !== true) {
+    config.tools.experimental.planTool = true;
+    changed = true;
+    console.log('[patch-config] tools.experimental.planTool = true');
+  }
+} else if (config.tools.experimental?.planTool !== undefined) {
+  delete config.tools.experimental.planTool;
+  changed = true;
+  console.log('[patch-config] removed tools.experimental.planTool (env off)');
+}
+const loopDetectEnabled = !['off', '0', 'false', 'no'].includes(
+  (process.env.OPENCLAW_TOOLS_LOOP_DETECTION || 'on').trim().toLowerCase(),
+);
+if (loopDetectEnabled) {
+  config.tools.loopDetection ??= {};
+  if (config.tools.loopDetection.enabled !== true) {
+    config.tools.loopDetection.enabled = true;
+    changed = true;
+    console.log('[patch-config] tools.loopDetection.enabled = true');
+  }
+} else if (config.tools.loopDetection?.enabled !== undefined) {
+  delete config.tools.loopDetection.enabled;
+  changed = true;
+  console.log('[patch-config] removed tools.loopDetection.enabled (env off)');
+}
+
 // (9) Ensure memorySearch hybrid (BM25 + vector) + MMR diversity rerank.
 //     - vectorWeight 0.7 / textWeight 0.3: vector dominates (semantic retrieval
 //       is the main use case on multilingual content with bge-m3); BM25

@@ -1379,6 +1379,14 @@ services:
       # (any configured agent). off/0/false → patcher removes the block.
       OPENCLAW_TOOLS_AGENT_TO_AGENT: ${OPENCLAW_TOOLS_AGENT_TO_AGENT:-on}
       OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW: ${OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW:-*}
+      # Agentic capability toggles (schema captured from the 2026.6.1 WebGUI):
+      #   PLAN_TOOL → tools.experimental.planTool (experimental update_plan; multi-step
+      #     work tracking). LOOP_DETECTION → tools.loopDetection.enabled (repetitive
+      #     tool-call circuit breaker; autonomy safety for long agentic/sub-agent chains).
+      # Both default on; off/0/false → patcher removes the key. (Footguns codeMode /
+      # exec-full are intentionally NOT wired — they'd break or endanger the bot.)
+      OPENCLAW_TOOLS_PLAN_TOOL: ${OPENCLAW_TOOLS_PLAN_TOOL:-on}
+      OPENCLAW_TOOLS_LOOP_DETECTION: ${OPENCLAW_TOOLS_LOOP_DETECTION:-on}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
