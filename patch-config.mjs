@@ -2587,19 +2587,14 @@ const IMAGE_GEN_CHEATSHEET_BODY =
   `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-2k'}\`-t használja.\n` +
   '- Adult/NSFW: `workflow="flux-krea-2k-adult"` — ugyanaz a pipeline +\n' +
   '  flux-uncensored-v2 LoRA. Adult-policy a `USER.md`-ben.\n\n' +
-  'Felbontás — `width` és `height` mindig párban (különben aspect-mismatch).\n' +
-  'Default: 1280×720 (HD 16:9). A "2K" a user szóhasználatában jellemzően\n' +
-  '"2K HD 16:9", nem négyzet — csak explicit "square / négyzet" → 1:1.\n\n' +
-  'Felbontás-recipek (user kérése → `width × height`):\n' +
-  '- Default / "kép" → 1280×720 (HD 16:9)\n' +
-  '- "2K", "2K HD", "1080p", "FullHD", "panoráma", "wide" → 1920×1088\n' +
-  '- "portrait", "függőleges", "álló" → 768×1280\n' +
-  '- "portrait 2K", "álló 2K" → 1152×2048\n' +
-  '- "négyzet", "square" → 1024×1024\n' +
-  '- "négyzet 2K", "square 2K" → 2048×2048\n\n' +
-  'FLUX 1024-2048 natív res-en a legjobb; magasabb lassabb + kompozíciós\n' +
-  'hibákat hozhat. 4K workflow nincs (UltimateSDUpscale tile-seam\n' +
-  'műtermékeket termelt a FLUX latensen, 2026-05-09).\n\n' +
+  'Felbontás — `width`+`height` MINDIG párban (különben aspect-mismatch). Default\n' +
+  '1280×720 (HD 16:9); a "2K" jellemzően "2K HD 16:9", nem négyzet (csak explicit\n' +
+  '"square/négyzet" → 1:1). Recipek (kérés → `width×height`): "2K"/"2K HD"/"1080p"/\n' +
+  '"FullHD"/"panoráma"/"wide" → 1920×1088; "portrait"/"függőleges"/"álló" → 768×1280;\n' +
+  '"portrait 2K"/"álló 2K" → 1152×2048; "négyzet"/"square" → 1024×1024; "négyzet 2K"/\n' +
+  '"square 2K" → 2048×2048. FLUX 1024-2048 natív res-en a legjobb; magasabb lassabb +\n' +
+  'kompozíciós hibák. 4K workflow nincs (UltimateSDUpscale tile-seam műtermékek a\n' +
+  'FLUX latensen, 2026-05-09).\n\n' +
   'A `display_markdown` tool-output mezőt verbatim illeszd be a válasz\n' +
   'elejére (image URL + `[embed]` shortcode, blank-line elválasztva), aztán\n' +
   'jöhet a kommentárod. A két sort a webchat ill. a Discord külön kezeli.\n';
@@ -2618,64 +2613,40 @@ const LTX_VIDEO_MAX_DURATION_S_ENV = (process.env.LTX_VIDEO_MAX_DURATION_S || '1
 const LTX_VIDEO_CHEATSHEET_BODY =
   '\n## Videógenerálás — `comfyui_image__generate_video` (LTX-Video 2.3)\n\n' +
   'Ugyanaz a bridge, mint a képeknél, csak más tool. Két mód:\n\n' +
-  '- **T2V** (text-to-video): csak `prompt` kell, a többi default. A bridge\n' +
-  '  automatikusan az `ltx-2.3-t2v` workflow-t választja.\n' +
-  '- **I2V** (image-to-video): `prompt` + `init_image_url`. Ha be van\n' +
-  '  állítva, a bridge automatikusan az `ltx-2.3-i2v` workflow-ra vált.\n' +
-  '  **Discord attachment-ekre AZ ABSZOLÚT FILESYSTEM PATH-T** passzold,\n' +
-  '  ne URL-t. Az inbound attachment-ek itt vannak:\n' +
-  '  `/home/node/.openclaw/media/inbound/<uuid>.png`. Ez NEM URL hanem\n' +
-  '  in-container path — a bridge a saját volume mount-jából olvassa.\n' +
-  '  NE PRÓBÁLD https://vision.<domain>/view?type=inbound&...-szerű URL-t\n' +
-  '  konstruálni — az ComfyUI /view endpoint, csak `type=output|input|temp`-ot\n' +
-  '  ismer és 400-ozni fog. Példa helyes hívás:\n' +
-  '  `init_image_url="/home/node/.openclaw/media/inbound/abc-123.png"`.\n\n' +
-  '**Felbontás:** elsősorban a `resolution` arg (lásd lent). Ha pontos custom dim kell, `width`+`height` MINDIG párban (külön küldve a hiányzó dim a 768 default marad → torz kép); step-32 (a bridge kerekíti: 720→704, 1080→1088). Render-idő (6s clip) nő a pixel-számmal: default 1024×576 ~55s, square 1024×1024 ~105s, HD 1280×704 ~90s, FullHD 1920×1088 ~270s. VRAM ~konstans 115 GB. Hosszú render esetén jelezd a várakozást, ne tagadd meg.\n\n' +
-  '**FELBONTÁS — `resolution` ARG A LEGFONTOSABB (v0.12.4 óta).** A\n' +
-  '`generate_video` tool új `resolution` arg-ot fogad, ami felülbírál mindent.\n' +
-  'Ha a user szövegében bármilyen resolution-kifejezést látsz (akár magyarul,\n' +
-  'akár angolul), a tool-hívás `resolution` arg-jába pontosan ezt a kifejezést\n' +
-  'tedd be — **akármi van a prompt szövegben**. Ez azért a legmegbízhatóbb\n' +
-  'útvonal, mert akkor is fennmarad ha te a prompt-ot átfogalmazod\n' +
-  'angolra/szebbre. Példák:\n\n' +
-  '- "csinálj fullhd videót..." → `{prompt: "...", resolution: "fullhd"}`\n' +
-  '- "1080p videó kell" → `{prompt: "...", resolution: "1080p"}`\n' +
-  '- "négyzet videó / square" → `{prompt: "...", resolution: "square"}`\n' +
-  '- "portrait / álló videó" → `{prompt: "...", resolution: "portrait"}`\n' +
-  '- "hd / 720p videó" → `{prompt: "...", resolution: "hd"}`\n' +
-  '- "4K videó" → `{prompt: "...", resolution: "4k"}`\n' +
-  '- "1024x1024 videót" → `{prompt: "...", resolution: "1024x1024"}`\n' +
-  '- "csinálj egy videót egy macskáról" (NINCS resolution szó) → ne adj át\n' +
-  '  `resolution`-t, a tool default 1024×576-ra esik.\n\n' +
+  '- **T2V** (text-to-video): csak `prompt` kell → bridge `ltx-2.3-t2v` workflow.\n' +
+  '- **I2V** (image-to-video): `prompt` + `init_image_url` → bridge `ltx-2.3-i2v`.\n' +
+  '  Discord attachment-re **AZ ABSZOLÚT FILESYSTEM PATH-t** add, ne URL-t:\n' +
+  '  `/home/node/.openclaw/media/inbound/<uuid>.png` (in-container path, a\n' +
+  '  bridge a volume mountból olvassa). NE konstruálj\n' +
+  '  `https://vision.<domain>/view?type=inbound&...`-szerű URL-t — a ComfyUI\n' +
+  '  `/view` csak `type=output|input|temp`-et ismer, 400-zik.\n\n' +
+  '**Felbontás — a `resolution` arg a legfontosabb (v0.12.4 óta).** Ha a user\n' +
+  'szövegében BÁRMILYEN resolution-kifejezést látsz (magyarul vagy angolul), tedd\n' +
+  'be PONTOSAN azt a `resolution` argba — ez túléli ha a promptot átfogalmazod\n' +
+  'angolra/szebbre. Példák: "fullhd"→`resolution:"fullhd"`, "1080p"→`"1080p"`,\n' +
+  '"négyzet/square"→`"square"`, "portrait/álló"→`"portrait"`, "hd/720p"→`"hd"`,\n' +
+  '"4K"→`"4k"`, "1024x1024"→`"1024x1024"`. NINCS resolution-szó → ne adj át\n' +
+  '`resolution`-t, a tool default 1024×576-ra esik.\n\n' +
   '**Felismerendő kulcsszavak:** fullhd, full hd, fhd, 1080p, 4k, uhd, 2160p,\n' +
   'qhd, 1440p, hd, 720p, mini-hd, square, négyzet, kocka, portrait, függőleges,\n' +
-  'álló, landscape, fekvő, szélesvásznú, VAGY explicit `AxB` formátum\n' +
-  '(pl. 1024x1024, 1920x1088).\n\n' +
-  '**Precedencia (a bridge milyen sorrendben dönt):**\n' +
-  '1. Explicit `width` ÉS `height` pair → az nyer (használd ha pontos dim kell)\n' +
-  '2. `resolution` arg → az alias-tábla alapján width+height\n' +
-  '3. Prompt szövegben AxB vagy keyword → safety-net parse\n' +
-  '4. Semmi → default 1024×576\n\n' +
-  '**Második legjobb path:** explicit `width` ÉS `height` pair. Pl.\n' +
-  '`{prompt: "...", width: 1024, height: 1024}`. Akkor használd, ha\n' +
-  'olyan custom dim-et kérsz amit nem fed le a `resolution` alias-tábla.\n\n' +
-  'Egyéb tipikus paraméterek:\n\n' +
-  '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
-  LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +
-  '  ' + (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + ' másodperc. **MUST** `8k+1` (1, 9, 17, ..., 97, ..., 193, 201, ...).\n' +
-  '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. Magasabb fps → simább, de hosszabb render.\n' +
-  '- `audio_enabled`: default `true` — LTX-2.3 natívan generál hangot is.\n' +
-  '  Néma klip: `audio_enabled=false`.\n' +
-  '- `timeout_s`: legalább 600. Cold-cache első hívás 3-10 perc.\n\n' +
-  'Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + ' másodperc (`LTX_VIDEO_MAX_DURATION_S`). Hosszabbra a\n' +
-  'Discord auto-embed ~50 MB cap miatt nem érdemes menni.\n\n' +
-  '**Prompt→args röviden:** "csinálj videót [X]-ről" → `{prompt:"[X]"}` (default); "animáld ezt a képet" + attachment → I2V `init_image_url=<path>`; "8s" → default, hosszabb `length=`-tel; "néma" → `audio_enabled=false`. A felbontást MINDIG a `resolution` arggal add át (lásd fent).\n\n' +
-  '**KÖTELEZŐ válasz-struktúra:** a `display_markdown` tool-output mező\n' +
-  'első sora a NYERS mp4 URL — VERBATIM illeszd be a válaszod elejére\n' +
-  'első sorként. Discord automatikusan inline beágyazza (lejátszható\n' +
-  'közvetlenül a chatben). Blank-line után jöhet a saját kommentárod\n' +
-  'magyarul. SOHA ne hagyd ki a URL paste-et — anélkül a user 0 videót\n' +
-  'lát, csak szöveget, ami garantáltan rossz UX.\n';
+  'álló, landscape, fekvő, szélesvásznú, VAGY explicit `AxB` (1024x1024, 1920x1088).\n\n' +
+  '**Precedencia:** (1) explicit `width`+`height` pair nyer — MINDIG párban\n' +
+  '(külön küldve a hiányzó dim 768 default marad → torz kép); (2) `resolution`\n' +
+  'arg alias-táblából; (3) prompt-szövegbeli AxB/keyword safety-net; (4) default\n' +
+  '1024×576. Step-32 kerekítés (720→704, 1080→1088). Render (6s clip): default\n' +
+  '1024×576 ~55s, square 1024×1024 ~105s, HD 1280×704 ~90s, FullHD 1920×1088\n' +
+  '~270s; VRAM ~konstans 115 GB. Hosszú render esetén jelezd a várakozást, ne tagadd meg.\n\n' +
+  'Egyéb paraméterek:\n' +
+  '- `length`: frame-szám, default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' (' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps → ' +
+  (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + 's). **MUST** `8k+1` (1, 9, 17, ..., 201).\n' +
+  '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. `audio_enabled`: default `true` (LTX-2.3 natív hang); néma: `false`.\n' +
+  '- `timeout_s`: ≥600 (cold-cache első hívás 3-10 perc). Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + 's (`LTX_VIDEO_MAX_DURATION_S`, Discord ~50 MB embed cap).\n\n' +
+  '**Prompt→args:** "videót [X]-ről" → `{prompt:"[X]"}`; "animáld ezt a képet" +\n' +
+  'attachment → I2V `init_image_url=<path>`; "8s" → hosszabb `length=`; "néma" → `audio_enabled=false`.\n\n' +
+  '**KÖTELEZŐ válasz:** a `display_markdown` első sora a NYERS mp4 URL — VERBATIM\n' +
+  'az első sor a válaszodban (Discord inline beágyazza, lejátszható a chatben).\n' +
+  'Blank-line után a kommentárod magyarul. SOHA ne hagyd ki — anélkül a user 0\n' +
+  'videót lát, csak szöveget.\n';
 
 // Step XXa/b/c — Discord agent UX cheatsheet blocks (Reverend Green's first-pass
 // review, 2026-06-06: format spam, lobster emoji at every reply, missing skills
