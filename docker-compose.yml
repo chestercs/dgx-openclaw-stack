@@ -974,6 +974,11 @@ services:
       # GITHUB_REPO is owner/repo; the agent can ONLY push there (cannot target others).
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_REPO: ${GITHUB_REPO:-}
+      # When GITHUB_REPO doesn't exist yet, git_push auto-creates it under the token's
+      # account (a dedicated bot account only needs to hand over a token — no manual repo
+      # creation; needs a classic PAT with `repo` scope, or fine-grained that can create).
+      # This is the visibility of the auto-created repo. Default private; false = public.
+      GITHUB_REPO_PRIVATE: ${GITHUB_REPO_PRIVATE:-true}
       GIT_DEFAULT_BRANCH: ${GIT_DEFAULT_BRANCH:-main}
       GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-ImbulClaw}
       GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-bot@petyuspolisz.com}

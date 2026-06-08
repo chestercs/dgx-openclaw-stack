@@ -79,6 +79,10 @@ GIT_PUSH_TIMEOUT_S = float(os.environ.get("GIT_PUSH_TIMEOUT_S", "120"))
 GIT_DEFAULT_BRANCH = os.environ.get("GIT_DEFAULT_BRANCH", "main").strip() or "main"
 GIT_AUTHOR_NAME = os.environ.get("GIT_AUTHOR_NAME", "ImbulClaw").strip() or "ImbulClaw"
 GIT_AUTHOR_EMAIL = os.environ.get("GIT_AUTHOR_EMAIL", "bot@petyuspolisz.com").strip() or "bot@petyuspolisz.com"
+# When GITHUB_REPO does not exist yet, git_push auto-creates it under the token's
+# account (so a dedicated bot account only needs to hand over a token — no manual
+# repo creation). This is its visibility. Default private; set false for public.
+GITHUB_REPO_PRIVATE = os.environ.get("GITHUB_REPO_PRIVATE", "true").strip().lower() not in ("false", "0", "no", "off")
 
 # Protocol version we advertise to the client. Matches the MCP spec
 # revision we implement; clients that understand a newer revision will
@@ -192,10 +196,11 @@ TOOLS = [
             "auth are all held server-side — you never see or handle credentials. "
             "Typical flow: build a project (e.g. in /home/node/.openclaw/canvas/<name>), "
             "`git init` it via python_exec, then call git_push with repo_path=<that dir> "
-            "and a commit_message. It pushes ONLY to the configured repo (you cannot "
-            "target a different one) and never force-pushes. Returns the GitHub URL on "
-            "success. If the server has no GITHUB_TOKEN/GITHUB_REPO set, it returns a "
-            "clear 'not configured' error — tell the user the operator must wire those."
+            "and a commit_message. It pushes ONLY to the configured repo (auto-created "
+            "if it doesn't exist yet; you cannot target a different one) and never "
+            "force-pushes. Returns the GitHub URL on success. If the server has no "
+            "GITHUB_TOKEN/GITHUB_REPO set, it returns a clear 'not configured' error — "
+            "tell the user the operator must wire those."
         ),
         "inputSchema": {
             "type": "object",
@@ -352,6 +357,36 @@ def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Option
         raise ValueError(f"not a git repo (no .git dir): {real}. Run `git init` first via python_exec.")
     target_branch = (branch or GIT_DEFAULT_BRANCH).strip() or GIT_DEFAULT_BRANCH
 
+    # Auto-create the GitHub repo if it doesn't exist yet, so a dedicated bot account
+    # only needs to hand over a token (no manual repo creation). The repo is created
+    # under the token's own account; needs a token that can create repos (classic PAT
+    # with `repo` scope works). Visibility from GITHUB_REPO_PRIVATE (default private).
+    import requests  # local import: only this tool needs it
+    _api_headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+    repo_created = False
+    try:
+        _chk = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}", headers=_api_headers, timeout=20)
+    except requests.RequestException as e:
+        raise RuntimeError(f"GitHub API unreachable from the sandbox: {e}")
+    if _chk.status_code == 404:
+        _name = GITHUB_REPO.split("/", 1)[-1]
+        _cr = requests.post(
+            "https://api.github.com/user/repos", headers=_api_headers,
+            json={"name": _name, "private": GITHUB_REPO_PRIVATE, "auto_init": False}, timeout=30,
+        )
+        if _cr.status_code not in (200, 201):
+            raise RuntimeError(
+                f"repo {GITHUB_REPO} does not exist and auto-create failed "
+                f"(HTTP {_cr.status_code}): {_cr.text[:300]}. Check the token can create "
+                f"repos and that GITHUB_REPO's owner matches the token's account."
+            )
+        repo_created = True
+    elif _chk.status_code != 200:
+        raise RuntimeError(
+            f"GitHub repo check failed (HTTP {_chk.status_code}): {_chk.text[:200]}. "
+            f"Is GITHUB_TOKEN valid and does it have access to {GITHUB_REPO}?"
+        )
+
     # GIT_ASKPASS shim: git invokes it for the password and we echo the token from
     # an env var scoped to this subprocess only. Keeps the token out of argv.
     askpass = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, dir="/tmp")
@@ -402,6 +437,7 @@ def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Option
         "repo": GITHUB_REPO,
         "branch": target_branch,
         "committed": committed,
+        "repo_created": repo_created,
         "url": f"https://github.com/{GITHUB_REPO}",
         "commit_output": commit_out[-400:],
         "push_output": push_out[-600:],
