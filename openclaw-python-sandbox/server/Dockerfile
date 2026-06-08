@@ -37,6 +37,18 @@ ENV PYTHONUNBUFFERED=1 \
 # pip dep in requirements.txt.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini curl build-essential gfortran ffmpeg \
+    git openjdk-21-jdk-headless golang-go make cmake jq unzip zip nano \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22 LTS (NodeSource) + Angular CLI — Debian's `nodejs` is too old for
+# Angular. Installed system-wide so `ng`/`node`/`npm` land on PATH for the
+# non-root sandbox user. (2026-06-08: full-stack developer toolchain — the
+# agent writes code with python_sandbox, and an operator can host a dev server
+# on the published preview port.)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @angular/cli \
+    && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -58,7 +70,11 @@ RUN useradd -u 1000 -m -s /bin/bash sandbox \
     && chown -R sandbox:sandbox /app /workspace
 USER 1000:1000
 
-EXPOSE 8094
+# 8094 = MCP server. 8095 = preview/hosting port: an operator-launched dev
+# server (Angular `ng serve --host 0.0.0.0 --port 8095`, a Python http.server,
+# a Go/Java app, …) bound inside the container is reachable on the host's
+# published 8095 and proxied to sandbox.petyuspolisz.com via nginx.
+EXPOSE 8094 8095
 
 ENTRYPOINT ["tini", "--"]
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8094", "--no-access-log"]

@@ -925,6 +925,14 @@ services:
       # without docker exec gymnastics. The gateway uses bridge DNS, so
       # publishing isn't strictly required — it's purely operator ergonomics.
       - "${PYTHON_SANDBOX_BIND:-127.0.0.1}:${PYTHON_SANDBOX_PORT:-8094}:8094"
+      # Preview/hosting port (2026-06-08). An operator (or the agent) can launch
+      # a dev server INSIDE the container bound to 0.0.0.0:8095 — `ng serve
+      # --host 0.0.0.0 --port 8095`, `python -m http.server 8095`, a Go/Java
+      # app, etc. — and reach it on the host's published 8095. nginx then
+      # proxies sandbox.petyuspolisz.com → 127.0.0.1:8095. Loopback bind by
+      # default (nginx runs on the host); set SANDBOX_PREVIEW_BIND=0.0.0.0 for
+      # direct LAN exposure.
+      - "${SANDBOX_PREVIEW_BIND:-127.0.0.1}:${SANDBOX_PREVIEW_PORT:-8095}:8095"
     environment:
       # Required. Empty value fails fast at app startup — a token-less
       # sandbox would let any container on the bridge run arbitrary code.
