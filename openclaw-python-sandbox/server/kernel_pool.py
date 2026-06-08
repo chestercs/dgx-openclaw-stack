@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -28,6 +29,27 @@ from typing import Optional
 from jupyter_client.multikernelmanager import MultiKernelManager
 
 log = logging.getLogger("kernel-pool")
+
+# Secrets that the server process (app.py MCP handlers) legitimately needs
+# but that user-submitted code in the kernel must NOT be able to read via
+# os.environ. The kernel runs arbitrary Python from Discord users; leaking
+# the STT bearer token (or the sandbox's own auth token) into that namespace
+# would defeat the "dedicated MCP tool holds the token" isolation. We strip
+# them from the child kernel's environment at start_kernel() time. The MCP
+# tool implementations in app.py read these from the *uvicorn* process env,
+# which is untouched. (2026-06-08 — added with the transcribe_audio tool.)
+_KERNEL_ENV_DENYLIST = {
+    "PYTHON_SANDBOX_API_TOKEN",
+    "STT_API_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HF_TOKEN",
+}
+
+
+def _kernel_env() -> dict[str, str]:
+    """Copy the process environment minus the secret denylist, so the
+    child ipykernel inherits PATH/PYTHONPATH/etc. but not bearer tokens."""
+    return {k: v for k, v in os.environ.items() if k not in _KERNEL_ENV_DENYLIST}
 
 
 @dataclass
@@ -64,9 +86,13 @@ class KernelPool:
             if entry is not None and entry.kernel_id in self._mkm:
                 entry.last_used = time.time()
                 return entry.kernel_id
-            # Stale or missing entry — start fresh.
+            # Stale or missing entry — start fresh. Pass a token-stripped
+            # env so user code in the kernel can't read os.environ secrets
+            # (the transcribe_audio MCP tool holds the STT token server-side).
             self._sessions.pop(sid, None)
-            kernel_id = await asyncio.to_thread(self._mkm.start_kernel)
+            kernel_id = await asyncio.to_thread(
+                lambda: self._mkm.start_kernel(env=_kernel_env())
+            )
             self._sessions[sid] = _Entry(kernel_id=kernel_id)
             log.info("started kernel session=%s kernel_id=%s", sid, kernel_id)
             return kernel_id

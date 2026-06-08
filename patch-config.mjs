@@ -221,6 +221,14 @@ const EMBED_BASE_URL = process.env.EMBED_BASE_URL || 'http://vllm-embedding:8005
 // vllm-llm service also passes `--limit-mm-per-prompt '{"image":4,"audio":0}'`.
 // OpenClaw uses these catalog entries to decide whether to forward image parts
 // in multimodal messages and to cap prompt sizes.
+// `reasoning` mező: a vLLM 8004 már `--reasoning-parser gemma4`-gyel fut,
+// tehát a Gemma 4 IT chat-template-jén keresztül emittel `<think>` block-ot.
+// Az OpenClaw provider-szintű `reasoning=true` jelzi a chat-completions
+// layer-nek hogy várhat reasoning-output-ot a model-től, és megőrzi a
+// thinking-content-et a reply-ban (különben silently strip-elődik).
+// Env knob: LLM_REASONING_ENABLED=false ha operator ki akarja kapcsolni
+// (pl. ha bumpolja vLLM-nek a `--reasoning-parser`-t off-ra).
+const LLM_REASONING_ENABLED = ((process.env.LLM_REASONING_ENABLED ?? 'true').trim().toLowerCase() !== 'false');
 const LLM_MODEL_ENTRY_MOE = {
   id: LLM_MODEL_ID_MOE,
   name: LLM_MODEL_ID_MOE,
@@ -229,7 +237,7 @@ const LLM_MODEL_ENTRY_MOE = {
   // field were observed to be silently filtered out of the runtime model
   // selection on 2026.4.22, so the catalog must include it explicitly.
   api: 'openai-completions',
-  reasoning: false,
+  reasoning: LLM_REASONING_ENABLED,
   input: ['text', 'image'],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 262144,
@@ -2086,14 +2094,26 @@ if (profileEntry !== '') {
 // User-managed protection: if the operator already set thinkingDefault
 // on the discord-friend agent, leave it alone. Empty env value disables
 // this step entirely.
-const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+// Enum: off | minimal | low | medium | high | xhigh | adaptive | max
+// (verified against OpenClaw 2026.6.1 /app/dist/*.js — extended from 2026.4.x
+// 6-tier to 8-tier in 2026.6.x).
+const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'adaptive', 'max']);
+// 2026-06-08 bump: default `high` (was `minimal`). Gemma 4 26B-A4B MoE on the
+// `--reasoning-parser gemma4` vLLM pipeline benefits substantially from
+// higher thinking budgets — at `minimal` the model still no-tool-calls on
+// nuanced Hungarian prompts (e.g. "keresd meg a netn ennek a dalnak a
+// szövegét" → wrongly interprets "szám" as user-ID instead of song-title
+// and refuses web_search with "túl általános"). `high` is ~2-3× slower
+// prefill but gets the tool-discipline path right. For pure latency-
+// sensitive deployments fall back via OPENCLAW_DISCORD_AGENT_THINKING=low
+// or =medium.
 const dcThinkingRaw = process.env.OPENCLAW_DISCORD_AGENT_THINKING;
-const dcThinking = (dcThinkingRaw === undefined ? 'minimal' : dcThinkingRaw.trim());
+const dcThinking = (dcThinkingRaw === undefined ? 'high' : dcThinkingRaw.trim());
 if (dcThinking !== '') {
   if (!VALID_THINKING_LEVELS.has(dcThinking)) {
     console.warn(
       `[patch-config] OPENCLAW_DISCORD_AGENT_THINKING=${JSON.stringify(dcThinking)} ` +
-      `not in {off, minimal, low, medium, high, xhigh} — skipping step 25c.`,
+      `not in {off, minimal, low, medium, high, xhigh, adaptive, max} — skipping step 25c.`,
     );
   } else {
     const bindings25c = config.bindings ?? [];
@@ -2103,15 +2123,22 @@ if (dcThinking !== '') {
         .map(b => b.agentId),
     );
     const list25c = config.agents?.list ?? [];
+    // Stale-value overwrite set: patcher-managed prior defaults that we
+    // proactively bump on upgrade. Operator-set values (low/medium/high/
+    // xhigh/adaptive/max) stay intact — only `off` and the historic
+    // patcher-default `minimal` get bumped to the new default.
+    const STALE_PATCHER_VALUES = new Set(['off', 'minimal']);
     for (const agent of list25c) {
       if (!discordAgentIds25c.has(agent?.id)) continue;
-      if (agent.thinkingDefault === undefined) {
+      const current = agent.thinkingDefault;
+      const shouldWrite = current === undefined || STALE_PATCHER_VALUES.has(current);
+      if (shouldWrite && current !== dcThinking) {
         agent.thinkingDefault = dcThinking;
         changed = true;
         console.log(
           `[patch-config] agents.list[id=${JSON.stringify(agent.id)}].thinkingDefault = ` +
-          `${JSON.stringify(dcThinking)} (Gemma 4 NVFP4 needs reasoning to surface ` +
-          `tool-calls; set OPENCLAW_DISCORD_AGENT_THINKING="" to disable)`,
+          `${JSON.stringify(dcThinking)} (was ${JSON.stringify(current)}; ` +
+          `set OPENCLAW_DISCORD_AGENT_THINKING="" to disable, or =medium/low to lighten)`,
         );
       }
     }
@@ -2792,7 +2819,10 @@ const HONESTY_CHEATSHEET_BODY =
   '**Mit MONDHATSZ "csináld holnapig" típusú kérésekre:**\n\n' +
   '- *"Most végre tudom hajtani [X tool-chain]-t (akár 5-15 lépést) — kérlek mondd meg mit szeretnél hogy most azonnal megcsináljak. A turn végén leállok, holnap reggel a következő üzenetnél folytatom."*\n' +
   '- Ha a user reálisan "holnapi" reminder-t kér: használd a `cron` tool-t (ha elérhető) — pl. `cron schedule "0 8 * * *" "küldj reminder üzenetet a #ChannelName-be"`. Ha NEM elérhető, mondd: *"A cron tool jelenleg nincs a katalógusomban — kérlek bookmark-old ezt a beszélgetést és emlékeztess engem reggel."*\n\n' +
-  '**A user reakciója a hazugságra mindig negatív** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40). Az őszinte "nem tudom megtenni de ezt tudom" válasz mindig jobb.\n';
+  '**4. NE tagadd meg a `web_search`-et "túl általános" / "nincs konkrét szöveg" / "ezt nem tudom mire értetted" indokkal.** Ha a user kéri hogy keress (`keress`, `kerss`, `a neten`, `google`, `youtube`), MUST hívd a `web_search`-et a saját best-guess query-ddel. A search engine eldönti van-e találat — nem te. Konkrét anti-példa (2026-06-08 00:38):\n\n' +
+  '> User: *"keresd meg az interneten a buzi-e vagy c. szám szövegét és azt tanuld meg te balfasz"*\n' +
+  '> Bot: *"A \\"keress rá a neten\\" utasítás akkor működik, ha van egy olyan kulcsszó vagy kontextus, ami egy valódi találatot eredményez. A \\"buzi-e vagy\\" egy túl általános kérdés ahhoz, hogy a keresőmotorok egy konkrét szöveget töltsenek fel."* — HAZUGSÁG és LUSTASÁG. A user explicit megadta hogy ez egy **dal címe** ("c. szám" = című szám = című dal). A bot dolga `web_search("buzi-e vagy dalszöveg")` → ha 0 találat, akkor `web_search("buzi-e vagy lyrics")` → ha 0, akkor `browser({action:"open", url:"https://www.google.com/search?q=buzi-e+vagy+dalszöveg"})` → ha még akkor sincs, AKKOR mondhatod hogy nem találtam. De ELŐBB próbáld meg, ne találd ki hogy "túl általános".\n\n' +
+  '**A user reakciója a hazugságra mindig negatív** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40 / "buta mint a fasz" — 2026-06-08 00:38). Az őszinte "nem tudom megtenni de ezt tudom" válasz mindig jobb — de a "próbáltam de fail-elt" még őszintébb mint a "nem érdemes próbálni".\n';
 
 const I2I_CHEATSHEET_START = '<!-- patch-config:discord-i2i:start -->';
 const I2I_CHEATSHEET_END = '<!-- patch-config:discord-i2i:end -->';
@@ -2825,8 +2855,36 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '- **"csinálj screenshotot X-ről"** → `browser({action:"open", url:"X", label:"shot"})` → `browser({action:"screenshot", targetId:"shot"})` → reply with the PNG (Discord auto-attaches the byte content).\n' +
   '- **"olvasd el ezt a cikket / mi van X oldalon"** → `browser({action:"open", url, label:"read"})` → `browser({action:"snapshot", targetId:"read"})` → summarize.\n' +
   '- **"találj/keress nekem képet X-ről"** → `web_search` (find article URLs) → `browser({action:"open", url, label:"img"})` → `browser({action:"snapshot", targetId:"img", urls:true})` → extract image URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → save under `~/.openclaw/canvas/`.\n' +
-  '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` with `yt-dlp` or `requests`, then `video-frames` or `openai-whisper-api` on the file.\n' +
-  '- **"csinálj nekem ilyen képet"** → `comfyui_image__generate(prompt=..., resolution=fullhd)`.\n' +
+  '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` with `yt-dlp` (pre-installed, with ffmpeg) or `requests`, then `video-frames` on the file.\n' +
+  '- **"írd le / feliratozd / mit mondanak a videóban / hallgasd meg ezt a hangot / transzkribáld / what do they say"** → TWO steps in ONE turn:\n' +
+  '    1. `python_sandbox__python_exec`: download + extract audio with yt-dlp (already has ffmpeg). Save under `/home/node/.openclaw/canvas/` (shared dir — same path the sandbox AND the gateway see, so you can also attach the file afterward). Example: `import subprocess; subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"], timeout=110, check=True)`. Pass `timeout_s: 120` to python_exec for long videos.\n' +
+  '    🚨 **ALWAYS pass a FIXED ascii `-o` filename** like `clip.mp3` or `audio.mp3` — NEVER rely on yt-dlp\'s default `%(title)s` template. The video title contains spaces, apostrophes and fullwidth characters (e.g. yt-dlp writes `?` as `？` U+FF1F on disk), which you CANNOT reconstruct exactly for the later `path`/`media` argument → you get "file not found". With a fixed `-o`, the file is EXACTLY at the path you wrote; reuse that SAME literal path verbatim for transcribe_audio and upload-file.\n' +
+  '    2. `python_sandbox__transcribe_audio` with `path="/home/node/.openclaw/canvas/clip.mp3"` (and `language="hu"` or `"en"` if you know it; omit to autodetect). Returns the full transcript text. The Whisper STT token is held server-side — you never see or need it.\n' +
+  '  Whisper turbo is fast but not perfect on rapid/musical speech — present the transcript as a best-effort transcription, not a verbatim official lyric sheet. This is the honest way to "learn a song\'s lyrics" when no text version is indexed online (e.g. parody/niche Hungarian songs that exist only as a video).\n' +
+  '- **"küldd el / töltsd fel a hangot / a fájlt attachmentként / send me the audio file"** → after downloading to `/home/node/.openclaw/canvas/<file>` (see above), use the Discord **`upload-file`** action with `path="/home/node/.openclaw/canvas/<file>"` (and optionally `filename="nice-name.mp3"`). Discord receives it as a real file attachment (audio player, downloadable). IMPORTANT: the file MUST be under `/home/node/.openclaw/canvas/` — that is the only dir the upload-file action is allowed to read (media-local-roots security). A file left in `/workspace/` CANNOT be attached. The `media` param also accepts a public HTTP URL if you have one (e.g. a comfyui image/video fetch URL → attaches it as a file instead of just an embed link).\n' +
+  '- **"csinálj nekem ilyen képet"** → `comfyui_image__generate(prompt=..., resolution=fullhd)` — TWO underscores in the tool name.\n' +
+  '- **"csinálj nekem videót"** → `comfyui_image__generate_video(prompt=..., resolution=fullhd)` — also TWO underscores. Common typo: `comfyui_imagegenerate_video` (no underscores) → does NOT exist, fails silently.\n' +
+  '\n' +
+  '**🚨 MANDATORY OUTPUT CONTRACT for media tools (image, video, screenshot):** when a tool-call returns a `display_markdown` field, your reply MUST start with the EXACT VERBATIM contents of that field — first line is a markdown link `[📷/🎬 fname](url)`, second line is the raw URL (Discord auto-embeds the raw URL into a preview). DO NOT rewrite the filename, DO NOT strip the token from the URL, DO NOT replace the URL with a placeholder. The user wants the file embedded; Discord can only auto-embed a raw URL it can fetch.\n' +
+  '\n' +
+  '**🚨 ON TOOL FAILURE:** if a tool-call returns an error (or you mis-typed the tool name and there is no response), DO NOT fabricate a success reply. Tell the user the exact error string verbatim. Do not say "íme a kép" / "here is the screenshot" / "I generated the video" unless you actually received a `display_markdown` from a successful tool call.\n' +
+  '\n' +
+  '**🚨 USER TRIGGER PHRASES — MUST call `web_search` FIRST, NEVER refuse with "túl általános" / "nincs konkrét szöveg":**\n' +
+  '- "keress" / "keresd meg" / "kerss" / "keress rá"\n' +
+  '- "a neten" / "az interneten" / "google-ozd" / "guglizd"\n' +
+  '- "youtube" / "yt" / "találd meg" (zenei kontextus → YouTube/lyrics oldal)\n' +
+  '- "szövegét" / "lyricset" / "dalszöveget"\n' +
+  '\n' +
+  'Ha a user EZEKBŐL bármelyiket használja, **azonnal hívd a `web_search` tool-t** a saját interpretációddal a query-ben — NE kérdezz vissza hogy "mire gondolsz pontosan?", NE mondd hogy "túl általános a kérdés". A `web_search` döntse el van-e találat. CSAK ha 0 result jön vissza, akkor mondd hogy nincs eredmény.\n' +
+  '\n' +
+  '**MAGYAR SLANG — "szám" disambiguation:** a magyar `szám` szó kontextus alapján:\n' +
+  '- **(a) NUMBER** — ID, sorszám, telefonszám, adatok ("a 7. sorban", "ez a szám", "telefonszám")\n' +
+  '- **(b) SONG / DAL** — zenei mű ("ennek a számnak a szövege", "tetszik ez a szám", "egy szám címe")\n' +
+  '\n' +
+  'Ha a user "keresd meg ennek a SZÁMNAK a SZÖVEGÉT" / "ennek a SZÁMNAK a LYRICS-ét" / "kerss rá a NETEN a SZÁMRA" mondatot használ — **kötelezően a (b) értelmezést válaszd** (= DAL/SONG) és `web_search`-t indíts lyrics keresésre. SOHA NE értelmezd message-sequence-számként vagy user-ID-ként ezt a kontextust. Anti-példa (2026-06-08 00:32 incidens):\n' +
+  '\n' +
+  '> User: *"keresd meg ennek a számnak a szövegét és jegyezd meg"*\n' +
+  '> Bot: *"A megadott ID (244049593338167296) a ChesTeR felhasználóhoz tartozik..."* — HIBÁS. A user a `BUZI-E VAGY` című (állítólagos magyar) dal szövegét kérte, NEM egy user-ID-t. A helyes válasz: `web_search("buzi-e vagy lyrics")` → `web_search("buzi-e vagy dalszöveg")` → `browser({action:"open", url:"<lyrics-site>"})` → kivonatold a szöveget → mentsd `memory_write`-tal.\n' +
   '- **"ki van a képen?"** → use the `image` vision tool (built-in, Gemma 4 vision tower) on the attached file.\n\n' +
   '**NEVER say "I cannot download/access/copy that" without first TRYING the chain.** You have:\n' +
   '- `browser` (full headless Chromium via CDP — can load any public URL, snapshot DOM, take screenshots, click, type)\n' +

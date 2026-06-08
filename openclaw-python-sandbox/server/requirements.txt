@@ -17,3 +17,11 @@ numpy>=1.26,<3
 matplotlib>=3.8,<4
 scikit-learn>=1.4,<2
 scipy>=1.13,<2
+# Media fetch (2026-06-08): yt-dlp lets the agent download YouTube (and other
+# site) media for the "fetch → extract audio → transcribe via Whisper STT"
+# chain. Installed system-wide here (not per-run) so the `yt-dlp` console
+# script lands on PATH; pairs with the apt `ffmpeg` binary in the Dockerfile.
+# Pinned to a wide range — yt-dlp ships frequent releases to track site changes,
+# and an over-tight pin would rot fast. Rebuild the image to pull a newer one.
+yt-dlp>=2025.1,<2027
+requests>=2.31,<3

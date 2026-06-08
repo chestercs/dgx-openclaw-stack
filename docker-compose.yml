@@ -823,7 +823,13 @@ services:
       BROWSER_MAX_PROFILES: ${BROWSER_MAX_PROFILES:-20}
       BROWSER_RATE_LIMIT_RPS: ${BROWSER_RATE_LIMIT_RPS:-0.5}
       BROWSER_RATE_LIMIT_BURST: ${BROWSER_RATE_LIMIT_BURST:-5}
-      BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-30000}
+      # Per-action CDP timeout. Bumped 2026-06-08 from 30s → 60s: heavy
+      # JS-driven pages (YouTube, Wowhead, sites with many ad-iframes) blow
+      # past 30s when building the ARIA accessibility tree for a `snapshot`
+      # action — the agent saw "[tools] browser failed: timed out" on a
+      # YouTube `snapshot` even though `open` succeeded and the tab was live.
+      # 60s covers the worst real pages without hanging the agent turn.
+      BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-60000}
       BROWSER_STORAGE_DIR: /storage
     volumes:
       - browser-storage:/storage
@@ -936,11 +942,35 @@ services:
       # state and the next call starts fresh.
       PYTHON_SANDBOX_IDLE_TTL_S: ${PYTHON_SANDBOX_IDLE_TTL_S:-1800}
       PYTHON_SANDBOX_REAP_INTERVAL_S: ${PYTHON_SANDBOX_REAP_INTERVAL_S:-300}
+      # Whisper STT bridge for the transcribe_audio MCP tool (2026-06-08).
+      # The token lives ONLY in this server process — kernel_pool.py strips it
+      # from the child kernel env, so user code in python_exec cannot read it
+      # via os.environ. This is the "dedicated tool holds the token" isolation:
+      # the agent downloads media with yt-dlp+ffmpeg in python_exec, then calls
+      # transcribe_audio(path=...) and the server-side handler does the
+      # token-authenticated POST to Whisper. Same token as openclaw-stt-whisper.
+      STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
+      STT_API_TOKEN: ${STT_API_TOKEN:-}
+      STT_MODEL: ${OPENCLAW_STT_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}
+      # Cap on the audio file size transcribe_audio will POST (guards the STT
+      # container from an OOM on a multi-GB file). Default 200 MB.
+      STT_MAX_FILE_BYTES: ${STT_MAX_FILE_BYTES:-209715200}
     volumes:
       # /workspace is the canonical place for the agent to read/write files.
       # Bind-mounted from the host so files persist across recreates and so
       # the operator can drop CSVs in for the agent to analyze.
       - ${OPENCLAW_WORKSPACE_DIR}/sandbox:/workspace:rw
+      # Shared canvas dir, mounted at the SAME path the gateway sees it
+      # (/home/node/.openclaw/canvas). This lets the agent download media in
+      # python_exec (e.g. yt-dlp → /home/node/.openclaw/canvas/clip.mp3) and
+      # then attach it to Discord via the `upload-file` action using the
+      # IDENTICAL path — the canvas dir is in the discord-friend agent's
+      # media-local-roots, so upload-file is allowed to read it. Without this
+      # shared mount the file would land in /workspace/sandbox, which is
+      # OUTSIDE the agent's media roots → upload-file gets access-denied.
+      # Same path on both sides means one path convention for the agent.
+      # (2026-06-08 — audio/file attachment support.)
+      - ${OPENCLAW_CONFIG_DIR}/canvas:/home/node/.openclaw/canvas:rw
     # No `networks:` directive — the sandbox joins the project's default
     # bridge so the gateway can reach it via DNS at openclaw-python-sandbox.
     # PYTHON_SANDBOX_NETWORK in .env is a documented placeholder for a
@@ -1210,9 +1240,14 @@ services:
       # claimed to "work overnight" — neither is true.
       OPENCLAW_DISCORD_AGENT_HONESTY: ${OPENCLAW_DISCORD_AGENT_HONESTY:-}
       # Discord-routed agent thinkingDefault (patcher step 25c). Default
-      # `minimal` — Gemma 4 NVFP4 needs reasoning to surface structured
-      # tool-calls. Empty disables.
-      OPENCLAW_DISCORD_AGENT_THINKING: ${OPENCLAW_DISCORD_AGENT_THINKING:-minimal}
+      # `high` (bumped 2026-06-08 from `minimal`) — Gemma 4 NVFP4 on the
+      # `--reasoning-parser gemma4` pipeline benefits from larger thinking
+      # budgets on nuanced Hungarian prompts where tool-discipline matters
+      # (e.g. lyrics search "szám"=song disambiguation). Latency: ~2-3×
+      # slower prefill vs `minimal`, ~10-15s typical. Fall back to `medium`
+      # or `low` if you need snappier replies. Enum: off|minimal|low|medium|
+      # high|xhigh|adaptive|max. Empty disables.
+      OPENCLAW_DISCORD_AGENT_THINKING: ${OPENCLAW_DISCORD_AGENT_THINKING:-high}
       # Per-guild cron tool allow-list (patcher step 24c). Comma-separated
       # Discord guild snowflake IDs where the cron tool should be available
       # on text channels. Without an entry the runtime per-guild policy

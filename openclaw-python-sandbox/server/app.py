@@ -54,6 +54,19 @@ MAX_OUTPUT_BYTES = int(os.environ.get("PYTHON_SANDBOX_MAX_OUTPUT_BYTES", str(10 
 IDLE_TTL_S = float(os.environ.get("PYTHON_SANDBOX_IDLE_TTL_S", "1800"))  # 30 min
 REAP_INTERVAL_S = float(os.environ.get("PYTHON_SANDBOX_REAP_INTERVAL_S", "300"))  # 5 min
 
+# ── Whisper STT bridge (transcribe_audio tool) ────────────────────────
+# The token lives ONLY in this (uvicorn) process env — kernel_pool strips
+# it from the child kernel, so user-submitted Python in python_exec cannot
+# read it via os.environ. This is the "dedicated MCP tool holds the token"
+# isolation the operator chose over exposing the token to the sandbox.
+STT_BASE_URL = os.environ.get("STT_BASE_URL", "http://openclaw-stt-whisper:8080/v1").rstrip("/")
+STT_API_TOKEN = os.environ.get("STT_API_TOKEN", "").strip()
+STT_MODEL = os.environ.get("STT_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2")
+# Cap on the audio file the tool will POST to Whisper — guards against a
+# user pointing the tool at a multi-GB file and OOMing the STT container.
+STT_MAX_FILE_BYTES = int(os.environ.get("STT_MAX_FILE_BYTES", str(200 * 1024 * 1024)))  # 200 MB
+STT_REQUEST_TIMEOUT_S = float(os.environ.get("STT_REQUEST_TIMEOUT_S", "600"))  # 10 min
+
 # Protocol version we advertise to the client. Matches the MCP spec
 # revision we implement; clients that understand a newer revision will
 # negotiate down to this one in the initialize handshake.
@@ -119,6 +132,45 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "transcribe_audio",
+        "description": (
+            "Transcribe a local audio (or video) file to text using the "
+            "self-hosted Whisper STT backend (faster-whisper turbo, "
+            "autodetects EN/HU and many more). Give it a filesystem path "
+            "to a file you already produced — typically with yt-dlp + "
+            "ffmpeg inside python_exec (e.g. download a YouTube video, "
+            "extract the audio to /workspace/audio.mp3, then call this "
+            "tool with path='/workspace/audio.mp3'). The Whisper bearer "
+            "token is held server-side; you never need it. Returns the "
+            "full transcript text plus the detected language. Common "
+            "audio/container formats work (mp3, m4a, wav, webm, mp4); "
+            "Whisper decodes via its own ffmpeg."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the audio/video file to transcribe. "
+                        "Use /workspace/... (bind-mounted, persistent) or /tmp/... "
+                        "Must already exist — create it first via python_exec."
+                    ),
+                },
+                "language": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO-639-1 language hint (e.g. 'hu', 'en'). "
+                        "Omit to let Whisper autodetect — recommended unless "
+                        "autodetect picks the wrong language on short/noisy clips."
+                    ),
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -154,9 +206,80 @@ async def _tool_python_session_reset(args: dict) -> dict:
     return {"session_id": sid, "existed": existed}
 
 
+def _transcribe_sync(path: str, language: Optional[str]) -> dict:
+    """Blocking Whisper POST — run via asyncio.to_thread. Lives here (not in
+    the kernel) so the STT token never enters user-code scope."""
+    import requests  # local import: only this tool needs it
+
+    if not STT_API_TOKEN:
+        raise RuntimeError(
+            "STT_API_TOKEN is not set on the sandbox server — the operator must "
+            "wire it in docker-compose for transcribe_audio to work."
+        )
+    # Path safety: must exist, be a regular file, and stay within the dirs
+    # the agent legitimately writes to. The kernel and this process share the
+    # container filesystem, so a path the agent wrote is readable here.
+    real = os.path.realpath(path)
+    if not os.path.isfile(real):
+        raise ValueError(f"file not found: {path}")
+    # /home/node/.openclaw/canvas is the shared mount (same path the gateway
+    # sees) — files there can be attached to Discord via upload-file. /workspace
+    # and /tmp are sandbox-local scratch.
+    allowed_roots = ("/workspace", "/tmp", "/home/node/.openclaw/canvas")
+    if not any(real == r or real.startswith(r + "/") for r in allowed_roots):
+        raise ValueError(
+            f"path must be under {' or '.join(allowed_roots)} (got {real})"
+        )
+    size = os.path.getsize(real)
+    if size > STT_MAX_FILE_BYTES:
+        raise ValueError(
+            f"file is {size} bytes; exceeds STT_MAX_FILE_BYTES={STT_MAX_FILE_BYTES}"
+        )
+
+    url = f"{STT_BASE_URL}/audio/transcriptions"
+    data = {"model": STT_MODEL}
+    if language:
+        data["language"] = language
+    with open(real, "rb") as fh:
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {STT_API_TOKEN}"},
+            files={"file": (os.path.basename(real), fh)},
+            data=data,
+            timeout=STT_REQUEST_TIMEOUT_S,
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Whisper STT returned HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+    try:
+        body = resp.json()
+    except ValueError:
+        # Some whisper shims return text/plain; fall back to raw body.
+        return {"text": resp.text, "language": language, "model": STT_MODEL}
+    return {
+        "text": body.get("text", ""),
+        "language": body.get("language", language),
+        "model": STT_MODEL,
+        "duration": body.get("duration"),
+        "file_bytes": size,
+    }
+
+
+async def _tool_transcribe_audio(args: dict) -> dict:
+    path = args.get("path")
+    if not isinstance(path, str) or not path:
+        raise ValueError("`path` is required and must be a non-empty string")
+    language = args.get("language") or None
+    if language is not None and not isinstance(language, str):
+        raise ValueError("`language` must be a string when provided")
+    return await asyncio.to_thread(_transcribe_sync, path, language)
+
+
 TOOL_HANDLERS = {
     "python_exec": _tool_python_exec,
     "python_session_reset": _tool_python_session_reset,
+    "transcribe_audio": _tool_transcribe_audio,
 }
 
 

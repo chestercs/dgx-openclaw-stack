@@ -30,8 +30,13 @@ ENV PYTHONUNBUFFERED=1 \
 # tini = clean PID 1 + sigterm propagation; curl for the healthcheck;
 # build-essential is needed for some scientific-Python wheels on ARM64
 # slim base (scipy, numpy fall back to compiling from sdist if no wheel).
+# ffmpeg (2026-06-08): the agent's "download a YouTube video → extract audio →
+# transcribe" chain needs a real ffmpeg binary — yt-dlp shells out to it for
+# audio extraction / format conversion, and it's apt-only (the sandbox user is
+# non-root, so it cannot be installed at agent runtime). Pairs with the yt-dlp
+# pip dep in requirements.txt.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tini curl build-essential gfortran \
+    tini curl build-essential gfortran ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
