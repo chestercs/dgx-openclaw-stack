@@ -928,6 +928,40 @@ if (config.channels?.discord?.enabled === true) {
   }
 }
 
+// (8g) tools.agentToAgent — cross-agent messaging surface (sessions_send to a
+//      DIFFERENT agent id, e.g. discord-friend → main). This is DISTINCT from
+//      sub-agent SPAWN (same agent id, isolated child) which needs no config and
+//      ships with the "full" tool profile. Schema captured verbatim from the live
+//      2026.6.1 WebGUI (the schema oracle, after a hand-written guess at
+//      `agents.defaults.subagents` crash-looped the gateway): the GUI persists
+//      `tools.agentToAgent = { enabled: bool, allow: [agentId | "*"] }`. Env-gated
+//      OPENCLAW_TOOLS_AGENT_TO_AGENT (default on); allow-list from
+//      OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW (comma-list, default "*" = any configured
+//      agent). off/0/false self-heals by removing the block.
+const a2aEnabled = !['off', '0', 'false', 'no'].includes(
+  (process.env.OPENCLAW_TOOLS_AGENT_TO_AGENT || 'on').trim().toLowerCase(),
+);
+if (a2aEnabled) {
+  const a2aAllow = (process.env.OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW || '*')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  config.tools ??= {};
+  config.tools.agentToAgent ??= {};
+  if (config.tools.agentToAgent.enabled !== true) {
+    config.tools.agentToAgent.enabled = true;
+    changed = true;
+    console.log('[patch-config] tools.agentToAgent.enabled = true');
+  }
+  if (JSON.stringify(config.tools.agentToAgent.allow) !== JSON.stringify(a2aAllow)) {
+    config.tools.agentToAgent.allow = a2aAllow;
+    changed = true;
+    console.log(`[patch-config] tools.agentToAgent.allow = ${JSON.stringify(a2aAllow)}`);
+  }
+} else if (config.tools?.agentToAgent !== undefined) {
+  delete config.tools.agentToAgent;
+  changed = true;
+  console.log('[patch-config] removed tools.agentToAgent (env off)');
+}
+
 // (9) Ensure memorySearch hybrid (BM25 + vector) + MMR diversity rerank.
 //     - vectorWeight 0.7 / textWeight 0.3: vector dominates (semantic retrieval
 //       is the main use case on multilingual content with bge-m3); BM25

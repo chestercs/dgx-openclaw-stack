@@ -1372,6 +1372,13 @@ services:
       OPENCLAW_DISCORD_COMMANDS_ALLOW: ${OPENCLAW_DISCORD_COMMANDS_ALLOW:-*}
       OPENCLAW_DISCORD_COMMAND_OWNERS: ${OPENCLAW_DISCORD_COMMAND_OWNERS:-*}
       OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW: ${OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW:-*}
+      # tools.agentToAgent — cross-agent messaging surface (sessions_send to a
+      # DIFFERENT agent id, e.g. discord-friend → main). Distinct from sub-agent
+      # SPAWN (same agent, no config). Schema captured from the live 2026.6.1 WebGUI
+      # (the schema oracle): { enabled, allow:[agentId|"*"] }. Default on, allow "*"
+      # (any configured agent). off/0/false → patcher removes the block.
+      OPENCLAW_TOOLS_AGENT_TO_AGENT: ${OPENCLAW_TOOLS_AGENT_TO_AGENT:-on}
+      OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW: ${OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW:-*}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
