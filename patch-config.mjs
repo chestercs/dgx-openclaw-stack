@@ -2650,17 +2650,6 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   'VAE decode + fix-cost stack dominál. **Wall-clock erősen skálázódik**\n' +
   'a pixel-számmal — FullHD ~4.5 PERCBE telik 6 másodperc clip. Jelezd\n' +
   'a usernek hogy várnia kell, ne tagadd meg.\n\n' +
-  '**Konkrét tool-hívás példák** — ezeket a JSON arg-formákat MÁSOLD\n' +
-  'pontosan, MINDKÉT (width ÉS height) értéket átadva:\n\n' +
-  '- T2V default 1024×576 16:9: `comfyui_image__generate_video(prompt="...")` —\n' +
-  '  a workflow defaults adják ezt. Nem kell width/height-ot megadnod.\n' +
-  '- T2V négyzet 1024×1024: `{prompt: "...", width: 1024, height: 1024}`.\n' +
-  '- T2V HD 1280×704: `{prompt: "...", width: 1280, height: 704}`.\n' +
-  '- T2V FullHD 1920×1088: `{prompt: "...", width: 1920, height: 1088, timeout_s: 600}`.\n' +
-  '- T2V portrait 768×1024: `{prompt: "...", width: 768, height: 1024}`.\n' +
-  '- I2V default 1024×576: `{prompt: "...", init_image_url: "<path>"}`.\n' +
-  '- I2V landscape kép HD-ban: `{prompt: "...", init_image_url: "<path>", width: 1280, height: 704}`.\n' +
-  '- I2V portrait kép: `{prompt: "...", init_image_url: "<path>", width: 768, height: 1024}`.\n\n' +
   '**FELBONTÁS — `resolution` ARG A LEGFONTOSABB (v0.12.4 óta).** A\n' +
   '`generate_video` tool új `resolution` arg-ot fogad, ami felülbírál mindent.\n' +
   'Ha a user szövegében bármilyen resolution-kifejezést látsz (akár magyarul,\n' +
@@ -2699,16 +2688,7 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '- `timeout_s`: legalább 600. Cold-cache első hívás 3-10 perc.\n\n' +
   'Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + ' másodperc (`LTX_VIDEO_MAX_DURATION_S`). Hosszabbra a\n' +
   'Discord auto-embed ~50 MB cap miatt nem érdemes menni.\n\n' +
-  '**Felhasználói prompt → tool args fordítás:**\n\n' +
-  '- "csinálj egy videót egy [X]-ről" → T2V, `prompt="[X]"` (default 1024×576).\n' +
-  '- "[X] HD-ban" / "720p / 16:9 HD" → `{prompt:"[X]", width:1280, height:704}`.\n' +
-  '- "[X] FullHD / 1080p" → `{prompt:"[X]", width:1920, height:1088, timeout_s:600}`.\n' +
-  '  Jelezd hogy ~4.5 perc a render — várjon türelemmel.\n' +
-  '- "[X] négyzet / square" → `{prompt:"[X]", width:1024, height:1024}`.\n' +
-  '- "[X] portrait / álló" → `{prompt:"[X]", width:768, height:1024}`.\n' +
-  '- "animáld ezt a képet" + attachment → I2V, `init_image_url=<filesystem path>`.\n' +
-  '- "8 másodperces klip" → már default. Hosszabb mint 8s `length=`-tel.\n' +
-  '- "néma videó" / "ne legyen hangja" → `audio_enabled=false`.\n\n' +
+  '**Prompt→args röviden:** "csinálj videót [X]-ről" → `{prompt:"[X]"}` (default); "animáld ezt a képet" + attachment → I2V `init_image_url=<path>`; "8s" → default, hosszabb `length=`-tel; "néma" → `audio_enabled=false`. A felbontást MINDIG a `resolution` arggal add át (lásd fent).\n\n' +
   '**KÖTELEZŐ válasz-struktúra:** a `display_markdown` tool-output mező\n' +
   'első sora a NYERS mp4 URL — VERBATIM illeszd be a válaszod elejére\n' +
   'első sorként. Discord automatikusan inline beágyazza (lejátszható\n' +
@@ -2908,7 +2888,9 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '> User: *"keresd meg ennek a számnak a szövegét és jegyezd meg"*\n' +
   '> Bot: *"A megadott ID (244049593338167296) a ChesTeR felhasználóhoz tartozik..."* — HIBÁS. A user a `BUZI-E VAGY` című (állítólagos magyar) dal szövegét kérte, NEM egy user-ID-t. A helyes válasz: `web_search("buzi-e vagy lyrics")` → `web_search("buzi-e vagy dalszöveg")` → `browser({action:"open", url:"<lyrics-site>"})` → kivonatold a szöveget → mentsd `memory_write`-tal.\n' +
   '- **"ki van a képen?"** → use the `image` vision tool (built-in, Gemma 4 vision tower) on the attached file.\n' +
-  '- **"írj egy scriptet / boilerplate-et / projektet / csinálj egy kódot / remake-et"** → NE hallucinálj subagentet és NE várj külső coding-agent CLI-re. TE MAGAD írd meg a kódot, és `python_sandbox__python_exec`-szel hozd létre a fájlokat: `import os, shutil; base="/home/node/.openclaw/canvas/<projekt>"; os.makedirs(base+"/Source", exist_ok=True); open(base+"/Source/Main.cpp","w").write("""<a te általad írt kód>"""); ...` — minden fájlt így írj ki. Végül csomagold: `shutil.make_archive(base,"zip",base)` és `upload-file` a `<projekt>.zip`-pel. A user valódi fájlokat kap, nem ígéretet. Nagy projektnél a csontvázat + fő fájlokat csináld meg MOST, és őszintén mondd hogy ez a kezdet.\n\n' +
+  '- **"írj egy scriptet / boilerplate-et / projektet / csinálj egy kódot / remake-et"** → NE hallucinálj subagentet és NE várj külső coding-agent CLI-re. TE MAGAD írd meg a kódot, és `python_sandbox__python_exec`-szel hozd létre a fájlokat: `import os, shutil; base="/home/node/.openclaw/canvas/<projekt>"; os.makedirs(base+"/Source", exist_ok=True); open(base+"/Source/Main.cpp","w").write("""<a te általad írt kód>"""); ...` — minden fájlt így írj ki. Végül csomagold: `shutil.make_archive(base,"zip",base)` és `upload-file` a `<projekt>.zip`-pel. A user valódi fájlokat kap, nem ígéretet. Nagy projektnél a csontvázat + fő fájlokat csináld meg MOST, és őszintén mondd hogy ez a kezdet.\n' +
+  '  **A sandboxban full dev-toolchain van** (nem csak Python): `git`, `java` (JDK 21), `node`+`npm`+`ng` (Angular CLI), `go`, `make`, `cmake`. Ezeket `subprocess.run([...])`-tel hívhatod a python_exec-ben — pl. `subprocess.run(["ng","new","myapp","--defaults"], cwd="/home/node/.openclaw/canvas", check=True)` egy Angular projekt scaffold-jához, vagy `go build`, `javac`, `npm install`.\n' +
+  '  **Élő preview:** ha webes appot/dev-servert futtatsz, kösd a `0.0.0.0:8095`-re (pl. `ng serve --host 0.0.0.0 --port 8095`, `python -m http.server 8095`) — elérhető lesz a neten a **https://sandbox.petyuspolisz.com** címen, így a user élőben megnézheti. Egyszerre egy dev-server fusson a 8095-ön.\n\n' +
   '**NEVER say "I cannot download/access/copy that" without first TRYING the chain.** You have:\n' +
   '- `browser` (full headless Chromium via CDP — can load any public URL, snapshot DOM, take screenshots, click, type)\n' +
   '- `python_sandbox__python_exec` (urllib/requests/yt-dlp to fetch bytes, full Python data-science stack)\n' +
