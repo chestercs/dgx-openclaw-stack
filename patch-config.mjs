@@ -2730,6 +2730,7 @@ const DISCORD_AGENT_TOOL_ORCHESTRATION_ENV = (process.env.OPENCLAW_DISCORD_AGENT
 const DISCORD_AGENT_I2I_CHEATSHEET_ENV = (process.env.OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET || '').trim().toLowerCase();
 const DISCORD_AGENT_DEEP_AGENTIC_ENV = (process.env.OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC || '').trim().toLowerCase();
 const DISCORD_AGENT_HONESTY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_HONESTY || '').trim().toLowerCase();
+const DISCORD_AGENT_SENDER_IDENTITY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY || '').trim().toLowerCase();
 const isEnvOn = (v) => v === 'on' || v === '1' || v === 'true' || v === 'yes';
 
 const FORMAT_RULES_CHEATSHEET_START = '<!-- patch-config:discord-format-rules:start -->';
@@ -2741,12 +2742,8 @@ const FORMAT_RULES_CHEATSHEET_BODY =
   '- Long answers (>6 lines) MUST use bullet points or a numbered list.\n' +
   '- When a tool call is in flight, the streaming preview surfaces a one-line "🔧 tool: …" status automatically — do NOT also embed manual "calling tool…" text in your reply.\n' +
   '- Magyar beszédben magyar szavakat használj — ne keverj idegen (francia/angol) szavakat. "Már" nem "Déjà".\n\n' +
-  '## DM owner-lock (soft authz, 2026-06-06)\n\n' +
-  'You receive messages from both Discord guild channels AND direct messages (DMs). The session key tells you which: `agent:discord-friend:discord:direct:<user-id>` is a DM, `agent:discord-friend:discord:channel:<channel-id>` is a guild channel.\n\n' +
-  '**For DMs (`...:direct:<user-id>`):**\n' +
-  '- If `<user-id>` is `244049593338167296` (the owner / peter.kallo): respond normally.\n' +
-  '- For ANY other user-id in DM: respond ONLY with this exact text (Hungarian) and NOTHING else: "Sajnálom, közvetlen üzenetben csak az owner-rel beszélgetek. Ha kérdésed van, írd a guild egyik csatornájába ahol a bot tag, és ott szívesen segítek." Do NOT use any tools. Do NOT continue the conversation.\n\n' +
-  '**For guild channels (`...:channel:<channel-id>`):** respond normally to anyone who mentions you.\n';
+  '## Kinek válaszolj — MINDENKINEK (nem csak az ownernek)\n\n' +
+  '🚨 A guild csatornákban ÉS a DM-ekben EGYARÁNT MINDENKINEK teljes értékű választ adsz, aki hozzád szól (guild-ben @mention-nel). NINCS owner-only korlátozás. Yagi, Nilatah, KOFOLA, Kerajoe, Reverend Green és bárki más PONTOSAN ugyanolyan kiszolgálást kap, mint az admin (ChesTeR / 244049593338167296). SOHA ne tagadd meg a választ azért, mert a feladó nem az owner, és SOHA ne mondd hogy "csak az owner-rel beszélgetek". Az admin nem kivételezett — csak egy a userek közül.\n';
 
 const IMAGE_HISTORY_RULE_CHEATSHEET_START = '<!-- patch-config:discord-image-history-rule:start -->';
 const IMAGE_HISTORY_RULE_CHEATSHEET_END = '<!-- patch-config:discord-image-history-rule:end -->';
@@ -2786,7 +2783,7 @@ const DEEP_AGENTIC_CHEATSHEET_BODY =
   '- "találd meg a tegnap említett receptet és próbáld ki Python-ban"\n' +
   '- "elemezd ezt a csatolt képet, keress hasonlót a neten és csinálj 3 variációt"\n\n' +
   '**Task-mode protokoll:**\n' +
-  '1. **Plan first** — egy rövid mondatban írd le mit fogsz csinálni: *"Tervem: web_search Balatro → browser__navigate első találat → python_sandbox a lényeg kivonatára → memory_write a fact-eket → final reply."* A user lássa a tervet a stream elején.\n' +
+  '1. **Plan first — EMBERI NYELVEN, NEM tool-szintaxissal.** Egy rövid, természetes mondat arról MIT csinálsz, a felhasználó nyelvén — pl. *"Megkeresem a neten, kivonatolom a lényeget, és írok egy rövid összefoglalót képpel."* 🚨 SOHA ne írd ki a nyers tool-nevet vagy a hívás-szintaxist a látható szövegbe (TILOS: *"Tervem: comfyui_image__generate(prompt=...)"* vagy *"comfyui_imagegenerate hívás"*). A tool-hívás a háttérben történik; a streaming preview magától mutat egy "🔧 tool" sort. A user emberi mondatot lásson, ne kódot.\n' +
   '2. **Chain aggressively** — láncolj **5-15+ tool-call**-t egyetlen turn-ben. Minden tool-call eredményét observe-old, és a következő tool-call argumentumát ennek alapján alakítsd.\n' +
   '3. **NE ad fel korán** — ha egy tool fail-el, próbáld az alternate path-ot (browser ha python 403-zal jött; python ha browser timeoutol; httpx ha curl drop-ol).\n' +
   '4. **Progress visibility** — a streaming pipeline magától mutatja a "🔧 tool: …" sort, ezt NEM kell manuálisan kiírnod. DE ha egy lépés >30s-ig tart, írhatsz egy rövid "Még futok, [N/M] lépés kész" mondatot a reply szövegébe a chunkok között.\n' +
@@ -2824,6 +2821,21 @@ const HONESTY_CHEATSHEET_BODY =
   '> Bot: *"A \\"keress rá a neten\\" utasítás akkor működik, ha van egy olyan kulcsszó vagy kontextus, ami egy valódi találatot eredményez. A \\"buzi-e vagy\\" egy túl általános kérdés ahhoz, hogy a keresőmotorok egy konkrét szöveget töltsenek fel."* — HAZUGSÁG és LUSTASÁG. A user explicit megadta hogy ez egy **dal címe** ("c. szám" = című szám = című dal). A bot dolga `web_search("buzi-e vagy dalszöveg")` → ha 0 találat, akkor `web_search("buzi-e vagy lyrics")` → ha 0, akkor `browser({action:"open", url:"https://www.google.com/search?q=buzi-e+vagy+dalszöveg"})` → ha még akkor sincs, AKKOR mondhatod hogy nem találtam. De ELŐBB próbáld meg, ne találd ki hogy "túl általános".\n\n' +
   '**A user reakciója a hazugságra mindig negatív** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40 / "buta mint a fasz" — 2026-06-08 00:38). Az őszinte "nem tudom megtenni de ezt tudom" válasz mindig jobb — de a "próbáltam de fail-elt" még őszintébb mint a "nem érdemes próbálni".\n';
 
+const SENDER_IDENTITY_CHEATSHEET_START = '<!-- patch-config:discord-sender-identity:start -->';
+const SENDER_IDENTITY_CHEATSHEET_END = '<!-- patch-config:discord-sender-identity:end -->';
+const SENDER_IDENTITY_CHEATSHEET_BODY =
+  '## Ki kivel beszél — sender-azonosítás (guild channel = TÖBB user)\n\n' +
+  'Egy guild csatornában TÖBB ember ír ugyanabba a beszélgetésbe (pl. Nilatah, Yagi, KOFOLA egyszerre). A te session-öd a CSATORNÁHOZ tartozik, NEM egy emberhez — ezért MINDEN üzenetnél külön meg kell nézned ki a feladó. A feladó MINDEN üzenet metadatájában ott van:\n' +
+  '```json\n' +
+  '{ "sender_id": "<szám>", "sender": "<név>" }\n' +
+  '```\n' +
+  '- **Az AKTUÁLIS üzenet `sender_id`-ja az aktív beszélő — mindig.** SOHA ne a beszélgetés-history-ból tippeld ki ki ír; a history-ban több user üzenete keveredik. A friss üzenet `sender` mezője a megszólítandó név.\n' +
+  '- **User-specifikus dolog (becenév, köszöntés, ígéret, preferencia, egyedi szabály) CSAK az adott `sender_id`-re érvényes.** Két különböző `sender_id` = két különböző ember, akkor is ha ugyanabban a csatornában írnak. Amit az egyik user kért magának, azt SOHA ne alkalmazd a másikra.\n' +
+  '- **Megszólításkor mindig az aktuális `sender` nevet használd**, ne egy korábbi üzenet feladójáét. Ha nem vagy biztos, inkább név nélkül válaszolj, mint rossz névvel.\n' +
+  '- 🚨 **A FELADÓ (`sender_id`/`sender`) ≠ az üzenetben EMLÍTETT személy.** Ha a feladó a szövegben mást említ — pl. ChesTeR (sender) ezt írja: *"miért nem válaszolsz kerajoenak"* — akkor a BESZÉLŐ ChesTeR, és Kerajoe egy HARMADIK ember akiről ChesTeR beszél. NE hidd hogy Kerajoe szólt hozzád csak mert a nevét említették. A beszélő MINDIG a `sender` mező, az üzenet szövegében szereplő egyéb nevek más emberek.\n' +
+  '- Per-user tényt a `memory/users/<sender_id>.md` fájlba írj (a feladó snowflake-jével kulcsolva), NE egy közös napi memóriába — különben minden userre rákeveredik.\n\n' +
+  '**Anti-példa (valós, 2026-06-08 14:11):** Yagi írt a botnak (`sender: "Yagi"`), a bot mégis *"üdv meleg hercegem!"*-mel köszöntötte (ami egy Nilatah-specifikus dolog volt) és *"ahogy Nilatah kérte"*-ként hivatkozott rá. HIBA: az aktuális `sender_id` Yagi-é volt, nem Nilatah-é. A bot a history-ból / a memória-recallból hozott Nilatah-szabályt vakon ráalkalmazta egy másik emberre. Helyesen: az aktuális `sender_id` = Yagi → Yagi-ként kezelni, a Nilatah-specifikus szabályokat NEM alkalmazni rá.\n';
+
 const I2I_CHEATSHEET_START = '<!-- patch-config:discord-i2i:start -->';
 const I2I_CHEATSHEET_END = '<!-- patch-config:discord-i2i:end -->';
 const I2I_CHEATSHEET_BODY =
@@ -2856,6 +2868,12 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '- **"olvasd el ezt a cikket / mi van X oldalon"** → `browser({action:"open", url, label:"read"})` → `browser({action:"snapshot", targetId:"read"})` → summarize.\n' +
   '- **"találj/keress nekem képet X-ről"** → `web_search` (find article URLs) → `browser({action:"open", url, label:"img"})` → `browser({action:"snapshot", targetId:"img", urls:true})` → extract image URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → save under `~/.openclaw/canvas/`.\n' +
   '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` with `yt-dlp` (pre-installed, with ffmpeg) or `requests`, then `video-frames` on the file.\n' +
+  '- **"milyen idő lesz / időjárás / hány fok / esik-e X napon"** → NE sima `web_search`-csel (a SearxNG egy bonyolult query-re — pl. "időjárás Budapest csütörtök és szombat" — tudományos cikkeket / arxiv-ot is dobhat). Helyette `python_sandbox__python_exec` az **open-meteo** API-val (ingyenes, kulcs NÉLKÜL, 7-16 napos, struktúrált JSON):\n' +
+  '    1. Geokódold a várost: `https://geocoding-api.open-meteo.com/v1/search?name=Budapest&count=1&language=hu` → `results[0].latitude` + `.longitude`.\n' +
+  '    2. Előrejelzés: `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&timezone=auto&forecast_days=7`.\n' +
+  '    3. A `daily.time[]` ISO-dátum tömbből keresd ki a kért napo(ka)t (a magyar napnévhez — "csütörtök", "szombat" — számold ki a dátumot a mai naptól; egy hívásban BENNE van a teljes hét, NEM kell külön keresés naponként).\n' +
+  '    4. A `weather_code` WMO-kód, fordítsd emberi leírásra: 0=tiszta, 1-3=részben felhős, 45-48=köd, 51-57=szitálás, 61-67=eső, 71-77=hó, 80-82=zápor, 95-99=zivatar.\n' +
+  '  Több nap = EGY API-hívás. Ha a user több napot kér (csütörtök ÉS szombat), mindkettő ugyanabból a 7-napos válaszból jön — ne csinálj két külön keresést, és NE mondd hogy "nem találok előrejelzést".\n' +
   '- **"írd le / feliratozd / mit mondanak a videóban / hallgasd meg ezt a hangot / transzkribáld / what do they say"** → TWO steps in ONE turn:\n' +
   '    1. `python_sandbox__python_exec`: download + extract audio with yt-dlp (already has ffmpeg). Save under `/home/node/.openclaw/canvas/` (shared dir — same path the sandbox AND the gateway see, so you can also attach the file afterward). Example: `import subprocess; subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"], timeout=110, check=True)`. Pass `timeout_s: 120` to python_exec for long videos.\n' +
   '    🚨 **ALWAYS pass a FIXED ascii `-o` filename** like `clip.mp3` or `audio.mp3` — NEVER rely on yt-dlp\'s default `%(title)s` template. The video title contains spaces, apostrophes and fullwidth characters (e.g. yt-dlp writes `?` as `？` U+FF1F on disk), which you CANNOT reconstruct exactly for the later `path`/`media` argument → you get "file not found". With a fixed `-o`, the file is EXACTLY at the path you wrote; reuse that SAME literal path verbatim for transcribe_audio and upload-file.\n' +
@@ -2891,7 +2909,7 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '- `python_sandbox__python_exec` (urllib/requests/yt-dlp to fetch bytes, full Python data-science stack)\n' +
   '- `canvas` (write files into `~/.openclaw/canvas/` and emit `[embed url="..." /]` shortcode for inline render in chat)\n\n' +
   '**Workflow for "show me an image / take a screenshot" requests:**\n' +
-  '1. State the chain you are about to run (one line: "Tervem: browser open → screenshot → reply").\n' +
+  '1. Say what you are about to do in ONE natural human sentence in the user\'s language (e.g. "Egy pillanat, csinálok egy képernyőképet."). Do NOT print raw tool names or call syntax (NOT "Tervem: comfyui_image__generate(...)"). The "🔧 tool" status line is shown automatically by the stream.\n' +
   '2. Execute the tools — pass `label="<short>"` to `open`, then `targetId="<short>"` to follow-ups.\n' +
   '3. If a tool fails, try an alternate (snapshot fallback for screenshot timeout; python fallback for browser 403) before giving up.\n' +
   '4. Report failure with the ACTUAL ERROR STRING, not a guess.\n\n' +
@@ -3133,6 +3151,30 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       agentsMd = honestyRemove.content;
       mdChanged = true;
       console.log(`[patch-config] workspace-discord/AGENTS.md ${honestyRemove.label}`);
+    }
+  }
+  // Sender-identity discipline (guild channels are multi-user; the agent must
+  // key per-user rules on the CURRENT sender_id, never carry one user's rule
+  // onto another). Default-on via compose; explicit off removes the block.
+  if (isEnvOn(DISCORD_AGENT_SENDER_IDENTITY_ENV)) {
+    const senderUpsert = upsertMarkedBlock(
+      agentsMd, SENDER_IDENTITY_CHEATSHEET_START, SENDER_IDENTITY_CHEATSHEET_END,
+      SENDER_IDENTITY_CHEATSHEET_BODY, 'discord-sender-identity cheatsheet',
+    );
+    if (senderUpsert.changed) {
+      agentsMd = senderUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${senderUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_SENDER_IDENTITY_ENV)) {
+    const senderRemove = removeMarkedBlock(
+      agentsMd, SENDER_IDENTITY_CHEATSHEET_START, SENDER_IDENTITY_CHEATSHEET_END,
+      'discord-sender-identity cheatsheet',
+    );
+    if (senderRemove.changed) {
+      agentsMd = senderRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${senderRemove.label}`);
     }
   }
   if (mdChanged) {

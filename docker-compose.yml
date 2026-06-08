@@ -1239,6 +1239,13 @@ services:
       # Gemma 4 fabricated "Code Architect / Asset Designer" subagents and
       # claimed to "work overnight" — neither is true.
       OPENCLAW_DISCORD_AGENT_HONESTY: ${OPENCLAW_DISCORD_AGENT_HONESTY:-}
+      # Sender-identity discipline cheatsheet (default on). Guild channels are
+      # multi-user; the agent must key per-user rules (nickname, greeting,
+      # promises) on the CURRENT message's sender_id and never carry one user's
+      # rule onto another. Added after a 2026-06-08 incident where the bot
+      # greeted Yagi with a Nilatah-specific "üdv meleg hercegem" and treated
+      # Yagi as Nilatah. Set to off to remove the block.
+      OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY: ${OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY:-on}
       # Discord-routed agent thinkingDefault (patcher step 25c). Default
       # `high` (bumped 2026-06-08 from `minimal`) — Gemma 4 NVFP4 on the
       # `--reasoning-parser gemma4` pipeline benefits from larger thinking
