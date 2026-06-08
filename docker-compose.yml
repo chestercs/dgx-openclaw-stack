@@ -929,10 +929,13 @@ services:
       # a dev server INSIDE the container bound to 0.0.0.0:8095 — `ng serve
       # --host 0.0.0.0 --port 8095`, `python -m http.server 8095`, a Go/Java
       # app, etc. — and reach it on the host's published 8095. nginx then
-      # proxies sandbox.petyuspolisz.com → 127.0.0.1:8095. Loopback bind by
-      # default (nginx runs on the host); set SANDBOX_PREVIEW_BIND=0.0.0.0 for
-      # direct LAN exposure.
-      - "${SANDBOX_PREVIEW_BIND:-127.0.0.1}:${SANDBOX_PREVIEW_PORT:-8095}:8095"
+      # proxies sandbox.petyuspolisz.com → <host>:8095. Bound to 0.0.0.0 so the
+      # nginx-proxy-manager (running in host-net, pointing its upstream at the
+      # host LAN IP 192.168.111.100:8095) can reach it — a 127.0.0.1-only bind
+      # gives the NPM a 502 because it dials the LAN IP, not loopback. The
+      # public gate is NPM + Cloudflare (SSL), so LAN exposure of the raw
+      # preview port is acceptable in this homelab. Override via env if needed.
+      - "${SANDBOX_PREVIEW_BIND:-0.0.0.0}:${SANDBOX_PREVIEW_PORT:-8095}:8095"
     environment:
       # Required. Empty value fails fast at app startup — a token-less
       # sandbox would let any container on the bridge run arbitrary code.
