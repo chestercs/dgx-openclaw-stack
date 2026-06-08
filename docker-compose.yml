@@ -1257,6 +1257,17 @@ services:
       # greeted Yagi with a Nilatah-specific "üdv meleg hercegem" and treated
       # Yagi as Nilatah. Set to off to remove the block.
       OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY: ${OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY:-on}
+      # 2026-06-08 — native sub-agent delegation cheatsheet block. The
+      # sessions_spawn/sessions_yield tools ship with the "full" tool profile and the
+      # Gemma 4 MoE drives the spawn→yield→announce protocol correctly (gate-tested:
+      # F(25)=75025 computed in an isolated child sub-agent). This knob writes the
+      # AGENTS.md delegation recipe (WHEN/HOW to delegate heavy multi-step tasks).
+      # Default on; `off` removes the block. NOTE: the 2026.6.1 schema REJECTS an
+      # `agents.defaults.subagents` bounds object (gateway crash-loop) — the patcher
+      # self-heals by removing it. The capability needs no extra config; OpenClaw's
+      # built-in subagent defaults + Discord's ~15-min interaction cap bound it. (A
+      # confirmed-schema bounds step is deferred — see CHANGELOG / docs/reference.)
+      OPENCLAW_DISCORD_AGENT_SUBAGENTS: ${OPENCLAW_DISCORD_AGENT_SUBAGENTS:-on}
       # Discord-routed agent thinkingDefault (patcher step 25c). Default
       # `high` (bumped 2026-06-08 from `minimal`) — Gemma 4 NVFP4 on the
       # `--reasoning-parser gemma4` pipeline benefits from larger thinking

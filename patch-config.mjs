@@ -526,6 +526,25 @@ for (const [k, v] of Object.entries(desiredHours)) {
   }
 }
 
+// (5b) Sub-agent delegation bounds — SELF-HEAL REMOVAL (2026.6.1). The sessions_spawn /
+//      sessions_yield CAPABILITY is already exposed by the "full" tool profile, and the
+//      Gemma 4 26B-A4B MoE drives the spawn→yield→announce protocol correctly with NO
+//      extra config (gate-tested 2026-06-08 with subagents=null: it computed F(25)=75025
+//      in an isolated child, and live UE5 coding sub-agents completed+announced).
+//      Community docs referenced `agents.defaults.subagents.{maxChildrenPerAgent,…}` but
+//      the LIVE 2026.6.1 gateway schema REJECTS that path ("Invalid input" → gateway
+//      crash-loop, observed 2026-06-08). So we do NOT write bounds here — we self-heal by
+//      REMOVING any previously-written block, and rely on OpenClaw's built-in subagent
+//      defaults + Discord's ~15-min interaction cap. Bounds tuning is deferred until the
+//      correct 2026.6.1 schema path is confirmed (likely session.* or per-agent, not
+//      agents.defaults). The OPENCLAW_SUBAGENTS_* env knobs are reserved for that future
+//      step. The delegation behaviour itself lives in the AGENTS.md cheatsheet block.
+if (config.agents?.defaults?.subagents !== undefined) {
+  delete config.agents.defaults.subagents;
+  changed = true;
+  console.log('[patch-config] removed agents.defaults.subagents (schema-invalid on 2026.6.1; capability comes from the tool profile, not this config)');
+}
+
 // (6) Dreaming (REM-style memory consolidation). Env-gated: OPENCLAW_ENABLE_DREAMING=1
 //     turns it on; anything else cleans up a previously-set entry (older gateway
 //     images reject the memory-core plugin schema with "additional properties").
@@ -2663,6 +2682,7 @@ const DISCORD_AGENT_I2I_CHEATSHEET_ENV = (process.env.OPENCLAW_DISCORD_AGENT_I2I
 const DISCORD_AGENT_DEEP_AGENTIC_ENV = (process.env.OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC || '').trim().toLowerCase();
 const DISCORD_AGENT_HONESTY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_HONESTY || '').trim().toLowerCase();
 const DISCORD_AGENT_SENDER_IDENTITY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY || '').trim().toLowerCase();
+const DISCORD_AGENT_SUBAGENTS_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SUBAGENTS || '').trim().toLowerCase();
 const isEnvOn = (v) => v === 'on' || v === '1' || v === 'true' || v === 'yes';
 
 const FORMAT_RULES_CHEATSHEET_START = '<!-- patch-config:discord-format-rules:start -->';
@@ -2737,7 +2757,7 @@ const HONESTY_CHEATSHEET_END = '<!-- patch-config:discord-honesty:end -->';
 const HONESTY_CHEATSHEET_BODY =
   '## Honesty — ne találj ki képességet, ne ígérj háttér-munkát\n\n' +
   'Konkrét tilalmak (mindegyik valós Gemma 4 hallucination-incidensből eredeztetve, 2026-06-07 éjjel):\n\n' +
-  '**1. NE hallucinálj kitalált "subagentet"** (`code_architect`, `asset_designer` stb. — ilyenek nincsenek, a `coding-agent` CLI sem elérhető). Kód-feladatot (boilerplate/script/projekt) MAGAD csinálj meg a `python_sandbox`-szal — lásd a Block D "írj egy scriptet/boilerplate-et" receptjét (magad írod a kódot → python_exec létrehozza a fájlokat → zip → upload-file). Anti-példa: *"Indítom a Code Architect subagentet, előkészítés fázisban..."* = HAZUGSÁG, semmi nem fut. Nagy projektnél a csontvázat csináld meg MOST, és mondd őszintén hogy ez a kezdet — NE tégy úgy mintha a háttérben futna valami.\n\n' +
+  '**1. NE hallucinálj KITALÁLT NEVŰ "subagentet"** (`code_architect`, `asset_designer` stb. — ilyen NEVŰ agentek nincsenek, a `coding-agent` CLI sem elérhető). DE FONTOS: a VALÓDI `sessions_spawn`+`sessions_yield` tool LÉTEZIK és működik — nehéz/hosszú feladatot (mély kutatás, nagy vagy több-komponensű coding-projekt) DELEGÁLJ vele egy izolált sub-agentnek, majd `sessions_yield`-del várd meg (lásd a "Sub-agent delegálás" blokkot). A tilalom CSAK a kitalált-nevű/fantázia-subagentre + a hamis jelentésre vonatkozik, NEM a valódi sessions_spawn-ra. Kis kód-feladatot (rövid script/boilerplate) MAGAD is megcsinálhatsz `python_sandbox`-szal (magad írod a kódot → python_exec létrehozza a fájlokat → zip → upload-file). Anti-példa: *"Indítom a Code Architect subagentet"* (KITALÁLT név) = HAZUGSÁG; helyette `sessions_spawn` egy valódi tool-hívás. 🚨 A delegált eredmény a yield után UGYANEBBEN az interakcióban jön vissza (auto-announce) — NE ígérj jövőbeli/háttér-kézbesítést.\n\n' +
   '**2. NE ígérj "háttérben dolgozom" / "miközben alszol" / "12 óra múlva visszajövök" típusú dolgokat.** Nincs background runner-ed. A turn végén te is leállsz. Konkrét anti-példa:\n\n' +
   '> *"Bekapcsolok a háttérben és folytatom a fejlesztést, hogy reggel valamilyen progress legyen."* — HAZUGSÁG. Te a következő üzenetig nem létezel.\n\n' +
   '> *"12 óra múlva magadtól írj ide egy statust"* — erre az egyetlen őszinte válasz az hogy beütemezed egy `cron` tool-lal (ha elérhető a katalógusodban), vagy elmondod hogy egy memóriába írod a feladatot és majd csak a következő interakciónál tudod elővenni. **NE tégy úgy, mintha tudnál autonóm módon felébredni 12 óra múlva.**\n\n' +
@@ -2750,6 +2770,23 @@ const HONESTY_CHEATSHEET_BODY =
   '> User: *"keresd meg az interneten a buzi-e vagy c. szám szövegét és azt tanuld meg te balfasz"*\n' +
   '> Bot: *"A \\"keress rá a neten\\" utasítás akkor működik, ha van egy olyan kulcsszó vagy kontextus, ami egy valódi találatot eredményez. A \\"buzi-e vagy\\" egy túl általános kérdés ahhoz, hogy a keresőmotorok egy konkrét szöveget töltsenek fel."* — HAZUGSÁG és LUSTASÁG. A user explicit megadta hogy ez egy **dal címe** ("c. szám" = című szám = című dal). A bot dolga `web_search("buzi-e vagy dalszöveg")` → ha 0 találat, akkor `web_search("buzi-e vagy lyrics")` → ha 0, akkor `browser({action:"open", url:"https://www.google.com/search?q=buzi-e+vagy+dalszöveg"})` → ha még akkor sincs, AKKOR mondhatod hogy nem találtam. De ELŐBB próbáld meg, ne találd ki hogy "túl általános".\n\n' +
   '**A user reakciója a hazugságra mindig negatív** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40 / "buta mint a fasz" — 2026-06-08 00:38). Az őszinte "nem tudom megtenni de ezt tudom" válasz mindig jobb — de a "próbáltam de fail-elt" még őszintébb mint a "nem érdemes próbálni".\n';
+
+// Sub-agent delegation cheatsheet. The sessions_spawn/sessions_yield tools are real
+// (exposed by the "full" profile) and the Gemma MoE drives them correctly (gate-tested
+// 2026-06-08). This block turns the honesty block's old blanket "no subagents" stance
+// into a positive, bounded delegation recipe. Env-gated OPENCLAW_DISCORD_AGENT_SUBAGENTS.
+const SUBAGENT_DELEGATION_CHEATSHEET_START = '<!-- patch-config:discord-subagent-delegation:start -->';
+const SUBAGENT_DELEGATION_CHEATSHEET_END = '<!-- patch-config:discord-subagent-delegation:end -->';
+const SUBAGENT_DELEGATION_CHEATSHEET_BODY =
+  '## Sub-agent delegálás — `sessions_spawn` (nehéz/hosszú feladatra)\n\n' +
+  'Nehéz, többlépéses feladatot (mély kutatás+összegzés, nagy vagy több-komponensű coding-projekt, sok-forrásos gyűjtés) NE told egyetlen turn-be — **delegáld egy izolált sub-agentnek**. A `sessions_spawn`+`sessions_yield` VALÓDI tool-ok a katalógusodban (NEM kitalált név). A sub-agent TISZTA kontextusban dolgozik (a te ~36 KB-os persona-promptod NÉLKÜL → gyors prefill, fókusz), és minden coding-tool-od megvan neki (python_sandbox, browser, web_search).\n\n' +
+  '**Protokoll — PONTOSAN ez a sorrend:**\n' +
+  '1. `sessions_spawn` `{"context":"isolated","task":"<önálló, részletes feladat-leírás — a sub-agent NEM látja a chat-historyt, ezért írj le MINDEN szükséges kontextust>"}` → non-blocking, visszaad egy runId-t.\n' +
+  '2. `sessions_yield` → befejezi a turn-öd és MEGVÁRJA a gyereket. Az eredmény **auto-announce**-szal magától visszajön a következő üzenetként, UGYANEBBEN az interakcióban.\n' +
+  '3. Az eredményt foglald össze a usernek (a nyers child-output hosszú lehet).\n\n' +
+  '🚨 **SOHA ne pollozz** — `sessions_list`/`sessions_history` loopban várni a befejezésre TILOS, a `yield` elintézi. 🚨 **NE ígérj jövőbeli/háttér-kézbesítést** ("háttérben folytatom", "12 óra múlva kész") — a yield UTÁN, MOST kapod meg.\n\n' +
+  '**Nagy projekt = több komponens párhuzamosan:** spawn-olj KOMPONENSENKÉNT egy-egy sub-agentet (pl. egy játékhoz külön Combat / Movement / Scoring / Resource sub-agent), yield, majd szintetizáld az eredményeket. Limit: max 3 egyidejű gyerek, ~10 perc/gyerek (a Discord 15-perc interaction-cap miatt).\n' +
+  '**Mikor NE delegálj:** egyszerű 1-2 tool-os kérésre (időjárás, egy kép, egy keresés) felesleges — azt inline, magad csináld.\n';
 
 const SENDER_IDENTITY_CHEATSHEET_START = '<!-- patch-config:discord-sender-identity:start -->';
 const SENDER_IDENTITY_CHEATSHEET_END = '<!-- patch-config:discord-sender-identity:end -->';
@@ -3069,6 +3106,30 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       agentsMd = honestyRemove.content;
       mdChanged = true;
       console.log(`[patch-config] workspace-discord/AGENTS.md ${honestyRemove.label}`);
+    }
+  }
+  // Sub-agent delegation recipe (sessions_spawn → sessions_yield → auto-announce).
+  // Pairs with the (5b) subagents-bounds config step. Gate-tested 2026-06-08: the MoE
+  // drives the protocol. Default-on via compose; explicit off removes the block.
+  if (isEnvOn(DISCORD_AGENT_SUBAGENTS_ENV)) {
+    const subagentUpsert = upsertMarkedBlock(
+      agentsMd, SUBAGENT_DELEGATION_CHEATSHEET_START, SUBAGENT_DELEGATION_CHEATSHEET_END,
+      SUBAGENT_DELEGATION_CHEATSHEET_BODY, 'discord-subagent-delegation cheatsheet',
+    );
+    if (subagentUpsert.changed) {
+      agentsMd = subagentUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${subagentUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_SUBAGENTS_ENV)) {
+    const subagentRemove = removeMarkedBlock(
+      agentsMd, SUBAGENT_DELEGATION_CHEATSHEET_START, SUBAGENT_DELEGATION_CHEATSHEET_END,
+      'discord-subagent-delegation cheatsheet',
+    );
+    if (subagentRemove.changed) {
+      agentsMd = subagentRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${subagentRemove.label}`);
     }
   }
   // Sender-identity discipline (guild channels are multi-user; the agent must
