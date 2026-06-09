@@ -299,6 +299,12 @@ if (vllm) {
   const desiredCore = {
     baseUrl: LLM_BASE_URL,
     api: LLM_API,
+    // Per-provider model request timeout (s). Raises OpenClaw's implicit ~120s LLM
+    // request/stream watchdog (schema: "raises the LLM idle/stream watchdog ceiling
+    // for this provider above the implicit ~120s default"). Coding sessions accrue
+    // large context whose prefill on the GB10 MoE can exceed 120s → "LLM request
+    // timed out" + an unresponsive channel. Env LLM_REQUEST_TIMEOUT_SECONDS (default 300).
+    timeoutSeconds: parseInt(process.env.LLM_REQUEST_TIMEOUT_SECONDS || '1800', 10),
   };
   if (VLLM_API_KEY) desiredCore.apiKey = VLLM_API_KEY;
   for (const [k, v] of Object.entries(desiredCore)) {
@@ -371,6 +377,7 @@ const vllmDense = config.models.providers['vllm-dense'];
 const desiredDenseCore = {
   baseUrl: LLM_DENSE_BASE_URL,
   api: LLM_API,
+  timeoutSeconds: parseInt(process.env.LLM_REQUEST_TIMEOUT_SECONDS || '300', 10),
 };
 if (VLLM_API_KEY) desiredDenseCore.apiKey = VLLM_API_KEY;
 for (const [k, v] of Object.entries(desiredDenseCore)) {
