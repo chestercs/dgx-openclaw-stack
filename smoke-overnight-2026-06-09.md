@@ -36,6 +36,24 @@ agentic coding, memóriák. Önfolytató ScheduleWakeup-loop tartja életben reg
 
 ---
 
+## [07:30] REGGELI follow-up — max-payne-2 "szét van esve" 2. réteg + bot-enablement
+
+A user (ChesTeR) reggel élőben jelezte: a max-payne oldal NÁLA még mindig szétesett, és a
+bot web_search-csölt a saját oldalára (→ Google reCAPTCHA) screenshot helyett.
+**Gyökérok (2. réteg, az éjszakai bootstrap-fix UTÁN):** a `src/styles.css` ÜRES volt,
+nincs `tailwind.config.js` → a Tailwind v3 (telepítve volt!) SOHA nem futott → a sok
+`bg-max-black`/`flex`/`text-max-red` utility-osztály nem érvényesült → stílustalan, törött
+layout (built styles.css = 678 byte). **Fix:** `tailwind.config.js` (content-paths +
+max-black/max-red/max-gray színek) + `src/styles.css` (@tailwind direktívák + noir-grain/
+noir-vignette/scanline custom CSS) + rebuild → styles.css **678 byte → 12.7 kB**, szolgált
+oldal 200 + styled. **User-teendő: KEMÉNY refresh (Ctrl+Shift+R)** a cache-elt régi
+index.html/CSS miatt.
+**Bot-enablement:** a bot nem tudta a saját oldala URL-jét → web_search → reCAPTCHA.
+Beírtam `memory/projects.md`-be (URL + forrás + "te fejleszted" + "NE web_search-csölj a
+saját oldaladra") + indexeltem. Validálva: új session a bot `memory_search`+`memory_get`-tel
+megtalálta + a helyes URL-t nyitotta `browser`-rel (6×), 0 reCAPTCHA.
+**Recept:** Block D bővítve a Tailwind-setup hygiene-nel (config kötelező, nem elég a class).
+
 ## 🌅 ZÁRÓ ÖSSZEFOGLALÓ (06:49 — stack végig egészséges, ZERO incidens)
 
 Az autonóm éjszakai smoke+fix session lezárva (03:09 → 06:49). A healthcheck-watchdog
