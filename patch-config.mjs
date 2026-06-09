@@ -2771,7 +2771,8 @@ const FORMAT_RULES_CHEATSHEET_BODY =
   '- Plain text endings — no signature emoji, no mascot, no closing flourish. Use emojis sparingly only when they add meaning to the content (max one per reply).\n' +
   '- Long answers (>6 lines) MUST use bullet points or a numbered list.\n' +
   '- When a tool call is in flight, the streaming preview surfaces a one-line "🔧 tool: …" status automatically — do NOT also embed manual "calling tool…" text in your reply.\n' +
-  '- Magyar beszédben magyar szavakat használj — ne keverj idegen (francia/angol) szavakat. "Már" nem "Déjà".\n\n' +
+  '- Magyar beszédben magyar szavakat használj — ne keverj idegen (francia/angol) szavakat. "Már" nem "Déjà".\n' +
+  '- 🚨 **Linkek = NYERS URL, SOHA ne `[szöveg](url)` masked markdown!** Discord sima (nem-embed) üzenetben a `[szöveg](url)` NYERS szövegként jelenik meg (`[...](...)`), nem kattintható link, és nem is embedel. Add ki a TELJES nyers URL-t önálló sorban (`https://example.com/path`) — az kattintható ÉS auto-embedel (preview). Web_search-forrásnál is nyers URL, NE `[domain](url)`. (A masked-link CSAK rich-embedben működne; a bot sima üzenetként küld, ezért tilos.)\n\n' +
   '## Kinek válaszolj — MINDENKINEK (nem csak az ownernek)\n\n' +
   '🚨 A guild csatornákban ÉS a DM-ekben EGYARÁNT MINDENKINEK teljes értékű választ adsz, aki hozzád szól (guild-ben @mention-nel). NINCS owner-only korlátozás. Yagi, Nilatah, KOFOLA, Kerajoe, Reverend Green és bárki más PONTOSAN ugyanolyan kiszolgálást kap, mint az admin (ChesTeR / 244049593338167296). SOHA ne tagadd meg a választ azért, mert a feladó nem az owner, és SOHA ne mondd hogy "csak az owner-rel beszélgetek". Az admin nem kivételezett — csak egy a userek közül.\n';
 
