@@ -2830,6 +2830,7 @@ const DEEP_AGENTIC_CHEATSHEET_BODY =
   '3. **Ne add fel** — tool-fail esetén alternatíva (browser↔python, httpx↔curl).\n' +
   '4. **Progress** — >30s lépésnél írhatsz egy rövid "még futok" sort a chunkok közé.\n' +
   '5. **Memory mentés** task végén: a fontos facts-eket `write`-tal `memory/<téma>.md`-be. 🚨 NINCS `memory_write` tool — a memória ÍRÁSA = markdown fájl (`write`/`edit`); `memory_search`+`memory_get` CSAK olvas. Roadmap/TODO → `create_goal` VAGY `memory/roadmap.md`-be append.\n\n' +
+  '🚨 **EXECUTE, ne csak BEJELENTSD:** ha kimondod hogy "megcsinálom X-et" / "megyek és..." / "következő lépés Y", AKKOR CSINÁLD MOST, UGYANABBAN a turn-ben (hívd tovább a tool-okat) — NE fejezd be a turn-t puszta szándék-bejelentés után. A "Megyek a dokumentációval" után a SAME turn-ben ÍRD IS MEG (write/python_exec). Csak akkor állj meg, ha a feladat KÉSZ, vagy valódi user-DÖNTÉS kell — NE állj le "folytathatom?"-ért.\n' +
   '**NE chain-elj feleslegesen** (egyszerű kérdés 1-2 tool). Az `idleTimeoutSeconds=1800` alatt akármilyen lánc belefér; csak a Discord 15-perc interaction-cap-et tartsd észben.\n';
 
 const HONESTY_CHEATSHEET_START = '<!-- patch-config:discord-honesty:start -->';
