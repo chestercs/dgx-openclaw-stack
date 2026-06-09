@@ -36,6 +36,43 @@ agentic coding, memóriák. Önfolytató ScheduleWakeup-loop tartja életben reg
 
 ---
 
+## 🌅 ZÁRÓ ÖSSZEFOGLALÓ (06:49 — stack végig egészséges, ZERO incidens)
+
+Az autonóm éjszakai smoke+fix session lezárva (03:09 → 06:49). A healthcheck-watchdog
+MINDEN 5-perces logja: `healthz live, gpu 0%, not_up=[none]`. Stack stabil maradt.
+
+**Javított bugok (mind deployolva + ÉLŐ — session-reset NÉLKÜL, mert az AGENTS.md
+runtime-renderel):**
+1. **`memory_write` halott-tool** (4 hely az AGENTS.md-ben) → `write` a `memory/*.md`-be +
+   `create_goal`. Ez okozta Reverend Green "vedd fel a roadmapre" failjét. A bot most ment.
+2. **`browser__navigate`/`read_page`** (régi API) → `browser({action})`.
+3. **TTS engine-név** Kokoro/F5 → Fish Audio S2 Pro (a SKILLS-blokk amúgy inaktív).
+4. **Angular render-bug** (max-payne-2): hardcode-olt build-asset tag a `src/index.html`
+   templateben → dupla script → `import` syntax-error → no bootstrap (a "tájkép" screenshot).
+   Tiszta template + rebuild + Block D recept-erősítés.
+
+**Verifikált user-flow-k (mind 0 failure, a BOT vezérelte — NEM operátor-MCP):** memory
+write/search, browser open/snapshot/screenshot + Gemma-vision, **git_push (autonóm! a
+user eredeti kérése)**, web_search, image-gen (flux-krea-2k), video-gen (LTX t2v),
+goals (create_goal), cron (#34 RESOLVED), STT-backend, sub-agent (sessions_spawn→yield,
+F30=832040), multi-tool research (web+browser+python), Go agentic coding (build+run),
+static build+host (sandbox.petyuspolisz.com/imbul-test), update_plan.
+
+**☑️ REGGELI USER-DÖNTÉSEK:**
+- **TTS (Fish):** a backend nem fut (#13). Vagy deploy (figyelni a GPU-OOM-ra a futó
+  vllm mellett), vagy `messages.tts.enabled=false` amíg nincs backend. Doc addig javítva.
+- **Whisper STT (opcionális):** a turbo zajos/régi audión repetíciós hallucinációt ad
+  (watch #4). Ha gyakori panasz: `STT_WHISPER_MODEL=large-v3` vagy `Trendency/whisper-large-v3-hu`.
+- **Loop-detection:** nem fogta meg a bot 84-call Angular-rebuild loopját — érdemes a
+  `tools.loopDetection` küszöböket GUI-ban (séma-validálva) finomítani.
+
+**Git:** `2eaf4ca` (dead-tool fix) + `ac4d3db` (report+watchdog) + ez a záró commit.
+**Healthcheck cron** 07:00 után magától kiveszi magát a crontab-ból.
+**Test-detritus (törölhető):** imbul-test oldal, `imbulclaw-smoke-test` GitHub repo,
+`primes`/`bot-*` session-ök.
+
+---
+
 ## Részletes findings + fixek (kronológikus)
 
 ### [03:09] memory_write halott tool — FIXED + VERIFIED ✅
@@ -147,6 +184,36 @@ bot tool-call-logja, nem befagyasztott prompt). A channel-session fájlok első 
 az AGENTS.md-ből minden aktiváláskor. **A javított AGENTS.md a meglévő csatornákon a
 következő üzenetnél él, reset nélkül.** (A memory-note "sticky reset" csak a thinking-
 paraméterre + history-ra vonatkozik, az AGENTS.md promptra nem.)
+
+### [04:33] (watch #1) sub-agent delegáció (sessions_spawn→yield) — VERIFIED ✅
+Health: healthz ok, gpu 0%, watchdog not_up=[none] minden 5-perces logban. Spot-teszt:
+bot `sessions_spawn`+`sessions_yield` (2 call, 0 fail, yielded:true) → a gyerek sub-agent
+kiszámolta F(30)=**832040** (session-store igazolja). A Gemma MoE helyesen vezérli a
+spawn→yield protokollt, end-to-end működik.
+
+### [05:00] (watch #2) multi-tool research lánc — VERIFIED ✅
+Health ok (healthz live, gpu 0%, not_up=[none]). Spot-teszt: `web_search`+`browser`+
+`python_exec` (4 call, 0 fail) → "Mount Everest 8848.86 m = 29031.69 ft" (helyes
+átváltás). Deep multi-tool chaining (Block F deep-agentic) működik.
+
+### [05:27] (watch #3) harder agentic coding (Go dev-toolchain) — VERIFIED ✅
+Health ok (healthz live, gpu 0%, not_up=[none]). Bot: Go program (első 10 prím) write +
+`go build` + run (2 call python_exec, 0 fail) → "2 3 5 7 11 13 17 19 23 29" (helyes).
+A sandbox dev-toolchain (go build+run) működik.
+
+### [05:54] (watch #4) transcribe yt-dlp+STT — PIPELINE PASS, transcript-minőség ⚠️
+Health ok. Bot: `python_exec` (yt-dlp download) + `transcribe_audio` (2 call, 0 fail) — a
+lánc end-to-end működik. **DE** a Whisper turbo a "Me at the zoo" (jNQXAC9IVRw) régi/zajos
+klippen REPETÍCIÓS hallucinációt adott ("it's bad it's bad..."), nem a valódi szöveget.
+Ismert turbo-limitáció (4-layer decoder, zajos/régi audión), NEM pipeline-bug — tiszta
+beszéden jól megy (prior sessions). **Megfontolandó (user):** `STT_WHISPER_MODEL=
+Trendency/whisper-large-v3-hu` (HU) vagy a teljes `large-v3` a jobb minőséghez, ha a
+gyenge-audió transzkripció gyakori panasz lesz.
+
+### [06:23] (watch #5) fixed-item re-verify — minden tart ✅
+Health ok (06:00-06:20 healthz live, not_up=[none]). max-payne-2: HTTP 200 + egyetlen
+`<script type="module">` (Angular-fix stabil). imbul-test: HTTP 200. memory/roadmap.md
+ép ("WebGL játék fejlesztése"). Minden éjszakai javítás stabil maradt.
 
 ## Pending / kockázat (reggeli user-döntés)
 - **TTS (Fish):** `messages.tts.enabled=true` de a `openclaw-tts-fish` backend nem fut
