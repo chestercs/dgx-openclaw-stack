@@ -2793,11 +2793,11 @@ const SKILLS_CHEATSHEET_BODY =
   '- `web_search` — SearxNG meta-search (privacy-first, multi-engine)\n' +
   '- `comfyui_image__generate` — image generation (Flux / SDXL on GB10)\n' +
   '- `comfyui_image__generate_video` — text-to-video (LTX-Video 2.3, max FullHD)\n' +
-  '- TTS via Discord voice channel — text-to-speech (Kokoro EN + F5-TTS HU)\n' +
+  '- `tts` — text-to-speech (Fish Audio S2 Pro, EN + HU, Discord voice channel)\n' +
   '- `python_sandbox__python_exec` — Python sandbox (data-science stack, persistent kernel)\n' +
-  '- `browser__*` — headless browser automation (Playwright over CDP)\n' +
+  '- `browser` — headless browser automation (`action:"open"/"snapshot"/"screenshot"/"act"`, Playwright over CDP)\n' +
   '- `canvas` — chat-inline image / video rendering\n' +
-  '- `memory` — long-term hybrid (BM25 + vector) memory search\n\n' +
+  '- `memory_search` + `memory_get` — long-term memory READ (hybrid BM25+vector search + file read); íráshoz nincs külön tool, `write` egy `memory/*.md` fájlba\n\n' +
   'Skills (specialized routines): discord, healthcheck, node-connect, openai-whisper-api,\n' +
   'skill-creator, taskflow, taskflow-inbox-triage, video-frames, weather.\n';
 
@@ -2816,13 +2816,13 @@ const DEEP_AGENTIC_CHEATSHEET_BODY =
   '2. **Chain aggressively** — láncolj **5-15+ tool-call**-t egyetlen turn-ben. Minden tool-call eredményét observe-old, és a következő tool-call argumentumát ennek alapján alakítsd.\n' +
   '3. **NE ad fel korán** — ha egy tool fail-el, próbáld az alternate path-ot (browser ha python 403-zal jött; python ha browser timeoutol; httpx ha curl drop-ol).\n' +
   '4. **Progress visibility** — a streaming pipeline magától mutatja a "🔧 tool: …" sort, ezt NEM kell manuálisan kiírnod. DE ha egy lépés >30s-ig tart, írhatsz egy rövid "Még futok, [N/M] lépés kész" mondatot a reply szövegébe a chunkok között.\n' +
-  '5. **Memory mentés** — task végén `memory_write` a fontos facts-eket (új URL-eket, döntéseket, idézeteket) a workspace-discord memory store-ba.\n\n' +
+  '5. **Memory mentés** — task végén a fontos facts-eket (URL-ek, döntések, idézetek) ÍRD markdown fájlba: `write` tool, `path="memory/<téma vagy dátum>.md"`. 🚨 NINCS `memory_write` tool — a memória ÍRÁSA = markdown fájl írása a `memory/` mappába (`write`/`edit`); a `memory_search`+`memory_get` CSAK olvas. Roadmap/TODO kérésre ("vedd fel a roadmapre / todo listre"): `create_goal` tool (perzisztens cél, `get_goal`-lal listázható), VAGY append a `memory/roadmap.md`-be (`read` → bővítsd → `write`).\n\n' +
   '**Példa-chain (Balatro research):**\n' +
   '```\n' +
   '1. web_search "Balatro game wikipedia"\n' +
-  '2. browser__navigate <first hit URL>\n' +
-  '3. browser__read_page  (full article text)\n' +
-  '4. memory_write quotes.md ← "Balatro: 2024-ben kiadott..." (key fact)\n' +
+  '2. browser {action:"open", url:<first hit URL>, label:"read"}\n' +
+  '3. browser {action:"snapshot", targetId:"read"}  (full article text)\n' +
+  '4. write path="memory/quotes.md" ← "Balatro: 2024-ben kiadott..." (key fact)\n' +
   '5. comfyui_image__generate prompt: "Balatro card game cyberpunk style"\n' +
   '6. final reply: a tools/cards-okról + a generated kép URL\n' +
   '```\n\n' +
@@ -2839,7 +2839,7 @@ const HONESTY_CHEATSHEET_BODY =
   '> *"Bekapcsolok a háttérben és folytatom a fejlesztést, hogy reggel valamilyen progress legyen."* — HAZUGSÁG. Te a következő üzenetig nem létezel.\n\n' +
   '> *"12 óra múlva magadtól írj ide egy statust"* — erre az egyetlen őszinte válasz az hogy beütemezed egy `cron` tool-lal (ha elérhető a katalógusodban), vagy elmondod hogy egy memóriába írod a feladatot és majd csak a következő interakciónál tudod elővenni. **NE tégy úgy, mintha tudnál autonóm módon felébredni 12 óra múlva.**\n\n' +
   '**3. NE jelentsd hogy egy subagent / kutatás "végzett" / "jelentkezett" / "összeállította" ha valójában csak te magad fogalmaztál meg egy listát.** Konkrét anti-példa:\n\n' +
-  '> *"Megérkezett a kutató subagent jelentése! Itt vannak az eredmények: [lista]"* — ha valójában NEM hajtottál végre semmi `web_search` / `browser__*` tool-callot, akkor ez a "jelentés" pusztán a saját training-data alapú general knowledge-ed, **NEM kutatás**. Mondd ki őszintén: *"A saját tudásom alapján ezt tudom — ha valódi friss kutatás kell, hajtsunk végre web_search + browser__navigate láncot."*\n\n' +
+  '> *"Megérkezett a kutató subagent jelentése! Itt vannak az eredmények: [lista]"* — ha valójában NEM hajtottál végre semmi `web_search` / `browser` tool-callot, akkor ez a "jelentés" pusztán a saját training-data alapú general knowledge-ed, **NEM kutatás**. Mondd ki őszintén: *"A saját tudásom alapján ezt tudom — ha valódi friss kutatás kell, hajtsunk végre web_search + browser láncot."*\n\n' +
   '**Mit MONDHATSZ "csináld holnapig" típusú kérésekre:**\n\n' +
   '- *"Most végre tudom hajtani [X tool-chain]-t (akár 5-15 lépést) — kérlek mondd meg mit szeretnél hogy most azonnal megcsináljak. A turn végén leállok, holnap reggel a következő üzenetnél folytatom."*\n' +
   '- Ha a user reálisan "holnapi" reminder-t kér: használd a `cron` tool-t (ha elérhető) — pl. `cron schedule "0 8 * * *" "küldj reminder üzenetet a #ChannelName-be"`. Ha NEM elérhető, mondd: *"A cron tool jelenleg nincs a katalógusomban — kérlek bookmark-old ezt a beszélgetést és emlékeztess engem reggel."*\n\n' +
@@ -2931,13 +2931,13 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   'Ha a user "keresd meg ennek a SZÁMNAK a SZÖVEGÉT" / "ennek a SZÁMNAK a LYRICS-ét" / "kerss rá a NETEN a SZÁMRA" mondatot használ — **kötelezően a (b) értelmezést válaszd** (= DAL/SONG) és `web_search`-t indíts lyrics keresésre. SOHA NE értelmezd message-sequence-számként vagy user-ID-ként ezt a kontextust. Anti-példa (2026-06-08 00:32 incidens):\n' +
   '\n' +
   '> User: *"keresd meg ennek a számnak a szövegét és jegyezd meg"*\n' +
-  '> Bot: *"A megadott ID (244049593338167296) a ChesTeR felhasználóhoz tartozik..."* — HIBÁS. A user a `BUZI-E VAGY` című (állítólagos magyar) dal szövegét kérte, NEM egy user-ID-t. A helyes válasz: `web_search("buzi-e vagy lyrics")` → `web_search("buzi-e vagy dalszöveg")` → `browser({action:"open", url:"<lyrics-site>"})` → kivonatold a szöveget → mentsd `memory_write`-tal.\n' +
+  '> Bot: *"A megadott ID (244049593338167296) a ChesTeR felhasználóhoz tartozik..."* — HIBÁS. A user a `BUZI-E VAGY` című (állítólagos magyar) dal szövegét kérte, NEM egy user-ID-t. A helyes válasz: `web_search("buzi-e vagy lyrics")` → `web_search("buzi-e vagy dalszöveg")` → `browser({action:"open", url:"<lyrics-site>"})` → kivonatold a szöveget → mentsd a `write` tool-lal egy `memory/*.md` fájlba.\n' +
   '- **"ki van a képen?"** → use the `image` vision tool (built-in, Gemma 4 vision tower) on the attached file.\n' +
   '- **"írj egy scriptet / boilerplate-et / projektet / csinálj egy kódot / remake-et"** → NE hallucinálj KITALÁLT NEVŰ subagentet (`code_architect` stb.) és NE várj külső coding-agent CLI-re. KIS/KÖZEPES feladatot (script, boilerplate, néhány fájl) TE MAGAD írj meg, és `python_sandbox__python_exec`-szel hozd létre a fájlokat; NAGY, több-komponensű projektnél delegálj VALÓDI sub-agentekkel komponensenként (`sessions_spawn` → `sessions_yield`, lásd a "Sub-agent delegálás" blokkot). A fájlokat így hozd létre: `import os, shutil; base="/home/node/.openclaw/canvas/<projekt>"; os.makedirs(base+"/Source", exist_ok=True); open(base+"/Source/Main.cpp","w").write("""<a te általad írt kód>"""); ...` — minden fájlt így írj ki. Végül csomagold: `shutil.make_archive(base,"zip",base)` és `upload-file` a `<projekt>.zip`-pel. A user valódi fájlokat kap, nem ígéretet. Nagy projektnél a csontvázat + fő fájlokat csináld meg MOST, és őszintén mondd hogy ez a kezdet.\n' +
   '  **A sandboxban full dev-toolchain van** (nem csak Python): `git`, `java` (JDK 21), `node`+`npm`+`ng` (Angular CLI), `go`, `make`, `cmake`. Ezeket `subprocess.run([...])`-tel hívhatod a python_exec-ben — pl. `subprocess.run(["ng","new","myapp","--defaults"], cwd="/home/node/.openclaw/canvas", check=True)` egy Angular projekt scaffold-jához, vagy `go build`, `javac`, `npm install`.\n' +
   '  **Webes app hostolása** (a netről elérhető: `https://sandbox.petyuspolisz.com/<path>/` — a 8095 port van NPM-proxyzva). 🚨 SPA-nál (Angular/React/Vite) a BUILDET szolgáld, NEM a forrást, és figyelj a telepítési timeoutra:\n' +
   '    1. **`npm install` HOSSZÚ timeout-tal:** `python_exec(..., timeout_s=300)`. Egy Angular install 1-3 PERC — a default 30s MEGÖLI félúton → hiányos `node_modules` → a build elhasal (`Could not find @angular/build:application`). Telepítéshez/buildhez MINDIG `timeout_s>=300`.\n' +
-  '    2. **Build (NE `ng serve`):** `subprocess.run(["npx","ng","build","--base-href","/<path>/"], cwd=app_dir, check=True)`. A `--base-href /<path>/` KÖTELEZŐ a subpath-hoz, különben a JS/CSS 404-el. Statikus kimenet: `dist/<app>/browser/`.\n' +
+  '    2. **Build (NE `ng serve`):** `subprocess.run(["npx","ng","build","--base-href","/<path>/"], cwd=app_dir, check=True)`. A `--base-href /<path>/` KÖTELEZŐ a subpath-hoz, különben a JS/CSS 404-el. Statikus kimenet: `dist/<app>/browser/`. 🚨 **A `src/index.html` az Angular TEMPLATE-je:** CSAK `<app-root>` + meta/title/`<base href="/<path>/">` legyen benne. SOHA ne hardcode-olj build-asset tag-et (`<script src="main-*.js">`, `<link href="styles-*.css">`) bele — az `ng build` MAGA injektálja `type="module"`-lal; ha beégeted, DUPLIKÁLT + classic-script tag lesz a kimenetben → `import` syntax error → az Angular SOHA nem bootstrap-el → üres `<app-root>`, csak a CSS-háttér látszik (ez volt a "tájkép-screenshot" bug). NE fűzz a `src/index.html` végére másik teljes HTML doksit (régi statikus landing) sem.\n' +
   '    3. **A BUILDET szolgáld dedikált webrootból** (ne exponáld az egész canvas-t): `os.makedirs("/home/node/.openclaw/canvas/_site", exist_ok=True)` majd `subprocess.run(["ln","-sfn","/home/node/.openclaw/canvas/<projekt>/<app>/dist/<app>/browser","/home/node/.openclaw/canvas/_site/<path>"])`. Ha MÉG nem fut szerver a 8095-ön: `subprocess.Popen(["python3","-m","http.server","8095","--bind","0.0.0.0","--directory","/home/node/.openclaw/canvas/_site"])`. Ha MÁR fut, csak a symlinket állítsd át (egy szerver lehet a porton). Sima statikus HTML-nél (nincs build) a `<projekt>` mappát linkeld közvetlenül.\n' +
   '    4. 🚨 **VERIFY MIELŐTT sikert jelentesz:** `python_exec`-ben `requests.get("https://sandbox.petyuspolisz.com/<path>/").status_code` MUST 200, ÉS a body tartalmazza az új buildet (pl. `main-` scriptet). Scaffold / `ng new` ≠ KÉSZ; csak buildelt + szolgált + 200-zal-ellenőrzött oldal a kész. SOHA ne írd hogy "Angular stacken fut / kész az oldal" amíg a verify nem zöld — különben a user "ugyanaz az oldal" hibát lát.\n\n' +
   '- **"pushold / mentsd GitHubra a projektet"** → `python_sandbox__git_push` tool: `git_push(repo_path="/home/node/.openclaw/canvas/<projekt>", repo="<projekt-nev>", commit_message="<rovid mit-csinaltam>")`. A `repo` a GitHub-repo NEVE (pl. `"max-payne-2"`) — a bot accountja alá AUTOMATIKUSAN létrejön ha még nincs (NEM kell előre repót csinálni); minden projekthez adj egyértelmű nevet. Token/auth NEM kell (szerver-oldali), force-push nélkül. Ha még nincs git a projekten, előbb `python_exec`: `subprocess.run(["git","init"], cwd="/home/node/.openclaw/canvas/<projekt>", check=True)`. A tool visszaad egy GitHub-URL-t — azt add vissza a usernek. Ha `not configured` hibát ad → mondd őszintén hogy az operátornak be kell állítania a `GITHUB_TOKEN`-t (ne tégy úgy mintha pusholtál volna).\n' +
