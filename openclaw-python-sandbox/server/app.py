@@ -196,11 +196,11 @@ TOOLS = [
             "auth are all held server-side — you never see or handle credentials. "
             "Typical flow: build a project (e.g. in /home/node/.openclaw/canvas/<name>), "
             "`git init` it via python_exec, then call git_push with repo_path=<that dir> "
-            "and a commit_message. It pushes ONLY to the configured repo (auto-created "
-            "if it doesn't exist yet; you cannot target a different one) and never "
-            "force-pushes. Returns the GitHub URL on success. If the server has no "
-            "GITHUB_TOKEN/GITHUB_REPO set, it returns a clear 'not configured' error — "
-            "tell the user the operator must wire those."
+            "and a commit_message, plus `repo` to name the GitHub repo for THIS project "
+            "(e.g. 'max-payne-2' — created under the bot's account if it doesn't exist "
+            "yet; or a full 'owner/name'). Never force-pushes. Returns the GitHub URL on "
+            "success. If the server has no GITHUB_TOKEN set, it returns a clear "
+            "'not configured' error — tell the user the operator must wire it."
         ),
         "inputSchema": {
             "type": "object",
@@ -218,6 +218,14 @@ TOOLS = [
                     "description": (
                         "Optional. If given, `git add -A` + commit ALL current changes "
                         "before pushing. Omit to push already-committed work only."
+                    ),
+                },
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "The GitHub repo for this project. A bare name (e.g. "
+                        "'max-payne-2') is created under the bot's account if missing; "
+                        "or pass a full 'owner/name'. Pick a clear name per project."
                     ),
                 },
                 "branch": {
@@ -334,19 +342,44 @@ async def _tool_transcribe_audio(args: dict) -> dict:
     return await asyncio.to_thread(_transcribe_sync, path, language)
 
 
-def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Optional[str]) -> dict:
+def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Optional[str], repo: Optional[str]) -> dict:
     """Blocking git commit+push — run via asyncio.to_thread. The PAT lives only in
     this process env; we hand it to git via a transient GIT_ASKPASS helper so it
-    never lands in argv (ps) or .git/config, and we only ever push to GITHUB_REPO."""
+    never lands in argv (ps) or .git/config. The target repo is DYNAMIC: the agent
+    passes `repo` per call (a bare name → qualified under the token account's login,
+    or a full owner/name), falling back to the GITHUB_REPO env default if set."""
     import subprocess
     import tempfile
+    import requests
 
-    if not GITHUB_TOKEN or not GITHUB_REPO:
+    if not GITHUB_TOKEN:
         raise RuntimeError(
-            "git_push is not configured: the operator must set GITHUB_TOKEN (a "
-            "fine-grained PAT with Contents:read+write on the repo) and GITHUB_REPO "
-            "(owner/repo) in docker-compose for the sandbox."
+            "git_push is not configured: the operator must set GITHUB_TOKEN (a PAT, "
+            "e.g. a classic token with `repo` scope) in docker-compose for the sandbox."
         )
+    _api_headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+    # Resolve the target repo: per-call `repo` wins; else the GITHUB_REPO env default.
+    # A bare name (no "/") is qualified with the token account's login.
+    target_repo = (repo or GITHUB_REPO or "").strip().strip("/")
+    if not target_repo:
+        raise RuntimeError(
+            "no target repo: pass `repo` (e.g. 'max-payne-2' or 'owner/max-payne-2'), "
+            "or set GITHUB_REPO on the sandbox."
+        )
+    if "/" not in target_repo:
+        try:
+            _u = requests.get("https://api.github.com/user", headers=_api_headers, timeout=20)
+        except requests.RequestException as e:
+            raise RuntimeError(f"GitHub API unreachable from the sandbox: {e}")
+        if _u.status_code != 200:
+            raise RuntimeError(
+                f"cannot resolve the token's account (HTTP {_u.status_code}): "
+                f"{_u.text[:200]}. Pass `repo` as 'owner/name' instead."
+            )
+        _login = (_u.json() or {}).get("login")
+        if not _login:
+            raise RuntimeError("GitHub /user returned no login; pass `repo` as 'owner/name'.")
+        target_repo = f"{_login}/{target_repo}"
     real = os.path.realpath(repo_path)
     if not os.path.isdir(real):
         raise ValueError(f"repo path not found or not a directory: {repo_path}")
@@ -357,34 +390,32 @@ def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Option
         raise ValueError(f"not a git repo (no .git dir): {real}. Run `git init` first via python_exec.")
     target_branch = (branch or GIT_DEFAULT_BRANCH).strip() or GIT_DEFAULT_BRANCH
 
-    # Auto-create the GitHub repo if it doesn't exist yet, so a dedicated bot account
-    # only needs to hand over a token (no manual repo creation). The repo is created
-    # under the token's own account; needs a token that can create repos (classic PAT
-    # with `repo` scope works). Visibility from GITHUB_REPO_PRIVATE (default private).
-    import requests  # local import: only this tool needs it
-    _api_headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+    # Auto-create the GitHub repo if it doesn't exist yet (under the token's account),
+    # so the agent can push a brand-new project with no manual repo creation. Needs a
+    # token that can create repos (a classic PAT with `repo` scope works). Visibility
+    # from GITHUB_REPO_PRIVATE (default private).
     repo_created = False
     try:
-        _chk = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}", headers=_api_headers, timeout=20)
+        _chk = requests.get(f"https://api.github.com/repos/{target_repo}", headers=_api_headers, timeout=20)
     except requests.RequestException as e:
         raise RuntimeError(f"GitHub API unreachable from the sandbox: {e}")
     if _chk.status_code == 404:
-        _name = GITHUB_REPO.split("/", 1)[-1]
+        _name = target_repo.split("/", 1)[-1]
         _cr = requests.post(
             "https://api.github.com/user/repos", headers=_api_headers,
             json={"name": _name, "private": GITHUB_REPO_PRIVATE, "auto_init": False}, timeout=30,
         )
         if _cr.status_code not in (200, 201):
             raise RuntimeError(
-                f"repo {GITHUB_REPO} does not exist and auto-create failed "
+                f"repo {target_repo} does not exist and auto-create failed "
                 f"(HTTP {_cr.status_code}): {_cr.text[:300]}. Check the token can create "
-                f"repos and that GITHUB_REPO's owner matches the token's account."
+                f"repos and that the repo owner matches the token's account."
             )
         repo_created = True
     elif _chk.status_code != 200:
         raise RuntimeError(
             f"GitHub repo check failed (HTTP {_chk.status_code}): {_chk.text[:200]}. "
-            f"Is GITHUB_TOKEN valid and does it have access to {GITHUB_REPO}?"
+            f"Is GITHUB_TOKEN valid and does it have access to {target_repo}?"
         )
 
     # GIT_ASKPASS shim: git invokes it for the password and we echo the token from
@@ -397,7 +428,7 @@ def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Option
     env["GIT_PUSH_TOKEN"] = GITHUB_TOKEN
     env["GIT_ASKPASS"] = askpass.name
     env["GIT_TERMINAL_PROMPT"] = "0"
-    remote = f"https://x-access-token@github.com/{GITHUB_REPO}.git"
+    remote = f"https://x-access-token@github.com/{target_repo}.git"
 
     def _git(*argv: str):
         return subprocess.run(
@@ -434,11 +465,11 @@ def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Option
         raise RuntimeError(f"git push failed (exit {pr.returncode}): {push_out[:800]}")
     return {
         "ok": True,
-        "repo": GITHUB_REPO,
+        "repo": target_repo,
         "branch": target_branch,
         "committed": committed,
         "repo_created": repo_created,
-        "url": f"https://github.com/{GITHUB_REPO}",
+        "url": f"https://github.com/{target_repo}",
         "commit_output": commit_out[-400:],
         "push_output": push_out[-600:],
     }
@@ -454,7 +485,10 @@ async def _tool_git_push(args: dict) -> dict:
     branch = args.get("branch") or None
     if branch is not None and not isinstance(branch, str):
         raise ValueError("`branch` must be a string when provided")
-    return await asyncio.to_thread(_git_push_sync, repo_path, commit_message, branch)
+    repo = args.get("repo") or None
+    if repo is not None and not isinstance(repo, str):
+        raise ValueError("`repo` must be a string when provided")
+    return await asyncio.to_thread(_git_push_sync, repo_path, commit_message, branch, repo)
 
 
 TOOL_HANDLERS = {
