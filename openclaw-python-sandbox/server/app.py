@@ -198,7 +198,8 @@ TOOLS = [
             "`git init` it via python_exec, then call git_push with repo_path=<that dir> "
             "and a commit_message, plus `repo` to name the GitHub repo for THIS project "
             "(e.g. 'max-payne-2' — created under the bot's account if it doesn't exist "
-            "yet; or a full 'owner/name'). Never force-pushes. Returns the GitHub URL on "
+            "yet; or a full 'owner/name'). Pass force=true to overwrite a diverged remote "
+            "(your own throwaway repos only). Returns the GitHub URL on "
             "success. If the server has no GITHUB_TOKEN set, it returns a clear "
             "'not configured' error — tell the user the operator must wire it."
         ),
@@ -231,6 +232,16 @@ TOOLS = [
                 "branch": {
                     "type": "string",
                     "description": "Optional target branch. Default 'main'.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional (default false). If true, force-push (overwrite the "
+                        "remote with your LOCAL history). Use ONLY for your own throwaway "
+                        "project repos when the remote diverged (you reset history or "
+                        "re-init'd after a previous push). Safe here: repos live on the "
+                        "bot's dedicated account."
+                    ),
                 },
             },
             "required": ["repo_path"],
@@ -342,7 +353,7 @@ async def _tool_transcribe_audio(args: dict) -> dict:
     return await asyncio.to_thread(_transcribe_sync, path, language)
 
 
-def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Optional[str], repo: Optional[str]) -> dict:
+def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Optional[str], repo: Optional[str], force: bool = False) -> dict:
     """Blocking git commit+push — run via asyncio.to_thread. The PAT lives only in
     this process env; we hand it to git via a transient GIT_ASKPASS helper so it
     never lands in argv (ps) or .git/config. The target repo is DYNAMIC: the agent
@@ -453,7 +464,8 @@ def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Option
                 cr = _git("commit", "-m", commit_message)
                 commit_out = _redact(cr.stdout + cr.stderr)
                 committed = cr.returncode == 0
-        pr = _git("push", remote, f"HEAD:{target_branch}")
+        push_argv = ["push"] + (["--force"] if force else []) + [remote, f"HEAD:{target_branch}"]
+        pr = _git(*push_argv)
     finally:
         try:
             os.unlink(askpass.name)
@@ -462,7 +474,15 @@ def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Option
 
     push_out = _redact(pr.stdout + pr.stderr)
     if pr.returncode != 0:
-        raise RuntimeError(f"git push failed (exit {pr.returncode}): {push_out[:800]}")
+        hint = ""
+        if any(s in push_out.lower() for s in ("fetch first", "non-fast-forward", "rejected")):
+            hint = (
+                " — the remote already has DIFFERENT content (history diverged, e.g. you "
+                "reset/re-init'd after a previous push). Do NOT retry the same push: re-call "
+                "git_push with force=true to overwrite (safe for your own throwaway repos), "
+                "or push to a NEW repo name."
+            )
+        raise RuntimeError(f"git push failed (exit {pr.returncode}): {push_out[:800]}{hint}")
     return {
         "ok": True,
         "repo": target_repo,
@@ -488,7 +508,8 @@ async def _tool_git_push(args: dict) -> dict:
     repo = args.get("repo") or None
     if repo is not None and not isinstance(repo, str):
         raise ValueError("`repo` must be a string when provided")
-    return await asyncio.to_thread(_git_push_sync, repo_path, commit_message, branch, repo)
+    force = bool(args.get("force") or False)
+    return await asyncio.to_thread(_git_push_sync, repo_path, commit_message, branch, repo, force)
 
 
 TOOL_HANDLERS = {
