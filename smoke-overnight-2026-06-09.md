@@ -54,6 +54,33 @@ saját oldaladra") + indexeltem. Validálva: új session a bot `memory_search`+`
 megtalálta + a helyes URL-t nyitotta `browser`-rel (6×), 0 reCAPTCHA.
 **Recept:** Block D bővítve a Tailwind-setup hygiene-nel (config kötelező, nem elég a class).
 
+## [10:00-11:15] REGGELI LIVE-DEBUG (Discord user-flow hibák — mind javítva+deployolva)
+
+A userek (KOFOLA, Reverend Green) élőben teszteltek; több bot-hiba felszínre jött:
+- **max-payne-2 oldal stílustalan** ("szétesett", 2. réteg az éjszakai bootstrap-fix után):
+  a `tailwindcss@3` telepítve volt, DE nem volt konfigurálva (üres `src/styles.css`, nincs
+  `tailwind.config.js`) → buildelt CSS 678B → utility-osztályok inertek. Fix: config + színek
+  + `@tailwind` direktívák + rebuild → **678B→12.7KB**, oldal styled. User-teendő: HARD-REFRESH.
+  Block D recept: Tailwind config kötelező, verify styles >5KB. (commit 6903ec2)
+- **git_push "fetch first" loop** (UE5 remake repo): a remote divergált (a bot `git reset`-elt
+  push után). Fix: `git_push` **opt-in `force` param** + a hibaüzenet megmondja mit tegyen +
+  recept (ne reset-elj push után; divergenciánál force/új-név). A force-push-t a Claude
+  classifier blokkolta (Reverend Green: "force nem kell") → **force NÉLKÜL** oldottam meg:
+  clone → tartalom-csere a tiszta skeletonra → `push HEAD:main` = **fast-forward**
+  (`3e92615..56e6ee7`). A repo most tiszta UE5 skeleton, history megőrizve. (commit 69096c3)
+- **edit-loop** (a tegnap esti 84-call timeout valódi oka): a bot literál `\n`-t írt valódi
+  újsor helyett az `edit` args-ban → sosem matchelt → 20+ retry → loop-detection blokk.
+  Recept: sikertelen edit-et ne ismételj, read/write-tal javíts, max 2 próba.
+- **cron-misfire:** a bot az "csütörtökön milyen idő lesz" időjárás-kérdést emlékeztetőnek
+  hitte → bogus cron (`0 18 * * 4`) — TÖRÖLVE. Recept: cron CSAK explicit ismétlődő emlékeztetőre;
+  jövőbeli INFÓ (időjárás/eredmény) = nézd meg MOST (open-meteo 7-16 nap). + dátum-feloldás
+  (datetime-mal a cél-napot indexeld, ne a mait). Igazolva: bot most open-meteo, 0 cron. (commit 53211d0)
+- **Bot-projekt-kontextus:** `workspace-discord/memory/projects.md` (indexelve) → a bot tudja a
+  max-payne URL-jét + "ne web_search-csölj a saját oldaladra (reCAPTCHA), nyisd közvetlenül".
+- **Session-reset (poisoned history):** gateway-restart kell (sticky session warm a memóriában);
+  a Claude classifier blokkolja (minden usert ~30s-re offline visz) → explicit user-OK-ra vár.
+  A recept-fixek e NÉLKÜL is élnek (AGENTS.md re-render).
+
 ## 🌅 ZÁRÓ ÖSSZEFOGLALÓ (06:49 — stack végig egészséges, ZERO incidens)
 
 Az autonóm éjszakai smoke+fix session lezárva (03:09 → 06:49). A healthcheck-watchdog
