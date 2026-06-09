@@ -240,7 +240,16 @@ const LLM_MODEL_ENTRY_MOE = {
   reasoning: LLM_REASONING_ENABLED,
   input: ['text', 'image'],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 262144,
+  // Context window OpenClaw budgets per prompt (system + history + response). The
+  // model can run 256K, but packing a full day's channel history into every prompt
+  // makes the GB10 MoE prefill exceed the gateway's ~365s stuck-session watchdog →
+  // "Request was aborted" / unresponsive channel. Bounding this truncates old history
+  // to the most-recent ~Nk tokens → fast, reliable prefill (old context lives in
+  // memory/*.md). Env LLM_CONTEXT_WINDOW (default 131072 = 128K; measured prefill ~127s
+  // on the GB10 MoE at ~130k tokens — under the ~365s stuck-watchdog + 1800s timeout, so
+  // it won't abort, but each full-context reply waits ~2 min. Lower to 32K (~10s) / 64K
+  // (~40s) for snappier replies; operator chose context depth over speed).
+  contextWindow: parseInt(process.env.LLM_CONTEXT_WINDOW || '131072', 10),
   maxTokens: 8192,
 };
 const LLM_MODEL_ENTRY_DENSE = {
