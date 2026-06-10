@@ -74,6 +74,10 @@ volumes:
   # toll back (the container still works, just starts slow once).
   tts-fish-cuda-jit-cache:
     name: dgx-openclaw-tts-fish-cuda-jit-cache
+  # Triton's kernel-compile cache (separate from the driver PTX cache above).
+  # Persisting it keeps the first-synthesis latency flat across recreates.
+  tts-fish-triton-cache:
+    name: dgx-openclaw-tts-fish-triton-cache
   # faster-whisper weight cache for openclaw-stt-whisper. Holds the ~3 GB
   # large-v3 CT2-quantized weights (or ~1.6 GB turbo) so `docker compose down`
   # doesn't re-download them on the next boot. No host bind — faster-whisper
@@ -651,6 +655,10 @@ services:
       - tts-fish-voices:/app/voices
       - tts-fish-hf-cache:/root/.cache/huggingface
       - tts-fish-cuda-jit-cache:/cuda-jit-cache
+      # Triton keeps its own kernel-compile cache separate from the driver's
+      # PTX JIT cache; without this mount the first synthesis after every
+      # recreate re-compiles the decode kernels (~1 min extra latency).
+      - tts-fish-triton-cache:/root/.triton
     deploy:
       resources:
         reservations:
