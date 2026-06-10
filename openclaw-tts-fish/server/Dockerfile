@@ -65,32 +65,76 @@ RUN pip install "uv>=0.5" "huggingface_hub[cli]>=0.26" \
 
 WORKDIR /app
 
-# 1) Blackwell-aware torch + torchaudio from the cu130 wheel index FIRST.
-#    SGLang-Omni's .[s2pro] extra resolves against an installed torch; with
-#    torch already present from the cu130 index, the resolver picks up the
-#    Blackwell-ready binary instead of pulling a PyPI default that lacks sm_120
-#    kernels. Same pattern as openclaw-tts-en / openclaw-stt-whisper / vllm-llm.
+# 1) Blackwell-aware torch stack from the cu130 wheel index FIRST, pinned to
+#    the exact versions sglang-omni's pyproject requires (torch==2.9.1,
+#    torchvision==0.24.1). On aarch64 the PyPI torch wheels are CPU-only —
+#    the 2026-05-19 and 2026-06-06 builds died exactly here: the omni resolver
+#    silently replaced cu130 torch with `2.9.1+cpu`, so the engine later
+#    reported "CPU/No GPU detected". Pre-pinning + the index flags in step 2
+#    + the re-pin in step 2c keep the GPU build in place end to end.
 RUN pip install --index-url https://download.pytorch.org/whl/cu130 \
-        torch torchaudio \
+        "torch==2.9.1+cu130" "torchvision==0.24.1+cu130" "torchaudio==2.9.1+cu130" \
     && python -c "import torch; \
 print('torch', torch.__version__, 'cuda_built', torch.version.cuda, \
 'arch', torch.cuda.get_arch_list() if hasattr(torch,'cuda') else 'no-runtime-gpu')"
 
-# 2) SGLang-Omni from source. The pip package name is unstable (`sgl-omni` vs
-#    `sglang-omni` vs `sglang_omni` across releases) and the .[s2pro] extra
+# 2a) sgl-kernel cu130 aarch64 wheel from the sgl-project whl release page.
+#     The PyPI `sgl_kernel-0.3.21` aarch64 wheel is a CUDA *12* build — its
+#     common_ops.abi3.so dlopen-fails inside this CUDA 13 image with
+#     `libnvrtc.so.12: cannot open shared object file` (observed 2026-06-06).
+#     Upstream publishes a parallel `+cu130` build on GitHub releases (this is
+#     the documented install path in sglang v0.5.8's install.md for CUDA 13).
+#     0.3.21 is exactly what sglang==0.5.8 (sglang-omni's pin) requires.
+#     The wheel ships sm90/sm100 SASS + embedded PTX; on GB10 (sm_121) the
+#     driver JIT-compiles the PTX — same mechanism the official
+#     `lmsysorg/sglang:spark` image relies on. Installing it BEFORE sglang-omni
+#     satisfies the `sgl-kernel==0.3.21` dep so the resolver doesn't pull the
+#     broken cu12 wheel from PyPI (PEP 440: `==0.3.21` matches `0.3.21+cu130`).
+RUN pip install \
+    "sgl-kernel @ https://github.com/sgl-project/whl/releases/download/v0.3.21/sgl_kernel-0.3.21+cu130-cp310-abi3-manylinux2014_aarch64.whl"
+
+# 2b) SGLang-Omni from source. The pip package name is unstable (`sgl-omni` vs
+#    `sglang-omni` vs `sglang_omni` across releases) and the source install
 #    only resolves cleanly when pulled from the git repo. Pinned to main for
-#    now — switch to a tag once upstream cuts a stable s2-pro release.
+#    now — switch to a tag once upstream cuts a stable s2-pro release. The
+#    `rev-parse` line stamps the exact upstream commit into the build log so a
+#    broken nightly can be identified after the fact.
+#
+#    No `[s2pro]` extra anymore: upstream folded the S2-Pro deps (tiktoken,
+#    hydra-core, descript-audio-codec, …) into the core dependency list.
 #
 #    --no-build-isolation lets uv reuse the pre-installed torch instead of
-#    fetching a fresh one; --system installs into the base Python env so
-#    `python -m sglang_omni.cli.cli` resolves at runtime without activating
-#    a venv. -v keeps the from-source kernel build output visible in `docker
-#    build` logs (sgl-kernel can take 10-20 min on aarch64 — silent stalls
-#    confuse "is it hung or just busy" diagnostics).
+#    fetching a fresh one; --system installs into the base Python env so the
+#    `sgl-omni` console script resolves at runtime without activating a venv.
+#    --extra-index-url + unsafe-best-match let the resolver see the cu130
+#    torch wheels, so `torch==2.9.1` resolves to `2.9.1+cu130` instead of the
+#    CPU-only PyPI aarch64 build (local-version tags win under best-match).
 RUN git clone --depth 1 https://github.com/sgl-project/sglang-omni.git ${SGLANG_OMNI_DIR} \
     && cd ${SGLANG_OMNI_DIR} \
-    && uv pip install --system --break-system-packages --no-build-isolation -v ".[s2pro]" \
+    && echo "sglang-omni commit: $(git rev-parse HEAD)" \
+    && uv pip install --system --break-system-packages --no-build-isolation \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --index-strategy unsafe-best-match \
+        -v "." \
     && python -c "import sglang_omni; print('sglang_omni loaded from', sglang_omni.__file__)"
+
+# 2c) Re-pin the GPU stack + fail the BUILD (not the 2am runtime) if the omni
+#     resolution still swapped anything for a CPU/cu12 build. `--no-deps`
+#     keeps this surgical — only the four packages move, nothing else
+#     re-resolves. The exact `+cu130` local-version pins make pip a no-op when
+#     step 2b behaved, and a corrective reinstall when it didn't.
+#     sgl_kernel itself can't be imported here (its loader dlopens libcuda,
+#     which only exists at runtime via the NVIDIA container toolkit), so the
+#     check asserts on package metadata instead of an import.
+RUN pip install --no-deps --index-url https://download.pytorch.org/whl/cu130 \
+        "torch==2.9.1+cu130" "torchvision==0.24.1+cu130" "torchaudio==2.9.1+cu130" \
+    && pip install --no-deps --force-reinstall \
+        "sgl-kernel @ https://github.com/sgl-project/whl/releases/download/v0.3.21/sgl_kernel-0.3.21+cu130-cp310-abi3-manylinux2014_aarch64.whl" \
+    && python -c "import torch, importlib.metadata as md; \
+assert torch.version.cuda and torch.version.cuda.startswith('13'), f'torch {torch.__version__} is not a cu13 build'; \
+v = md.version('sgl-kernel'); \
+assert 'cu130' in v, f'sgl-kernel {v} is not the cu130 build'; \
+print('build-verify OK: torch', torch.__version__, '| sgl-kernel', v)"
 
 # 3) Bake s2-pro weights at build time (~11 GB: 2 safetensors shards + codec.pth
 #    + tokenizer). Public HF repo, no token required at time of writing, but
