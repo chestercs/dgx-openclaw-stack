@@ -81,6 +81,13 @@ A userek (KOFOLA, Reverend Green) élőben teszteltek; több bot-hiba felszínre
   a Claude classifier blokkolja (minden usert ~30s-re offline visz) → explicit user-OK-ra vár.
   A recept-fixek e NÉLKÜL is élnek (AGENTS.md re-render).
 
+- **Hyperlink markdown nyersként Discordon** (commit utáni): a bot `[szöveg](url)` masked
+  markdown-t adott → Discord sima (nem-embed) üzenetben NYERS szövegként látszik (`[..](..)`),
+  nem kattintható + nem embedel. (`suppressEmbeds` valójában már `false` — az embed nem ettől
+  romlott; az első jq tévesen "unset"-et mutatott, mert `false // x` → x a jq-ban.) Fix:
+  FORMAT_RULES blokk "linkek = NYERS URL, soha ne masked markdown" + a hibás user-managed
+  Web-search sor javítva. Verified: bot most plain `https://…` URL-t ad.
+
 ## 🌅 ZÁRÓ ÖSSZEFOGLALÓ (06:49 — stack végig egészséges, ZERO incidens)
 
 Az autonóm éjszakai smoke+fix session lezárva (03:09 → 06:49). A healthcheck-watchdog

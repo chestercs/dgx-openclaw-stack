@@ -3836,8 +3836,11 @@ const SKILL_ROUTER_BODY =
   '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
   '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n' +
   '- letöltés / transzkripció / fájl-feltöltés / kép-keresés → `media-downloads`\n' +
-  '- **"milyen idő lesz / hány fok" → `weather-forecast`** — gyorshivatkozás: `python_exec` + open-meteo API ' +
-  '(geokód → forecast, kulcs nélkül), MOST kérdezd le, SOHA nem cron és nem web_search; a részletes recept a skillben.\n' +
+  '- **"milyen idő / hány fok lesz" → AZONNAL `python_exec`, SOHA nem cron és SOHA nem web_search.** A teljes recept inline: ' +
+  '(1) geokód: `https://geocoding-api.open-meteo.com/v1/search?name=<város>&count=1` → lat/lon; ' +
+  '(2) `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&timezone=auto&forecast_days=7`; ' +
+  '(3) a cél-napot `datetime`-mal számold ki és AZT indexeld a `daily.time[]`-ból, ne a mait. Konkrét számokat adj vissza (min/max °C, csapadék%). ' +
+  'WMO-kódok + óránkénti bontás: `skills/weather-forecast/SKILL.md`.\n' +
   '- kódírás / web-app hostolás / git push → `coding-projects`\n' +
   '- többórás munka kártyával → `long-task-workboard`\n';
 
