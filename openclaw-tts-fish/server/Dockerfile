@@ -189,9 +189,18 @@ RUN mkdir -p ${FISH_CHECKPOINT_DIR} \
 COPY voices/ ${VOICES_SEED_DIR}/
 RUN ls -la ${VOICES_SEED_DIR}/
 
-# 5) Shim deps + app source.
+# 5) Shim deps + app source + pipeline configs.
 COPY requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
+
+# GB10-calibrated SGLang-Omni pipeline config is the image default (see the
+# comments inside the yaml for why each override exists — short version: the
+# upstream defaults size the KV pool for a dedicated datacenter GPU and
+# torch-compile/CUDA-graph-capture at startup, which on a shared 128 GB
+# unified-memory box wedged the first PoC run into swap before ready).
+# Override per deployment via FISH_S2PRO_CONFIG (compose passes it through).
+COPY configs/ /opt/configs/
+ENV FISH_S2PRO_CONFIG=/opt/configs/s2pro_tts_gb10.yaml
 
 COPY app.py /app/app.py
 

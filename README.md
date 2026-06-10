@@ -282,10 +282,11 @@ curl -H "Authorization: Bearer $TTS_API_TOKEN" \
      http://127.0.0.1:8091/v1/audio/speech --output out.wav
 ```
 
-Default voices shipped: `default_en` (LibriSpeech / LibriVox PD) and
-`default_hu` (Diana Majlinger / "Egri csillagok", LibriVox PD). Both are
-seeded from the image's `/app/voices_seed/` on first start without
-overwriting user voices. Details + endpoint reference in
+Ships a 7-voice library out of the box: `default_en` + five more English
+timbres (US/UK, male/female — Kokoro 82M syntheses, Apache-2.0) and
+`default_hu` (LibriVox public domain). Friendly aliases (`english`, `female`,
+`male`, `british`, `deep`, `soft`, `magyar`) are wired by the config patcher.
+Details, provenance and endpoint reference in
 [`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md).
 
 ## Why this stack

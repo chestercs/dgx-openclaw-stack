@@ -228,7 +228,10 @@ Spot-check the Fish Audio TTS backend directly:
 ```bash
 TTS_KEY=$(grep '^TTS_API_TOKEN=' .env | cut -d= -f2-)
 curl -s http://127.0.0.1:8091/healthz | jq .
-# → {"status": "ok", "engine_ready": true, "voices_available": ["default_en","default_hu"], ...}
+# → {"status": "ok", "engine_ready": true,
+#    "voices_available": ["bella","default_en","default_hu","emma","fenrir","michael","nicole"], ...}
+# NOTE: the FIRST boot on GB10 can take 10-30+ minutes (one-time PTX JIT
+# toll, cached on the tts-fish-cuda-jit-cache volume afterwards).
 
 # English smoke (writes a WAV to /tmp/test_en.wav):
 curl -sS -X POST http://127.0.0.1:8091/v1/audio/speech \

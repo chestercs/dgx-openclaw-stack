@@ -1,0 +1,64 @@
+# GB10-calibrated SGLang-Omni pipeline config for Fish Audio S2 Pro.
+# Mirrors upstream examples/configs/s2pro_tts.yaml + the default stage list
+# from sglang_omni.models.fishaudio_s2_pro.config, with four overrides that
+# make the engine start (and fit) on a 128 GB unified-memory GB10 that also
+# runs vLLM + Whisper + the OpenClaw gateway:
+#
+#   mem_fraction_static 0.85 -> 0.5
+#     sglang sizes its static pool from the memory VISIBLE AT STARTUP. On the
+#     unified pool that's whatever vLLM left over (~30 GB), so the default
+#     0.85 allocated a 16 GB KV cache for a TTS model that serves 1-2
+#     concurrent requests, leaving 3.6 GB for the audio decoder + vocoder
+#     stage + their CUDA contexts -> the 2026-06-10 first PoC run wedged the
+#     box into swap during decoder load and never reached ready. 0.5 yields
+#     a ~4-6 GB KV pool (plenty: context_length is fixed at 4096) and leaves
+#     real headroom.
+#
+#   enable_torch_compile true -> false
+#     Inductor/Triton cold-compile on aarch64 + sm_121 adds many minutes to
+#     first start (and Triton sm_121a PTXAS support has open upstream
+#     issues). TTS latency is dominated by the AR decode loop; skip the
+#     gamble at startup.
+#
+#   disable_cuda_graph false -> true
+#     CUDA graph capture launches the whole kernel zoo at startup — on GB10
+#     every sgl-kernel op goes through PTX forward-compat JIT the first time
+#     (the cu130 wheel ships sm90/sm100 SASS only), so capture multiplies
+#     the cold-start JIT marathon. Trade a little steady-state latency for
+#     a bounded startup.
+#
+#   max_running_requests 64 -> 4
+#     One Discord voice channel + an occasional CLI call is the real
+#     workload. Smaller request pool = smaller auxiliary buffers.
+#
+# Everything else (stage names, factories, wiring) must track upstream —
+# when bumping the sglang-omni clone, diff this file against
+# examples/configs/s2pro_tts.yaml + models/fishaudio_s2_pro/config.py.
+config_cls: S2ProPipelineConfig
+model_path: /opt/checkpoints/fish_s2_pro
+relay_backend: shm
+stages:
+  - name: preprocessing
+    process: pipeline
+    factory: sglang_omni.models.fishaudio_s2_pro.stages.create_preprocessing_executor
+    next: tts_engine
+  - name: tts_engine
+    process: pipeline
+    factory: sglang_omni.models.fishaudio_s2_pro.stages.create_sglang_tts_engine_executor
+    factory_args:
+      device: "cuda:0"
+      max_new_tokens: 2048
+      server_args_overrides:
+        mem_fraction_static: 0.5
+        enable_torch_compile: false
+        disable_cuda_graph: true
+        max_running_requests: 4
+    gpu: 0
+    next: vocoder
+    stream_to: [vocoder]
+  - name: vocoder
+    process: pipeline
+    factory: sglang_omni.models.fishaudio_s2_pro.stages.create_vocoder_executor
+    gpu: 0
+    terminal: true
+    can_accept_stream_before_payload: true

@@ -154,15 +154,24 @@ subsequent builds hit the layer cache.
 | `TTS_FISH_MAX_NEW_TOKENS` | *(unset)* | " |
 | `TTS_FISH_SPEED` | *(unset)* | " |
 | `TTS_FISH_SEED` | *(unset)* | " — set for reproducible regression audio |
-| `FISH_S2PRO_CONFIG` | `/opt/sglang-omni/examples/configs/s2pro_tts.yaml` | SGLang-Omni pipeline config (`config_cls`, `relay_backend`) |
+| `FISH_S2PRO_CONFIG` | `/opt/configs/s2pro_tts_gb10.yaml` | SGLang-Omni pipeline config. Image default is GB10-calibrated (capped KV pool, no startup torch-compile / CUDA-graph capture — rationale inline in the yaml). Upstream defaults: `/opt/sglang-omni/examples/configs/s2pro_tts.yaml` |
+| `SGLANG_OMNI_STARTUP_TIMEOUT` | `3000` (compose) / `600` (upstream) | Engine-internal stage-ready watchdog (seconds) |
 | `FISH_ENGINE_PORT` | `9090` | Internal loopback for the SGLang-Omni child process |
-| `FISH_ENGINE_READY_DEADLINE_S` | `600` | How long startup waits for SGLang-Omni's /health to flip |
+| `FISH_ENGINE_READY_DEADLINE_S` | `3300` (compose) / `600` (image) | How long the shim waits for SGLang-Omni's /health to flip — keep above `SGLANG_OMNI_STARTUP_TIMEOUT` so the engine's own error surfaces first |
 
 ## Troubleshooting
 
-- **`{"status":"starting"}` for >10 minutes**: SGLang-Omni cold load on first
-  start can take several minutes (model decompress + CUDA kernels JIT-compile).
-  Watch `docker compose logs -f openclaw-tts-fish`.
+- **First boot takes 10-30+ minutes, later boots are fast**: expected on GB10.
+  The cu130 `sgl-kernel` wheel ships sm90/sm100 SASS only; every kernel is
+  JIT-compiled from embedded PTX for sm_121 on first launch. The result
+  persists on the `tts-fish-cuda-jit-cache` volume — don't wipe it unless you
+  enjoy the marathon. Watch `docker compose logs -f openclaw-tts-fish`.
+- **Engine wedges during "Loading Fish audio decoder" and times out**: the KV
+  pool ate the headroom. sglang sizes its static pool from memory visible at
+  startup — on the unified GB10 pool that's "whatever vLLM left", so the
+  upstream `mem_fraction_static: 0.85` allocates a ~16 GB KV cache and leaves
+  nothing for the decoder + vocoder. The bundled GB10 yaml caps it at 0.5;
+  if you still wedge, stop ComfyUI/video workloads and recreate.
 - **`404 voice 'x' not found`**: `docker exec openclaw-tts-fish ls /app/voices`
   to confirm the file pair landed; check the `.txt` file exists alongside the
   `.wav`.

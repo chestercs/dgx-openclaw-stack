@@ -62,10 +62,18 @@ volumes:
   # User-overridable reference voice directory for openclaw-tts-fish. Drop
   # <name>.wav + <name>.txt files in here to add custom voices the service
   # can clone (no restart required — the shim resolves voice → file pair at
-  # request time). Ships with default_en + default_hu (LibriVox public domain)
-  # seeded from the image's /app/voices_seed/ on first start.
+  # request time). Ships with the bundled 7-voice library (default_en +
+  # bella/nicole/michael/fenrir/emma + default_hu) seeded from the image's
+  # /app/voices_seed/ on first start.
   tts-fish-voices:
     name: dgx-openclaw-tts-fish-voices
+  # CUDA JIT cache for openclaw-tts-fish. The cu130 sgl-kernel wheel ships
+  # sm90/sm100 SASS only; on GB10 (sm_121) every kernel is JIT-compiled from
+  # embedded PTX on first launch. This volume persists the compiled result so
+  # only the FIRST boot pays the multi-minute JIT toll — wiping it brings the
+  # toll back (the container still works, just starts slow once).
+  tts-fish-cuda-jit-cache:
+    name: dgx-openclaw-tts-fish-cuda-jit-cache
   # faster-whisper weight cache for openclaw-stt-whisper. Holds the ~3 GB
   # large-v3 CT2-quantized weights (or ~1.6 GB turbo) so `docker compose down`
   # doesn't re-download them on the next boot. No host bind — faster-whisper
@@ -597,11 +605,30 @@ services:
       TTS_FISH_MAX_NEW_TOKENS: ${TTS_FISH_MAX_NEW_TOKENS:-}
       TTS_FISH_SPEED: ${TTS_FISH_SPEED:-}
       TTS_FISH_SEED: ${TTS_FISH_SEED:-}
+      # SGLang-Omni pipeline config. The image default is the GB10-calibrated
+      # yaml (capped KV pool, no startup torch-compile/CUDA-graph capture —
+      # see openclaw-tts-fish/server/configs/s2pro_tts_gb10.yaml for the
+      # rationale per knob). Point at your own yaml for other hardware.
+      FISH_S2PRO_CONFIG: ${FISH_S2PRO_CONFIG:-/opt/configs/s2pro_tts_gb10.yaml}
+      # Engine-ready deadlines. Cold start on GB10 pays a PTX forward-compat
+      # JIT toll (the cu130 sgl-kernel wheel ships sm90/sm100 SASS only) —
+      # the first boot can take WAY longer than a warm one. The JIT result
+      # persists on the tts-fish-cuda-jit-cache volume, so later boots are
+      # minutes, not tens of minutes. Inner (engine) timeout must stay below
+      # the outer (shim) one so the engine's own error surfaces first.
+      SGLANG_OMNI_STARTUP_TIMEOUT: ${SGLANG_OMNI_STARTUP_TIMEOUT:-3000}
+      FISH_ENGINE_READY_DEADLINE_S: ${FISH_ENGINE_READY_DEADLINE_S:-3300}
+      # Persist + upsize the CUDA JIT cache (default 1 GB is too small for
+      # the full sgl-kernel PTX surface; an evicted cache = re-JIT marathon
+      # on every restart).
+      CUDA_CACHE_PATH: /cuda-jit-cache/ComputeCache
+      CUDA_CACHE_MAXSIZE: "4294967296"
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     volumes:
       - tts-fish-voices:/app/voices
       - tts-fish-hf-cache:/root/.cache/huggingface
+      - tts-fish-cuda-jit-cache:/cuda-jit-cache
     deploy:
       resources:
         reservations:

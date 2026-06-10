@@ -310,10 +310,15 @@ docker cp myclone.wav ${PROJ}openclaw-tts-fish:/app/voices/
 docker cp myclone.txt ${PROJ}openclaw-tts-fish:/app/voices/
 ```
 
-Default voices shipped: `default_en` (LibriSpeech / LibriVox PD) and
-`default_hu` (Diana Majlinger / "Egri csillagok", LibriVox PD). Both are
-seeded from `/app/voices_seed/` baked into the image; the shim copies them
-into `/app/voices/` on first start without overwriting user voices.
+Default voice library (7 voices, bundled in `openclaw-tts-fish/server/voices/`
+and baked into `/app/voices_seed/`; the shim copies them into `/app/voices/`
+on first start without overwriting user voices): `default_en`, `bella`,
+`nicole`, `michael`, `fenrir`, `emma` — Kokoro 82M syntheses (Apache-2.0
+generated audio) covering US/UK male/female timbres — plus `default_hu`
+(Diana Majlinger / "Egri csillagok", LibriVox public domain). Patcher step 11
+maps friendly aliases (`english`/`female`/`male`/`british`/`deep`/`soft`/
+`magyar`/`hungarian`) onto the raw ids. Provenance table in
+[`openclaw-tts-fish/README.md`](../openclaw-tts-fish/README.md).
 
 ### License
 

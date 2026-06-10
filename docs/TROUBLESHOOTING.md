@@ -276,10 +276,13 @@ Check what's mounted:
 docker exec ${PROJ}openclaw-tts-fish ls -la /app/voices/
 ```
 
-The seed defaults (`default_en.wav` + `default_hu.wav` and their `.txt`
-transcripts) should be present after first start. If they're missing (e.g.
-the `fetch_default_voices.py` build-time fetcher failed on the HF dataset),
-add a voice manually:
+The bundled 7-voice library (`default_en`, `bella`, `nicole`, `michael`,
+`fenrir`, `emma`, `default_hu` — each a `.wav` + `.txt` pair) should be
+present after first start; it's baked into the image from
+`openclaw-tts-fish/server/voices/`, so a missing seed means the container
+started before the volume mount, or someone deleted files from the volume
+(the shim never re-copies a name that already exists there). Re-seed by
+recreating the container, or add a voice manually:
 
 ```bash
 docker cp myvoice.wav ${PROJ}openclaw-tts-fish:/app/voices/

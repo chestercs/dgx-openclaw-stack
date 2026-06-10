@@ -199,7 +199,7 @@ The v0.4.x patcher has **13 steps** (6 base + 7 higher; steps 7–13 cover trust
 8. **idleTimeout** — `agents.defaults.llm.idleTimeoutSeconds = 300`. The default 120s is too tight for 31B + reasoning + multi-tool chains.
 9. **hybrid + MMR** — `memorySearch.query.hybrid` block (BM25 + vector + MMR re-rank). Native OpenClaw feature, upgrade-safe.
 10. **SearxNG enable** — `tools.web.search.provider = searxng` + `plugins.entries.searxng.enabled = true`. The bundled SearxNG plugin ships disabled by default.
-11. **TTS wiring** — env-gated (`OPENCLAW_TTS_FISH_API_KEY`). Writes top-level `messages.tts.{enabled,auto,mode}` switches + `providers.openai.{baseUrl,apiKey,model,voiceId}` pointing at `openclaw-tts-fish` + `voiceAliases` (`english`/`narrator` → `default_en`, `magyar`/`hungarian` → `default_hu`). Historical spec for the legacy 3-service stack: `tts-stack.md` (SUPERSEDED).
+11. **TTS wiring** — env-gated (`OPENCLAW_TTS_FISH_API_KEY`). Writes top-level `messages.tts.{enabled,auto,mode}` switches + `providers.openai.{baseUrl,apiKey,model,voiceId}` pointing at `openclaw-tts-fish` + `voiceAliases` (`english`/`narrator` → `default_en`, `magyar`/`hungarian` → `default_hu`, plus timbre handles `female` → `bella`, `male` → `michael`, `british` → `emma`, `deep` → `fenrir`, `soft` → `nicole` for the bundled 7-voice library). Historical spec for the legacy 3-service stack: `tts-stack.md` (SUPERSEDED).
 12. **gateway.remote.token mirror** — `gateway.auth.token` → `gateway.remote.token`. Otherwise the loopback CLI WS-connect hits a "gateway token mismatch" and silently falls back to the embedded runner (a side-car path, not the production agent route).
 
     ```
