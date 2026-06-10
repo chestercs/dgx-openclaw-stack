@@ -223,6 +223,22 @@ RUN BOOTSTRAP=/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaud
     && grep -q "low_cpu_mem_usage=True" "$BOOTSTRAP" \
     && python -c "import ast,sys; ast.parse(open('/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_s2_pro/bootstrap.py').read()); print('low-mem decoder-load patch applied + parses')"
 
+# 7) Build-time patch: soundfile reference-audio loader. torchaudio 2.9
+#    removed its legacy sox/soundfile I/O — `torchaudio.load()` now requires
+#    torchcodec, and there is NO torchcodec build for torch 2.9 on aarch64
+#    (PyPI starts at 0.11, the cu130 index at 0.10, both built against torch
+#    2.10+ — installing them dlopen-fails on a missing c10 symbol,
+#    `MessageLogger::stream`). The reference clips are plain mono WAVs, so
+#    swap the single s2-pro call site to soundfile (already a shim dependency,
+#    libsndfile1 in the base layer). soundfile returns (frames, channels) —
+#    the `.T` restores torchaudio's (channels, frames) convention.
+RUN STAGES=/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_s2_pro/stages.py \
+    && grep -q "audio, sr = torchaudio.load(audio_path)" "$STAGES" \
+        || { echo "PATCH TARGET MISSING — upstream stages.py changed; re-derive the soundfile patch" >&2; exit 1; } \
+    && sed -i 's|audio, sr = torchaudio.load(audio_path)|import soundfile as _sf; _arr, sr = _sf.read(audio_path, dtype="float32", always_2d=True); audio = torch.from_numpy(_arr.T)|' "$STAGES" \
+    && grep -q "always_2d=True" "$STAGES" \
+    && python -c "import ast; ast.parse(open('/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_s2_pro/stages.py').read()); print('soundfile reference-loader patch applied + parses')"
+
 COPY app.py /app/app.py
 
 EXPOSE 8080
