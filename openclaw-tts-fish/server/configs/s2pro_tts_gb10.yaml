@@ -31,6 +31,13 @@
 #     One Discord voice channel + an occasional CLI call is the real
 #     workload. Smaller request pool = smaller auxiliary buffers.
 #
+#   attention_backend (factory default fa3) -> triton
+#     FlashAttention-3 is Hopper-only SASS — the first synthesis on GB10
+#     dies with "no kernel image is available for execution on the device"
+#     from flash_fwd_launch_template.h. Triton compiles for sm_121a at
+#     runtime (requires the TRITON_PTXAS_PATH=system-ptxas fix baked into
+#     the image — Triton's bundled ptxas predates sm_121a).
+#
 # Everything else (stage names, factories, wiring) must track upstream —
 # when bumping the sglang-omni clone, diff this file against
 # examples/configs/s2pro_tts.yaml + models/fishaudio_s2_pro/config.py.
@@ -53,6 +60,7 @@ stages:
         enable_torch_compile: false
         disable_cuda_graph: true
         max_running_requests: 4
+        attention_backend: triton
     gpu: 0
     next: vocoder
     stream_to: [vocoder]
