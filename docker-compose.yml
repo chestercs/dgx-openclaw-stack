@@ -571,6 +571,18 @@ services:
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish
     hostname: openclaw-tts-fish
     restart: unless-stopped
+    # Containment — non-negotiable on a shared unified-memory box. An
+    # uncontained engine start (startup JIT + warmup storm on top of an
+    # already-tight pool) once pushed the WHOLE HOST into a reclaim livelock:
+    # userspace frozen (sshd banner timeouts, gateway dark) while kernel ICMP
+    # stayed healthy, for over an hour (2026-06-10). With these caps the
+    # worst case is THIS container OOMing — visible in its own logs — while
+    # vLLM, the gateway and sshd keep breathing.
+    #   mem_limit = memswap_limit  → swap is DENIED to this container
+    #   cpus < host cores          → sshd/vLLM survive the JIT storm
+    mem_limit: ${TTS_FISH_MEM_LIMIT:-26g}
+    memswap_limit: ${TTS_FISH_MEM_LIMIT:-26g}
+    cpus: ${TTS_FISH_CPUS:-12}
     # Host-side bind for debug access. Default 127.0.0.1 = loopback only.
     # Set TTS_FISH_BIND=0.0.0.0 in .env to expose on the LAN (Bearer-auth via
     # TTS_API_TOKEN). Sibling containers (gateway / CLI) always reach this
