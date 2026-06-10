@@ -3842,6 +3842,10 @@ const SKILL_ROUTER_BODY =
   '(3) a cél-napot `datetime`-mal számold ki és AZT indexeld a `daily.time[]`-ból, ne a mait. Konkrét számokat adj vissza (min/max °C, csapadék%). ' +
   'WMO-kódok + óránkénti bontás: `skills/weather-forecast/SKILL.md`.\n' +
   '- kódírás / web-app hostolás / git push → `coding-projects`\n' +
+  '- **"dolgozz rajta X órát/napot" / "kutass utána alaposan" / hosszú-mély munka → AZONNAL, MÉG EBBEN A TURN-BEN hívd:** ' +
+  '`sessions_spawn` `{"thread":true,"taskName":"<rovid-kebab-nev>","cleanup":"keep","context":"isolated","task":"<önálló, TELJES feladat-leírás>"}`. ' +
+  '🚨 A "kijövök egy threadbe / megyek dolgozni" mondat spawn-hívás NÉLKÜL = hazugság: a turn a szöveged után VÉGET ÉR, semmi nem fut tovább. ' +
+  'A bejelentő szöveg és a `sessions_spawn` hívás UGYANABBAN a turn-ben kötelező. Részletek: thread-tasks blokk.\n' +
   '- többórás munka kártyával → `long-task-workboard`\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
@@ -3867,7 +3871,7 @@ const THREAD_TASKS_END = '<!-- patch-config:discord-thread-tasks:end -->';
 const THREAD_TASKS_BODY =
   '## Coding / hosszú task → saját Discord thread\n\n' +
   'Ha a user coding-feladatot vagy hosszú (több-órás, akár 1 napos) munkát kér, NE a fő csatornán dolgozz végig:\n' +
-  '1. `sessions_spawn` `{"thread": true, "taskName": "<rovid-kebab-nev>", "cleanup": "keep", "context": "isolated", "task": "<önálló, TELJES feladat-leírás — a child nem látja a chat-historyt>"}` — a task SAJÁT threadet kap, oda kerül az output, a fő csatorna szabad marad.\n' +
+  '1. `sessions_spawn` `{"thread": true, "taskName": "<rovid-kebab-nev>", "cleanup": "keep", "context": "isolated", "task": "<önálló, TELJES feladat-leírás — a child nem látja a chat-historyt>"}` — a task SAJÁT threadet kap, oda kerül az output, a fő csatorna szabad marad. 🚨 A spawn-t UGYANABBAN a turn-ben hívd meg, amelyikben bejelented a munkát — a "megyek a threadbe dolgozni" szöveg utáni turn-vége MINDENT leállít, spawn nélkül SEMMI nem fut tovább.\n' +
   '2. **Egy task = egy thread.** Ugyanarra a taskra érkező follow-up a threadben folytatódik — NE spawn-olj duplikált threadet.\n' +
   '3. Státusz-kérdésre: `/subagents list` (runId + állapot) — NE találgass.\n' +
   '4. **"Dolgozz rajta egy napig" = tényleg addig fut.** A spawn-olt child run-timeout nélkül dolgozik; announce-szal jelez amikor TÉNYLEG kész. SOHA ne jelents kész-t korábban, és ne ígérj háttér-munkát amit nem spawn-oltál el (runId nélkül nincs háttér-munka).\n' +
