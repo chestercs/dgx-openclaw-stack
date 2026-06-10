@@ -1284,6 +1284,11 @@ services:
       # lacks ffmpeg and the text-channel attachment pipeline crashes silently
       # with `[discord] final reply failed: Error: ffmpeg not found` otherwise.
       OPENCLAW_TTS_AUTO: ${OPENCLAW_TTS_AUTO:-always}
+      # Per-request TTS fetch ceiling (messages.tts.timeoutMs, patcher step
+      # 11). The gateway's generic 30 s default times out on self-hosted Fish
+      # synthesis of anything beyond ~300 chars (~3 s per second of audio on
+      # GB10); 180 s covers ~3000-char chunks. Lower on cloud-fast TTS.
+      OPENCLAW_TTS_TIMEOUT_MS: ${OPENCLAW_TTS_TIMEOUT_MS:-180000}
       # Discord ackReactionScope (patcher step 20). Defends against upstream
       # issue #46024 stale-queue reaction-cycle bug. Default 'off' kills the
       # auto-emoji lifecycle entirely; agent can still emit explicit reactions

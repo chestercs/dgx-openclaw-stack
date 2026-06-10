@@ -1430,6 +1430,15 @@ if (ttsRouterKey) {
     enabled: true,
     auto: process.env.OPENCLAW_TTS_AUTO || 'always',
     mode: 'final',
+    // Per-request TTS fetch ceiling. The gateway's generic default is 30 s
+    // (fetchWithSsrFGuard), which self-hosted Fish S2 Pro blows through on
+    // anything longer than ~300 characters (~3 s of synthesis per second of
+    // audio on GB10) — the first long-read Discord test produced four
+    // consecutive "tts failed: request timed out" on ~2000-char chunks.
+    // Dist oracle (tts-runtime resolveSpeechProviderTimeoutMs): an operator-
+    // set messages.tts.timeoutMs overrides the 30 s default. 180 s covers
+    // ~3000-char chunks; cloud-fast TTS deployments can lower it via env.
+    timeoutMs: parseInt(process.env.OPENCLAW_TTS_TIMEOUT_MS || '180000', 10),
   };
   for (const [k, v] of Object.entries(desiredTopLevel)) {
     if (config.messages.tts[k] !== v) {
