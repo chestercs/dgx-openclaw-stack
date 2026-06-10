@@ -1087,6 +1087,51 @@ if (config.channels?.discord?.enabled === true) {
   }
 }
 
+// (8f₂) commands.bash — the `!<cmd>` Discord directive that runs a shell command
+//       inside the gateway container, bypassing the LLM entirely. This is the
+//       enabler for the operator image-gen command `!~/.openclaw/bin/img` (the
+//       Gemma-RLHF bypass for adult prompts — see docs/reference/img-bash-command.md).
+//       Now patcher-managed; before this it lived as an ad-hoc
+//       `openclaw config set` that step 8f's ownerAllowFrom default silently
+//       widened back to ["*"] on every run (a latent guild-wide RCE — see the
+//       warning below).
+//
+//       ⚠ SECURITY — `commands.bash` is ALL-OR-NOTHING arbitrary shell. There is
+//       no per-command allowlist and no role gate; OpenClaw gates it ONLY by the
+//       user-id lists in commands.ownerAllowFrom (step 8f, knob
+//       OPENCLAW_DISCORD_COMMAND_OWNERS) and tools.elevated.allowFrom.discord
+//       (knob OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW). Enabling bash while EITHER
+//       of those is the wide-open default ["*"] means ANY guild member can run
+//       arbitrary commands in the gateway container — RCE for the whole guild.
+//       So whenever you set this knob `on`, you MUST also set
+//       OPENCLAW_DISCORD_COMMAND_OWNERS (and the elevated knob) to a concrete,
+//       short, fully-trusted snowflake list. Those users get full container
+//       shell + owner-only slash commands (`/config`, `/mcp`, …), NOT just
+//       image-gen — there is no "image-only" tier without a separate bot.
+//
+//       Schema-gate posture (mirrors 8g/8h): empty env = SKIP (leave whatever's
+//       in config untouched — today's behaviour), on/true/1/yes = write
+//       commands.bash=true, off/0/false/no = remove the key (self-heal).
+const bashCmdRaw = (process.env.OPENCLAW_COMMANDS_BASH || '').trim().toLowerCase();
+if (bashCmdRaw) {
+  config.commands ??= {};
+  if (['on', 'true', '1', 'yes'].includes(bashCmdRaw)) {
+    if (config.commands.bash !== true) {
+      config.commands.bash = true;
+      changed = true;
+      console.log('[patch-config] commands.bash = true (!<cmd> shell directive ENABLED — gate via OPENCLAW_DISCORD_COMMAND_OWNERS!)');
+    }
+  } else if (['off', '0', 'false', 'no'].includes(bashCmdRaw)) {
+    if (config.commands?.bash !== undefined) {
+      delete config.commands.bash;
+      changed = true;
+      console.log('[patch-config] removed commands.bash (env off — !<cmd> shell directive DISABLED)');
+    }
+  } else {
+    console.warn(`[patch-config] OPENCLAW_COMMANDS_BASH=${JSON.stringify(bashCmdRaw)} not on/off — skipping (leaving commands.bash as-is).`);
+  }
+}
+
 // (8g) tools.agentToAgent — cross-agent messaging surface (sessions_send to a
 //      DIFFERENT agent id, e.g. discord-friend → main). This is DISTINCT from
 //      sub-agent SPAWN (same agent id, isolated child) which needs no config and
@@ -4414,6 +4459,215 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       removeSkillFile(WORKSPACE_MAIN_ROOT, 'browser-automation');
       removeSkillFile(WORKSPACE_MAIN_ROOT, 'video-generation');
     }
+  }
+}
+
+// ─── Operator/trusted image-gen bash command (~/.openclaw/bin/img) ──────────
+// The script the `!~/.openclaw/bin/img "<prompt>"` directive runs. It calls the
+// comfyui_image bridge directly (no LLM in the path — the only reliable way to
+// get an adult prompt past Gemma's RLHF, see docs/reference/img-bash-command.md)
+// and DELIVERS THE RESULT AS A TRUE DISCORD ATTACHMENT when it can: the bridge
+// returns the PNG as base64 (include_base64), the script reads the bot token
+// from openclaw.json + the current channel id from the runtime env, and uploads
+// the file via the Discord REST API. Fallbacks, in order: a fixed-channel
+// webhook (IMG_DISCORD_WEBHOOK_URL) if the channel id isn't in the env, then the
+// auto-embedded public link (today's behaviour) if neither is available or the
+// PNG exceeds the attachment cap.
+//
+// PATCHER-OWNED: this file is rewritten on every patcher run, so operator edits
+// are lost — change the IMG_BASH_SCRIPT constant here instead. Written only when
+// OPENCLAW_COMMANDS_BASH is `on` AND IMAGE_GEN_API_TOKEN is set (no token → the
+// bridge is unreachable, so the script would be dead weight); removed on `off`.
+//
+// The script source below deliberately uses NO backticks, NO `${...}`, and NO
+// backslash escapes (console.log instead of "\n", [0-9] instead of \d) so it
+// embeds verbatim in this template literal with zero escaping — keep it that way.
+const IMG_BASH_SCRIPT = `#!/usr/bin/env node
+'use strict';
+//
+// !~/.openclaw/bin/img - trusted image generation, LLM-bypass.
+// PATCHER-OWNED (patch-config.mjs -> IMG_BASH_SCRIPT). Do NOT hand-edit;
+// openclaw-config-init overwrites this on every run.
+//
+// Usage: !~/.openclaw/bin/img [--nsfw|--adult]
+//          [--hd|--2k|--portrait|--pano|--square] [--w=N] [--h=N] [--seed=N]
+//          "<prompt>"
+
+const fs = require('fs');
+
+const BRIDGE_URL = process.env.IMAGE_GEN_URL || 'http://openclaw-image-comfyui:9095/mcp';
+const BRIDGE_TOKEN = process.env.IMAGE_GEN_API_TOKEN || '';
+const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || '/home/node/.openclaw/openclaw.json';
+const WEBHOOK_URL = process.env.IMG_DISCORD_WEBHOOK_URL || '';
+const MAX_BYTES = parseInt(process.env.IMG_DISCORD_MAX_BYTES || '', 10) || 9437184;
+
+const PRESETS = {
+  hd: [1280, 720],
+  '2k': [2048, 2048],
+  portrait: [768, 1280],
+  pano: [1920, 1088],
+  square: [1024, 1024]
+};
+
+function parseArgs(argv) {
+  let workflow = 'flux-krea-2k';
+  let width = null, height = null, seed = null;
+  const parts = [];
+  for (const a of argv) {
+    if (a === '--nsfw' || a === '--adult') workflow = 'flux-krea-2k-adult';
+    else if (a === '--hd') { width = PRESETS.hd[0]; height = PRESETS.hd[1]; }
+    else if (a === '--2k') { width = PRESETS['2k'][0]; height = PRESETS['2k'][1]; }
+    else if (a === '--portrait') { width = PRESETS.portrait[0]; height = PRESETS.portrait[1]; }
+    else if (a === '--pano') { width = PRESETS.pano[0]; height = PRESETS.pano[1]; }
+    else if (a === '--square') { width = PRESETS.square[0]; height = PRESETS.square[1]; }
+    else if (a.indexOf('--w=') === 0) width = parseInt(a.slice(4), 10);
+    else if (a.indexOf('--h=') === 0) height = parseInt(a.slice(4), 10);
+    else if (a.indexOf('--seed=') === 0) seed = parseInt(a.slice(7), 10);
+    else parts.push(a);
+  }
+  return { workflow: workflow, width: width, height: height, seed: seed, prompt: parts.join(' ').trim() };
+}
+
+function readBotToken() {
+  try {
+    const c = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return (c && c.channels && c.channels.discord && c.channels.discord.token) || '';
+  } catch (e) { return ''; }
+}
+
+function resolveChannelId() {
+  // The MCP runtime exports the current channel id under this name for MCP
+  // server processes; the !-bash directive MAY inherit it. Probe the known
+  // name, then any OPENCLAW_*CHANNEL* env that looks like a snowflake.
+  const direct = process.env.OPENCLAW_MCP_CURRENT_CHANNEL_ID || process.env.OPENCLAW_CURRENT_CHANNEL_ID || '';
+  if (/^[0-9]{5,}$/.test(direct)) return direct;
+  for (const k of Object.keys(process.env)) {
+    const v = process.env[k] || '';
+    if (k.indexOf('CHANNEL') !== -1 && /^[0-9]{5,}$/.test(v)) return v;
+  }
+  return '';
+}
+
+async function callBridge(gen) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, 600000);
+  try {
+    const r = await fetch(BRIDGE_URL, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': 'Bearer ' + BRIDGE_TOKEN
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'generate', arguments: gen } })
+    });
+    return await r.json();
+  } finally { clearTimeout(timer); }
+}
+
+async function uploadFile(url, headers, bytes, filename, caption) {
+  const payload = { attachments: [{ id: 0, filename: filename }] };
+  if (caption) payload.content = caption;
+  const form = new FormData();
+  form.append('payload_json', JSON.stringify(payload));
+  form.append('files[0]', new Blob([bytes], { type: 'image/png' }), filename);
+  const r = await fetch(url, { method: 'POST', headers: headers, body: form });
+  if (!r.ok) {
+    let t = '';
+    try { t = await r.text(); } catch (e) {}
+    console.error('[img] upload failed ' + r.status + ' ' + t.slice(0, 200));
+    return false;
+  }
+  return true;
+}
+
+(async function () {
+  const a = parseArgs(process.argv.slice(2));
+  if (!a.prompt) {
+    console.log('usage: !~/.openclaw/bin/img [--nsfw] [--hd|--2k|--portrait|--pano|--square] [--w=N --h=N] [--seed=N] "<prompt>"');
+    return;
+  }
+  if (!BRIDGE_TOKEN) {
+    console.log('image-gen unavailable: IMAGE_GEN_API_TOKEN is not set in the gateway env.');
+    return;
+  }
+
+  const gen = { prompt: a.prompt, workflow: a.workflow, include_base64: true, attach_image_content: false };
+  if (Number.isFinite(a.width)) gen.width = a.width;
+  if (Number.isFinite(a.height)) gen.height = a.height;
+  if (Number.isFinite(a.seed)) gen.seed = a.seed;
+
+  console.error('[img] ' + a.workflow + ' ' + (a.width || 'def') + 'x' + (a.height || 'def') + ' rendering...');
+
+  let j;
+  try { j = await callBridge(gen); }
+  catch (e) { console.log('image-gen request failed: ' + ((e && e.message) || e)); return; }
+
+  if (j && j.error) { console.log('image-gen error: ' + (j.error.message || JSON.stringify(j.error))); return; }
+  const items = (j && j.result && j.result.content) || [];
+  let data = {};
+  const textItem = items.find(function (c) { return c && c.type === 'text'; });
+  try { data = textItem ? JSON.parse(textItem.text) : {}; } catch (e) {}
+  if (data.error) { console.log('image-gen: ' + (data.message || data.error)); return; }
+
+  const img = (data.images || [])[0] || {};
+  const w = img.width || a.width || '';
+  const h = img.height || a.height || '';
+  const elapsed = (typeof data.elapsed_s === 'number') ? (data.elapsed_s.toFixed(1) + 's') : '?';
+  const seedUsed = (data.seed_used != null) ? data.seed_used : '?';
+  const summary = (data.workflow_used || a.workflow) + ' ' + w + 'x' + h + ' - ' + elapsed + ', seed ' + seedUsed;
+  const linkLine = data.display_markdown || ((data.comfyui_external_url || '') + (img.fetch_url_path || ''));
+
+  const bytes = img.base64 ? Buffer.from(img.base64, 'base64') : null;
+  const filename = img.filename || 'image.png';
+
+  // 1) true attachment to the current channel (needs channel id + bot token)
+  if (bytes && bytes.length <= MAX_BYTES) {
+    const channelId = resolveChannelId();
+    const botToken = readBotToken();
+    if (channelId && botToken) {
+      const ok = await uploadFile('https://discord.com/api/v10/channels/' + channelId + '/messages', { 'Authorization': 'Bot ' + botToken }, bytes, filename, null);
+      if (ok) { console.log(summary); return; }
+    }
+    // 2) fixed-channel webhook (no channel id needed)
+    if (WEBHOOK_URL) {
+      const ok = await uploadFile(WEBHOOK_URL, {}, bytes, filename, summary);
+      if (ok) { console.log(summary); return; }
+    }
+  } else if (bytes) {
+    console.error('[img] image ' + bytes.length + ' B over the ' + MAX_BYTES + ' B attach cap - linking instead.');
+  }
+
+  // 3) link fallback (Discord auto-embeds the URL on its own line)
+  console.log(summary);
+  console.log(linkLine);
+})();
+`;
+{
+  const IMG_BIN_DIR = '/home/node/.openclaw/bin';
+  const IMG_BIN_PATH = IMG_BIN_DIR + '/img';
+  const bashRaw = (process.env.OPENCLAW_COMMANDS_BASH || '').trim().toLowerCase();
+  const imgBashOn = ['on', 'true', '1', 'yes'].includes(bashRaw);
+  const imgBashOff = ['off', '0', 'false', 'no'].includes(bashRaw);
+  if (imgBashOn && IMAGE_GEN_TOKEN) {
+    let cur = null;
+    try { cur = fs.readFileSync(IMG_BIN_PATH, 'utf8'); } catch (e) {}
+    if (cur !== IMG_BASH_SCRIPT) {
+      fs.mkdirSync(IMG_BIN_DIR, { recursive: true, mode: 0o755 });
+      fs.writeFileSync(IMG_BIN_PATH, IMG_BASH_SCRIPT, { mode: 0o755 });
+      console.log(`[patch-config] wrote ${IMG_BIN_PATH} (image-gen !command, ${IMG_BASH_SCRIPT.length} B)`);
+    }
+    // Re-assert the exec bit even when content is unchanged ({mode} only
+    // applies on create, and a `down`/restore can land it 0644).
+    try { fs.chmodSync(IMG_BIN_PATH, 0o755); } catch (e) {}
+  } else if (imgBashOff) {
+    try {
+      fs.rmSync(IMG_BIN_PATH);
+      console.log(`[patch-config] removed ${IMG_BIN_PATH} (OPENCLAW_COMMANDS_BASH off)`);
+    } catch (e) { /* already absent */ }
+  } else if (imgBashOn && !IMAGE_GEN_TOKEN) {
+    console.warn('[patch-config] OPENCLAW_COMMANDS_BASH=on but IMAGE_GEN_API_TOKEN unset — not writing ~/.openclaw/bin/img (bridge unreachable).');
   }
 }
 

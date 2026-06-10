@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `!~/.openclaw/bin/img` is patcher-managed + delivers Discord attachments
+
+The operator image-gen bash command (`!~/.openclaw/bin/img "<prompt>"`, the
+LLM-bypass path for adult prompts that Gemma's RLHF refuses) is now fully
+patcher-owned and can open to a trusted user-id list instead of a single owner.
+
+- **`commands.bash` is patcher-managed** (new step 8f₂, knob
+  `OPENCLAW_COMMANDS_BASH`: empty = leave as-is, `on` = enable, `off` =
+  self-heal remove). Previously ad-hoc — and because step 8f's
+  `ownerAllowFrom` default is `["*"]`, an enabled-but-ungated `commands.bash`
+  was a latent **guild-wide RCE**. Gate it with `OPENCLAW_DISCORD_COMMAND_OWNERS`
+  (+ `OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW`) — note `commands.bash` is
+  all-or-nothing arbitrary shell, so listed users get full container shell,
+  not just image-gen.
+- **The `img` script is patcher-written** to `~/.openclaw/bin/img` (mode 0755,
+  config volume) from the `IMG_BASH_SCRIPT` constant in `patch-config.mjs`,
+  gated on `OPENCLAW_COMMANDS_BASH=on` + `IMAGE_GEN_API_TOKEN`. Operator edits
+  to the deployed file are overwritten — change the constant.
+- **True Discord attachments.** The script requests the PNG as base64 from the
+  bridge and uploads it as a real attachment (channel id from the runtime env +
+  bot token from `openclaw.json`), with a fixed-channel webhook
+  (`IMG_DISCORD_WEBHOOK_URL`) and the auto-embedded public link as graceful
+  fallbacks. Size-capped via `IMG_DISCORD_MAX_BYTES` (~9 MiB).
+- Flags unchanged: `--nsfw`/`--adult`, `--hd`/`--2k`/`--portrait`/`--pano`/
+  `--square`, `--w=`/`--h=`, `--seed=`. See `docs/reference/img-bash-command.md`.
+
 ### Fixed — Fish Audio S2 Pro TTS actually hosts on GB10 (image 0.2.0)
 
 The 2026-05-19 migration attempt died on hardware compat; this release peels

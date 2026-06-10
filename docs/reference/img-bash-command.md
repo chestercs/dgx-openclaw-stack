@@ -7,20 +7,21 @@ post `!~/.openclaw/bin/img <prompt>` in Discord and get a rendered image
 back **without** Gemma's RLHF safety alignment evaluating the prompt.
 
 The flow:
-1. Operator types `!~/.openclaw/bin/img "<prompt>"` in any Discord channel
-   the bot can read.
-2. OpenClaw's gateway sees the `!` prefix, checks
-   `commands.ownerAllowFrom` against the sender's Discord user id
-   (currently restricted to the bot owner's id, `244049593338167296`).
-3. The shell command runs inside the openclaw-gateway container as
-   `node` (uid 1000). The script reads `$IMAGE_GEN_API_TOKEN` from the
-   gateway env, builds a JSON-RPC payload, and POSTs it directly to
-   `http://openclaw-image-comfyui:9095/mcp`.
+1. A trusted user types `!~/.openclaw/bin/img "<prompt>"` in any Discord
+   channel the bot can read.
+2. OpenClaw's gateway sees the `!` prefix, checks `commands.ownerAllowFrom`
+   against the sender's Discord user id (the trusted snowflake list set via
+   `OPENCLAW_DISCORD_COMMAND_OWNERS` — see "Configuration footprint" below).
+3. The script runs inside the openclaw-gateway container as `node` (uid
+   1000). It reads `$IMAGE_GEN_API_TOKEN` from the gateway env, builds a
+   JSON-RPC `tools/call` payload (`include_base64: true`), and POSTs it
+   directly to `http://openclaw-image-comfyui:9095/mcp`.
 4. The bridge talks to ComfyUI, polls `/history`, fetches the rendered
-   image bytes, returns metadata + `display_markdown` to the script.
-5. The script prints a one-line summary + the image URL + an
-   `[embed url=…]` shortcode to stdout, which OpenClaw posts back to
-   the same Discord channel.
+   image bytes, and returns metadata + the base64 PNG + `display_markdown`.
+5. The script delivers the result (see "Output" below): a TRUE Discord
+   attachment when it can reach the channel id + bot token, else a webhook
+   upload, else the auto-embedded public link. A one-line summary is printed
+   to stdout, which OpenClaw posts back to the same channel.
 
 No LLM in the loop. The script is the only entity that sees the
 prompt; nothing in the path applies safety filtering or rewrites.
@@ -74,20 +75,30 @@ load (warmup happens once).
 
 ## Output
 
-The script's stdout is what Discord receives. Format:
+The script delivers the rendered image one of three ways, tried in order.
+It always prints a one-line summary (`flux-krea-2k 1280x720 - 50.2s, seed
+11`) to stdout, which OpenClaw posts as the bot's reply.
 
-```
-🎨 flux-krea-2k @ 1280x720 — rendering...
-**`flux-krea-2k`** 1280x720 — 50.2s, seed 11
-https://vision.petyuspolisz.com/view?filename=flux-krea-2k_00005_.png&type=output&subfolder=openclaw-bridge&token=...
-
-[embed url="/__openclaw__/canvas/comfyui-8d6e18a2-flux-krea-2k_00005_.html" /]
-```
-
-Discord auto-embeds the URL on its own line as an inline image
-preview. The `[embed url=…]` shortcode is for the OpenClaw web chat
-surface (Path A canvas inline render); Discord ignores it as text
-noise but keeps the line for cross-surface compatibility.
+1. **True Discord attachment (preferred).** The bridge returns the PNG as
+   base64 (`include_base64`); the script reads the bot token from
+   `openclaw.json` (`channels.discord.token`) and the current channel id
+   from the runtime env (`OPENCLAW_MCP_CURRENT_CHANNEL_ID`, or any
+   `OPENCLAW_*CHANNEL*` env that looks like a snowflake), then uploads the
+   file via `POST /channels/{id}/messages` (multipart). The image lands as a
+   real uploaded attachment on Discord's CDN — it renders natively and does
+   not depend on the external URL staying reachable. **Whether this path
+   fires depends on the runtime exposing a channel id to the `!`-directive
+   subprocess** — verify with `!printenv | grep -i channel` from a trusted
+   account on your OpenClaw version.
+2. **Fixed-channel webhook.** If no channel id is in the env but
+   `IMG_DISCORD_WEBHOOK_URL` is set, the script uploads the PNG to that
+   webhook (a real attachment, but always in the webhook's channel).
+3. **Public link (fallback).** If neither attachment path is available — or
+   the PNG exceeds `IMG_DISCORD_MAX_BYTES` (~9 MiB, under Discord's 10 MiB
+   non-boosted cap) — the script prints the bridge's `display_markdown`
+   (image URL + `[embed]` shortcode). Discord auto-embeds the URL on its own
+   line as an inline preview; the `[embed]` shortcode is web-chat-only and
+   Discord ignores it as text noise.
 
 ## Why this exists (Gemma RLHF bypass)
 
@@ -102,63 +113,73 @@ overrides aren't reliable on Gemma's RLHF.
 The only true bypass is to keep the LLM out of the path entirely. Two
 realistic options were available:
 
-- (A) A separate Discord bot with `/img` slash commands. Rejected by
-  the operator: too much overhead, separate token, separate identity.
-- (B) The existing OpenClaw bot's `commands.bash` text-command
-  surface, gated to the operator's Discord user id only. Selected.
+- (A) A separate Discord bot with `/img` slash commands. The only design
+  that supports a real slash command, typed options, AND an "image-only"
+  permission tier (a user who can generate images but get nothing else) —
+  because it doesn't ride on `commands.bash`. Heavier (separate token,
+  separate identity, a small always-on service).
+- (B) The existing OpenClaw bot's `commands.bash` text-command surface,
+  gated to a trusted Discord user-id list. Selected — no extra service.
 
-`commands.bash` was already a stable OpenClaw feature; it ran
-arbitrary shell commands inside the gateway container as the node
-user. By gating it to a single Discord id (`ownerAllowFrom`) and
-restricting it via `tools.elevated.allowFrom.discord`, the bash
-command surface is invisible to anyone else on the bot's servers.
+`commands.bash` is a stable OpenClaw feature, but it is **all-or-nothing
+arbitrary shell** inside the gateway container as the node user: there is no
+per-command allowlist and no role gate. The only gate is the user-id lists
+`commands.ownerAllowFrom` + `tools.elevated.allowFrom.discord`. So every user
+on that list can run ANY command (`!rm -rf …`, read the config volume's
+secrets) and the owner-only slash commands (`/config`, `/mcp`, …) — NOT just
+image-gen. Keep the list short and fully trusted; this is option (B)'s
+inherent trade-off, and the reason an "image-only" tier needs option (A).
 
-The `img` script is purpose-built around `comfyui_image__generate` —
-no general-purpose shell access required for image-gen. The script's
-quoting, prompt extraction, and JSON parsing are all defensive.
+The `img` script itself is purpose-built around `comfyui_image__generate` —
+its quoting, prompt extraction, JSON parsing, and Discord upload are all
+defensive — but the surface it rides on (`commands.bash`) is not narrowed.
 
 ## Configuration footprint
 
-`openclaw.json` (already configured by ad-hoc `openclaw config set`
-calls in this session):
+All of this is **patcher-managed** (`patch-config.mjs`) and driven from
+`.env` — no ad-hoc `openclaw config set`. The relevant knobs:
 
-```json
-{
-  "commands": {
-    "bash": true,
-    "ownerAllowFrom": ["244049593338167296"]
-  },
-  "tools": {
-    "elevated": {
-      "enabled": true,
-      "allowFrom": {
-        "discord": ["244049593338167296"]
-      }
-    }
-  }
-}
+```bash
+# Enable the !-bash directive (patcher step 8f₂) + write ~/.openclaw/bin/img.
+OPENCLAW_COMMANDS_BASH=on
+# Gate it to a trusted snowflake list (NOT the `*` default!). These users get
+# full container shell + owner-only slash commands, not just image-gen.
+OPENCLAW_DISCORD_COMMAND_OWNERS=244049593338167296,OTHER_TRUSTED_SNOWFLAKE
+OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW=244049593338167296,OTHER_TRUSTED_SNOWFLAKE
+# Bridge token (already wired) — the script reaches the bridge with this.
+IMAGE_GEN_API_TOKEN=…
+# Optional: guarantee attachments via a fixed-channel webhook + size cap.
+IMG_DISCORD_WEBHOOK_URL=
+IMG_DISCORD_MAX_BYTES=9437184
 ```
 
-`docker-compose.yml` (committed): `IMAGE_GEN_API_TOKEN` env passthrough
-to the openclaw-gateway service.
-
-`/home/node/.openclaw/bin/img` (in the gateway container's
-mounted `OPENCLAW_CONFIG_DIR/bin/`): the script itself; survives
-gateway recreate because of the bind-mount.
+The patcher writes `commands.bash` (step 8f₂), `commands.ownerAllowFrom` +
+`tools.elevated.allowFrom.discord` (step 8f), and — when `OPENCLAW_COMMANDS_BASH`
+is `on` and `IMAGE_GEN_API_TOKEN` is set — the `img` script itself to
+`/home/node/.openclaw/bin/img` (mode 0755, in the config volume so it survives
+recreate). **The script is patcher-owned**: it is rewritten on every patcher
+run, so edit the `IMG_BASH_SCRIPT` constant in `patch-config.mjs`, never the
+deployed file. `docker-compose.yml` passes `IMAGE_GEN_URL`,
+`IMG_DISCORD_WEBHOOK_URL`, and `IMG_DISCORD_MAX_BYTES` to the gateway (where
+the script runs) and `OPENCLAW_COMMANDS_BASH` to config-init (the patcher).
 
 ## Limitations
 
-- **Operator-only** — the bash command surface is locked down to one
-  Discord user id. Adding more is a two-line edit to
-  `commands.ownerAllowFrom` and `tools.elevated.allowFrom.discord`,
-  then `openclaw config set` + gateway recreate.
-- **Discord 2000-char limit** — the URL + embed line is ~280 chars,
-  well under the limit. If you ever pipe long script output to
-  Discord, expect truncation.
-- **Render time vs. Discord interaction window** — the script blocks
-  the OpenClaw runtime for the duration of the render (~50s-3min).
-  Other operator commands have to wait. Concurrent renders aren't
-  supported (`IMAGE_GEN_MAX_CONCURRENCY=1` on the bridge).
-- **Operator's Discord ID is hardcoded** — if the operator switches
-  Discord accounts, the allowlists need updating (see "Configuration
-  footprint" above).
+- **Trusted users get full shell, not just image-gen** — `commands.bash` is
+  all-or-nothing (see "Why this exists"). Everyone on
+  `OPENCLAW_DISCORD_COMMAND_OWNERS` can run arbitrary container commands and
+  owner-only slash commands. There is no image-only tier without option (A).
+  Keep the list short. Leaving it at the `*` default while bash is on =
+  guild-wide RCE.
+- **Attachment delivery depends on the runtime** — the true-attachment path
+  needs a channel id in the `!`-directive subprocess env. If your OpenClaw
+  version doesn't expose one (`!printenv | grep -i channel` is empty), set
+  `IMG_DISCORD_WEBHOOK_URL` for attachments, or accept the link fallback.
+- **Discord 2000-char limit** — the summary + link line is well under it.
+- **Render time vs. concurrency** — the script blocks for the render
+  (~50s-3min); other directives wait. Concurrent renders aren't supported
+  (`IMAGE_GEN_MAX_CONCURRENCY=1` on the bridge).
+- **Snowflakes as STRINGS** — list ids as quoted strings; a bare 19-digit
+  integer is rounded by JS Number precision and the equality check then
+  fails. The patcher stringifies defensively, but set them as strings in
+  `.env` regardless.

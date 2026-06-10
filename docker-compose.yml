@@ -1504,6 +1504,15 @@ services:
       OPENCLAW_DISCORD_COMMANDS_ALLOW: ${OPENCLAW_DISCORD_COMMANDS_ALLOW:-*}
       OPENCLAW_DISCORD_COMMAND_OWNERS: ${OPENCLAW_DISCORD_COMMAND_OWNERS:-*}
       OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW: ${OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW:-*}
+      # commands.bash — the `!<cmd>` Discord shell directive (patcher step 8f₂),
+      # enabler for `!~/.openclaw/bin/img`. ⚠ ALL-OR-NOTHING arbitrary shell:
+      # whoever is in OPENCLAW_DISCORD_COMMAND_OWNERS above can run ANY command
+      # in the gateway container, not just image-gen — so set that to a short,
+      # fully-trusted snowflake list (NOT the `*` default) whenever this is on.
+      # Schema-gate: empty = leave config as-is, on = enable, off = self-heal
+      # remove. When on AND IMAGE_GEN_API_TOKEN is set, the patcher also writes
+      # the `!img` script to ~/.openclaw/bin/img. See .env.example.
+      OPENCLAW_COMMANDS_BASH: ${OPENCLAW_COMMANDS_BASH:-}
       # tools.agentToAgent — cross-agent messaging surface (sessions_send to a
       # DIFFERENT agent id, e.g. discord-friend → main). Distinct from sub-agent
       # SPAWN (same agent, no config). Schema captured from the live 2026.6.1 WebGUI
@@ -1733,12 +1742,25 @@ services:
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       OPENCLAW_NO_RESPAWN: "1"
       # Bridge auth token, exposed inside the gateway container so the
-      # operator-only `!~/.openclaw/bin/img` bash command (Gemma-bypass
-      # for adult image generation) can hit the bridge MCP without the
-      # secret being committed in the workspace script. The bash command
-      # is gated by `commands.ownerAllowFrom` (operator's Discord user
-      # id only) on a private single-user deploy.
+      # `!~/.openclaw/bin/img` bash command (LLM-bypass image gen — the only
+      # reliable way past Gemma's RLHF for adult prompts) can hit the bridge
+      # MCP without the secret being committed in the script. The command is
+      # gated to a trusted snowflake list via `commands.ownerAllowFrom`
+      # (OPENCLAW_DISCORD_COMMAND_OWNERS) — note `commands.bash` is all-or-
+      # nothing arbitrary shell, so those users get full container shell.
       IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
+      # The `!img` script reaches the bridge at this URL (defaults to the
+      # in-compose bridge over bridge DNS; mirror IMAGE_GEN_URL on config-init).
+      IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
+      # `!img` attachment delivery. When the runtime doesn't hand the bash
+      # directive a channel id, the script falls back to uploading the PNG to
+      # this fixed-channel Discord webhook (https://discord.com/api/webhooks/…).
+      # Empty → the script uses the auto-embedded public link instead.
+      IMG_DISCORD_WEBHOOK_URL: ${IMG_DISCORD_WEBHOOK_URL:-}
+      # Max bytes the `!img` script will upload as a Discord attachment before
+      # falling back to a link (default ~9 MiB, safe under the 10 MiB
+      # non-boosted cap; raise on a boosted/Nitro server).
+      IMG_DISCORD_MAX_BYTES: ${IMG_DISCORD_MAX_BYTES:-9437184}
       # MCP request-timeout ceiling. Upstream @modelcontextprotocol/sdk
       # hardcodes a 60 s default for client.request() and OpenClaw's
       # runtime calls callTool without a per-server override, so any
