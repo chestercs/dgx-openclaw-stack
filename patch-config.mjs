@@ -3824,16 +3824,22 @@ const SKILL_ROUTER_BODY =
   '`python_sandbox__git_push` · `browser` (action-alapú) · `canvas` · `exec` (shell, approval-gated) · ' +
   '`memory_search`+`memory_get` (olvasás; ÍRÁS = `write` egy `memory/*.md` fájlba, NINCS memory_write tool) · ' +
   '`cron` · `sessions_spawn`+`sessions_yield` · `image` (vision: "ki van a képen?").\n\n' +
-  'A részletes receptek SKILL-ekben élnek — ha a user kérése illik a triggerre, olvasd be és kövesd a skillt:\n\n' +
-  '- `cron-reminders` — emlékeztető / időzített küldés ("emlékeztess", "X múlva szólj", "minden reggel")\n' +
-  '- `browser-automation` — weboldal megnyitás / screenshot / kattintás / űrlap (browser.act param-formák!)\n' +
-  '- `image-generation` — képgenerálás workflow- és felbontás-receptek\n' +
-  '- `image-to-image` — csatolt kép átalakítása (denoise-skála, workflow-választás)\n' +
-  '- `video-generation` — T2V/I2V routing, resolution arg, mp4 beágyazás\n' +
-  '- `media-downloads` — yt-dlp letöltés, transzkripció, fájl-feltöltés, kép keresés+mentés\n' +
-  '- `weather-forecast` — időjárás open-meteo-val (SOHA nem cron!)\n' +
-  '- `coding-projects` — kódírás, web-app hostolás, git_push GitHubra\n' +
-  '- `long-task-workboard` — többórás munka workboard-kártyával trackelve\n';
+  '**🚨 SKILL ≠ TOOL — egy skillt SOHA ne hívj tool-ként** (`weather_forecast(...)` ' +
+  'tool-hívás NEM LÉTEZIK → "isn\'t available" hiba). A skill egy RECEPT-FÁJL. Használata PONTOSAN így:\n' +
+  '1. `read` tool-lal olvasd be: `skills/<skill-név>/SKILL.md` (workspace-relatív path, pl. `skills/weather-forecast/SKILL.md`).\n' +
+  '2. Kövesd a beolvasott receptet a VALÓDI tool-okkal (python_exec, browser, web_search, …).\n' +
+  '3. Ha a read nem megy, a fenti tools-listából improvizálj — de SOHA ne mondd hogy "nincs ilyen tool-om", és ne add fel.\n\n' +
+  'Mikor melyik skillt olvasd (trigger → skill):\n\n' +
+  '- "emlékeztess / X múlva szólj / minden reggel" → `cron-reminders`\n' +
+  '- weboldal megnyitás / screenshot / kattintás / űrlap → `browser-automation` (browser.act param-formák!)\n' +
+  '- képgenerálás → `image-generation` (workflow- és felbontás-receptek)\n' +
+  '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
+  '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n' +
+  '- letöltés / transzkripció / fájl-feltöltés / kép-keresés → `media-downloads`\n' +
+  '- **"milyen idő lesz / hány fok" → `weather-forecast`** — gyorshivatkozás: `python_exec` + open-meteo API ' +
+  '(geokód → forecast, kulcs nélkül), MOST kérdezd le, SOHA nem cron és nem web_search; a részletes recept a skillben.\n' +
+  '- kódírás / web-app hostolás / git push → `coding-projects`\n' +
+  '- többórás munka kártyával → `long-task-workboard`\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
 // DECISION-TIME policies stay always-injected; the per-domain recipes move
