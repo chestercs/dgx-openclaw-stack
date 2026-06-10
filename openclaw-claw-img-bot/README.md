@@ -56,6 +56,24 @@ OpenClaw bot's gateway connection.
   purpose — it can OOM the box; set width/height by hand if you must).
 - `steps` / `cfg` — quality knobs; omit to use the workflow defaults.
 
+### `/claw-video` (LTX-Video 2.3)
+
+```
+/claw-video prompt:<text> [image:<attachment>] [negative:<text>]
+            [resolution:square|portrait|landscape|fullhd]
+            [width:<px>] [height:<px>] [seconds:<float>] [fps:<int>]
+            [audio:true|false] [seed:<int>]
+```
+
+- **`image`** — attach a source image to **animate it** (image-to-video, the
+  bridge auto-picks `ltx-2.3-i2v`). Without it, it's text-to-video.
+- `seconds` — clip length (capped at `CLAW_VIDEO_MAX_SECONDS`, default 10).
+- `audio` — LTX-2.3 generates a synced audio track and muxes it into the mp4
+  (default on).
+- width/height are rounded to a multiple of 32 (LTX requirement); 2K/4K are not
+  offered for video. Returns the mp4 as an attachment (link fallback if it's
+  over the Discord upload cap). Cold-cache renders take a few minutes.
+
 - The default workflow is `CLAW_IMG_DEFAULT_WORKFLOW`. Set it to
   `flux-krea-2k-adult` for an NSFW-by-default deploy; `safe:true` forces the SFW
   workflow per call.

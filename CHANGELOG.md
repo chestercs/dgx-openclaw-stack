@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `/claw-video` (LTX-Video) on the claw-img bot
+
+The standalone bot gained a second slash command, `/claw-video`, calling the
+bridge's `generate_video` (LTX-Video 2.3) directly and uploading the mp4 as a
+Discord attachment (link fallback over the cap).
+
+- Text-to-video, or attach an `image` to animate it (image-to-video — the
+  bridge auto-picks `ltx-2.3-i2v`; the attachment is passed as base64 since the
+  bot's uploads don't land in the bridge media dir).
+- Options: `prompt`, `negative`, `resolution` (square/portrait/landscape/fullhd;
+  no 2K/4K for video), `width`/`height` (rounded to ÷32), `seconds` (capped),
+  `fps`, `audio` (LTX generates + muxes a track), `seed`.
+- Longer `CLAW_VIDEO_TIMEOUT_S` (900s) and a `CLAW_VIDEO_MAX_SECONDS` cap; bot
+  mem bumped 512m→768m for the mp4 base64 decode spike.
+
+### `/claw-img` parameters expanded
+
+`/claw-img` gained `negative`, `steps`, `cfg`, and a richer `resolution` preset
+set (square/portrait/landscape/hd/fullhd/2k; 4K omitted to avoid host OOM).
+
 ### Added — `openclaw-claw-img-bot`: a real `/claw-img` Discord slash command
 
 A standalone opt-in bot (compose profile `claw-img`) that exposes a true

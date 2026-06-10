@@ -1908,14 +1908,19 @@ services:
       CLAW_IMG_SFW_WORKFLOW: ${CLAW_IMG_SFW_WORKFLOW:-flux-krea-2k}
       CLAW_IMG_MAX_BYTES: ${CLAW_IMG_MAX_BYTES:-9437184}
       CLAW_IMG_TIMEOUT_S: ${CLAW_IMG_TIMEOUT_S:-600}
+      # /claw-video (LTX-Video) — slower renders + bigger mp4; own timeout and a
+      # duration cap (the bridge also enforces LTX_VIDEO_MAX_DURATION_S).
+      CLAW_VIDEO_TIMEOUT_S: ${CLAW_VIDEO_TIMEOUT_S:-900}
+      CLAW_VIDEO_MAX_SECONDS: ${CLAW_VIDEO_MAX_SECONDS:-10}
       TZ: ${TZ:-UTC}
     cap_drop: [ALL]
     security_opt:
       - "no-new-privileges:true"
-    # Tiny footprint (discord.py + aiohttp, no models). mem_limit == memswap_limit
-    # = swap-denied containment, per the stack convention.
-    mem_limit: 512m
-    memswap_limit: 512m
+    # discord.py + aiohttp, no models. Bumped 512m→768m for the transient spike
+    # when decoding a /claw-video mp4 from base64. mem_limit == memswap_limit =
+    # swap-denied containment, per the stack convention.
+    mem_limit: 768m
+    memswap_limit: 768m
     cpus: 1
     logging:
       driver: json-file

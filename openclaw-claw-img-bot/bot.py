@@ -42,6 +42,10 @@ SFW_WORKFLOW = os.environ.get("CLAW_IMG_SFW_WORKFLOW", "flux-krea-2k").strip()
 # bot posts the public link instead of an attachment.
 MAX_BYTES = int(os.environ.get("CLAW_IMG_MAX_BYTES", "9437184"))
 TIMEOUT_S = float(os.environ.get("CLAW_IMG_TIMEOUT_S", "600"))
+# Video renders are slower (LTX cold cache 3-10 min) and the mp4 is bigger.
+VIDEO_TIMEOUT_S = float(os.environ.get("CLAW_VIDEO_TIMEOUT_S", "900"))
+# Max seconds of video (the bridge also caps via LTX_VIDEO_MAX_DURATION_S).
+VIDEO_MAX_SECONDS = float(os.environ.get("CLAW_VIDEO_MAX_SECONDS", "10"))
 
 # Resolution presets (explicit dims). 4K is deliberately omitted — a 3840px
 # FLUX render peaks ~100+ GB on this box and has livelocked the host; set
@@ -54,6 +58,21 @@ PRESETS = {
     "fullhd": (1920, 1088),
     "2k": (2048, 2048),
 }
+
+# Video presets — LTX dims must be divisible by 32 and stay within the bridge's
+# max (1920×1088). No 2K/4K for video.
+VIDEO_PRESETS = {
+    "square": (1024, 1024),
+    "portrait": (704, 1280),
+    "landscape": (1280, 704),
+    "fullhd": (1920, 1088),
+}
+
+
+def round32(n: int) -> int:
+    """LTX requires width/height divisible by 32; round custom dims to the
+    nearest multiple so a hand-typed value doesn't get silently dropped."""
+    return max(32, int(round(n / 32)) * 32)
 
 if not TOKEN:
     raise SystemExit("CLAW_IMG_DISCORD_TOKEN is not set — nothing to run.")
@@ -68,7 +87,7 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 
-async def call_bridge(arguments: dict) -> dict:
+async def call_bridge(arguments: dict, tool: str = "generate", timeout_s: float = TIMEOUT_S) -> dict:
     """POST a single JSON-RPC tools/call to the bridge and return the parsed
     JSON-RPC envelope. The bridge's /mcp endpoint answers a lone request with
     plain JSON (no SSE), so a normal POST + .json() is enough."""
@@ -81,12 +100,22 @@ async def call_bridge(arguments: dict) -> dict:
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
-        "params": {"name": "generate", "arguments": arguments},
+        "params": {"name": tool, "arguments": arguments},
     }
-    timeout = aiohttp.ClientTimeout(total=TIMEOUT_S)
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(BRIDGE_URL, json=body, headers=headers) as resp:
             return await resp.json()
+
+
+def pick_media(data: dict) -> dict:
+    """Return the first generated media entry — videos take precedence over
+    images so /claw-video grabs the mp4."""
+    for key in ("videos", "images"):
+        arr = data.get(key) or []
+        if arr:
+            return arr[0]
+    return {}
 
 
 def extract_result(envelope: dict) -> dict:
@@ -216,8 +245,130 @@ async def claw_img_error(interaction: discord.Interaction, error: Exception):
         pass
 
 
+@tree.command(name="claw-video", description="Generate a short video (LTX-Video 2.3, direct — no chat LLM).")
+@app_commands.describe(
+    prompt="What the video should depict (and, if audio on, sound like).",
+    image="Optional source image to animate (image-to-video).",
+    negative="What to avoid / keep out of the video.",
+    resolution="Output size preset (width/height below override it).",
+    width="Custom width px — rounded to a multiple of 32 (pair with height).",
+    height="Custom height px — rounded to a multiple of 32 (pair with width).",
+    seconds=f"Clip length in seconds (max {int(VIDEO_MAX_SECONDS)}; omit = workflow default).",
+    fps="Frames per second (default 24).",
+    audio="Generate + mux an audio track (default on).",
+    seed="RNG seed (omit = random).",
+)
+@app_commands.choices(
+    resolution=[app_commands.Choice(name=k, value=k) for k in VIDEO_PRESETS]
+)
+async def claw_video(
+    interaction: discord.Interaction,
+    prompt: str,
+    image: discord.Attachment | None = None,
+    negative: str | None = None,
+    resolution: app_commands.Choice[str] | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    seconds: float | None = None,
+    fps: int | None = None,
+    audio: bool | None = None,
+    seed: int | None = None,
+):
+    await interaction.response.defer(thinking=True)
+
+    args = {
+        "prompt": prompt,
+        "include_base64": True,
+        "attach_image_content": False,
+        # Keep the bridge's own timeout just under ours so it errors first
+        # with a clean message rather than us aborting the socket.
+        "timeout_s": max(60.0, VIDEO_TIMEOUT_S - 30),
+    }
+    if negative:
+        args["negative"] = negative
+    if resolution is not None:
+        args["width"], args["height"] = VIDEO_PRESETS[resolution.value]
+    if width:
+        args["width"] = round32(width)
+    if height:
+        args["height"] = round32(height)
+    fps_eff = fps or 24
+    if fps:
+        args["fps"] = fps
+    if seconds is not None:
+        clip = max(0.5, min(seconds, VIDEO_MAX_SECONDS))
+        args["length"] = max(1, round(clip * fps_eff))
+    if audio is not None:
+        args["audio_enabled"] = audio
+    if seed is not None:
+        args["seed"] = seed
+
+    # Image-to-video: download the attachment and pass it as base64. KozelBot's
+    # uploads don't land in the bridge's media dir, so the filesystem-path route
+    # isn't available — base64 is the portable input. The bridge then auto-picks
+    # the ltx-2.3-i2v workflow.
+    if image is not None:
+        if not (image.content_type or "").startswith("image/"):
+            await interaction.followup.send("the `image` attachment must be an image (png/jpg/webp).")
+            return
+        raw_img = await image.read()
+        args["init_image_base64"] = base64.b64encode(raw_img).decode("ascii")
+
+    try:
+        envelope = await call_bridge(args, tool="generate_video", timeout_s=VIDEO_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("⌛ video render timed out — try fewer seconds or a smaller size.")
+        return
+    except Exception as e:  # noqa: BLE001
+        log.exception("video bridge call failed")
+        await interaction.followup.send(f"video request failed: {e}")
+        return
+
+    data = extract_result(envelope)
+    if data.get("error"):
+        await interaction.followup.send(f"video error: {data.get('message', data['error'])}")
+        return
+
+    media = pick_media(data)
+    summary = (
+        f"`{data.get('workflow_used', 'ltx-2.3')}` "
+        f"{media.get('width', '?')}x{media.get('height', '?')} — "
+        f"{media.get('duration_s', '?')}s @ {media.get('fps', '?')}fps, "
+        f"audio {'on' if media.get('audio_enabled') else 'off'}, "
+        f"seed {data.get('seed_used', '?')} (rendered {data.get('elapsed_s', '?')}s)"
+    )
+
+    b64 = media.get("base64")
+    if not b64:
+        await interaction.followup.send(f"{summary}\n{data.get('display_markdown', '(no video returned)')}")
+        return
+
+    raw = base64.b64decode(b64)
+    filename = media.get("filename") or "video.mp4"
+    if len(raw) <= MAX_BYTES:
+        await interaction.followup.send(content=summary, file=discord.File(io.BytesIO(raw), filename=filename))
+    else:
+        await interaction.followup.send(
+            f"{summary}\n(video is {len(raw) // 1024} KiB — over the attachment cap, linking instead)\n"
+            f"{data.get('display_markdown', '')}"
+        )
+
+
+@claw_video.error
+async def claw_video_error(interaction: discord.Interaction, error: Exception):
+    log.exception("claw-video command error: %s", error)
+    msg = f"⚠️ command failed: {error}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def sync_to_guild(guild: discord.abc.Snowflake):
-    """Register /claw-img on one guild — instant, unlike the ~1 h global sync."""
+    """Register the slash commands on one guild — instant, unlike global sync."""
     tree.copy_global_to(guild=guild)
     synced = await tree.sync(guild=guild)
     log.info("synced %d command(s) to guild %s", len(synced), getattr(guild, "id", guild))
