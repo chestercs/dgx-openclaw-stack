@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Fish Audio S2 Pro TTS actually hosts on GB10 (image 0.2.0)
+
+The 2026-05-19 migration attempt died on hardware compat; this release peels
+the full failure onion — five distinct root causes, each now fixed and
+build-asserted. First verified synthesis: 2026-06-10, Hungarian + English,
+STT roundtrip near-word-perfect.
+
+- **cu130 `sgl-kernel` wheel** — the PyPI aarch64 wheel is a CUDA 12 build
+  (`libnvrtc.so.12` dlopen failure inside the CUDA 13 image). Now installed
+  from the sgl-project/whl GitHub release (`0.3.21+cu130`), provenance-
+  asserted at build via pip's `direct_url.json` (the wheel's internal version
+  metadata is indistinguishable from the cu12 one). sm_121 runs its
+  sm90/sm100 SASS via PTX forward-compat JIT; the compiled cache persists on
+  the new `tts-fish-cuda-jit-cache` volume (`CUDA_CACHE_MAXSIZE` 4 GB).
+- **cu130 torch pins survive the omni resolve** — PyPI torch wheels for
+  aarch64 are CPU-only and the sglang-omni dependency resolution silently
+  swapped cu130 torch for `2.9.1+cpu`. Exact pre-pins + `--index-strategy
+  unsafe-best-match` + a surgical `--no-deps --force-reinstall` re-pin with
+  a build-time cu13 assert.
+- **Low-memory decoder load (build-time patch)** — upstream
+  `load_audio_decoder()` materializes the FULL 5B model fp32-random-init
+  (~20 GB) + checkpoint (~11 GB) + a bf16 copy just to extract the audio
+  decoder. That transient spike equals the GB10's entire headroom and
+  livelocked the whole host twice (frozen userspace, 1.5 h). Patched to
+  `torch_dtype=bf16 + low_cpu_mem_usage=True`; decoder load now ~28 s.
+- **Triton ptxas predates sm_121a** — first synthesis crashed the scheduler
+  (`ptxas fatal: Value 'sm_121a' is not defined`); `TRITON_PTXAS_PATH` now
+  points at the CUDA 13 system ptxas (the documented DGX Spark workaround).
+- **SDPA attention fallback (build-time patch)** — the Fish decoder imports
+  FlashAttention-3 directly from `sgl_kernel`, bypassing sglang's
+  `attention_backend`; FA3 is Hopper-only SASS ("no kernel image" on
+  sm_121). `fish_sdpa_attn_fallback.py` reimplements
+  `flash_attn_with_kvcache` (in-place cache append, bottom-right causal
+  alignment, GQA) on torch SDPA.
+
+### Added — TTS voice library, sampling knobs, GB10 pipeline config
+
+- **Bundled 7-voice library** (`openclaw-tts-fish/server/voices/`, baked into
+  the image seed): `default_en`/`bella`/`nicole`/`michael`/`fenrir`/`emma`
+  (Kokoro 82M syntheses, Apache-2.0 generated audio) + `default_hu` (LibriVox
+  public domain). Replaces the HF-dataset fetcher that soft-failed on every
+  aarch64 build (no torchcodec wheel) and shipped empty seed dirs. Patcher
+  step 11 adds timbre aliases: `female`/`male`/`british`/`deep`/`soft`.
+- **Deploy-wide sampling baselines** — `TTS_FISH_{TEMPERATURE,TOP_P,TOP_K,
+  REPETITION_PENALTY,MAX_NEW_TOKENS,SPEED,SEED}` env knobs applied only when
+  the request omits the field. Upstream defaults + the `top_k` 1..30 range
+  gotcha documented in `.env.example` and the service README.
+- **GB10-calibrated pipeline config** (`configs/s2pro_tts_gb10.yaml`, image
+  default via `FISH_S2PRO_CONFIG`): `mem_fraction_static` 0.85→0.5 (sglang
+  sizes its pool from memory-visible-at-startup — on the shared unified pool
+  the default allocated a 16 GB KV cache for a TTS engine), startup
+  torch-compile + CUDA-graph capture off, `max_running_requests` 4,
+  `attention_backend: triton`.
+- **Containment on the compose service** — `mem_limit`/`memswap_limit`
+  (swap denied) + `cpus` + BLAS/OMP thread caps, after an uncontained engine
+  start livelocked the host. Worst case is now the TTS container OOMing
+  alone. New deadlines: `SGLANG_OMNI_STARTUP_TIMEOUT=3000` under
+  `FISH_ENGINE_READY_DEADLINE_S=3300` (engine error surfaces first).
+- **soundfile reference loader (build-time patch)** — torchaudio 2.9 removed
+  legacy I/O and no torch-2.9-paired torchcodec exists for aarch64; the
+  single s2-pro reference-load call site now goes through soundfile.
+
+Known limitations: synthesis latency ~20-30 s per sentence (reference clip
+is VQ-encoded on CPU per request; CUDA graphs and torch-compile disabled
+pending sm_121 maturity) — fine for tagged Discord TTS, not yet for
+real-time voice-channel use. Steady-state memory is tight (~4 GB host
+headroom with vLLM + Fish + Whisper + ComfyUI all resident).
+
 ### Added — Discord agentic coding: exec + chat-side approvals, thread-per-task, long-run knobs
 
 Outcome of a full upstream-docs sweep (docs.openclaw.ai, ~150 pages) compared
