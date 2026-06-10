@@ -54,6 +54,36 @@ MAX_OUTPUT_BYTES = int(os.environ.get("PYTHON_SANDBOX_MAX_OUTPUT_BYTES", str(10 
 IDLE_TTL_S = float(os.environ.get("PYTHON_SANDBOX_IDLE_TTL_S", "1800"))  # 30 min
 REAP_INTERVAL_S = float(os.environ.get("PYTHON_SANDBOX_REAP_INTERVAL_S", "300"))  # 5 min
 
+# ── Whisper STT bridge (transcribe_audio tool) ────────────────────────
+# The token lives ONLY in this (uvicorn) process env — kernel_pool strips
+# it from the child kernel, so user-submitted Python in python_exec cannot
+# read it via os.environ. This is the "dedicated MCP tool holds the token"
+# isolation the operator chose over exposing the token to the sandbox.
+STT_BASE_URL = os.environ.get("STT_BASE_URL", "http://openclaw-stt-whisper:8080/v1").rstrip("/")
+STT_API_TOKEN = os.environ.get("STT_API_TOKEN", "").strip()
+STT_MODEL = os.environ.get("STT_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2")
+# Cap on the audio file the tool will POST to Whisper — guards against a
+# user pointing the tool at a multi-GB file and OOMing the STT container.
+STT_MAX_FILE_BYTES = int(os.environ.get("STT_MAX_FILE_BYTES", str(200 * 1024 * 1024)))  # 200 MB
+STT_REQUEST_TIMEOUT_S = float(os.environ.get("STT_REQUEST_TIMEOUT_S", "600"))  # 10 min
+
+# ── GitHub push bridge (git_push tool) ────────────────────────────────
+# A fine-grained PAT (Contents: read+write, scoped to GITHUB_REPO ONLY) lives
+# in this (uvicorn) process env. kernel_pool strips it from child kernels, and
+# the tool feeds it to git via GIT_ASKPASS — never in argv (ps) or .git/config —
+# so user-submitted python_exec code cannot read it. The tool can ONLY push to
+# GITHUB_REPO (the agent cannot target another repo), and never force-pushes.
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "").strip()  # "owner/repo"
+GIT_PUSH_TIMEOUT_S = float(os.environ.get("GIT_PUSH_TIMEOUT_S", "120"))
+GIT_DEFAULT_BRANCH = os.environ.get("GIT_DEFAULT_BRANCH", "main").strip() or "main"
+GIT_AUTHOR_NAME = os.environ.get("GIT_AUTHOR_NAME", "ImbulClaw").strip() or "ImbulClaw"
+GIT_AUTHOR_EMAIL = os.environ.get("GIT_AUTHOR_EMAIL", "bot@petyuspolisz.com").strip() or "bot@petyuspolisz.com"
+# When GITHUB_REPO does not exist yet, git_push auto-creates it under the token's
+# account (so a dedicated bot account only needs to hand over a token — no manual
+# repo creation). This is its visibility. Default private; set false for public.
+GITHUB_REPO_PRIVATE = os.environ.get("GITHUB_REPO_PRIVATE", "true").strip().lower() not in ("false", "0", "no", "off")
+
 # Protocol version we advertise to the client. Matches the MCP spec
 # revision we implement; clients that understand a newer revision will
 # negotiate down to this one in the initialize handshake.
@@ -119,6 +149,105 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "transcribe_audio",
+        "description": (
+            "Transcribe a local audio (or video) file to text using the "
+            "self-hosted Whisper STT backend (faster-whisper turbo, "
+            "autodetects EN/HU and many more). Give it a filesystem path "
+            "to a file you already produced — typically with yt-dlp + "
+            "ffmpeg inside python_exec (e.g. download a YouTube video, "
+            "extract the audio to /workspace/audio.mp3, then call this "
+            "tool with path='/workspace/audio.mp3'). The Whisper bearer "
+            "token is held server-side; you never need it. Returns the "
+            "full transcript text plus the detected language. Common "
+            "audio/container formats work (mp3, m4a, wav, webm, mp4); "
+            "Whisper decodes via its own ffmpeg."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the audio/video file to transcribe. "
+                        "Use /workspace/... (bind-mounted, persistent) or /tmp/... "
+                        "Must already exist — create it first via python_exec."
+                    ),
+                },
+                "language": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO-639-1 language hint (e.g. 'hu', 'en'). "
+                        "Omit to let Whisper autodetect — recommended unless "
+                        "autodetect picks the wrong language on short/noisy clips."
+                    ),
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "git_push",
+        "description": (
+            "Commit (optionally) and push a LOCAL git repo to the operator's "
+            "preconfigured GitHub repository. The repo, the GitHub token, and the "
+            "auth are all held server-side — you never see or handle credentials. "
+            "Typical flow: build a project (e.g. in /home/node/.openclaw/canvas/<name>), "
+            "`git init` it via python_exec, then call git_push with repo_path=<that dir> "
+            "and a commit_message, plus `repo` to name the GitHub repo for THIS project "
+            "(e.g. 'max-payne-2' — created under the bot's account if it doesn't exist "
+            "yet; or a full 'owner/name'). Pass force=true to overwrite a diverged remote "
+            "(your own throwaway repos only). Returns the GitHub URL on "
+            "success. If the server has no GITHUB_TOKEN set, it returns a clear "
+            "'not configured' error — tell the user the operator must wire it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the local git repo (must contain a .git dir; "
+                        "run `git init` first). Must be under /workspace or "
+                        "/home/node/.openclaw/canvas."
+                    ),
+                },
+                "commit_message": {
+                    "type": "string",
+                    "description": (
+                        "Optional. If given, `git add -A` + commit ALL current changes "
+                        "before pushing. Omit to push already-committed work only."
+                    ),
+                },
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "The GitHub repo for this project. A bare name (e.g. "
+                        "'max-payne-2') is created under the bot's account if missing; "
+                        "or pass a full 'owner/name'. Pick a clear name per project."
+                    ),
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Optional target branch. Default 'main'.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional (default false). If true, force-push (overwrite the "
+                        "remote with your LOCAL history). Use ONLY for your own throwaway "
+                        "project repos when the remote diverged (you reset history or "
+                        "re-init'd after a previous push). Safe here: repos live on the "
+                        "bot's dedicated account."
+                    ),
+                },
+            },
+            "required": ["repo_path"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -154,9 +283,240 @@ async def _tool_python_session_reset(args: dict) -> dict:
     return {"session_id": sid, "existed": existed}
 
 
+def _transcribe_sync(path: str, language: Optional[str]) -> dict:
+    """Blocking Whisper POST — run via asyncio.to_thread. Lives here (not in
+    the kernel) so the STT token never enters user-code scope."""
+    import requests  # local import: only this tool needs it
+
+    if not STT_API_TOKEN:
+        raise RuntimeError(
+            "STT_API_TOKEN is not set on the sandbox server — the operator must "
+            "wire it in docker-compose for transcribe_audio to work."
+        )
+    # Path safety: must exist, be a regular file, and stay within the dirs
+    # the agent legitimately writes to. The kernel and this process share the
+    # container filesystem, so a path the agent wrote is readable here.
+    real = os.path.realpath(path)
+    if not os.path.isfile(real):
+        raise ValueError(f"file not found: {path}")
+    # /home/node/.openclaw/canvas is the shared mount (same path the gateway
+    # sees) — files there can be attached to Discord via upload-file. /workspace
+    # and /tmp are sandbox-local scratch.
+    allowed_roots = ("/workspace", "/tmp", "/home/node/.openclaw/canvas")
+    if not any(real == r or real.startswith(r + "/") for r in allowed_roots):
+        raise ValueError(
+            f"path must be under {' or '.join(allowed_roots)} (got {real})"
+        )
+    size = os.path.getsize(real)
+    if size > STT_MAX_FILE_BYTES:
+        raise ValueError(
+            f"file is {size} bytes; exceeds STT_MAX_FILE_BYTES={STT_MAX_FILE_BYTES}"
+        )
+
+    url = f"{STT_BASE_URL}/audio/transcriptions"
+    data = {"model": STT_MODEL}
+    if language:
+        data["language"] = language
+    with open(real, "rb") as fh:
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {STT_API_TOKEN}"},
+            files={"file": (os.path.basename(real), fh)},
+            data=data,
+            timeout=STT_REQUEST_TIMEOUT_S,
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Whisper STT returned HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+    try:
+        body = resp.json()
+    except ValueError:
+        # Some whisper shims return text/plain; fall back to raw body.
+        return {"text": resp.text, "language": language, "model": STT_MODEL}
+    return {
+        "text": body.get("text", ""),
+        "language": body.get("language", language),
+        "model": STT_MODEL,
+        "duration": body.get("duration"),
+        "file_bytes": size,
+    }
+
+
+async def _tool_transcribe_audio(args: dict) -> dict:
+    path = args.get("path")
+    if not isinstance(path, str) or not path:
+        raise ValueError("`path` is required and must be a non-empty string")
+    language = args.get("language") or None
+    if language is not None and not isinstance(language, str):
+        raise ValueError("`language` must be a string when provided")
+    return await asyncio.to_thread(_transcribe_sync, path, language)
+
+
+def _git_push_sync(repo_path: str, commit_message: Optional[str], branch: Optional[str], repo: Optional[str], force: bool = False) -> dict:
+    """Blocking git commit+push — run via asyncio.to_thread. The PAT lives only in
+    this process env; we hand it to git via a transient GIT_ASKPASS helper so it
+    never lands in argv (ps) or .git/config. The target repo is DYNAMIC: the agent
+    passes `repo` per call (a bare name → qualified under the token account's login,
+    or a full owner/name), falling back to the GITHUB_REPO env default if set."""
+    import subprocess
+    import tempfile
+    import requests
+
+    if not GITHUB_TOKEN:
+        raise RuntimeError(
+            "git_push is not configured: the operator must set GITHUB_TOKEN (a PAT, "
+            "e.g. a classic token with `repo` scope) in docker-compose for the sandbox."
+        )
+    _api_headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+    # Resolve the target repo: per-call `repo` wins; else the GITHUB_REPO env default.
+    # A bare name (no "/") is qualified with the token account's login.
+    target_repo = (repo or GITHUB_REPO or "").strip().strip("/")
+    if not target_repo:
+        raise RuntimeError(
+            "no target repo: pass `repo` (e.g. 'max-payne-2' or 'owner/max-payne-2'), "
+            "or set GITHUB_REPO on the sandbox."
+        )
+    if "/" not in target_repo:
+        try:
+            _u = requests.get("https://api.github.com/user", headers=_api_headers, timeout=20)
+        except requests.RequestException as e:
+            raise RuntimeError(f"GitHub API unreachable from the sandbox: {e}")
+        if _u.status_code != 200:
+            raise RuntimeError(
+                f"cannot resolve the token's account (HTTP {_u.status_code}): "
+                f"{_u.text[:200]}. Pass `repo` as 'owner/name' instead."
+            )
+        _login = (_u.json() or {}).get("login")
+        if not _login:
+            raise RuntimeError("GitHub /user returned no login; pass `repo` as 'owner/name'.")
+        target_repo = f"{_login}/{target_repo}"
+    real = os.path.realpath(repo_path)
+    if not os.path.isdir(real):
+        raise ValueError(f"repo path not found or not a directory: {repo_path}")
+    allowed_roots = ("/workspace", "/home/node/.openclaw/canvas")
+    if not any(real == r or real.startswith(r + "/") for r in allowed_roots):
+        raise ValueError(f"repo path must be under {' or '.join(allowed_roots)} (got {real})")
+    if not os.path.isdir(os.path.join(real, ".git")):
+        raise ValueError(f"not a git repo (no .git dir): {real}. Run `git init` first via python_exec.")
+    target_branch = (branch or GIT_DEFAULT_BRANCH).strip() or GIT_DEFAULT_BRANCH
+
+    # Auto-create the GitHub repo if it doesn't exist yet (under the token's account),
+    # so the agent can push a brand-new project with no manual repo creation. Needs a
+    # token that can create repos (a classic PAT with `repo` scope works). Visibility
+    # from GITHUB_REPO_PRIVATE (default private).
+    repo_created = False
+    try:
+        _chk = requests.get(f"https://api.github.com/repos/{target_repo}", headers=_api_headers, timeout=20)
+    except requests.RequestException as e:
+        raise RuntimeError(f"GitHub API unreachable from the sandbox: {e}")
+    if _chk.status_code == 404:
+        _name = target_repo.split("/", 1)[-1]
+        _cr = requests.post(
+            "https://api.github.com/user/repos", headers=_api_headers,
+            json={"name": _name, "private": GITHUB_REPO_PRIVATE, "auto_init": False}, timeout=30,
+        )
+        if _cr.status_code not in (200, 201):
+            raise RuntimeError(
+                f"repo {target_repo} does not exist and auto-create failed "
+                f"(HTTP {_cr.status_code}): {_cr.text[:300]}. Check the token can create "
+                f"repos and that the repo owner matches the token's account."
+            )
+        repo_created = True
+    elif _chk.status_code != 200:
+        raise RuntimeError(
+            f"GitHub repo check failed (HTTP {_chk.status_code}): {_chk.text[:200]}. "
+            f"Is GITHUB_TOKEN valid and does it have access to {target_repo}?"
+        )
+
+    # GIT_ASKPASS shim: git invokes it for the password and we echo the token from
+    # an env var scoped to this subprocess only. Keeps the token out of argv.
+    askpass = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, dir="/tmp")
+    askpass.write("#!/bin/sh\nexec printf '%s' \"$GIT_PUSH_TOKEN\"\n")
+    askpass.close()
+    os.chmod(askpass.name, 0o700)
+    env = dict(os.environ)
+    env["GIT_PUSH_TOKEN"] = GITHUB_TOKEN
+    env["GIT_ASKPASS"] = askpass.name
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    remote = f"https://x-access-token@github.com/{target_repo}.git"
+
+    def _git(*argv: str):
+        return subprocess.run(
+            ["git", "-C", real, *argv],
+            env=env, capture_output=True, text=True,
+            timeout=GIT_PUSH_TIMEOUT_S,
+        )
+
+    def _redact(s: str) -> str:
+        return (s or "").replace(GITHUB_TOKEN, "***")
+
+    try:
+        # Commit identity (idempotent; ignore failures — repo may already have it).
+        _git("config", "user.name", GIT_AUTHOR_NAME)
+        _git("config", "user.email", GIT_AUTHOR_EMAIL)
+        committed = False
+        commit_out = ""
+        if commit_message:
+            _git("add", "-A")
+            status = _git("status", "--porcelain")
+            if status.stdout.strip():
+                cr = _git("commit", "-m", commit_message)
+                commit_out = _redact(cr.stdout + cr.stderr)
+                committed = cr.returncode == 0
+        push_argv = ["push"] + (["--force"] if force else []) + [remote, f"HEAD:{target_branch}"]
+        pr = _git(*push_argv)
+    finally:
+        try:
+            os.unlink(askpass.name)
+        except OSError:
+            pass
+
+    push_out = _redact(pr.stdout + pr.stderr)
+    if pr.returncode != 0:
+        hint = ""
+        if any(s in push_out.lower() for s in ("fetch first", "non-fast-forward", "rejected")):
+            hint = (
+                " — the remote already has DIFFERENT content (history diverged, e.g. you "
+                "reset/re-init'd after a previous push). Do NOT retry the same push: re-call "
+                "git_push with force=true to overwrite (safe for your own throwaway repos), "
+                "or push to a NEW repo name."
+            )
+        raise RuntimeError(f"git push failed (exit {pr.returncode}): {push_out[:800]}{hint}")
+    return {
+        "ok": True,
+        "repo": target_repo,
+        "branch": target_branch,
+        "committed": committed,
+        "repo_created": repo_created,
+        "url": f"https://github.com/{target_repo}",
+        "commit_output": commit_out[-400:],
+        "push_output": push_out[-600:],
+    }
+
+
+async def _tool_git_push(args: dict) -> dict:
+    repo_path = args.get("repo_path")
+    if not isinstance(repo_path, str) or not repo_path:
+        raise ValueError("`repo_path` is required and must be a non-empty string")
+    commit_message = args.get("commit_message") or None
+    if commit_message is not None and not isinstance(commit_message, str):
+        raise ValueError("`commit_message` must be a string when provided")
+    branch = args.get("branch") or None
+    if branch is not None and not isinstance(branch, str):
+        raise ValueError("`branch` must be a string when provided")
+    repo = args.get("repo") or None
+    if repo is not None and not isinstance(repo, str):
+        raise ValueError("`repo` must be a string when provided")
+    force = bool(args.get("force") or False)
+    return await asyncio.to_thread(_git_push_sync, repo_path, commit_message, branch, repo, force)
+
+
 TOOL_HANDLERS = {
     "python_exec": _tool_python_exec,
     "python_session_reset": _tool_python_session_reset,
+    "transcribe_audio": _tool_transcribe_audio,
+    "git_push": _tool_git_push,
 }
 
 

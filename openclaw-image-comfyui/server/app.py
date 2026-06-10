@@ -139,6 +139,16 @@ LTX_VIDEO_DEFAULT_AUDIO = os.environ.get("LTX_VIDEO_DEFAULT_AUDIO", "on").strip(
 # 60-second clips that take 30+ minutes and blow past Discord's
 # auto-embed size cap. Bridge enforces seconds = length / fps <= cap.
 LTX_VIDEO_MAX_DURATION_S = float(os.environ.get("LTX_VIDEO_MAX_DURATION_S", "10"))
+# Hard ceiling on video resolution. The LTX-Video 2.3 22B distilled
+# checkpoint is trained around 1280×720 / 1216×704; pushing past FullHD
+# (1920×1088) the sampler does not converge and the job runs indefinitely
+# at 96% GPU until manually killed — verified in production 2026-06-06,
+# where a `4k`/`uhd` keyword in the prompt resolved to 3840×2176 via
+# RESOLUTION_ALIASES and locked the discord-friend session queue. The
+# default cap matches LTX's documented native ceiling. Operators on
+# fine-tuned higher-res checkpoints can raise it via env.
+LTX_VIDEO_MAX_WIDTH = int(os.environ.get("LTX_VIDEO_MAX_WIDTH", "1920"))
+LTX_VIDEO_MAX_HEIGHT = int(os.environ.get("LTX_VIDEO_MAX_HEIGHT", "1088"))
 
 
 # ── Proxy-side resolution resolver ────────────────────────────────────
@@ -380,6 +390,59 @@ TOOLS = [
         },
     },
     {
+        "name": "generate_i2i",
+        "description": (
+            "Flux image-to-image (img2img): take a SOURCE image and a text prompt, "
+            "produce a MODIFIED image. Use this when the user has attached or "
+            "referenced an existing image and wants to edit, restyle, transform, "
+            "or extend it. NOT for plain text-to-image — use `generate` for that.\n\n"
+            "Source image input (REQUIRED, mutually exclusive):\n"
+            "  - `init_image_url`: filesystem path inside the bridge (preferred for "
+            "Discord attachments — they land at "
+            "`/home/node/.openclaw/media/inbound/<uuid>.png` and the bridge has "
+            "the SAME path bind-mounted), or an `http://` / `https://` URL.\n"
+            "  - `init_image_base64`: raw base64 OR `data:image/...;base64,...` "
+            "data URI. Use this only when no path/URL is available.\n\n"
+            "`denoise` controls transform strength (0.0 = no change, 1.0 = full "
+            "redraw / source discarded). Default 0.7. Typical bands: 0.3-0.5 "
+            "subtle edit (color/lighting tweak); 0.6-0.75 moderate restyling "
+            "(keep structure, change look); 0.8-0.95 heavy transform (compose "
+            "differently using the source as anchor).\n\n"
+            "Default workflow `flux-krea-2k-i2i` (FLUX.1-Krea + VAEEncode init). "
+            "For explicit / NSFW content pass `workflow=\"flux-krea-2k-i2i-adult\"` "
+            "(adds the flux-uncensored-v2 LoRA at strength 1.5).\n\n"
+            "MANDATORY OUTPUT CONTRACT — your reply MUST start with the EXACT "
+            "verbatim contents of the `display_markdown` field. Discord needs "
+            "the URL line for auto-embed; web-chat needs the [embed] shortcode "
+            "for inline iframe. Paste both lines verbatim, separated by the "
+            "blank line. Add commentary AFTER the paste."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt":            {"type": "string", "description": "Positive text prompt describing the desired modified image."},
+                "init_image_url":    {"type": "string", "description": "Source image: filesystem path (preferred — Discord attachments live under /home/node/.openclaw/media/inbound/) or http(s) URL."},
+                "init_image_base64": {"type": "string", "description": "Source image as base64 or data: URI. Use only if no path/URL is available."},
+                "denoise":           {"type": "number", "description": "Transform strength 0.0-1.0. Default 0.7. 0.3-0.5 subtle, 0.6-0.75 moderate, 0.8-0.95 heavy.", "default": 0.7},
+                "workflow":          {"type": "string", "description": "Workflow template. Default `flux-krea-2k-i2i`. NSFW: `flux-krea-2k-i2i-adult`. Call `list_workflows` to see all."},
+                "negative":          {"type": "string", "description": "Negative prompt (Flux ignores in BasicGuider path, but workflow-dependent)."},
+                "checkpoint":        {"type": "string", "description": "Override checkpoint filename. Default from workflow."},
+                "width":             {"type": "integer", "description": "Output width. Default from workflow (typically matches source aspect)."},
+                "height":            {"type": "integer", "description": "Output height. Default from workflow."},
+                "seed":              {"type": "integer", "description": "Seed; -1 = random.", "default": -1},
+                "steps":             {"type": "integer", "description": "Sampler steps. Default from workflow."},
+                "cfg":               {"type": "number", "description": "FluxGuidance value. Default from workflow."},
+                "sampler":           {"type": "string"},
+                "scheduler":         {"type": "string"},
+                "timeout_s":         {"type": "number", "description": f"Per-call timeout. Default {DEFAULT_TIMEOUT_S}s."},
+                "include_base64":    {"type": "boolean", "default": False},
+                "attach_image_content": {"type": "boolean", "default": True},
+            },
+            "required": ["prompt"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "cancel",
         "description": (
             "Best-effort cancel of an in-flight prompt by id. Useful if a "
@@ -422,6 +485,91 @@ bearer = HTTPBearer(auto_error=False)
 def require_token(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer)) -> None:
     if creds is None or creds.scheme.lower() != "bearer" or creds.credentials != TOKEN:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid bearer token")
+
+
+# ── Shared helper: fetch + upload init image ──────────────────────────
+async def _fetch_and_upload_init_image(
+    init_image_url: Optional[str],
+    init_image_b64: Optional[str],
+) -> str:
+    """Resolve an init image from one of three input shapes and upload it to
+    ComfyUI's input/ dir, returning the uploaded filename for a LoadImage
+    workflow node to consume.
+
+    Accepted shapes (mutually exclusive; XOR checked by the caller):
+      1. `init_image_url` starting with `/` or `file://` — filesystem path.
+         Read from disk directly. Used by the Discord agent flow on OpenClaw:
+         inbound attachments land at `/home/node/.openclaw/media/inbound/
+         <uuid>.png`. The compose file binds the gateway's inbound dir into
+         the bridge container at the SAME path so the agent's reference works
+         verbatim (verified live 2026-05-14).
+      2. `init_image_url` starting with `http://` or `https://` — httpx-fetched.
+      3. `init_image_base64` — raw base64 or a `data:image/...;base64,` data URI.
+
+    All three end at the same place: ref_bytes + base filename →
+    `comfy.upload_image()` → ComfyUI input/.
+
+    Returns the final filename ComfyUI assigned (the bridge prefixes with a
+    uuid-hex prefix to avoid collisions on concurrent calls, but ComfyUI may
+    rename on collision — we trust the response).
+
+    Reused by both `_tool_generate_video` (I2V) and `_tool_generate_i2i`
+    (Flux img2img). Extracted 2026-06-06 when img2img landed; before that
+    the body was inline in `_tool_generate_video`.
+    """
+    if not (init_image_url or init_image_b64):
+        raise ValueError(
+            "init image required: pass init_image_url (filesystem path / "
+            "http(s) URL) OR init_image_base64"
+        )
+    if init_image_url and init_image_b64:
+        raise ValueError("pass either init_image_url OR init_image_base64, not both")
+
+    try:
+        if init_image_url:
+            src = init_image_url
+            if src.startswith("file://"):
+                src = src[len("file://"):]
+            if src.startswith("/"):
+                if not os.path.isfile(src):
+                    raise ValueError(
+                        f"init_image_url path doesn't exist inside the bridge "
+                        f"container: {src} (mount the source dir into the "
+                        "openclaw-image-comfyui compose volumes if you're "
+                        "passing a path the gateway can see)"
+                    )
+                with open(src, "rb") as f:
+                    ref_bytes = f.read()
+                base = os.path.basename(src) or "init.png"
+            else:
+                async with httpx.AsyncClient(timeout=30.0) as ic:
+                    r = await ic.get(init_image_url)
+                if r.status_code != 200:
+                    raise ValueError(f"init_image_url returned HTTP {r.status_code}")
+                ref_bytes = r.content
+                from urllib.parse import urlsplit
+                url_path = urlsplit(init_image_url).path
+                base = os.path.basename(url_path) or "init.png"
+        else:
+            # init_image_base64 may include a data: URI prefix or be raw base64.
+            b64_text = init_image_b64
+            if "," in b64_text and b64_text.startswith("data:"):
+                b64_text = b64_text.split(",", 1)[1]
+            try:
+                ref_bytes = base64.b64decode(b64_text)
+            except Exception as e:
+                raise ValueError(f"init_image_base64 not valid base64: {e}") from e
+            base = "init.png"
+    except httpx.RequestError as e:
+        raise ValueError(f"init_image_url fetch failed: {type(e).__name__}: {e}") from e
+
+    # uuid-hex prefix so concurrent in-flight calls don't collide on
+    # ComfyUI's input/ filenames.
+    uniq = uuid.uuid4().hex[:8]
+    upload_name = f"openclaw-{uniq}-{base}"
+    upload_resp = await comfy.upload_image(ref_bytes, upload_name, image_type="input", overwrite=True)
+    # ComfyUI may rename on collision; use whatever name it actually wrote.
+    return upload_resp.get("name", upload_name)
 
 
 # ── Tool implementations ──────────────────────────────────────────────
@@ -670,6 +818,21 @@ async def _tool_generate(args: dict) -> dict:
         display_lines = []
         for img in images:
             url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
+            # Discord auto-embed trick: append "#<filename>.ext" fragment so
+            # the Discord crawler recognizes the URL as an image and triggers
+            # auto-embed. The fragment is NOT sent in the actual GET request
+            # — ComfyUI receives the same query-only URL as before.
+            fname = img.get("filename", "")
+            if fname and "." in fname:
+                url = f"{url}#{fname}"
+                # Pretty markdown-link FIRST: clickable text with the URL hidden
+                # in the link target. Discord renders this as a clean blue
+                # hyperlink — the long auth token doesn't appear as visible text.
+                label = "📷"
+                display_lines.append(f"[{label} {fname}]({url})")
+            # Raw URL on its own line — required for Discord auto-embed
+            # (markdown-links don't trigger auto-embed; only raw URLs do).
+            # The preview attaches below the link in Discord.
             display_lines.append(url)
             if img.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
@@ -697,6 +860,262 @@ async def _tool_generate(args: dict) -> dict:
                 "skip the [embed] on Discord — follow that. Add your own "
                 "commentary AFTER the paste. Describing the image in prose "
                 "is NOT a substitute."
+            ),
+            "images": images,
+            "_attachments": attachments,
+        }
+
+    if _gen_sem is None:
+        return await _run()
+    async with _gen_sem:
+        return await _run()
+
+
+async def _tool_generate_i2i(args: dict) -> dict:
+    """Flux img2img: source image + text prompt → modified image. Parallel
+    to `_tool_generate` (text-to-image) but takes an init image and a
+    denoise strength, runs an image-to-image workflow (default
+    `flux-krea-2k-i2i`).
+
+    Why a separate tool rather than an `init_image=` flag on `_tool_generate`:
+    the LLM-facing tool catalog surfaces this as its own entry with explicit
+    args (init_image_url / init_image_base64 / denoise), so the agent picks
+    the right tool from intent ("modify this attached image", "restyle it")
+    instead of having to remember a hidden flag on the regular generate.
+    Also: the workflow templates DIFFER (i2i has LoadImage + VAEEncode nodes
+    where t2i has EmptyLatentImage); same-tool overloading would need to
+    detect which template was loaded and bind conditionally, which is more
+    error-prone than two thin tools sharing helpers.
+
+    Reuses `_fetch_and_upload_init_image()` for the source-image upload —
+    same 3-shape input (file path / http(s) URL / base64) as the I2V flow.
+    """
+    # 1. Validate init image presence (helper does the XOR check too, but
+    #    we want a clean error before workflow load if both are unset).
+    init_image_url = args.get("init_image_url")
+    init_image_b64 = args.get("init_image_base64")
+    if not (init_image_url or init_image_b64):
+        raise ValueError(
+            "img2img requires either init_image_url (filesystem path / http(s) URL) "
+            "or init_image_base64 to be set"
+        )
+
+    # 2. Workflow resolve. Default `flux-krea-2k-i2i` ships in workflows/
+    #    and binds `init_image` (LoadImage filename) + `denoise` targets.
+    workflow_name = args.get("workflow") or "flux-krea-2k-i2i"
+    try:
+        workflow = loader.get(workflow_name)
+    except WorkflowError as e:
+        raise ValueError(str(e)) from e
+
+    # 3. Init image fetch + upload. The helper validates XOR (both unset OR
+    #    both set both raise) and uploads to ComfyUI's input/ dir, returns
+    #    the uploaded filename for LoadImage to consume.
+    init_image_filename = await _fetch_and_upload_init_image(
+        init_image_url, init_image_b64
+    )
+
+    # 4. Seed handling — same as _tool_generate.
+    raw_seed = args.get("seed", -1)
+    try:
+        seed_val = int(raw_seed)
+    except (TypeError, ValueError):
+        seed_val = -1
+    if seed_val < 0:
+        seed_val = random.randint(0, 2**32 - 1)
+
+    # 5. Denoise strength. 0.0 = no change (pointless), 1.0 = full noise
+    #    (~equivalent to t2i, source image discarded). Sweet spot 0.5-0.8.
+    try:
+        denoise = float(args.get("denoise", workflow.defaults.get("denoise", 0.7)))
+    except (TypeError, ValueError):
+        denoise = 0.7
+    if not (0.0 <= denoise <= 1.0):
+        raise ValueError(f"denoise must be in [0.0, 1.0], got {denoise}")
+
+    # 6. Bind args — same as _tool_generate plus init_image + denoise.
+    #    No batch_size (img2img typically renders 1 variant per call;
+    #    if the user wants multiple variants, they re-call with a new seed).
+    bind_args = {
+        "prompt":     args.get("prompt"),
+        "negative":   args.get("negative") or workflow.defaults.get("negative"),
+        "checkpoint": (
+            args.get("checkpoint")
+            or workflow.defaults.get("checkpoint")
+            or (IMAGE_GEN_DEFAULT_CHECKPOINT or None)
+        ),
+        "width":      args.get("width") or workflow.defaults.get("width") or 1280,
+        "height":     args.get("height") or workflow.defaults.get("height") or 720,
+        "seed":       seed_val,
+        "steps":      args.get("steps") or workflow.defaults.get("steps"),
+        "cfg":        args.get("cfg") or workflow.defaults.get("cfg"),
+        "sampler":    args.get("sampler") or workflow.defaults.get("sampler"),
+        "scheduler":  args.get("scheduler") or workflow.defaults.get("scheduler"),
+        "init_image": init_image_filename,
+        "denoise":    denoise,
+    }
+    try:
+        prompt_dict = workflow.bind(bind_args)
+    except WorkflowError as e:
+        raise ValueError(str(e)) from e
+
+    try:
+        timeout_s = float(args.get("timeout_s") or DEFAULT_TIMEOUT_S)
+    except (TypeError, ValueError):
+        timeout_s = DEFAULT_TIMEOUT_S
+
+    include_base64 = bool(args.get("include_base64", False))
+    attach_image_content = bool(args.get("attach_image_content", True))
+
+    client_id = uuid.uuid4().hex
+    started = time.monotonic()
+
+    async def _run() -> dict:
+        prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
+        try:
+            entry = await comfy.wait_for_completion(prompt_id, timeout_s)
+        except ComfyUITimeout:
+            await comfy.cancel(prompt_id)
+            raise
+        outputs = [o for o in extract_media_outputs(entry) if o.get("media_kind") == "image"]
+        if not outputs:
+            raise ComfyUIError(
+                f"prompt {prompt_id} completed but produced no images "
+                "(check the workflow has a SaveImage node)"
+            )
+
+        images: list[dict] = []
+        total_bytes = 0
+        for out in outputs:
+            data = await comfy.fetch_image(
+                out["filename"], image_type=out["type"], subfolder=out["subfolder"]
+            )
+            total_bytes += len(data)
+            if total_bytes > MAX_OUTPUT_BYTES:
+                raise ComfyUIError(
+                    f"image batch exceeded IMAGE_GEN_MAX_OUTPUT_BYTES "
+                    f"({MAX_OUTPUT_BYTES} B) — increase the cap"
+                )
+            try:
+                with Image.open(BytesIO(data)) as im:
+                    width, height, fmt = im.width, im.height, (im.format or "PNG").lower()
+            except Exception:
+                width, height, fmt = 0, 0, "png"
+            b64 = base64.b64encode(data).decode("ascii")
+            from urllib.parse import quote
+            view_qs = (
+                f"filename={quote(out['filename'], safe='')}"
+                f"&type={quote(out['type'], safe='')}"
+                f"&subfolder={quote(out['subfolder'], safe='')}"
+            )
+            if COMFYUI_VIEW_TOKEN:
+                view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
+            canvas_url_path: Optional[str] = None
+            if IMAGE_GEN_CANVAS_DIR:
+                base_name = f"comfyui-{prompt_id[:8]}-{out['filename']}"
+                png_target = os.path.join(IMAGE_GEN_CANVAS_DIR, base_name)
+                html_basename = (
+                    base_name[:-4] + ".html"
+                    if base_name.lower().endswith((".png", ".jpg", ".webp"))
+                    else base_name + ".html"
+                )
+                html_target = os.path.join(IMAGE_GEN_CANVAS_DIR, html_basename)
+                wrapper_html = (
+                    "<!DOCTYPE html><meta charset=\"utf-8\">"
+                    "<style>"
+                    "html,body{margin:0;height:100%;background:#0a0a0a;}"
+                    "body{display:flex;align-items:center;justify-content:center;}"
+                    "img{max-width:100%;max-height:100%;object-fit:contain;display:block;}"
+                    "</style>"
+                    f"<img src=\"{base_name}\" alt=\"generated image\">"
+                )
+                try:
+                    with open(png_target, "wb") as f:
+                        f.write(data)
+                    with open(html_target, "w", encoding="utf-8") as f:
+                        f.write(wrapper_html)
+                    canvas_url_path = f"/__openclaw__/canvas/{html_basename}"
+                except OSError as e:
+                    log.warning(
+                        "[path-a] canvas dir write failed (i2i, png=%s html=%s): %s",
+                        png_target, html_target, e,
+                    )
+            entry = {
+                "format": fmt,
+                "filename": out["filename"],
+                "subfolder": out["subfolder"],
+                "type": out["type"],
+                "node_id": out["node_id"],
+                "width": width,
+                "height": height,
+                "byte_size": len(data),
+                "fetch_url_path": f"/view?{view_qs}",
+                "canvas_url_path": canvas_url_path,
+            }
+            if include_base64:
+                entry["base64"] = b64
+            entry["_b64_blob"] = b64
+            images.append(entry)
+
+        attachments = []
+        if attach_image_content:
+            for img in images:
+                attachments.append({
+                    "mime_type": (
+                        f"image/{img['format']}"
+                        if img['format'] in ("png", "jpeg", "webp")
+                        else "image/png"
+                    ),
+                    "data": img.pop("_b64_blob"),
+                    "filename": img["filename"],
+                })
+        else:
+            for img in images:
+                img.pop("_b64_blob", None)
+
+        display_lines = []
+        for img in images:
+            url = f"{COMFYUI_EXTERNAL_URL}{img['fetch_url_path']}"
+            # Discord auto-embed trick: append "#<filename>.ext" fragment so
+            # the Discord crawler recognizes the URL as an image and triggers
+            # auto-embed. The fragment is NOT sent in the actual GET request
+            # — ComfyUI receives the same query-only URL as before.
+            fname = img.get("filename", "")
+            if fname and "." in fname:
+                url = f"{url}#{fname}"
+                # Pretty markdown-link FIRST: clickable text with the URL hidden
+                # in the link target. Discord renders this as a clean blue
+                # hyperlink — the long auth token doesn't appear as visible text.
+                label = "📷"
+                display_lines.append(f"[{label} {fname}]({url})")
+            # Raw URL on its own line — required for Discord auto-embed
+            # (markdown-links don't trigger auto-embed; only raw URLs do).
+            # The preview attaches below the link in Discord.
+            display_lines.append(url)
+            if img.get("canvas_url_path"):
+                display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
+        display_markdown = "\n\n".join(display_lines)
+
+        return {
+            "prompt_id": prompt_id,
+            "workflow_used": workflow_name,
+            "seed_used": seed_val,
+            "denoise_used": denoise,
+            "init_image_source": init_image_filename,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "include_base64": include_base64,
+            "attach_image_content": attach_image_content,
+            "comfyui_base_url": COMFYUI_URL,
+            "comfyui_external_url": COMFYUI_EXTERNAL_URL,
+            "display_markdown": display_markdown,
+            "agent_hint": (
+                "MANDATORY: include the EXACT `display_markdown` value at "
+                "the START of your reply. It contains the modified-image URL "
+                "(Discord auto-embeds; web-chat autolinks) and optionally an "
+                "`[embed url=...]` shortcode line. Paste verbatim. Add your "
+                "own commentary AFTER. Describing the image in prose is NOT "
+                "a substitute. Per-agent AGENTS.md may instruct you to skip "
+                "the [embed] on Discord — follow that."
             ),
             "images": images,
             "_attachments": attachments,
@@ -798,61 +1217,12 @@ async def _tool_generate_video(args: dict) -> dict:
     # upload to ComfyUI's input/ dir via /upload/image.
     init_image_filename: Optional[str] = None
     if is_i2v:
-        if init_image_url and init_image_b64:
-            raise ValueError("pass either init_image_url OR init_image_base64, not both")
-        try:
-            if init_image_url:
-                src = init_image_url
-                if src.startswith("file://"):
-                    src = src[len("file://"):]
-                if src.startswith("/"):
-                    if not os.path.isfile(src):
-                        raise ValueError(
-                            f"init_image_url path doesn't exist inside the bridge "
-                            f"container: {src} (mount the source dir into the "
-                            "openclaw-image-comfyui compose volumes if you're "
-                            "passing a path the gateway can see)"
-                        )
-                    with open(src, "rb") as f:
-                        ref_bytes = f.read()
-                    base = os.path.basename(src) or "init.png"
-                else:
-                    async with httpx.AsyncClient(timeout=30.0) as ic:
-                        r = await ic.get(init_image_url)
-                    if r.status_code != 200:
-                        raise ValueError(f"init_image_url returned HTTP {r.status_code}")
-                    ref_bytes = r.content
-                    # ComfyUI ignores the upload's reported extension and
-                    # sniffs the bytes, but the LoadImage node prefers a
-                    # plausible name. Strip the URL's filename if present;
-                    # fall back to a generic name.
-                    from urllib.parse import urlsplit
-                    url_path = urlsplit(init_image_url).path
-                    base = os.path.basename(url_path) or "init.png"
-            else:
-                # init_image_base64 may include a data: URI prefix or be
-                # raw base64. Strip the prefix if present.
-                b64_text = init_image_b64
-                if "," in b64_text and b64_text.startswith("data:"):
-                    b64_text = b64_text.split(",", 1)[1]
-                try:
-                    ref_bytes = base64.b64decode(b64_text)
-                except Exception as e:
-                    raise ValueError(f"init_image_base64 not valid base64: {e}") from e
-                base = "init.png"
-        except httpx.RequestError as e:
-            raise ValueError(f"init_image_url fetch failed: {type(e).__name__}: {e}") from e
-
-        # Prefix with the bridge's prompt-id-equivalent so multiple
-        # in-flight I2V calls don't collide on the same input filename
-        # under ComfyUI's input/.
-        uniq = uuid.uuid4().hex[:8]
-        upload_name = f"openclaw-{uniq}-{base}"
-        upload_resp = await comfy.upload_image(ref_bytes, upload_name, image_type="input", overwrite=True)
-        # ComfyUI may rename on collision; use whatever name it
-        # actually wrote. Subfolder/type rarely matter for LoadImage
-        # but we keep them in case a workflow uses a custom subfolder.
-        init_image_filename = upload_resp.get("name", upload_name)
+        # Body extracted to _fetch_and_upload_init_image() 2026-06-06 so the
+        # img2img tool (_tool_generate_i2i) can reuse the same 3-shape input
+        # logic (file path / http(s) URL / base64) without copy-paste drift.
+        init_image_filename = await _fetch_and_upload_init_image(
+            init_image_url, init_image_b64
+        )
 
         # Width/height resolution is the AGENT's responsibility — pass
         # what the caller gave us, fall through to workflow defaults
@@ -912,6 +1282,20 @@ async def _tool_generate_video(args: dict) -> dict:
                 caller_w, caller_h,
             )
             args = {**args, "width": None, "height": None}
+
+    # Hard reject >FullHD before workflow bind. See LTX_VIDEO_MAX_WIDTH /
+    # _HEIGHT for the why; the agent receives an actionable error and
+    # can self-correct in a follow-up call instead of locking the queue.
+    final_w = args.get("width") or 0
+    final_h = args.get("height") or 0
+    if final_w > LTX_VIDEO_MAX_WIDTH or final_h > LTX_VIDEO_MAX_HEIGHT:
+        raise ValueError(
+            f"requested resolution {final_w}x{final_h} exceeds the LTX-Video cap "
+            f"{LTX_VIDEO_MAX_WIDTH}x{LTX_VIDEO_MAX_HEIGHT}. The 22B distilled checkpoint "
+            f"is not trained for >FullHD and will not converge on 4K/UHD. "
+            f"Use resolution=fullhd or lower (or raise LTX_VIDEO_MAX_WIDTH/_HEIGHT env if "
+            f"you've swapped in a higher-res checkpoint)."
+        )
 
     bind_args = {
         "prompt":       args.get("prompt"),
@@ -1084,6 +1468,15 @@ async def _tool_generate_video(args: dict) -> dict:
         display_lines = []
         for v in videos:
             url = f"{COMFYUI_EXTERNAL_URL}{v['fetch_url_path']}"
+            # Discord auto-embed trick (same as image path above): append
+            # "#<filename>.mp4" fragment so the crawler recognizes the URL
+            # as video. Fragment is not sent in actual GET request.
+            fname = v.get("filename", "")
+            if fname and "." in fname:
+                url = f"{url}#{fname}"
+                # Pretty markdown-link FIRST: clickable text, token hidden.
+                display_lines.append(f"[🎬 {fname}]({url})")
+            # Raw URL second line — Discord auto-embed trigger for video preview.
             display_lines.append(url)
             if v.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{v["canvas_url_path"]}" /]')
@@ -1127,6 +1520,7 @@ async def _tool_generate_video(args: dict) -> dict:
 TOOL_HANDLERS = {
     "generate":        _tool_generate,
     "generate_video":  _tool_generate_video,
+    "generate_i2i":    _tool_generate_i2i,
     "list_workflows":  _tool_list_workflows,
     "cancel":          _tool_cancel,
 }

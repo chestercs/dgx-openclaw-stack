@@ -128,7 +128,7 @@ services:
       # docs/reference/image-comfyui-bridge.md → "Path A" (verify the
       # canvas dir host path on your deploy + that [embed] accepts .png
       # MIME on your openclaw version).
-      # - ${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw
+      - ${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw
     cap_drop: [ALL]
     security_opt:
       - "no-new-privileges:true"

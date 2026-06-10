@@ -11,17 +11,15 @@
 #   vllm-llm             — Gemma 4 31B IT NVFP4         port 8004 (internal)
 #   vllm-embedding       — BAAI/bge-m3 1024-dim         port 8005 (internal)
 #   searxng              — privacy meta-search          port 8080 (internal)
-#   openclaw-tts-en      — Kokoro 82M (English)         port 8091 (loopback)
-#   openclaw-tts-router  — OpenAI-compat /v1/audio      port 8092 (loopback)
-#   openclaw-tts-f5hun   — F5-TTS Hungarian (opt-in)    port 8090 (loopback, profile=hu)
-#   openclaw-stt-whisper — faster-whisper large-v3      port 8093 (loopback)
+#   openclaw-tts-fish    — Fish Audio S2 Pro (multilingual) port 8091 (loopback)
+#   openclaw-stt-whisper — faster-whisper turbo CT2     port 8093 (loopback)
 #   openclaw-gateway     — agent gateway + WebSocket    port 18789 (exposed)
 #   openclaw-config-init — idempotent config patcher    one-shot
 #   openclaw-cli         — always-up exec target        shares gateway namespace
 #
 # Networking model:
 #   - Sibling containers reach each other by compose service name (vllm-llm:8004,
-#     vllm-embedding:8005, searxng:8080, openclaw-tts-router:8080) on the default
+#     vllm-embedding:8005, searxng:8080, openclaw-tts-fish:8080) on the default
 #     compose bridge network. No host port publishing is required for inter-
 #     service traffic.
 #   - vLLM ports are intentionally NOT published on the host — uncomment the
@@ -55,21 +53,19 @@ volumes:
       type: none
       device: ${VLLM_HF_CACHE_DIR}
       o: bind
-  # Kokoro voice + weight cache for openclaw-tts-en. The voices are baked into
-  # the image at build time; this volume is a safety net for any runtime HF
-  # downloads (e.g. the misaki G2P backend pulling assets on first synth).
-  tts-en-hf-cache:
-    name: dgx-openclaw-tts-en-hf-cache
-  # F5-TTS Hungarian HF cache (only used when the `hu` Compose profile is
-  # active). Holds any runtime HF downloads (the checkpoint itself is baked
-  # into the image at build time).
-  tts-f5hun-hf-cache:
-    name: dgx-openclaw-tts-f5hun-hf-cache
-  # User-overridable reference voice directory for openclaw-tts-f5hun (only
-  # used when the `hu` Compose profile is active). Drop <name>.wav + <name>.txt
-  # files in here to add custom HU reference voices the service can clone.
-  tts-f5hun-voices:
-    name: dgx-openclaw-tts-f5hun-voices
+  # Fish Audio S2 Pro HF cache for openclaw-tts-fish. The ~11 GB s2-pro weights
+  # are baked into the image at build time; this volume is a safety net for any
+  # runtime HF downloads SGLang-Omni does on first synth (tokenizer assets,
+  # codec cache, etc.).
+  tts-fish-hf-cache:
+    name: dgx-openclaw-tts-fish-hf-cache
+  # User-overridable reference voice directory for openclaw-tts-fish. Drop
+  # <name>.wav + <name>.txt files in here to add custom voices the service
+  # can clone (no restart required — the shim resolves voice → file pair at
+  # request time). Ships with default_en + default_hu (LibriVox public domain)
+  # seeded from the image's /app/voices_seed/ on first start.
+  tts-fish-voices:
+    name: dgx-openclaw-tts-fish-voices
   # faster-whisper weight cache for openclaw-stt-whisper. Holds the ~3 GB
   # large-v3 CT2-quantized weights (or ~1.6 GB turbo) so `docker compose down`
   # doesn't re-download them on the next boot. No host bind — faster-whisper
@@ -244,7 +240,7 @@ services:
       --tool-call-parser gemma4
       --chat-template /templates/tool_chat_template_gemma4.jinja
       --enable-auto-tool-choice
-      --limit-mm-per-prompt '{"image":4,"audio":0}'
+      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-2},"audio":0}'
       --mm-processor-kwargs '{"max_soft_tokens":280}'
       --enable-prefix-caching
       --enable-chunked-prefill
@@ -329,7 +325,7 @@ services:
       --tool-call-parser gemma4
       --chat-template /templates/tool_chat_template_gemma4.jinja
       --enable-auto-tool-choice
-      --limit-mm-per-prompt '{"image":4,"audio":0}'
+      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-2},"audio":0}'
       --mm-processor-kwargs '{"max_soft_tokens":280}'
       --enable-prefix-caching
       --enable-chunked-prefill
@@ -506,210 +502,119 @@ services:
         max-size: "50m"
 
   ######################
-  ## Kokoro 82M English TTS — OpenAI-compatible /v1/audio/speech (mandatory half
-  ## of the bilingual TTS surface).
+  ## Fish Audio S2 Pro TTS — OpenAI-compatible /v1/audio/speech (multilingual,
+  ## voice-cloning). Replaces the legacy 3-service Kokoro EN + F5-TTS HU +
+  ## router pipeline with one container.
   #
-  #  Model: hexgrad/Kokoro-82M (Apache 2.0). TTS Arena #1 open-weights at the
-  #  time of writing. ~500 MB - 1 GB VRAM, coexists with the Gemma 4 NVFP4 LLM
-  #  on the same GB10 GPU.
+  #  Model: fishaudio/s2-pro (Fish Audio Research License — non-commercial).
+  #  ~11 GB weights (2 safetensors shards + codec.pth + tokenizer) baked into
+  #  the image at build time. 80+ languages from one checkpoint, English and
+  #  Hungarian both supported (HU is Tier 3 — voice cloning with a clean
+  #  reference clip compensates).
   #
-  #  Why a custom thin wrapper instead of the popular `remsky/Kokoro-FastAPI`:
-  #  that image is broken on DGX Spark / ARM64 + Blackwell — see upstream
-  #  remsky/Kokoro-FastAPI issue #401 ("no kernel image available" / "exec
-  #  format error") and the unmerged ARM64 nightly-torch wrapper PR #403.
-  #  The cu130 wheel pattern used by vllm-llm / vllm-embedding is the proven
-  #  path on GB10. ~80 lines of FastAPI on top of Kokoro's KPipeline is simpler
-  #  than waiting on upstream.
+  #  Loader: SGLang-Omni (sgl-project/sglang-omni). The upstream Docker image
+  #  `frankleeeee/sglang-omni:dev` is amd64-only, so we build a custom image
+  #  on a CUDA 13 devel aarch64 base and let SGLang-Omni compile sgl-kernel
+  #  from source against the cu130 torch wheels. First build is long
+  #  (~15-30 min including model download); subsequent builds hit the layer
+  #  cache. See ./openclaw-tts-fish/README.md for the full rationale.
   #
-  #  Networking: internal-only by default — the router (and the gateway via the
-  #  router) reach this service by compose DNS as `http://openclaw-tts-en:8080`.
-  #  For host-side debug access, uncomment the `127.0.0.1:8091:8080` binding.
+  #  Architecture: two processes inside one container. A FastAPI shim on
+  #  :8080 handles Bearer auth (TTS_API_TOKEN) + voice→references mapping +
+  #  optional leading-silence pad. SGLang-Omni runs as a child process on
+  #  loopback :9090 and emits the native /v1/audio/speech response. The shim
+  #  translates the OpenAI-style `voice` field into SGLang-Omni's
+  #  `references[].audio_path` shape (voice cloning via mounted file paths,
+  #  NOT inline base64).
   #
-  #  Voices baked into the image at build time: only the A/A-/B- grade entries
-  #  from Kokoro's VOICES catalog (af_heart, af_bella, af_nicole, af_aoede,
-  #  af_kore, af_sarah, am_michael, am_fenrir, am_puck, bf_emma). The full pack
-  #  is 54 voices; we ship the production-ready subset to keep the image lean.
-  #  Add more by extending allow_patterns in openclaw-tts-en/server/Dockerfile
-  #  and rebuilding.
+  #  Voice cloning workflow: drop <name>.wav + <name>.txt into
+  #  tts-fish-voices. No restart required — the shim resolves the voice id
+  #  to the file pair at request time.
+  #    docker cp myclone.wav ${CONTAINER_NAME_PREFIX}openclaw-tts-fish:/app/voices/
+  #    docker cp myclone.txt ${CONTAINER_NAME_PREFIX}openclaw-tts-fish:/app/voices/
   #
-  #  Disable: set `profiles: ["never"]` on this service AND on the router below
-  #  to drop the bilingual TTS surface entirely. The patcher's TTS step is also
-  #  env-gated (skipped when OPENCLAW_TTS_ROUTER_API_KEY is unset), so removing
-  #  the env var from .env keeps the openai TTS provider untouched.
+  #  Default voices shipped: default_en (LibriSpeech / LibriVox PD) and
+  #  default_hu (Diana Majlinger / "Egri csillagok", LibriVox PD). Seeded
+  #  from /app/voices_seed/ at first start without overwriting user voices.
+  #
+  #  License caveat: the s2-pro weights are Fish Audio Research License —
+  #  research / non-commercial use only. Wrapper code in
+  #  ./openclaw-tts-fish/server/ is MIT. Commercial deployments need either
+  #  `business@fish.audio` or a swap to a different checkpoint via the
+  #  FISH_REPO build arg.
+  #
+  #  Networking: internal-only by default — the gateway reaches this service
+  #  by compose DNS as `http://openclaw-tts-fish:8080`. Host-side loopback
+  #  publish below for debug. Bearer-auth: TTS_API_TOKEN.
+  #
+  #  Disable: set `profiles: ["never"]` on this service AND leave
+  #  OPENCLAW_TTS_FISH_API_KEY empty in .env. Patcher step 11 is env-gated
+  #  (skipped when the key is unset), so dropping the key cleanly opts out of
+  #  the gateway wiring too.
   ######################
-  openclaw-tts-en:
-    build: ./openclaw-tts-en/server
-    image: openclaw-tts-en:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-en
-    hostname: openclaw-tts-en
-    restart: unless-stopped
-    # Host-side bind for debug access. Default 127.0.0.1 = loopback only (LAN
-    # cannot reach it). Set TTS_EN_BIND=0.0.0.0 in .env to expose on the LAN
-    # (token-protected — Bearer auth via TTS_API_TOKEN). Sibling containers
-    # always reach the service via bridge DNS regardless of this binding.
-    ports:
-      - "${TTS_EN_BIND:-127.0.0.1}:${TTS_EN_PORT:-8091}:8080"
-    environment:
-      TTS_API_TOKEN: ${TTS_API_TOKEN:-}
-      DEFAULT_VOICE: ${TTS_EN_DEFAULT_VOICE:-af_heart}
-      KOKORO_DEVICE: ${KOKORO_DEVICE:-cuda}
-    volumes:
-      - tts-en-hf-cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-
-  ######################
-  ## F5-TTS Hungarian — OPT-IN, CC-BY-NC model weights.
-  #
-  #  Activation requires BOTH:
-  #    1. F5HUN_API_TOKEN set in .env (bootstrap.sh generates this).
-  #    2. The `hu` Compose profile active. Either of:
-  #         - COMPOSE_PROFILES=hu in .env (preferred), OR
-  #         - --profile hu on the docker compose command line.
-  #
-  #  Without the profile this service does NOT start. The router auto-detects
-  #  the missing backend at boot and serves EN-only — HU voice ids return 404,
-  #  the diacritic autodetect is a no-op. With both the profile and the token
-  #  the router activates HU voice ids (default_hu, hu_diana) and the
-  #  diacritic-based autodetect re-routes Hungarian-text requests transparently.
-  #
-  #  License caveat: the model weights pulled at build time
-  #  (sarpba/F5-TTS_V1_hun_v2) are CC-BY-NC-4.0 — non-commercial use only.
-  #  The wrapper code in ./openclaw-tts-f5hun/server/ is MIT. By building this
-  #  service you accept the upstream model license. For commercial deployments,
-  #  override F5_CHECKPOINT / F5_VOCAB to point at a checkpoint you have a
-  #  commercial license to. See ./openclaw-tts-f5hun/README.md for details.
-  #
-  #  Networking: internal-only by default. The router reaches this service on
-  #  bridge DNS at `http://openclaw-tts-f5hun:8080`. For host-side debug,
-  #  uncomment the `127.0.0.1:8090:8080` binding (token-protected).
-  #
-  #  Voice catalog: ships with `default_hu` (Diana Majlinger / "Egri csillagok",
-  #  LibriVox public domain). Add your own by dropping <name>.wav + <name>.txt
-  #  into the tts-f5hun-voices volume.
-  ######################
-  openclaw-tts-f5hun:
-    profiles: ["hu"]
-    build: ./openclaw-tts-f5hun/server
-    image: openclaw-tts-f5hun:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-f5hun
-    hostname: openclaw-tts-f5hun
+  openclaw-tts-fish:
+    build:
+      context: ./openclaw-tts-fish/server
+      args:
+        # Optional — pass through if the operator's HF account is rate-
+        # limited or the model becomes gated. Public access works without it.
+        HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    image: openclaw-tts-fish:0.1.0
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish
+    hostname: openclaw-tts-fish
     restart: unless-stopped
     # Host-side bind for debug access. Default 127.0.0.1 = loopback only.
-    # Set TTS_F5HUN_BIND=0.0.0.0 in .env to expose on the LAN (Bearer auth via
-    # F5HUN_API_TOKEN). Sibling containers reach this via bridge DNS regardless.
-    ports:
-      - "${TTS_F5HUN_BIND:-127.0.0.1}:${TTS_F5HUN_PORT:-8090}:8080"
-    environment:
-      TTS_API_TOKEN: ${F5HUN_API_TOKEN:-}
-      DEFAULT_VOICE: ${F5HUN_DEFAULT_VOICE:-default_hu}
-      F5_DEVICE: ${F5HUN_DEVICE:-cuda}
-    volumes:
-      - tts-f5hun-voices:/app/voices
-      - tts-f5hun-hf-cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-
-  ######################
-  ## TTS Router — OpenAI-compatible /v1/audio/speech passthrough.
-  #
-  #  Single endpoint that fronts the EN backend (Kokoro 82M, mandatory) and the
-  #  optional Hungarian backend (F5-TTS, opt-in via the `hu` Compose profile +
-  #  F5HUN_API_TOKEN in .env). Matches the OpenAI Audio API shape so OpenClaw
-  #  can use it via `messages.tts.providers.openai.baseUrl` (the sanctioned
-  #  override per closed OpenClaw issues #13907 / #29224).
-  #
-  #  Why a router and not direct provider wiring: OpenClaw's openai TTS
-  #  provider accepts exactly one baseUrl. Multiple language backends require
-  #  a fronting service. ~150 LOC of FastAPI + httpx, no GPU. Bundles ffmpeg
-  #  because OpenClaw's openai provider asks for mp3 by default and the voice
-  #  surfaces sniff content-type — we transcode the backend's wav on the fly
-  #  to mp3 / opus / aac so playback works regardless of requested format.
-  #
-  #  Hungarian autodetect: when the HU backend is wired AND the gateway sends
-  #  one of the OpenAI default voices (alloy / coral / shimmer / …) AND the
-  #  input contains Hungarian diacritics (áéíóöőúüű), the router silently
-  #  re-routes to the HU backend so the agent doesn't need to know voice ids
-  #  to get correct pronunciation. No-op when HU isn't wired.
-  #
-  #  Networking: internal-only by default. The gateway reaches the router on
-  #  bridge DNS at `http://openclaw-tts-router:8080`. For host-side debug,
-  #  uncomment the `127.0.0.1:8092:8080` binding.
-  ######################
-  openclaw-tts-router:
-    build: ./openclaw-tts-router/server
-    image: openclaw-tts-router:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-router
-    hostname: openclaw-tts-router
-    restart: unless-stopped
-    # Host-side bind for debug access. Default 127.0.0.1 = loopback only.
-    # Set TTS_ROUTER_BIND=0.0.0.0 in .env to expose on the LAN (Bearer auth via
-    # OPENCLAW_TTS_ROUTER_API_KEY). The OpenClaw gateway always reaches this
+    # Set TTS_FISH_BIND=0.0.0.0 in .env to expose on the LAN (Bearer-auth via
+    # TTS_API_TOKEN). Sibling containers (gateway / CLI) always reach this
     # via bridge DNS regardless of this binding.
     ports:
-      - "${TTS_ROUTER_BIND:-127.0.0.1}:${TTS_ROUTER_PORT:-8092}:8080"
+      - "${TTS_FISH_BIND:-127.0.0.1}:${TTS_FISH_PORT:-8091}:8080"
     environment:
-      ROUTER_API_KEY: ${OPENCLAW_TTS_ROUTER_API_KEY:-}
-      EN_API_TOKEN: ${TTS_API_TOKEN:-}
-      EN_URL: ${TTS_EN_URL:-http://openclaw-tts-en:8080/v1/audio/speech}
-      # Optional Hungarian backend. The router activates HU voices and the
-      # diacritic-based autodetect only when BOTH F5HUN_URL and F5HUN_API_TOKEN
-      # are non-empty. Leave unset to ship EN-only.
-      F5HUN_URL: ${F5HUN_URL:-}
-      F5HUN_API_TOKEN: ${F5HUN_API_TOKEN:-}
-      ROUTER_DEFAULT_VOICE: ${TTS_ROUTER_DEFAULT_VOICE:-af_heart}
-      HU_AUTOROUTE_VOICE: ${TTS_HU_AUTOROUTE_VOICE:-default_hu}
-      # Prepend this many ms of leading silence to every TTS reply. F5-TTS has
-      # near-zero onset silence, which collides with Whisper's STT warm-up and
-      # drops the first phoneme (observed "Szia" -> "Zia"). 300 ms is empirically
-      # fine for both EN + HU. Set ROUTER_LEADING_SILENCE_MS=0 in .env to skip.
-      ROUTER_LEADING_SILENCE_MS: ${ROUTER_LEADING_SILENCE_MS:-300}
-    depends_on:
-      openclaw-tts-en:
-        condition: service_healthy
+      # Bearer token gating every /v1/* request. Required — the shim refuses
+      # to start without it (the s2-pro model is non-commercially licensed
+      # and we don't want anonymous LAN clients on it).
+      TTS_API_TOKEN: ${TTS_API_TOKEN:-}
+      # Voice picked when the gateway doesn't override. Must match a file
+      # pair in /app/voices/ (default_en + default_hu ship by default).
+      TTS_FISH_DEFAULT_VOICE: ${TTS_FISH_DEFAULT_VOICE:-default_en}
+      # cuda by default; set cpu for a slow CPU fallback (useful on a remote
+      # vLLM deployment where this host has no GPU).
+      TTS_FISH_DEVICE: ${TTS_FISH_DEVICE:-cuda}
+      # Leading silence (ms) prepended to every WAV reply. Defends against
+      # the Whisper STT onset clip ("Szia" -> "Zia"). 300 ms is empirically
+      # fine for EN + HU. Set 0 to skip (brings back the onset clip on
+      # short HU utterances).
+      TTS_FISH_LEADING_SILENCE_MS: ${TTS_FISH_LEADING_SILENCE_MS:-300}
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - tts-fish-voices:/app/voices
+      - tts-fish-hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
+      # /healthz is always unauth (middleware exempts it by path). Cold start
+      # is long — SGLang-Omni's child process can take several minutes to
+      # load s2-pro weights + JIT-compile kernels on a fresh GPU. start_period
+      # 180s buys a generous grace window before the container is marked
+      # unhealthy and restarted.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/healthz || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 180s
     logging:
       driver: json-file
       options:
         max-size: "50m"
 
   ######################
-  ## Whisper STT — faster-whisper large-v3, OpenAI-compatible speech-to-text.
+  ## Whisper STT — faster-whisper turbo CT2, OpenAI-compatible speech-to-text.
   #
   #  Endpoints: POST /v1/audio/transcriptions, POST /v1/audio/translations,
   #             GET /v1/models, GET /health. Served by a ~150 LOC FastAPI
@@ -724,20 +629,24 @@ services:
   #  the float32 fallback runs on CUDA cores at real-time factor ~1× while
   #  also destabilizing numerically. A CUDA 13 base + cu130 PyTorch wheels +
   #  current faster-whisper is the proven GB10 path (matches the vllm-llm /
-  #  openclaw-tts-en wheel pattern). Swap `build:` back to `image:` if the
+  #  openclaw-tts-fish wheel pattern). Swap `build:` back to `image:` if the
   #  speaches upstream ever publishes a Blackwell-tensor-core variant.
   #
-  #  Model: Systran/faster-whisper-large-v3 (MIT) by default, ~3 GB VRAM at
-  #  compute_type=float16. FLEURS Hungarian WER 14.1% (best validated number
-  #  among OpenAI-compat Whisper servers). Autodetects language per request —
-  #  no bilingual router needed (unlike TTS).
+  #  Model: deepdml/faster-whisper-large-v3-turbo-ct2 (MIT) by default,
+  #  ~1.6 GB VRAM at compute_type=float16, ~8× faster than the vanilla
+  #  large-v3 (4 decoder layers instead of 32). Autodetects language per
+  #  request — no bilingual router needed (unlike TTS). Multilingual EN+HU
+  #  works out of the box. Turbo is the right default for voice-chat latency
+  #  (Fish Audio S2 Pro → LLM → STT roundtrip on Discord voice channels).
   #
-  #  Alternate: STT_WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
-  #  for 8x speed at ~1.6 GB VRAM. HU WER not independently published — run
-  #  your own samples through it before switching on production audio.
+  #  HU-finetune alternate: STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu
+  #  (Apache-2.0, ~11% CV WER, more robust on noisy / phone-grade HU audio
+  #  per 2026-04-24 GB10 validation). Slower (~3 GB VRAM, full 32-layer
+  #  decoder). Switch if Hungarian transcription accuracy on noisy mic input
+  #  matters more than latency.
   #
   #  VRAM-tight fallback: STT_WHISPER_COMPUTE_TYPE=int8_float16 halves VRAM
-  #  (~1.5 GB) at a 5-10% WER cost. Safe if the LLM / TTS squeeze the budget.
+  #  (~0.8 GB on turbo) at a 5-10% WER cost.
   #
   #  OpenClaw consumption (see patch-config.mjs step 14): wired via
   #  tools.media.audio.models[] pointing at this service. Used by voice-note
@@ -748,8 +657,9 @@ services:
   #  Web Speech API, which does NOT route through this service.
   #
   #  GB10 VRAM budget at LLM_GPU_MEM_UTIL=0.68:
-  #    Gemma 4 NVFP4 ~96 GB + bge-m3 ~1.1 GB + Kokoro ~1 GB + Whisper ~3 GB
-  #    ≈ 101 GB used, ~12 GB headroom on the 113 GB effective shared pool.
+  #    Gemma 4 NVFP4 ~96 GB + bge-m3 ~1.1 GB + Fish S2 Pro ~11 GB + Whisper
+  #    turbo ~1.6 GB ≈ 110 GB used, ~3 GB headroom on the 113 GB effective
+  #    shared pool. Drop ComfyUI / video workloads before heavy TTS+STT use.
   #
   #  Networking: internal-only by bridge DNS (`openclaw-stt-whisper:8080`).
   #  Host-side loopback publish below for debug. Bearer-auth: STT_API_TOKEN.
@@ -777,16 +687,17 @@ services:
       # <STT_API_TOKEN>`. /health is always unauth so Docker healthchecks
       # and bridge-DNS probes keep working.
       STT_API_TOKEN: ${STT_API_TOKEN:-}
-      # Default points at the Hungarian fine-tune (Apache-2.0, ~11% CV WER,
-      # more robust on noisy / phone-grade audio than the vanilla multilingual
-      # large-v3 per 2026-04-24 GB10 validation). English recognition is
-      # unchanged vs vanilla on the JFK 11-sec reference clip. Switch to
-      # `Systran/faster-whisper-large-v3` via STT_WHISPER_MODEL override in
-      # .env if you want the pure multilingual baseline or prefer a slightly
-      # lower Hungarian word error rate for multilingual workloads.
-      # First-boot HF download + CT2 conversion for Trendency is ~3 min,
-      # cached in the stt-whisper-hf-cache volume afterwards.
-      WHISPER_MODEL: ${STT_WHISPER_MODEL:-Trendency/whisper-large-v3-hu}
+      # Default points at the turbo CT2 build (MIT, ~1.6 GB VRAM, ~8× faster
+      # than vanilla large-v3 thanks to a 4-layer pruned decoder). Multilingual
+      # EN+HU works out of the box; pick this when voice-chat latency matters
+      # (Fish Audio S2 Pro → LLM → STT roundtrip on Discord voice channels).
+      # Switch to `Trendency/whisper-large-v3-hu` via STT_WHISPER_MODEL override
+      # in .env if you want the HU-finetune for noisy / phone-grade Hungarian
+      # audio (slower but ~3 percentage points lower HU WER on noisy mic input).
+      # First-boot HF download for turbo is ~1.6 GB; no CT2 conversion required
+      # (deepdml ships pre-converted CT2 weights), cached in the
+      # stt-whisper-hf-cache volume afterwards.
+      WHISPER_MODEL: ${STT_WHISPER_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}
       WHISPER_COMPUTE_TYPE: ${STT_WHISPER_COMPUTE_TYPE:-float16}
       WHISPER_DEVICE: ${STT_WHISPER_DEVICE:-cuda}
       # Optional language pin. Empty = Whisper autodetects per request (default).
@@ -807,6 +718,7 @@ services:
     healthcheck:
       # /health is always unauth (the wrapper's auth middleware exempts it by
       # path), so a plain curl without Authorization is sufficient. No need
+      # to dance with escaped env vars.
       # for a $$-escaped env-var dance.
       #
       # Cold-start: uvicorn comes up in a few seconds, but the first
@@ -911,7 +823,13 @@ services:
       BROWSER_MAX_PROFILES: ${BROWSER_MAX_PROFILES:-20}
       BROWSER_RATE_LIMIT_RPS: ${BROWSER_RATE_LIMIT_RPS:-0.5}
       BROWSER_RATE_LIMIT_BURST: ${BROWSER_RATE_LIMIT_BURST:-5}
-      BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-30000}
+      # Per-action CDP timeout. Bumped 2026-06-08 from 30s → 60s: heavy
+      # JS-driven pages (YouTube, Wowhead, sites with many ad-iframes) blow
+      # past 30s when building the ARIA accessibility tree for a `snapshot`
+      # action — the agent saw "[tools] browser failed: timed out" on a
+      # YouTube `snapshot` even though `open` succeeded and the tab was live.
+      # 60s covers the worst real pages without hanging the agent turn.
+      BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-60000}
       BROWSER_STORAGE_DIR: /storage
     volumes:
       - browser-storage:/storage
@@ -1007,6 +925,17 @@ services:
       # without docker exec gymnastics. The gateway uses bridge DNS, so
       # publishing isn't strictly required — it's purely operator ergonomics.
       - "${PYTHON_SANDBOX_BIND:-127.0.0.1}:${PYTHON_SANDBOX_PORT:-8094}:8094"
+      # Preview/hosting port (2026-06-08). An operator (or the agent) can launch
+      # a dev server INSIDE the container bound to 0.0.0.0:8095 — `ng serve
+      # --host 0.0.0.0 --port 8095`, `python -m http.server 8095`, a Go/Java
+      # app, etc. — and reach it on the host's published 8095. nginx then
+      # proxies sandbox.petyuspolisz.com → <host>:8095. Bound to 0.0.0.0 so the
+      # nginx-proxy-manager (running in host-net, pointing its upstream at the
+      # host LAN IP 192.168.111.100:8095) can reach it — a 127.0.0.1-only bind
+      # gives the NPM a 502 because it dials the LAN IP, not loopback. The
+      # public gate is NPM + Cloudflare (SSL), so LAN exposure of the raw
+      # preview port is acceptable in this homelab. Override via env if needed.
+      - "${SANDBOX_PREVIEW_BIND:-0.0.0.0}:${SANDBOX_PREVIEW_PORT:-8095}:8095"
     environment:
       # Required. Empty value fails fast at app startup — a token-less
       # sandbox would let any container on the bridge run arbitrary code.
@@ -1024,11 +953,51 @@ services:
       # state and the next call starts fresh.
       PYTHON_SANDBOX_IDLE_TTL_S: ${PYTHON_SANDBOX_IDLE_TTL_S:-1800}
       PYTHON_SANDBOX_REAP_INTERVAL_S: ${PYTHON_SANDBOX_REAP_INTERVAL_S:-300}
+      # Whisper STT bridge for the transcribe_audio MCP tool (2026-06-08).
+      # The token lives ONLY in this server process — kernel_pool.py strips it
+      # from the child kernel env, so user code in python_exec cannot read it
+      # via os.environ. This is the "dedicated tool holds the token" isolation:
+      # the agent downloads media with yt-dlp+ffmpeg in python_exec, then calls
+      # transcribe_audio(path=...) and the server-side handler does the
+      # token-authenticated POST to Whisper. Same token as openclaw-stt-whisper.
+      STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
+      STT_API_TOKEN: ${STT_API_TOKEN:-}
+      STT_MODEL: ${OPENCLAW_STT_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}
+      # Cap on the audio file size transcribe_audio will POST (guards the STT
+      # container from an OOM on a multi-GB file). Default 200 MB.
+      STT_MAX_FILE_BYTES: ${STT_MAX_FILE_BYTES:-209715200}
+      # git_push tool (2026-06-09): the agent can commit+push a local repo to ONE
+      # preconfigured GitHub repo. The PAT lives ONLY here (uvicorn env) — kernel_pool
+      # strips GITHUB_TOKEN from user kernels, and the tool feeds it to git via
+      # GIT_ASKPASS (never argv/.git/config). Set a FINE-GRAINED PAT scoped to the one
+      # repo with Contents:read+write. Empty token → the tool returns "not configured".
+      # GITHUB_REPO is owner/repo; the agent can ONLY push there (cannot target others).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      # When GITHUB_REPO doesn't exist yet, git_push auto-creates it under the token's
+      # account (a dedicated bot account only needs to hand over a token — no manual repo
+      # creation; needs a classic PAT with `repo` scope, or fine-grained that can create).
+      # This is the visibility of the auto-created repo. Default private; false = public.
+      GITHUB_REPO_PRIVATE: ${GITHUB_REPO_PRIVATE:-true}
+      GIT_DEFAULT_BRANCH: ${GIT_DEFAULT_BRANCH:-main}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-ImbulClaw}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-bot@petyuspolisz.com}
     volumes:
       # /workspace is the canonical place for the agent to read/write files.
       # Bind-mounted from the host so files persist across recreates and so
       # the operator can drop CSVs in for the agent to analyze.
       - ${OPENCLAW_WORKSPACE_DIR}/sandbox:/workspace:rw
+      # Shared canvas dir, mounted at the SAME path the gateway sees it
+      # (/home/node/.openclaw/canvas). This lets the agent download media in
+      # python_exec (e.g. yt-dlp → /home/node/.openclaw/canvas/clip.mp3) and
+      # then attach it to Discord via the `upload-file` action using the
+      # IDENTICAL path — the canvas dir is in the discord-friend agent's
+      # media-local-roots, so upload-file is allowed to read it. Without this
+      # shared mount the file would land in /workspace/sandbox, which is
+      # OUTSIDE the agent's media roots → upload-file gets access-denied.
+      # Same path on both sides means one path convention for the agent.
+      # (2026-06-08 — audio/file attachment support.)
+      - ${OPENCLAW_CONFIG_DIR}/canvas:/home/node/.openclaw/canvas:rw
     # No `networks:` directive — the sandbox joins the project's default
     # bridge so the gateway can reach it via DNS at openclaw-python-sandbox.
     # PYTHON_SANDBOX_NETWORK in .env is a documented placeholder for a
@@ -1082,10 +1051,10 @@ services:
   #       `enabled` flag to true. The plugin ships bundled-but-default-disabled;
   #       without this step the webSearch tool never lights up at runtime. Also
   #       wires baseUrl + categories + language for the sibling searxng service.
-  #   11. Ensure messages.tts.providers.openai is wired at the openclaw-tts-router
+  #   11. Ensure messages.tts.providers.openai is wired at the openclaw-tts-fish
   #       (OpenAI-compat baseUrl override, sanctioned per closed OpenClaw issues
   #       #13907 / #29224) + voiceAliases for human-readable voice names.
-  #       Env-gated: skipped when OPENCLAW_TTS_ROUTER_API_KEY is unset, so the
+  #       Env-gated: skipped when OPENCLAW_TTS_FISH_API_KEY is unset, so the
   #       openai TTS provider stays untouched if the user opts out of TTS.
   #   12. Mirror gateway.auth.token into gateway.remote.token so the loopback
   #       CLI can WS-connect without hitting "gateway token mismatch" and
@@ -1206,12 +1175,13 @@ services:
       EMBED_BASE_URL: ${EMBED_BASE_URL:-http://vllm-embedding:8005/v1/}
       # TTS provider wiring. When set, patcher step 11 writes
       # messages.tts.providers.openai.{baseUrl,apiKey,model,voiceId,voiceAliases}
-      # pointing at the openclaw-tts-router. Leave empty to opt out — the
-      # patcher then leaves the openai TTS provider untouched (and the router
-      # service block above can be parked with `profiles: ["never"]`).
-      OPENCLAW_TTS_ROUTER_API_KEY: ${OPENCLAW_TTS_ROUTER_API_KEY:-}
-      OPENCLAW_TTS_ROUTER_URL: ${OPENCLAW_TTS_ROUTER_URL:-http://openclaw-tts-router:8080/v1}
-      OPENCLAW_TTS_DEFAULT_VOICE: ${OPENCLAW_TTS_DEFAULT_VOICE:-af_heart}
+      # pointing at the openclaw-tts-fish service (Fish Audio S2 Pro via
+      # SGLang-Omni). Leave empty to opt out — the patcher then leaves the
+      # openai TTS provider untouched (and the fish service block above can be
+      # parked with `profiles: ["never"]`).
+      OPENCLAW_TTS_FISH_API_KEY: ${OPENCLAW_TTS_FISH_API_KEY:-}
+      OPENCLAW_TTS_FISH_URL: ${OPENCLAW_TTS_FISH_URL:-http://openclaw-tts-fish:8080/v1}
+      OPENCLAW_TTS_DEFAULT_VOICE: ${OPENCLAW_TTS_DEFAULT_VOICE:-default_en}
       # Auto-attach mode for messages.tts (patcher step 11). Default 'always'
       # speaks every final reply (voice channels, VoiceCall). Discord text-channel
       # deploys must use 'tagged' — see .env.example notes; the gateway image
@@ -1273,10 +1243,56 @@ services:
       # belt-and-braces if a tighter profile is chosen later. Set empty
       # to skip the step.
       OPENCLAW_DISCORD_AGENT_ALSO_ALLOW: ${OPENCLAW_DISCORD_AGENT_ALSO_ALLOW:-group:messaging,browser,tts,canvas,cron}
+      # Discord-friend agent UX cheatsheet blocks in workspace-discord/AGENTS.md
+      # (patcher step XXa/b/c, added 2026-06-06 in response to Reverend Green's
+      # review). Each independently env-gated so the operator can A/B individual
+      # rules without redeploying the patcher.
+      OPENCLAW_DISCORD_AGENT_FORMAT_RULES: ${OPENCLAW_DISCORD_AGENT_FORMAT_RULES:-}
+      OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE: ${OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE:-}
+      OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET: ${OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET:-}
+      OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION: ${OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION:-}
+      OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET: ${OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET:-}
+      # 2026-06-06 — Active Memory plugin (bundled, default-off). On enable,
+      # injects relevant long-term memory chunks into every reply context on
+      # the discord-friend agent — so the bot "remembers" cross-channel.
+      OPENCLAW_ACTIVE_MEMORY: ${OPENCLAW_ACTIVE_MEMORY:-}
+      # 2026-06-06 — Block F: deep agentic multi-step task decomposition rule
+      # in workspace-discord/AGENTS.md (env-gated, opt-in). Teaches the bot to
+      # chain 5-15+ tool calls on real tasks. Paired with idleTimeout=1800s.
+      OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC: ${OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC:-}
+      # 2026-06-07 — Block G: anti-hallucination honesty rule. Forbids the bot
+      # from inventing "subagent" tool-calls or promising background work the
+      # bot has no runtime to perform. Surfaced after a 01:40 incident where
+      # Gemma 4 fabricated "Code Architect / Asset Designer" subagents and
+      # claimed to "work overnight" — neither is true.
+      OPENCLAW_DISCORD_AGENT_HONESTY: ${OPENCLAW_DISCORD_AGENT_HONESTY:-}
+      # Sender-identity discipline cheatsheet (default on). Guild channels are
+      # multi-user; the agent must key per-user rules (nickname, greeting,
+      # promises) on the CURRENT message's sender_id and never carry one user's
+      # rule onto another. Added after a 2026-06-08 incident where the bot
+      # greeted Yagi with a Nilatah-specific "üdv meleg hercegem" and treated
+      # Yagi as Nilatah. Set to off to remove the block.
+      OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY: ${OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY:-on}
+      # 2026-06-08 — native sub-agent delegation cheatsheet block. The
+      # sessions_spawn/sessions_yield tools ship with the "full" tool profile and the
+      # Gemma 4 MoE drives the spawn→yield→announce protocol correctly (gate-tested:
+      # F(25)=75025 computed in an isolated child sub-agent). This knob writes the
+      # AGENTS.md delegation recipe (WHEN/HOW to delegate heavy multi-step tasks).
+      # Default on; `off` removes the block. NOTE: the 2026.6.1 schema REJECTS an
+      # `agents.defaults.subagents` bounds object (gateway crash-loop) — the patcher
+      # self-heals by removing it. The capability needs no extra config; OpenClaw's
+      # built-in subagent defaults + Discord's ~15-min interaction cap bound it. (A
+      # confirmed-schema bounds step is deferred — see CHANGELOG / docs/reference.)
+      OPENCLAW_DISCORD_AGENT_SUBAGENTS: ${OPENCLAW_DISCORD_AGENT_SUBAGENTS:-on}
       # Discord-routed agent thinkingDefault (patcher step 25c). Default
-      # `minimal` — Gemma 4 NVFP4 needs reasoning to surface structured
-      # tool-calls. Empty disables.
-      OPENCLAW_DISCORD_AGENT_THINKING: ${OPENCLAW_DISCORD_AGENT_THINKING:-minimal}
+      # `high` (bumped 2026-06-08 from `minimal`) — Gemma 4 NVFP4 on the
+      # `--reasoning-parser gemma4` pipeline benefits from larger thinking
+      # budgets on nuanced Hungarian prompts where tool-discipline matters
+      # (e.g. lyrics search "szám"=song disambiguation). Latency: ~2-3×
+      # slower prefill vs `minimal`, ~10-15s typical. Fall back to `medium`
+      # or `low` if you need snappier replies. Enum: off|minimal|low|medium|
+      # high|xhigh|adaptive|max. Empty disables.
+      OPENCLAW_DISCORD_AGENT_THINKING: ${OPENCLAW_DISCORD_AGENT_THINKING:-high}
       # Per-guild cron tool allow-list (patcher step 24c). Comma-separated
       # Discord guild snowflake IDs where the cron tool should be available
       # on text channels. Without an entry the runtime per-guild policy
@@ -1296,10 +1312,10 @@ services:
       OPENCLAW_DISCORD_OWNER_IDS: ${OPENCLAW_DISCORD_OWNER_IDS:-}
       # Discord voice subsystem (patcher step 29). `stt-tts` (default)
       # registers /vc join|leave|status and implicitly uses this stack's
-      # self-hosted faster-whisper (port 8093) + Kokoro/F5-TTS via the
-      # TTS router (port 8090). Note: upstream OpenClaw 2026.4.22 does NOT
-      # ship a real STT→LLM→TTS audio loop on Discord voice channels yet
-      # (issue #49246 still open); /vc join makes the bot SIT in the voice
+      # self-hosted faster-whisper turbo (port 8093) + Fish Audio S2 Pro
+      # (openclaw-tts-fish, port 8091). Note: upstream OpenClaw 2026.4.22
+      # does NOT ship a real STT→LLM→TTS audio loop on Discord voice channels
+      # yet (issue #49246 still open); /vc join makes the bot SIT in the voice
       # channel but it won't hear or speak. Set `off` to hide /vc commands
       # entirely until upstream lands a working loop.
       OPENCLAW_DISCORD_VOICE: ${OPENCLAW_DISCORD_VOICE:-stt-tts}
@@ -1338,7 +1354,10 @@ services:
       # vLLM idle watchdog timeout (patcher step 8). Default 600s gives
       # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
       # to 300 for fast-model-only deploys.
-      OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS: ${OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS:-600}
+      # Default empty for 2026.6.1+ — the patcher skips agents.defaults.llm writes
+      # when this is empty/'skip'/'off' (schema reject on 2026.6.1+). On 2026.4.x
+      # an operator can set a numeric value to restore the legacy 600s ceiling.
+      OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS: ${OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS-}
       # Per-file char budget for workspace bootstrap files (AGENTS.md,
       # USER.md, etc.) — written by patcher step 8b into
       # agents.defaults.bootstrapMaxChars. Upstream SDK default is
@@ -1349,7 +1368,41 @@ services:
       # never sees the later cheatsheet blocks (verified live 2026-05-14:
       # video cheatsheet additions were cut → bot defaulted to T2V on
       # I2V intents).
-      OPENCLAW_BOOTSTRAP_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_MAX_CHARS:-20000}
+      # Default bumped 20000 → 60000 (2026-06-07) once AGENTS.md grew past
+      # 30 KB with Block G honesty + Block F deep-agentic + LTX-video etc.
+      # Plus total-cap raised: per-file 60k, total 80k.
+      OPENCLAW_BOOTSTRAP_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_MAX_CHARS:-60000}
+      OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS:-80000}
+      # 2026.6.1+ sandbox-browser enable for `browser` tool target="sandbox".
+      OPENCLAW_SANDBOX_BROWSER: ${OPENCLAW_SANDBOX_BROWSER:-on}
+      # Default CDP profile when `browser` tool called without explicit profile.
+      OPENCLAW_BROWSER_DEFAULT_PROFILE: ${OPENCLAW_BROWSER_DEFAULT_PROFILE:-self-hosted}
+      # 2026.6.1 regression-fix: Discord plugin default suppressEmbeds=true
+      # kills auto-embed on every URL. Default off here = explicit `false` in
+      # config = auto-embed restored.
+      OPENCLAW_DISCORD_SUPPRESS_EMBEDS: ${OPENCLAW_DISCORD_SUPPRESS_EMBEDS:-off}
+      # Slash-command + elevated-tool authz wildcards (default "*" = open to
+      # everyone). Narrow these to comma-separated Discord snowflakes (as
+      # STRINGS — JS Number precision rounds 19-digit IDs and the equality
+      # check fails) if you want owner-only command surfaces.
+      OPENCLAW_DISCORD_COMMANDS_ALLOW: ${OPENCLAW_DISCORD_COMMANDS_ALLOW:-*}
+      OPENCLAW_DISCORD_COMMAND_OWNERS: ${OPENCLAW_DISCORD_COMMAND_OWNERS:-*}
+      OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW: ${OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW:-*}
+      # tools.agentToAgent — cross-agent messaging surface (sessions_send to a
+      # DIFFERENT agent id, e.g. discord-friend → main). Distinct from sub-agent
+      # SPAWN (same agent, no config). Schema captured from the live 2026.6.1 WebGUI
+      # (the schema oracle): { enabled, allow:[agentId|"*"] }. Default on, allow "*"
+      # (any configured agent). off/0/false → patcher removes the block.
+      OPENCLAW_TOOLS_AGENT_TO_AGENT: ${OPENCLAW_TOOLS_AGENT_TO_AGENT:-on}
+      OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW: ${OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW:-*}
+      # Agentic capability toggles (schema captured from the 2026.6.1 WebGUI):
+      #   PLAN_TOOL → tools.experimental.planTool (experimental update_plan; multi-step
+      #     work tracking). LOOP_DETECTION → tools.loopDetection.enabled (repetitive
+      #     tool-call circuit breaker; autonomy safety for long agentic/sub-agent chains).
+      # Both default on; off/0/false → patcher removes the key. (Footguns codeMode /
+      # exec-full are intentionally NOT wired — they'd break or endanger the bot.)
+      OPENCLAW_TOOLS_PLAN_TOOL: ${OPENCLAW_TOOLS_PLAN_TOOL:-on}
+      OPENCLAW_TOOLS_LOOP_DETECTION: ${OPENCLAW_TOOLS_LOOP_DETECTION:-on}
       # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
       # writes a tools.media.audio.models[] entry with provider=openai,
       # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
@@ -1358,7 +1411,7 @@ services:
       # empty to opt out — the patcher skips step 14 cleanly.
       STT_API_TOKEN: ${STT_API_TOKEN:-}
       OPENCLAW_STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
-      OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-Trendency/whisper-large-v3-hu}
+      OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}
       OPENCLAW_STT_LANGUAGE: ${OPENCLAW_STT_LANGUAGE:-}
       # Discord voice-controlled agent (opt-in). The patcher does not create
       # channels.discord.* automatically yet — the schema is user-driven via
@@ -1424,6 +1477,17 @@ services:
     # up the new tag automatically on the next `up -d --force-recreate`.
     image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.1}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-gateway
+    # Explicit public DNS — the Docker daemon's default 127.0.0.11 forwarder
+    # works for `curl` but the Node.js DNS-resolver retry strategy used by
+    # `npm install` (during plugin install via `openclaw plugins install`)
+    # hits EAI_AGAIN on it (verified 2026-06-07 during 2026.6.1 upgrade
+    # attempt — the gateway curl reached registry.npmjs.org with HTTP 200
+    # while npm errored EAI_AGAIN on the same hostname). Forcing 8.8.8.8 /
+    # 1.1.1.1 on the gateway container also fixes openclaw-cli which shares
+    # this network namespace via network_mode: service:openclaw-gateway.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_GATEWAY_CONTROL_PORT:-18790}:18790"

@@ -24,7 +24,7 @@
 //   8. Ensure agents.defaults.llm.idleTimeoutSeconds (default 600, env-tunable).
 //   9. Ensure memorySearch hybrid (BM25 + vector) retrieval with MMR re-rank.
 //  10. Ensure webSearch provider = searxng + enable the bundled searxng plugin.
-//  11. Ensure messages.tts wiring — env-gated by OPENCLAW_TTS_ROUTER_API_KEY.
+//  11. Ensure messages.tts wiring — env-gated by OPENCLAW_TTS_FISH_API_KEY.
 //  12. Mirror gateway.auth.token into gateway.remote.token so the loopback CLI
 //      can WS-connect without hitting "gateway token mismatch" and silently
 //      falling back to an embedded runner.
@@ -221,6 +221,14 @@ const EMBED_BASE_URL = process.env.EMBED_BASE_URL || 'http://vllm-embedding:8005
 // vllm-llm service also passes `--limit-mm-per-prompt '{"image":4,"audio":0}'`.
 // OpenClaw uses these catalog entries to decide whether to forward image parts
 // in multimodal messages and to cap prompt sizes.
+// `reasoning` mező: a vLLM 8004 már `--reasoning-parser gemma4`-gyel fut,
+// tehát a Gemma 4 IT chat-template-jén keresztül emittel `<think>` block-ot.
+// Az OpenClaw provider-szintű `reasoning=true` jelzi a chat-completions
+// layer-nek hogy várhat reasoning-output-ot a model-től, és megőrzi a
+// thinking-content-et a reply-ban (különben silently strip-elődik).
+// Env knob: LLM_REASONING_ENABLED=false ha operator ki akarja kapcsolni
+// (pl. ha bumpolja vLLM-nek a `--reasoning-parser`-t off-ra).
+const LLM_REASONING_ENABLED = ((process.env.LLM_REASONING_ENABLED ?? 'true').trim().toLowerCase() !== 'false');
 const LLM_MODEL_ENTRY_MOE = {
   id: LLM_MODEL_ID_MOE,
   name: LLM_MODEL_ID_MOE,
@@ -229,10 +237,19 @@ const LLM_MODEL_ENTRY_MOE = {
   // field were observed to be silently filtered out of the runtime model
   // selection on 2026.4.22, so the catalog must include it explicitly.
   api: 'openai-completions',
-  reasoning: false,
+  reasoning: LLM_REASONING_ENABLED,
   input: ['text', 'image'],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 262144,
+  // Context window OpenClaw budgets per prompt (system + history + response). The
+  // model can run 256K, but packing a full day's channel history into every prompt
+  // makes the GB10 MoE prefill exceed the gateway's ~365s stuck-session watchdog →
+  // "Request was aborted" / unresponsive channel. Bounding this truncates old history
+  // to the most-recent ~Nk tokens → fast, reliable prefill (old context lives in
+  // memory/*.md). Env LLM_CONTEXT_WINDOW (default 131072 = 128K; measured prefill ~127s
+  // on the GB10 MoE at ~130k tokens — under the ~365s stuck-watchdog + 1800s timeout, so
+  // it won't abort, but each full-context reply waits ~2 min. Lower to 32K (~10s) / 64K
+  // (~40s) for snappier replies; operator chose context depth over speed).
+  contextWindow: parseInt(process.env.LLM_CONTEXT_WINDOW || '131072', 10),
   maxTokens: 8192,
 };
 const LLM_MODEL_ENTRY_DENSE = {
@@ -291,6 +308,12 @@ if (vllm) {
   const desiredCore = {
     baseUrl: LLM_BASE_URL,
     api: LLM_API,
+    // Per-provider model request timeout (s). Raises OpenClaw's implicit ~120s LLM
+    // request/stream watchdog (schema: "raises the LLM idle/stream watchdog ceiling
+    // for this provider above the implicit ~120s default"). Coding sessions accrue
+    // large context whose prefill on the GB10 MoE can exceed 120s → "LLM request
+    // timed out" + an unresponsive channel. Env LLM_REQUEST_TIMEOUT_SECONDS (default 300).
+    timeoutSeconds: parseInt(process.env.LLM_REQUEST_TIMEOUT_SECONDS || '1800', 10),
   };
   if (VLLM_API_KEY) desiredCore.apiKey = VLLM_API_KEY;
   for (const [k, v] of Object.entries(desiredCore)) {
@@ -363,6 +386,7 @@ const vllmDense = config.models.providers['vllm-dense'];
 const desiredDenseCore = {
   baseUrl: LLM_DENSE_BASE_URL,
   api: LLM_API,
+  timeoutSeconds: parseInt(process.env.LLM_REQUEST_TIMEOUT_SECONDS || '300', 10),
 };
 if (VLLM_API_KEY) desiredDenseCore.apiKey = VLLM_API_KEY;
 for (const [k, v] of Object.entries(desiredDenseCore)) {
@@ -518,6 +542,25 @@ for (const [k, v] of Object.entries(desiredHours)) {
   }
 }
 
+// (5b) Sub-agent delegation bounds — SELF-HEAL REMOVAL (2026.6.1). The sessions_spawn /
+//      sessions_yield CAPABILITY is already exposed by the "full" tool profile, and the
+//      Gemma 4 26B-A4B MoE drives the spawn→yield→announce protocol correctly with NO
+//      extra config (gate-tested 2026-06-08 with subagents=null: it computed F(25)=75025
+//      in an isolated child, and live UE5 coding sub-agents completed+announced).
+//      Community docs referenced `agents.defaults.subagents.{maxChildrenPerAgent,…}` but
+//      the LIVE 2026.6.1 gateway schema REJECTS that path ("Invalid input" → gateway
+//      crash-loop, observed 2026-06-08). So we do NOT write bounds here — we self-heal by
+//      REMOVING any previously-written block, and rely on OpenClaw's built-in subagent
+//      defaults + Discord's ~15-min interaction cap. Bounds tuning is deferred until the
+//      correct 2026.6.1 schema path is confirmed (likely session.* or per-agent, not
+//      agents.defaults). The OPENCLAW_SUBAGENTS_* env knobs are reserved for that future
+//      step. The delegation behaviour itself lives in the AGENTS.md cheatsheet block.
+if (config.agents?.defaults?.subagents !== undefined) {
+  delete config.agents.defaults.subagents;
+  changed = true;
+  console.log('[patch-config] removed agents.defaults.subagents (schema-invalid on 2026.6.1; capability comes from the tool profile, not this config)');
+}
+
 // (6) Dreaming (REM-style memory consolidation). Env-gated: OPENCLAW_ENABLE_DREAMING=1
 //     turns it on; anything else cleans up a previously-set entry (older gateway
 //     images reject the memory-core plugin schema with "additional properties").
@@ -588,6 +631,81 @@ if (dreamingEnabled) {
   }
 }
 
+// ─── X. Active Memory plugin — automatic memory injection ──────────────────
+// Enables OpenClaw's bundled `active-memory` plugin (stock, shipped disabled
+// by default). The plugin runs a bounded blocking sub-agent BEFORE every
+// eligible conversational reply on enabled agents/chat-types, searches the
+// long-term memory store (e.g. discord-friend.sqlite hybrid BM25+vector) with
+// the current turn's user message + recent history as query, and INJECTS the
+// retrieved chunks into the main agent's prompt context.
+//
+// User-facing effect: the bot "remembers" what was discussed on other Discord
+// channels and DMs without the main agent having to manually call
+// memory_search every turn — the injection is deterministic, not LLM-judged.
+//
+// Env gate: OPENCLAW_ACTIVE_MEMORY=on (default off; additive feature). When
+// enabled, defaults are tuned for the homelab Discord deploy: agents=
+// discord-friend, all chat-types, queryMode=recent (recent context + memory),
+// promptStyle=recall-heavy (favor recall over precision), thinking=minimal
+// (fast sub-agent), 8s timeout (won't hold up the main turn for long).
+const ACTIVE_MEMORY_ENV = (process.env.OPENCLAW_ACTIVE_MEMORY || '').trim().toLowerCase();
+// Inline on-check (isEnvOn helper is declared later in this file; can't
+// reference it from this early step due to JS temporal dead zone).
+if (['on', '1', 'true', 'yes'].includes(ACTIVE_MEMORY_ENV)) {
+  config.plugins ??= {};
+  config.plugins.entries ??= {};
+  config.plugins.entries['active-memory'] ??= {};
+  const am = config.plugins.entries['active-memory'];
+  if (am.enabled !== true) {
+    am.enabled = true;
+    changed = true;
+    console.log('[patch-config] plugins.entries.active-memory.enabled = true');
+  }
+  am.config ??= {};
+  const desiredAmCfg = {
+    enabled: true,
+    agents: ['discord-friend'],
+    allowedChatTypes: ['direct', 'channel', 'group'],
+    queryMode: 'recent',
+    promptStyle: 'recall-heavy',
+    // `off` instead of `minimal` — Gemma 4 multi-modal context already adds
+    // 1-2s base latency; reasoning on top pushed the sub-agent past 8s
+    // timeout in production (2026-06-06: every turn returned `terminated`
+    // and the Discord interaction listener saw 43s slow-listener warnings).
+    thinking: 'off',
+    // 30s instead of 8s — the Gemma 26B vision tower needs time to prefill
+    // even on small contexts. 30s caps the per-turn extra latency to
+    // something the user notices but doesn't break the flow.
+    timeoutMs: 30000,
+    maxSummaryChars: 600,
+    // Tighter recent-context: less input → faster sub-agent. The original
+    // 600/400 user/assistant chars were over-budget on multi-modal turns.
+    recentUserTurns: 1,
+    recentAssistantTurns: 1,
+    recentUserChars: 300,
+    recentAssistantChars: 200,
+  };
+  for (const [k, v] of Object.entries(desiredAmCfg)) {
+    if (JSON.stringify(am.config[k]) !== JSON.stringify(v)) {
+      am.config[k] = v;
+      changed = true;
+      console.log(`[patch-config] plugins.entries.active-memory.config.${k} = ${JSON.stringify(v)}`);
+    }
+  }
+} else if (['off', '0', 'false', 'no'].includes(ACTIVE_MEMORY_ENV)) {
+  // Explicit off → scrub the entry. Without this, a previously-enabled
+  // active-memory config keeps injecting on every turn even after the env
+  // is flipped off, because the patcher's user-managed-protection attitude
+  // never overwrites existing values.
+  if (config.plugins?.entries?.['active-memory'] !== undefined) {
+    delete config.plugins.entries['active-memory'];
+    if (Object.keys(config.plugins.entries).length === 0) delete config.plugins.entries;
+    if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins;
+    changed = true;
+    console.log('[patch-config] OPENCLAW_ACTIVE_MEMORY=off — removed plugins.entries.active-memory.');
+  }
+}
+
 // (7) Ensure gateway.trustedProxies — silences the "trustedProxies is empty" security
 //     warning and lets the gateway correctly parse X-Forwarded-For headers.
 //     Baseline: loopback + the entire RFC1918 docker bridge range (172.16.0.0/12).
@@ -620,18 +738,34 @@ if (needsProxyUpdate) {
 //     real hangs (OOM, CUDA stuck) within 10 minutes — still reasonable.
 //     Env-tunable via OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS in case an operator
 //     wants tighter latency feedback (single-tool, fast-model deploys).
-const desiredIdleTimeoutSeconds = parseInt(
-  process.env.OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS?.trim() || '600',
-  10,
-);
-config.agents ??= {};
-config.agents.defaults ??= {};
-config.agents.defaults.llm ??= {};
-if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds) {
-  const prev = config.agents.defaults.llm.idleTimeoutSeconds;
-  config.agents.defaults.llm.idleTimeoutSeconds = desiredIdleTimeoutSeconds;
-  changed = true;
-  console.log(`[patch-config] agents.defaults.llm.idleTimeoutSeconds: ${prev ?? '(unset)'} -> ${desiredIdleTimeoutSeconds}`);
+// Schema-skip guard for OpenClaw 2026.6.1+ — the `agents.defaults.llm` block
+// is rejected by the new schema (verified 2026-06-07 upgrade attempt: gateway
+// crash-loop with "agents.defaults: Invalid input", doctor --fix auto-strips
+// the field). The replacement schema-location is TBD pending 2026.6.x doc
+// review. As an interim, an explicitly EMPTY env value (or "skip") skips this
+// step entirely — operators on 2026.6.1+ should leave the env empty so the
+// runtime default applies. Operators on 2026.4.x can set a numeric value to
+// keep the legacy behaviour.
+const idleRaw = process.env.OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS?.trim();
+if (idleRaw && idleRaw !== 'skip' && idleRaw !== 'off') {
+  const desiredIdleTimeoutSeconds = parseInt(idleRaw, 10);
+  config.agents ??= {};
+  config.agents.defaults ??= {};
+  config.agents.defaults.llm ??= {};
+  if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds) {
+    const prev = config.agents.defaults.llm.idleTimeoutSeconds;
+    config.agents.defaults.llm.idleTimeoutSeconds = desiredIdleTimeoutSeconds;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.llm.idleTimeoutSeconds: ${prev ?? '(unset)'} -> ${desiredIdleTimeoutSeconds}`);
+  }
+} else {
+  // Self-heal: strip any stale agents.defaults.llm we wrote on a previous
+  // recreate. The 2026.6.1 gateway crash-loops on the presence of this key.
+  if (config.agents?.defaults?.llm !== undefined) {
+    delete config.agents.defaults.llm;
+    changed = true;
+    console.log(`[patch-config] removed stale agents.defaults.llm (env empty; 2026.6.1+ schema rejects this block)`);
+  }
 }
 
 // (8b) Raise agents.defaults.bootstrapMaxChars beyond the 12000-char SDK
@@ -647,23 +781,244 @@ if (config.agents.defaults.llm.idleTimeoutSeconds !== desiredIdleTimeoutSeconds)
 //      init_image_url), insist "felbontás nem választható" when asked
 //      for FullHD, and silently skip the display_markdown paste.
 //
-//      Bumping to 20000 gives ~5k headroom over the current file size.
-//      Total bootstrap budget (DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS=60000)
-//      is also bumpable via `bootstrapTotalMaxChars`, but we don't need
-//      it: AGENTS.md is the only big bootstrap file.
+//      2026-06-07 update: bumped default from 20000 to 60000 once Block G
+//      honesty cheatsheet pushed AGENTS.md past 30 KB. Plus we now also set
+//      `bootstrapTotalMaxChars=80000` to give the total-budget headroom
+//      (default upstream is 60000 — without bumping it, the total cap kicks
+//      in even if per-file cap is fine).
 //
-//      Env knob: OPENCLAW_BOOTSTRAP_MAX_CHARS (default 20000). Bump
-//      further if you stuff more domain knowledge into AGENTS.md and
-//      see the truncation warning return in gateway logs.
+//      Env knobs:
+//        OPENCLAW_BOOTSTRAP_MAX_CHARS       (default 60000, per-file cap)
+//        OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS (default 80000, total cap)
 const desiredBootstrapMaxChars = parseInt(
-  process.env.OPENCLAW_BOOTSTRAP_MAX_CHARS?.trim() || '20000',
+  process.env.OPENCLAW_BOOTSTRAP_MAX_CHARS?.trim() || '60000',
   10,
 );
+config.agents ??= {};
+config.agents.defaults ??= {};
 if (config.agents.defaults.bootstrapMaxChars !== desiredBootstrapMaxChars) {
   const prev = config.agents.defaults.bootstrapMaxChars;
   config.agents.defaults.bootstrapMaxChars = desiredBootstrapMaxChars;
   changed = true;
   console.log(`[patch-config] agents.defaults.bootstrapMaxChars: ${prev ?? '(unset)'} -> ${desiredBootstrapMaxChars}`);
+}
+const desiredBootstrapTotalMaxChars = parseInt(
+  process.env.OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS?.trim() || '80000',
+  10,
+);
+if (config.agents.defaults.bootstrapTotalMaxChars !== desiredBootstrapTotalMaxChars) {
+  const prev = config.agents.defaults.bootstrapTotalMaxChars;
+  config.agents.defaults.bootstrapTotalMaxChars = desiredBootstrapTotalMaxChars;
+  changed = true;
+  console.log(`[patch-config] agents.defaults.bootstrapTotalMaxChars: ${prev ?? '(unset)'} -> ${desiredBootstrapTotalMaxChars}`);
+}
+
+// (8c) Sandbox browser enable — 2026.6.1+ feature.
+// The `browser` tool with target="sandbox" needs this enabled to use the
+// runtime's bundled headless browser. Otherwise calls fail with
+// "Sandbox browser is unavailable." Env knob OPENCLAW_SANDBOX_BROWSER
+// (default on). Set =off to skip if running a stack without browser tools.
+const sandboxBrowserRaw = (process.env.OPENCLAW_SANDBOX_BROWSER || 'on').trim().toLowerCase();
+if (sandboxBrowserRaw === 'on' || sandboxBrowserRaw === 'true' || sandboxBrowserRaw === '1') {
+  config.agents.defaults.sandbox ??= {};
+  config.agents.defaults.sandbox.browser ??= {};
+  if (config.agents.defaults.sandbox.browser.enabled !== true) {
+    config.agents.defaults.sandbox.browser.enabled = true;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.sandbox.browser.enabled = true (sandbox-browser for target="sandbox" calls)`);
+  }
+}
+
+// (8d) Browser defaultProfile — picks which CDP profile gets used when the
+// `browser` tool is called without explicit `profile:` argument. Our stack
+// runs openclaw-browser (Playwright Chromium) on port 9222 (`self-hosted`)
+// and 9223 (`bot-main`). Without a default, the tool falls through to
+// sandbox/host targets which need extra setup. Env knob
+// OPENCLAW_BROWSER_DEFAULT_PROFILE (default "self-hosted"). Set empty to
+// skip.
+const browserProfileRaw = process.env.OPENCLAW_BROWSER_DEFAULT_PROFILE?.trim() ?? 'self-hosted';
+if (browserProfileRaw && config.browser?.profiles?.[browserProfileRaw]) {
+  if (config.browser.defaultProfile !== browserProfileRaw) {
+    const prev = config.browser.defaultProfile;
+    config.browser.defaultProfile = browserProfileRaw;
+    changed = true;
+    console.log(`[patch-config] browser.defaultProfile: ${prev ?? '(unset)'} -> ${JSON.stringify(browserProfileRaw)} (CDP-attach to openclaw-browser)`);
+  }
+}
+
+// (8e) Discord suppressEmbeds — 2026.6.1 regression fix. The Discord plugin
+// `resolveDiscordSuppressEmbeds` defaults to `true` when the config field
+// is undefined → every bot message goes out with the suppress_embeds flag
+// → no auto-embed on any URL (image/video/link). Explicit `false` restores
+// pre-2026.6.1 behaviour. Env knob OPENCLAW_DISCORD_SUPPRESS_EMBEDS
+// (default off → writes `suppressEmbeds=false`). Set =on if you actually
+// want to suppress link previews.
+const supEmbRaw = (process.env.OPENCLAW_DISCORD_SUPPRESS_EMBEDS || 'off').trim().toLowerCase();
+const desiredSuppressEmbeds = supEmbRaw === 'on' || supEmbRaw === 'true' || supEmbRaw === '1';
+if (config.channels?.discord?.enabled === true) {
+  if (config.channels.discord.suppressEmbeds !== desiredSuppressEmbeds) {
+    const prev = config.channels.discord.suppressEmbeds;
+    config.channels.discord.suppressEmbeds = desiredSuppressEmbeds;
+    changed = true;
+    console.log(`[patch-config] channels.discord.suppressEmbeds: ${prev ?? '(unset)'} -> ${desiredSuppressEmbeds} (auto-embed ${desiredSuppressEmbeds ? 'OFF' : 'ON'} for media URLs in bot replies)`);
+  }
+}
+
+// (8f) Slash-command and elevated-tool authz — make slash commands work for
+// every user on guild channels, not just DMs / owners. Three separate fields
+// in different config paths the Discord plugin consults at command-handler
+// time:
+//
+//   - `commands.allowFrom.discord` — gates `commandsAllowFromAccess.allowed`.
+//     Without this set the plugin defaults to `allowed=false` for guild
+//     channels (DMs pass through as chatType="direct"), and even non-sensitive
+//     slash commands fall through to the unauthorized branch.
+//   - `commands.ownerAllowFrom` — gates `commandOwnerAllowFrom` (top-level
+//     owner-only filter). When set to `["*"]` every user is treated as owner
+//     for command-authz purposes. Use a narrower list (Discord IDs as STRINGS
+//     — see snowflake-precision note below) for actual owner-restriction.
+//   - `tools.elevated.allowFrom.discord` — gates the `tools.elevated` skill
+//     bundle's per-channel allowlist. Same string-list contract.
+//
+// ⚠ JS NUMBER PRECISION GOTCHA — Discord snowflakes are 17-20 digit integers
+// that exceed Number.MAX_SAFE_INTEGER (2^53). When the WebGUI or an
+// onboarding flow writes a snowflake into JSON as a bare integer, JSON.parse
+// rounds it. Example seen 2026-06-07: chestercs ID 244049593338167296 →
+// stored as 244049593338167300 → sender-ID equality check fails on every
+// command → unauthorized for the actual user the operator meant to allow.
+// This step DEFENSIVELY stringifies any non-"*" entries the operator passes
+// in via env, so a stray number doesn't get silently corrupted.
+//
+// Env knobs (default each "*" = wide-open):
+//   OPENCLAW_DISCORD_COMMANDS_ALLOW       — comma-list of guild snowflakes,
+//                                           or "*" (default)
+//   OPENCLAW_DISCORD_COMMAND_OWNERS       — comma-list of user snowflakes,
+//                                           or "*" (default)
+//   OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW — comma-list of user snowflakes,
+//                                           or "*" (default)
+//
+// Setting any to a narrow list quietly restricts that surface; the default
+// "*" matches the operator-friendly homelab posture (everything open, the
+// operator restricts later via Discord-server role permissions instead).
+function parseDiscordIdList(envValue) {
+  if (!envValue || !envValue.trim()) return ['*'];
+  return envValue
+    .split(',')
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+}
+
+if (config.channels?.discord?.enabled === true) {
+  const cmdAllowFromList = parseDiscordIdList(process.env.OPENCLAW_DISCORD_COMMANDS_ALLOW);
+  const cmdOwnerList = parseDiscordIdList(process.env.OPENCLAW_DISCORD_COMMAND_OWNERS);
+  const elevatedList = parseDiscordIdList(process.env.OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW);
+
+  // commands.allowFrom.discord — guild slash gate
+  config.commands ??= {};
+  config.commands.allowFrom ??= {};
+  if (JSON.stringify(config.commands.allowFrom.discord) !== JSON.stringify(cmdAllowFromList)) {
+    const prev = config.commands.allowFrom.discord;
+    config.commands.allowFrom.discord = cmdAllowFromList;
+    changed = true;
+    console.log(`[patch-config] commands.allowFrom.discord = ${JSON.stringify(cmdAllowFromList)} (slash commands on guild channels)`);
+  }
+
+  // commands.ownerAllowFrom — top-level owner-only filter
+  if (JSON.stringify(config.commands.ownerAllowFrom) !== JSON.stringify(cmdOwnerList)) {
+    const prev = config.commands.ownerAllowFrom;
+    config.commands.ownerAllowFrom = cmdOwnerList;
+    changed = true;
+    console.log(`[patch-config] commands.ownerAllowFrom = ${JSON.stringify(cmdOwnerList)} (owner-only command filter)`);
+  }
+
+  // tools.elevated.allowFrom.discord — elevated-tool authz
+  config.tools ??= {};
+  config.tools.elevated ??= {};
+  config.tools.elevated.enabled = true;
+  config.tools.elevated.allowFrom ??= {};
+  if (JSON.stringify(config.tools.elevated.allowFrom.discord) !== JSON.stringify(elevatedList)) {
+    const prev = config.tools.elevated.allowFrom.discord;
+    config.tools.elevated.allowFrom.discord = elevatedList;
+    changed = true;
+    console.log(`[patch-config] tools.elevated.allowFrom.discord = ${JSON.stringify(elevatedList)} (elevated-tool authz)`);
+  }
+}
+
+// (8g) tools.agentToAgent — cross-agent messaging surface (sessions_send to a
+//      DIFFERENT agent id, e.g. discord-friend → main). This is DISTINCT from
+//      sub-agent SPAWN (same agent id, isolated child) which needs no config and
+//      ships with the "full" tool profile. Schema captured verbatim from the live
+//      2026.6.1 WebGUI (the schema oracle, after a hand-written guess at
+//      `agents.defaults.subagents` crash-looped the gateway): the GUI persists
+//      `tools.agentToAgent = { enabled: bool, allow: [agentId | "*"] }`. Env-gated
+//      OPENCLAW_TOOLS_AGENT_TO_AGENT (default on); allow-list from
+//      OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW (comma-list, default "*" = any configured
+//      agent). off/0/false self-heals by removing the block.
+const a2aEnabled = !['off', '0', 'false', 'no'].includes(
+  (process.env.OPENCLAW_TOOLS_AGENT_TO_AGENT || 'on').trim().toLowerCase(),
+);
+if (a2aEnabled) {
+  const a2aAllow = (process.env.OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW || '*')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  config.tools ??= {};
+  config.tools.agentToAgent ??= {};
+  if (config.tools.agentToAgent.enabled !== true) {
+    config.tools.agentToAgent.enabled = true;
+    changed = true;
+    console.log('[patch-config] tools.agentToAgent.enabled = true');
+  }
+  if (JSON.stringify(config.tools.agentToAgent.allow) !== JSON.stringify(a2aAllow)) {
+    config.tools.agentToAgent.allow = a2aAllow;
+    changed = true;
+    console.log(`[patch-config] tools.agentToAgent.allow = ${JSON.stringify(a2aAllow)}`);
+  }
+} else if (config.tools?.agentToAgent !== undefined) {
+  delete config.tools.agentToAgent;
+  changed = true;
+  console.log('[patch-config] removed tools.agentToAgent (env off)');
+}
+
+// (8h) Agentic capability toggles captured from the live 2026.6.1 WebGUI (the schema
+//      oracle): the experimental structured-plan tool (`update_plan` — helps the model
+//      track non-trivial multi-step work) and tool-loop detection (repetitive
+//      tool-call circuit breaker — autonomy safety so a long agentic / sub-agent chain
+//      can't spin forever). Both are simple booleans; the GUI persists them at
+//      tools.experimental.planTool and tools.loopDetection.enabled. Env-gated, default
+//      on; off/0/false removes the key (self-heal).
+//      Footguns DELIBERATELY left off (would break/endanger this multi-user Discord
+//      bot): tools.codeMode (hides normal tools behind an exec-only QuickJS bridge →
+//      no image/browser/etc), and exec security/mode "full" (removes approval gates →
+//      arbitrary host commands from any Discord sender).
+config.tools ??= {};
+const planToolEnabled = !['off', '0', 'false', 'no'].includes(
+  (process.env.OPENCLAW_TOOLS_PLAN_TOOL || 'on').trim().toLowerCase(),
+);
+if (planToolEnabled) {
+  config.tools.experimental ??= {};
+  if (config.tools.experimental.planTool !== true) {
+    config.tools.experimental.planTool = true;
+    changed = true;
+    console.log('[patch-config] tools.experimental.planTool = true');
+  }
+} else if (config.tools.experimental?.planTool !== undefined) {
+  delete config.tools.experimental.planTool;
+  changed = true;
+  console.log('[patch-config] removed tools.experimental.planTool (env off)');
+}
+const loopDetectEnabled = !['off', '0', 'false', 'no'].includes(
+  (process.env.OPENCLAW_TOOLS_LOOP_DETECTION || 'on').trim().toLowerCase(),
+);
+if (loopDetectEnabled) {
+  config.tools.loopDetection ??= {};
+  if (config.tools.loopDetection.enabled !== true) {
+    config.tools.loopDetection.enabled = true;
+    changed = true;
+    console.log('[patch-config] tools.loopDetection.enabled = true');
+  }
+} else if (config.tools.loopDetection?.enabled !== undefined) {
+  delete config.tools.loopDetection.enabled;
+  changed = true;
+  console.log('[patch-config] removed tools.loopDetection.enabled (env off)');
 }
 
 // (9) Ensure memorySearch hybrid (BM25 + vector) + MMR diversity rerank.
@@ -755,27 +1110,29 @@ for (const [k, v] of Object.entries(desiredWebSearch)) {
   }
 }
 
-// (11) Ensure messages.tts.providers.openai points at the openclaw-tts-router.
-//      Env-gated: when OPENCLAW_TTS_ROUTER_API_KEY is unset, leave the openai
+// (11) Ensure messages.tts.providers.openai points at the openclaw-tts-fish
+//      service (Fish Audio S2 Pro via SGLang-Omni).
+//      Env-gated: when OPENCLAW_TTS_FISH_API_KEY is unset, leave the openai
 //      TTS provider untouched. This lets users opt out of TTS by simply not
-//      setting the var (and parking the openclaw-tts-en / openclaw-tts-router
-//      services with `profiles: ["never"]` in the compose file).
+//      setting the var (and parking the openclaw-tts-fish service with
+//      `profiles: ["never"]` in the compose file).
 //
-//      The router exposes the OpenAI Audio API shape on
-//      `${OPENCLAW_TTS_ROUTER_URL}/audio/speech` and accepts the same model /
-//      voice fields. The gateway sends `model` opaquely (the router ignores
-//      it), and the `voiceId` we set is what the TTS surface picks when an
-//      agent doesn't override. voiceAliases give the agent (and human users)
-//      friendly names like `english`, `narrator`, `male` instead of Kokoro's
-//      `af_heart` / `bf_emma` / `am_michael`.
+//      The shim exposes the OpenAI Audio API shape on
+//      `${OPENCLAW_TTS_FISH_URL}/audio/speech` and accepts the same input /
+//      voice / response_format / speed fields. The gateway sends `model`
+//      opaquely (the shim ignores it but logs it for debugging), and the
+//      `voiceId` we set is what the TTS surface picks when an agent doesn't
+//      override. voiceAliases give the agent (and human users) friendly
+//      names like `english` / `magyar` instead of having to remember which
+//      reference clip is mounted.
 //
-//      Hungarian aliases (`magyar`, `hungarian`) are written unconditionally
-//      so the alias surface stays stable; the router itself decides whether
-//      `default_hu` is a live voice (it is only when F5HUN_URL +
-//      F5HUN_API_TOKEN are set on the router service). Without HU wired, the
-//      router's HU autodetect is a no-op and `default_hu` returns 404 — that
-//      is the user's signal that they need to bring an F5-TTS HU backend.
-const ttsRouterKey = process.env.OPENCLAW_TTS_ROUTER_API_KEY?.trim();
+//      Voice catalog is operator-defined: the shim resolves a voice id to
+//      /app/voices/<id>.{wav,txt} at request time. Aliases below map to the
+//      two voices the image seeds by default (default_en + default_hu).
+//      To add richer palettes, drop more <name>.{wav,txt} pairs into the
+//      tts-fish-voices volume and either extend desiredAliases here or
+//      reference the voice id directly from agent prompts.
+const ttsRouterKey = process.env.OPENCLAW_TTS_FISH_API_KEY?.trim();
 if (ttsRouterKey) {
   config.messages ??= {};
   config.messages.tts ??= {};
@@ -797,8 +1154,7 @@ if (ttsRouterKey) {
   // text-channel deploys must set OPENCLAW_TTS_AUTO=tagged: with `always`,
   // the Discord plugin tries to attach a TTS audio file to every final reply
   // and shells out to ffmpeg for waveform/Opus transcoding — but the
-  // `ghcr.io/openclaw/openclaw` gateway image ships without ffmpeg (the
-  // bundled ffmpeg lives only inside the openclaw-tts-router image), so the
+  // `ghcr.io/openclaw/openclaw` gateway image ships without ffmpeg, so the
   // attachment pipeline fails silently with `[discord] final reply failed:
   // Error: ffmpeg not found in trusted system directories` and the bot's
   // text payload never lands on the channel (typing indicator + emoji
@@ -823,10 +1179,10 @@ if (ttsRouterKey) {
   const tts = config.messages.tts.providers.openai;
 
   const desiredTts = {
-    baseUrl: process.env.OPENCLAW_TTS_ROUTER_URL || 'http://openclaw-tts-router:8080/v1',
+    baseUrl: process.env.OPENCLAW_TTS_FISH_URL || 'http://openclaw-tts-fish:8080/v1',
     apiKey: ttsRouterKey,
-    model: 'openclaw-tts',
-    voiceId: process.env.OPENCLAW_TTS_DEFAULT_VOICE || 'af_heart',
+    model: 'fish-s2-pro',
+    voiceId: process.env.OPENCLAW_TTS_DEFAULT_VOICE || 'default_en',
   };
   for (const [k, v] of Object.entries(desiredTts)) {
     if (tts[k] !== v) {
@@ -838,11 +1194,14 @@ if (ttsRouterKey) {
   }
 
   tts.voiceAliases ??= {};
+  // Fish Audio S2 Pro voice palette is operator-defined (one file pair per
+  // voice in tts-fish-voices). The seed image ships default_en + default_hu;
+  // these aliases let agents reference them by language without remembering
+  // the file basenames. Add more aliases here when bundling more voice
+  // references (or rely on the agent passing the raw voice id).
   const desiredAliases = {
-    english:   'af_heart',
-    narrator:  'bf_emma',
-    male:      'am_michael',
-    female:    'af_bella',
+    english:   'default_en',
+    narrator:  'default_en',
     magyar:    'default_hu',
     hungarian: 'default_hu',
   };
@@ -854,7 +1213,7 @@ if (ttsRouterKey) {
     }
   }
 } else {
-  console.log('[patch-config] OPENCLAW_TTS_ROUTER_API_KEY not set — skipping messages.tts.* (TTS opt-out).');
+  console.log('[patch-config] OPENCLAW_TTS_FISH_API_KEY not set — skipping messages.tts.* (TTS opt-out).');
 }
 
 // (12) Mirror gateway.auth.token into gateway.remote.token.
@@ -971,7 +1330,7 @@ if (sttToken) {
   // memorySearch). Append one if the env var omits it, so either form works.
   const sttBaseUrl = (process.env.OPENCLAW_STT_BASE_URL || 'http://openclaw-stt-whisper:8080/v1')
     .replace(/\/?$/, '/');
-  const sttModel = process.env.OPENCLAW_STT_MODEL || 'Trendency/whisper-large-v3-hu';
+  const sttModel = process.env.OPENCLAW_STT_MODEL || 'deepdml/faster-whisper-large-v3-turbo-ct2';
   const sttLanguage = process.env.OPENCLAW_STT_LANGUAGE?.trim();
 
   const desiredEntry = {
@@ -1631,6 +1990,29 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
       }
     }
   }
+  // Self-heal: upstream OpenClaw 2026.4.22+ dropped the top-level `draftChunk`
+  // key from channels.discord schema, replacing it with the nested
+  // `streaming.preview.chunk` shape. Old installs with a left-over draftChunk
+  // object crash the gateway with "Config invalid - channels.discord:
+  // Unrecognized key: 'draftChunk'". If the operator hasn't explicitly set
+  // any of the three sub-knobs (minCharsRaw / maxCharsRaw / breakRaw all
+  // empty), assume they didn't intend the legacy key and scrub it.
+  // Verified live 2026-06-06 (Reverend Green review deploy): without this,
+  // the patcher writes a stale `draftChunk.breakPreference` field and the
+  // gateway refuses to start. The new location is set automatically by
+  // upstream's default streaming.preview.chunk; operators who want a non-
+  // default value will need a follow-up patcher step (todos.md #5).
+  if (
+    !minCharsRaw && !maxCharsRaw && !breakRaw &&
+    config.channels?.discord?.draftChunk !== undefined
+  ) {
+    delete config.channels.discord.draftChunk;
+    changed = true;
+    console.log(
+      `[patch-config] scrubbed channels.discord.draftChunk (upstream 2026.4.22+ ` +
+      `renamed to streaming.preview.chunk — see todos.md #5 for patcher upgrade).`,
+    );
+  }
 
   // streaming.preview.toolProgress — opt-out for the "Working...\n- tool:
   // <name>" lines that the gateway interleaves into the streaming preview.
@@ -1711,10 +2093,15 @@ const guildCronIds = (guildCronRaw || '').split(',').map(s => s.trim()).filter(B
 if (guildCronIds.length > 0 && config.channels?.discord?.enabled === true) {
   config.channels.discord.guilds ??= {};
   for (const gid of guildCronIds) {
-    if (!/^\d{17,20}$/.test(gid)) {
+    // `*` writes into the wildcard guild entry — the runtime applies wildcard
+    // policy as a fall-through when no explicit snowflake matches. Useful when
+    // the operator doesn't have the snowflake handy AND the bot only operates
+    // in one or two guilds (typical homelab case — see todos.md #4 history).
+    // Explicit snowflakes still take precedence and override the wildcard.
+    if (gid !== '*' && !/^\d{17,20}$/.test(gid)) {
       console.warn(
         `[patch-config] OPENCLAW_DISCORD_GUILD_CRON_IDS entry ${JSON.stringify(gid)} ` +
-        `is not a valid Discord snowflake (17-20 digits) — skipping.`,
+        `is not a valid Discord snowflake (17-20 digits) and not "*" — skipping.`,
       );
       continue;
     }
@@ -1725,7 +2112,7 @@ if (guildCronIds.length > 0 && config.channels?.discord?.enabled === true) {
       aa.push('cron');
       changed = true;
       console.log(
-        `[patch-config] channels.discord.guilds[${gid}].tools.alsoAllow += "cron" ` +
+        `[patch-config] channels.discord.guilds[${JSON.stringify(gid)}].tools.alsoAllow += "cron" ` +
         `(unblocks cron on this guild's text channels — without this the runtime ` +
         `policy filter strips cron from the agent's visible catalog)`,
       );
@@ -1819,14 +2206,26 @@ if (profileEntry !== '') {
 // User-managed protection: if the operator already set thinkingDefault
 // on the discord-friend agent, leave it alone. Empty env value disables
 // this step entirely.
-const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+// Enum: off | minimal | low | medium | high | xhigh | adaptive | max
+// (verified against OpenClaw 2026.6.1 /app/dist/*.js — extended from 2026.4.x
+// 6-tier to 8-tier in 2026.6.x).
+const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'adaptive', 'max']);
+// 2026-06-08 bump: default `high` (was `minimal`). Gemma 4 26B-A4B MoE on the
+// `--reasoning-parser gemma4` vLLM pipeline benefits substantially from
+// higher thinking budgets — at `minimal` the model still no-tool-calls on
+// nuanced Hungarian prompts (e.g. "keresd meg a netn ennek a dalnak a
+// szövegét" → wrongly interprets "szám" as user-ID instead of song-title
+// and refuses web_search with "túl általános"). `high` is ~2-3× slower
+// prefill but gets the tool-discipline path right. For pure latency-
+// sensitive deployments fall back via OPENCLAW_DISCORD_AGENT_THINKING=low
+// or =medium.
 const dcThinkingRaw = process.env.OPENCLAW_DISCORD_AGENT_THINKING;
-const dcThinking = (dcThinkingRaw === undefined ? 'minimal' : dcThinkingRaw.trim());
+const dcThinking = (dcThinkingRaw === undefined ? 'high' : dcThinkingRaw.trim());
 if (dcThinking !== '') {
   if (!VALID_THINKING_LEVELS.has(dcThinking)) {
     console.warn(
       `[patch-config] OPENCLAW_DISCORD_AGENT_THINKING=${JSON.stringify(dcThinking)} ` +
-      `not in {off, minimal, low, medium, high, xhigh} — skipping step 25c.`,
+      `not in {off, minimal, low, medium, high, xhigh, adaptive, max} — skipping step 25c.`,
     );
   } else {
     const bindings25c = config.bindings ?? [];
@@ -1836,15 +2235,22 @@ if (dcThinking !== '') {
         .map(b => b.agentId),
     );
     const list25c = config.agents?.list ?? [];
+    // Stale-value overwrite set: patcher-managed prior defaults that we
+    // proactively bump on upgrade. Operator-set values (low/medium/high/
+    // xhigh/adaptive/max) stay intact — only `off` and the historic
+    // patcher-default `minimal` get bumped to the new default.
+    const STALE_PATCHER_VALUES = new Set(['off', 'minimal']);
     for (const agent of list25c) {
       if (!discordAgentIds25c.has(agent?.id)) continue;
-      if (agent.thinkingDefault === undefined) {
+      const current = agent.thinkingDefault;
+      const shouldWrite = current === undefined || STALE_PATCHER_VALUES.has(current);
+      if (shouldWrite && current !== dcThinking) {
         agent.thinkingDefault = dcThinking;
         changed = true;
         console.log(
           `[patch-config] agents.list[id=${JSON.stringify(agent.id)}].thinkingDefault = ` +
-          `${JSON.stringify(dcThinking)} (Gemma 4 NVFP4 needs reasoning to surface ` +
-          `tool-calls; set OPENCLAW_DISCORD_AGENT_THINKING="" to disable)`,
+          `${JSON.stringify(dcThinking)} (was ${JSON.stringify(current)}; ` +
+          `set OPENCLAW_DISCORD_AGENT_THINKING="" to disable, or =medium/low to lighten)`,
         );
       }
     }
@@ -1942,13 +2348,13 @@ if (config.agents?.defaults?.llm && Object.prototype.hasOwnProperty.call(config.
 // burden without adding security. Operators on shared bots, multi-tenant
 // guilds, or public servers should set OPENCLAW_DISCORD_AUTHZ=allowlist
 // or =owner-only and manage allowFrom themselves.
-const VALID_AUTHZ_MODES = new Set(['open', 'allowlist', 'owner-only']);
+const VALID_AUTHZ_MODES = new Set(['open', 'allowlist', 'owner-only', 'pairing']);
 const authzRaw = process.env.OPENCLAW_DISCORD_AUTHZ;
 const authzMode = (authzRaw === undefined ? 'open' : authzRaw.trim());
 if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
   console.warn(
     `[patch-config] OPENCLAW_DISCORD_AUTHZ=${JSON.stringify(authzMode)} ` +
-    `not in {open, allowlist, owner-only} — skipping step 28.`,
+    `not in {open, allowlist, owner-only, pairing} — skipping step 28.`,
   );
 } else if (authzMode === 'allowlist') {
   // Explicit opt-out: skip silently, preserve upstream defaults.
@@ -1960,6 +2366,18 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
     desiredAllowFrom = ['*'];
     desiredDmPolicy = 'open';
     desiredGroupPolicy = 'open';
+  } else if (authzMode === 'pairing') {
+    // Pairing flow: new DM senders trigger OpenClaw's native device-pair
+    // approval workflow — the bot asks the owner whether to accept the
+    // stranger, dynamically extending access without an env-knob edit.
+    // Guild channels remain open to all members (allowFrom=["*"]).
+    // Group DM is disabled — the pairing handshake doesn't work cleanly in
+    // multi-recipient threads, and groupPolicy enum doesn't accept "pairing"
+    // (only "open"|"disabled"|"allowlist", verified 2026-06-06 against
+    // openclaw 2026.4.22 Config-invalid error).
+    desiredAllowFrom = ['*'];
+    desiredDmPolicy = 'pairing';
+    desiredGroupPolicy = 'disabled';
   } else {
     // owner-only
     const ownerIdsRaw = process.env.OPENCLAW_DISCORD_OWNER_IDS || '';
@@ -1988,24 +2406,31 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
   }
 
   if (desiredAllowFrom !== undefined) {
-    if (config.channels.discord.allowFrom === undefined) {
-      config.channels.discord.allowFrom = desiredAllowFrom;
+    // 2026-06-06: when the operator sets OPENCLAW_DISCORD_AUTHZ explicitly,
+    // FORCE-overwrite even if the live config already has values. The default
+    // "preserve operator overrides" attitude is wrong here: the env knob IS
+    // the operator's authoritative intent, and "open → owner-only" lockdown
+    // must take effect on the next recreate without a manual jq-edit.
+    const explicit = authzRaw !== undefined && authzMode !== '';
+    const cur = config.channels.discord;
+    const allowFromDiffers = JSON.stringify(cur.allowFrom) !== JSON.stringify(desiredAllowFrom);
+    if (cur.allowFrom === undefined || (explicit && allowFromDiffers)) {
+      cur.allowFrom = desiredAllowFrom;
       changed = true;
       console.log(
         `[patch-config] channels.discord.allowFrom = ${JSON.stringify(desiredAllowFrom)} ` +
-        `(slash-command authz ${authzMode} mode; defends against issue #19310 ` +
-        `dual perm check — set OPENCLAW_DISCORD_AUTHZ=allowlist to skip)`,
+        `(authz ${authzMode} mode${explicit ? ', explicit env override' : ''})`,
       );
     }
-    if (config.channels.discord.dmPolicy === undefined) {
-      config.channels.discord.dmPolicy = desiredDmPolicy;
+    if (cur.dmPolicy === undefined || (explicit && cur.dmPolicy !== desiredDmPolicy)) {
+      cur.dmPolicy = desiredDmPolicy;
       changed = true;
-      console.log(`[patch-config] channels.discord.dmPolicy = ${JSON.stringify(desiredDmPolicy)}`);
+      console.log(`[patch-config] channels.discord.dmPolicy = ${JSON.stringify(desiredDmPolicy)}${explicit ? ' (explicit env override)' : ''}`);
     }
-    if (config.channels.discord.groupPolicy === undefined) {
-      config.channels.discord.groupPolicy = desiredGroupPolicy;
+    if (cur.groupPolicy === undefined || (explicit && cur.groupPolicy !== desiredGroupPolicy)) {
+      cur.groupPolicy = desiredGroupPolicy;
       changed = true;
-      console.log(`[patch-config] channels.discord.groupPolicy = ${JSON.stringify(desiredGroupPolicy)}`);
+      console.log(`[patch-config] channels.discord.groupPolicy = ${JSON.stringify(desiredGroupPolicy)}${explicit ? ' (explicit env override)' : ''}`);
     }
   }
 }
@@ -2032,8 +2457,8 @@ if (authzMode !== '' && !VALID_AUTHZ_MODES.has(authzMode)) {
 // Voice mode picker (channels.discord.voice.mode):
 //
 //   "stt-tts"      — batch STT + TTS pipeline. Pairs cleanly with this
-//                    stack's self-hosted faster-whisper (port 8093) +
-//                    Kokoro / F5-TTS via the TTS router (port 8090).
+//                    stack's self-hosted faster-whisper turbo (port 8093) +
+//                    Fish Audio S2 Pro (openclaw-tts-fish, port 8091).
 //                    DEFAULT on this stack because the wiring already
 //                    exists for both halves (patcher step 11 + step 14).
 //                    Higher latency than realtime, but works fully offline.
@@ -2109,7 +2534,7 @@ if (config.channels?.discord?.enabled === true) {
       console.log(
         `[patch-config] channels.discord.voice.enabled = true ` +
         `(registers /vc join|leave|status; implicit STT-TTS via this stack's ` +
-        `faster-whisper + Kokoro/F5-TTS — set OPENCLAW_DISCORD_VOICE=off to skip)`,
+        `faster-whisper turbo + Fish Audio S2 Pro — set OPENCLAW_DISCORD_VOICE=off to skip)`,
       );
     }
   } else {
@@ -2241,6 +2666,7 @@ const CRON_CHEATSHEET_START = '<!-- patch-config:cron-tools:start -->';
 const CRON_CHEATSHEET_END = '<!-- patch-config:cron-tools:end -->';
 const CRON_CHEATSHEET_BODY =
   '\n## Időzített akciók — `cron` tool\n\n' +
+  '🚨 **CSAK akkor használj cron-t, ha a user EXPLICIT ismétlődő vagy jövőbeli ELKÜLDÉST / EMLÉKEZTETŐT kér** ("emlékeztess", "minden reggel küldj", "5 perc múlva szólj", "naponta"). 🚫 **NEM cron — egy jövőbeli INFÓ kérdése:** "csütörtökön milyen idő lesz", "mi lesz a meccs eredménye", "milyen hírek jönnek" — ezek a célnap ADATÁT kérik MOST (pl. az open-meteo 7-16 napot ad ELŐRE), tehát AZONNAL nézd meg (python_exec / web_search) és válaszolj. A "csütörtökön" a kért adat NAPJÁT jelöli, NEM a művelet ütemezését. Ha bizonytalan vagy: alapból nézd meg MOST, ne ütemezz cron-t.\n\n' +
   'Ha a user időzített akciót kér ("X múlva csinálj Y-t", "holnap reggel\n' +
   'küldj…", "emlékeztess 5 perc múlva"), ne hajtsd végre most — `cron add`\n' +
   'a végrehajtandó message-dzsel, és a wake-up turn-ben te magad fogod azt\n' +
@@ -2274,19 +2700,14 @@ const IMAGE_GEN_CHEATSHEET_BODY =
   `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-2k'}\`-t használja.\n` +
   '- Adult/NSFW: `workflow="flux-krea-2k-adult"` — ugyanaz a pipeline +\n' +
   '  flux-uncensored-v2 LoRA. Adult-policy a `USER.md`-ben.\n\n' +
-  'Felbontás — `width` és `height` mindig párban (különben aspect-mismatch).\n' +
-  'Default: 1280×720 (HD 16:9). A "2K" a user szóhasználatában jellemzően\n' +
-  '"2K HD 16:9", nem négyzet — csak explicit "square / négyzet" → 1:1.\n\n' +
-  'Felbontás-recipek (user kérése → `width × height`):\n' +
-  '- Default / "kép" → 1280×720 (HD 16:9)\n' +
-  '- "2K", "2K HD", "1080p", "FullHD", "panoráma", "wide" → 1920×1088\n' +
-  '- "portrait", "függőleges", "álló" → 768×1280\n' +
-  '- "portrait 2K", "álló 2K" → 1152×2048\n' +
-  '- "négyzet", "square" → 1024×1024\n' +
-  '- "négyzet 2K", "square 2K" → 2048×2048\n\n' +
-  'FLUX 1024-2048 natív res-en a legjobb; magasabb lassabb + kompozíciós\n' +
-  'hibákat hozhat. 4K workflow nincs (UltimateSDUpscale tile-seam\n' +
-  'műtermékeket termelt a FLUX latensen, 2026-05-09).\n\n' +
+  'Felbontás — `width`+`height` MINDIG párban (különben aspect-mismatch). Default\n' +
+  '1280×720 (HD 16:9); a "2K" jellemzően "2K HD 16:9", nem négyzet (csak explicit\n' +
+  '"square/négyzet" → 1:1). Recipek (kérés → `width×height`): "2K"/"2K HD"/"1080p"/\n' +
+  '"FullHD"/"panoráma"/"wide" → 1920×1088; "portrait"/"függőleges"/"álló" → 768×1280;\n' +
+  '"portrait 2K"/"álló 2K" → 1152×2048; "négyzet"/"square" → 1024×1024; "négyzet 2K"/\n' +
+  '"square 2K" → 2048×2048. FLUX 1024-2048 natív res-en a legjobb; magasabb lassabb +\n' +
+  'kompozíciós hibák. 4K workflow nincs (UltimateSDUpscale tile-seam műtermékek a\n' +
+  'FLUX latensen, 2026-05-09).\n\n' +
   'A `display_markdown` tool-output mezőt verbatim illeszd be a válasz\n' +
   'elejére (image URL + `[embed]` shortcode, blank-line elválasztva), aztán\n' +
   'jöhet a kommentárod. A két sort a webchat ill. a Discord külön kezeli.\n';
@@ -2305,103 +2726,244 @@ const LTX_VIDEO_MAX_DURATION_S_ENV = (process.env.LTX_VIDEO_MAX_DURATION_S || '1
 const LTX_VIDEO_CHEATSHEET_BODY =
   '\n## Videógenerálás — `comfyui_image__generate_video` (LTX-Video 2.3)\n\n' +
   'Ugyanaz a bridge, mint a képeknél, csak más tool. Két mód:\n\n' +
-  '- **T2V** (text-to-video): csak `prompt` kell, a többi default. A bridge\n' +
-  '  automatikusan az `ltx-2.3-t2v` workflow-t választja.\n' +
-  '- **I2V** (image-to-video): `prompt` + `init_image_url`. Ha be van\n' +
-  '  állítva, a bridge automatikusan az `ltx-2.3-i2v` workflow-ra vált.\n' +
-  '  **Discord attachment-ekre AZ ABSZOLÚT FILESYSTEM PATH-T** passzold,\n' +
-  '  ne URL-t. Az inbound attachment-ek itt vannak:\n' +
-  '  `/home/node/.openclaw/media/inbound/<uuid>.png`. Ez NEM URL hanem\n' +
-  '  in-container path — a bridge a saját volume mount-jából olvassa.\n' +
-  '  NE PRÓBÁLD https://vision.<domain>/view?type=inbound&...-szerű URL-t\n' +
-  '  konstruálni — az ComfyUI /view endpoint, csak `type=output|input|temp`-ot\n' +
-  '  ismer és 400-ozni fog. Példa helyes hívás:\n' +
-  '  `init_image_url="/home/node/.openclaw/media/inbound/abc-123.png"`.\n\n' +
-  '**FELBONTÁS — `width` ÉS `height` MINDIG EGYÜTT, párban.** Ha csak az\n' +
-  'egyiket küldöd, a másik a 768 (portrait default) marad — pl. 1920×768\n' +
-  'ultra-wide lesz a FullHD helyett. A bridge NEM derive-olja a hiányzó\n' +
-  'dimenziót. Mindkettőt EXPLICIT küldeni kell.\n\n' +
-  'Width és height step 32-nek osztható (EmptyLTXVLatentVideo követelmény):\n' +
-  '720 → 704, 1080 → 1088 automatikus rounding ComfyUI side.\n\n' +
-  '**Felbontás-recipek — pontosan ezeket a (width, height) PÁROKAT küldd:**\n\n' +
-  '| User kérése                     | width | height | Render-idő (6s)|\n' +
-  '|---------------------------------|-------|--------|----------------|\n' +
-  '| **Default / "kép" / "rövid videó" / 16:9** | **1024** | **576** | **~55 sec** |\n' +
-  '| "portrait" / "függőleges" / "álló" | 768   | 1024   | ~55 sec        |\n' +
-  '| Kis portrait (default volt)     | 512   | 768    | ~40 sec        |\n' +
-  '| "fekvő kicsi" / kis landscape   | 768   | 512    | ~40 sec        |\n' +
-  '| "négyzet" / "square" / "kocka"  | 1024  | 1024   | ~105 sec       |\n' +
-  '| "HD" / "720p" / "16:9 HD"       | 1280  | 704    | ~90 sec        |\n' +
-  '| "FullHD" / "1080p" / "16:9 FHD" | 1920  | 1088   | **~270 sec**   |\n\n' +
-  'VRAM peak gyakorlatilag KONSTANS ~115 GB minden felbontáson — a tile-as\n' +
-  'VAE decode + fix-cost stack dominál. **Wall-clock erősen skálázódik**\n' +
-  'a pixel-számmal — FullHD ~4.5 PERCBE telik 6 másodperc clip. Jelezd\n' +
-  'a usernek hogy várnia kell, ne tagadd meg.\n\n' +
-  '**Konkrét tool-hívás példák** — ezeket a JSON arg-formákat MÁSOLD\n' +
-  'pontosan, MINDKÉT (width ÉS height) értéket átadva:\n\n' +
-  '- T2V default 1024×576 16:9: `comfyui_image__generate_video(prompt="...")` —\n' +
-  '  a workflow defaults adják ezt. Nem kell width/height-ot megadnod.\n' +
-  '- T2V négyzet 1024×1024: `{prompt: "...", width: 1024, height: 1024}`.\n' +
-  '- T2V HD 1280×704: `{prompt: "...", width: 1280, height: 704}`.\n' +
-  '- T2V FullHD 1920×1088: `{prompt: "...", width: 1920, height: 1088, timeout_s: 600}`.\n' +
-  '- T2V portrait 768×1024: `{prompt: "...", width: 768, height: 1024}`.\n' +
-  '- I2V default 1024×576: `{prompt: "...", init_image_url: "<path>"}`.\n' +
-  '- I2V landscape kép HD-ban: `{prompt: "...", init_image_url: "<path>", width: 1280, height: 704}`.\n' +
-  '- I2V portrait kép: `{prompt: "...", init_image_url: "<path>", width: 768, height: 1024}`.\n\n' +
-  '**FELBONTÁS — `resolution` ARG A LEGFONTOSABB (v0.12.4 óta).** A\n' +
-  '`generate_video` tool új `resolution` arg-ot fogad, ami felülbírál mindent.\n' +
-  'Ha a user szövegében bármilyen resolution-kifejezést látsz (akár magyarul,\n' +
-  'akár angolul), a tool-hívás `resolution` arg-jába pontosan ezt a kifejezést\n' +
-  'tedd be — **akármi van a prompt szövegben**. Ez azért a legmegbízhatóbb\n' +
-  'útvonal, mert akkor is fennmarad ha te a prompt-ot átfogalmazod\n' +
-  'angolra/szebbre. Példák:\n\n' +
-  '- "csinálj fullhd videót..." → `{prompt: "...", resolution: "fullhd"}`\n' +
-  '- "1080p videó kell" → `{prompt: "...", resolution: "1080p"}`\n' +
-  '- "négyzet videó / square" → `{prompt: "...", resolution: "square"}`\n' +
-  '- "portrait / álló videó" → `{prompt: "...", resolution: "portrait"}`\n' +
-  '- "hd / 720p videó" → `{prompt: "...", resolution: "hd"}`\n' +
-  '- "4K videó" → `{prompt: "...", resolution: "4k"}`\n' +
-  '- "1024x1024 videót" → `{prompt: "...", resolution: "1024x1024"}`\n' +
-  '- "csinálj egy videót egy macskáról" (NINCS resolution szó) → ne adj át\n' +
-  '  `resolution`-t, a tool default 1024×576-ra esik.\n\n' +
+  '- **T2V** (text-to-video): csak `prompt` kell → bridge `ltx-2.3-t2v` workflow.\n' +
+  '- **I2V** (image-to-video): `prompt` + `init_image_url` → bridge `ltx-2.3-i2v`.\n' +
+  '  Discord attachment-re **AZ ABSZOLÚT FILESYSTEM PATH-t** add, ne URL-t:\n' +
+  '  `/home/node/.openclaw/media/inbound/<uuid>.png` (in-container path, a\n' +
+  '  bridge a volume mountból olvassa). NE konstruálj\n' +
+  '  `https://vision.<domain>/view?type=inbound&...`-szerű URL-t — a ComfyUI\n' +
+  '  `/view` csak `type=output|input|temp`-et ismer, 400-zik.\n\n' +
+  '**Felbontás — a `resolution` arg a legfontosabb (v0.12.4 óta).** Ha a user\n' +
+  'szövegében BÁRMILYEN resolution-kifejezést látsz (magyarul vagy angolul), tedd\n' +
+  'be PONTOSAN azt a `resolution` argba — ez túléli ha a promptot átfogalmazod\n' +
+  'angolra/szebbre. Példák: "fullhd"→`resolution:"fullhd"`, "1080p"→`"1080p"`,\n' +
+  '"négyzet/square"→`"square"`, "portrait/álló"→`"portrait"`, "hd/720p"→`"hd"`,\n' +
+  '"4K"→`"4k"`, "1024x1024"→`"1024x1024"`. NINCS resolution-szó → ne adj át\n' +
+  '`resolution`-t, a tool default 1024×576-ra esik.\n\n' +
   '**Felismerendő kulcsszavak:** fullhd, full hd, fhd, 1080p, 4k, uhd, 2160p,\n' +
   'qhd, 1440p, hd, 720p, mini-hd, square, négyzet, kocka, portrait, függőleges,\n' +
-  'álló, landscape, fekvő, szélesvásznú, VAGY explicit `AxB` formátum\n' +
-  '(pl. 1024x1024, 1920x1088).\n\n' +
-  '**Precedencia (a bridge milyen sorrendben dönt):**\n' +
-  '1. Explicit `width` ÉS `height` pair → az nyer (használd ha pontos dim kell)\n' +
-  '2. `resolution` arg → az alias-tábla alapján width+height\n' +
-  '3. Prompt szövegben AxB vagy keyword → safety-net parse\n' +
-  '4. Semmi → default 1024×576\n\n' +
-  '**Második legjobb path:** explicit `width` ÉS `height` pair. Pl.\n' +
-  '`{prompt: "...", width: 1024, height: 1024}`. Akkor használd, ha\n' +
-  'olyan custom dim-et kérsz amit nem fed le a `resolution` alias-tábla.\n\n' +
-  'Egyéb tipikus paraméterek:\n\n' +
-  '- `length`: frame-szám. Default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + '. ' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps mellett ' +
-  LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' frame ≈\n' +
-  '  ' + (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + ' másodperc. **MUST** `8k+1` (1, 9, 17, ..., 97, ..., 193, 201, ...).\n' +
-  '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. Magasabb fps → simább, de hosszabb render.\n' +
-  '- `audio_enabled`: default `true` — LTX-2.3 natívan generál hangot is.\n' +
-  '  Néma klip: `audio_enabled=false`.\n' +
-  '- `timeout_s`: legalább 600. Cold-cache első hívás 3-10 perc.\n\n' +
-  'Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + ' másodperc (`LTX_VIDEO_MAX_DURATION_S`). Hosszabbra a\n' +
-  'Discord auto-embed ~50 MB cap miatt nem érdemes menni.\n\n' +
-  '**Felhasználói prompt → tool args fordítás:**\n\n' +
-  '- "csinálj egy videót egy [X]-ről" → T2V, `prompt="[X]"` (default 1024×576).\n' +
-  '- "[X] HD-ban" / "720p / 16:9 HD" → `{prompt:"[X]", width:1280, height:704}`.\n' +
-  '- "[X] FullHD / 1080p" → `{prompt:"[X]", width:1920, height:1088, timeout_s:600}`.\n' +
-  '  Jelezd hogy ~4.5 perc a render — várjon türelemmel.\n' +
-  '- "[X] négyzet / square" → `{prompt:"[X]", width:1024, height:1024}`.\n' +
-  '- "[X] portrait / álló" → `{prompt:"[X]", width:768, height:1024}`.\n' +
-  '- "animáld ezt a képet" + attachment → I2V, `init_image_url=<filesystem path>`.\n' +
-  '- "8 másodperces klip" → már default. Hosszabb mint 8s `length=`-tel.\n' +
-  '- "néma videó" / "ne legyen hangja" → `audio_enabled=false`.\n\n' +
-  '**KÖTELEZŐ válasz-struktúra:** a `display_markdown` tool-output mező\n' +
-  'első sora a NYERS mp4 URL — VERBATIM illeszd be a válaszod elejére\n' +
-  'első sorként. Discord automatikusan inline beágyazza (lejátszható\n' +
-  'közvetlenül a chatben). Blank-line után jöhet a saját kommentárod\n' +
-  'magyarul. SOHA ne hagyd ki a URL paste-et — anélkül a user 0 videót\n' +
-  'lát, csak szöveget, ami garantáltan rossz UX.\n';
+  'álló, landscape, fekvő, szélesvásznú, VAGY explicit `AxB` (1024x1024, 1920x1088).\n\n' +
+  '**Precedencia:** (1) explicit `width`+`height` pair nyer — MINDIG párban\n' +
+  '(külön küldve a hiányzó dim 768 default marad → torz kép); (2) `resolution`\n' +
+  'arg alias-táblából; (3) prompt-szövegbeli AxB/keyword safety-net; (4) default\n' +
+  '1024×576. Step-32 kerekítés (720→704, 1080→1088). Render (6s clip): default\n' +
+  '1024×576 ~55s, square 1024×1024 ~105s, HD 1280×704 ~90s, FullHD 1920×1088\n' +
+  '~270s; VRAM ~konstans 115 GB. Hosszú render esetén jelezd a várakozást, ne tagadd meg.\n\n' +
+  'Egyéb paraméterek:\n' +
+  '- `length`: frame-szám, default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' (' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps → ' +
+  (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + 's). **MUST** `8k+1` (1, 9, 17, ..., 201).\n' +
+  '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. `audio_enabled`: default `true` (LTX-2.3 natív hang); néma: `false`.\n' +
+  '- `timeout_s`: ≥600 (cold-cache első hívás 3-10 perc). Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + 's (`LTX_VIDEO_MAX_DURATION_S`, Discord ~50 MB embed cap).\n\n' +
+  '**Prompt→args:** "videót [X]-ről" → `{prompt:"[X]"}`; "animáld ezt a képet" +\n' +
+  'attachment → I2V `init_image_url=<path>`; "8s" → hosszabb `length=`; "néma" → `audio_enabled=false`.\n\n' +
+  '**KÖTELEZŐ válasz:** a `display_markdown` első sora a NYERS mp4 URL — VERBATIM\n' +
+  'az első sor a válaszodban (Discord inline beágyazza, lejátszható a chatben).\n' +
+  'Blank-line után a kommentárod magyarul. SOHA ne hagyd ki — anélkül a user 0\n' +
+  'videót lát, csak szöveget.\n';
+
+// Step XXa/b/c — Discord agent UX cheatsheet blocks (Reverend Green's first-pass
+// review, 2026-06-06: format spam, lobster emoji at every reply, missing skills
+// list, no mid-turn tool-status visibility, sluggish multi-image turns). Each
+// block is env-gated independently so the operator can A/B individual rules
+// without redeploying the patcher. OFF by default — only appears when the
+// operator explicitly opts in via .env (OPENCLAW_DISCORD_AGENT_FORMAT_RULES,
+// _IMAGE_HISTORY_RULE, _SKILLS_CHEATSHEET).
+const DISCORD_AGENT_FORMAT_RULES_ENV = (process.env.OPENCLAW_DISCORD_AGENT_FORMAT_RULES || '').trim().toLowerCase();
+const DISCORD_AGENT_IMAGE_HISTORY_RULE_ENV = (process.env.OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE || '').trim().toLowerCase();
+const DISCORD_AGENT_SKILLS_CHEATSHEET_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET || '').trim().toLowerCase();
+const DISCORD_AGENT_TOOL_ORCHESTRATION_ENV = (process.env.OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION || '').trim().toLowerCase();
+const DISCORD_AGENT_I2I_CHEATSHEET_ENV = (process.env.OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET || '').trim().toLowerCase();
+const DISCORD_AGENT_DEEP_AGENTIC_ENV = (process.env.OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC || '').trim().toLowerCase();
+const DISCORD_AGENT_HONESTY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_HONESTY || '').trim().toLowerCase();
+const DISCORD_AGENT_SENDER_IDENTITY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY || '').trim().toLowerCase();
+const DISCORD_AGENT_SUBAGENTS_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SUBAGENTS || '').trim().toLowerCase();
+const isEnvOn = (v) => v === 'on' || v === '1' || v === 'true' || v === 'yes';
+
+const FORMAT_RULES_CHEATSHEET_START = '<!-- patch-config:discord-format-rules:start -->';
+const FORMAT_RULES_CHEATSHEET_END = '<!-- patch-config:discord-format-rules:end -->';
+const FORMAT_RULES_CHEATSHEET_BODY =
+  '## Message formatting (Discord)\n\n' +
+  '- After each sentence emit a newline. Empty lines (paragraph break) ONLY between paragraphs of 2+ sentences — never between every line.\n' +
+  '- Plain text endings — no signature emoji, no mascot, no closing flourish. Use emojis sparingly only when they add meaning to the content (max one per reply).\n' +
+  '- Long answers (>6 lines) MUST use bullet points or a numbered list.\n' +
+  '- When a tool call is in flight, the streaming preview surfaces a one-line "🔧 tool: …" status automatically — do NOT also embed manual "calling tool…" text in your reply.\n' +
+  '- Magyar beszédben magyar szavakat használj — ne keverj idegen (francia/angol) szavakat. "Már" nem "Déjà".\n' +
+  '- 🚨 **Linkek = NYERS URL, SOHA ne `[szöveg](url)` masked markdown!** Discord sima (nem-embed) üzenetben a `[szöveg](url)` NYERS szövegként jelenik meg (`[...](...)`), nem kattintható link, és nem is embedel. Add ki a TELJES nyers URL-t önálló sorban (`https://example.com/path`) — az kattintható ÉS auto-embedel (preview). Web_search-forrásnál is nyers URL, NE `[domain](url)`. (A masked-link CSAK rich-embedben működne; a bot sima üzenetként küld, ezért tilos.)\n\n' +
+  '## Kinek válaszolj — MINDENKINEK (nem csak az ownernek)\n\n' +
+  '🚨 A guild csatornákban ÉS a DM-ekben EGYARÁNT MINDENKINEK teljes értékű választ adsz, aki hozzád szól (guild-ben @mention-nel). NINCS owner-only korlátozás. Yagi, Nilatah, KOFOLA, Kerajoe, Reverend Green és bárki más PONTOSAN ugyanolyan kiszolgálást kap, mint az admin (ChesTeR / 244049593338167296). SOHA ne tagadd meg a választ azért, mert a feladó nem az owner, és SOHA ne mondd hogy "csak az owner-rel beszélgetek". Az admin nem kivételezett — csak egy a userek közül.\n';
+
+const IMAGE_HISTORY_RULE_CHEATSHEET_START = '<!-- patch-config:discord-image-history-rule:start -->';
+const IMAGE_HISTORY_RULE_CHEATSHEET_END = '<!-- patch-config:discord-image-history-rule:end -->';
+const IMAGE_HISTORY_RULE_CHEATSHEET_BODY =
+  '## Image context discipline — HARD RULE\n\n' +
+  'A vLLM backend **MAX 2 kép/prompt** cap-et kényszerít (configurable via `LLM_LIMIT_MM_IMAGES`). Ha túllép, HTTP 400-zal visszadob a chat/completions request és a teljes turn fail-el.\n\n' +
+  '**CSAK ezeket csatold a multi-modal contextbe:**\n' +
+  '1. A **current turn user-üzenetének** attached képei (a `/home/node/.openclaw/media/inbound/<uuid>.png` path-okat).\n' +
+  '2. Ha a current turn egy **reply-tag-elt** korábbi üzenetre, akkor a **parent message attached képeit** is.\n\n' +
+  '**MINDEN MÁS korábbi képre csak SZÖVEGESEN utalj** (pl. "a korábbi macskás képen" / "az előbb generált cyberpunk verzió"). NE re-vision-encode-old őket. Ha a user explicit visszamutat egy régebbi képre ("emlékszel arra a kre?"), describe-old szövegesen vagy említsd hogy a memóriában csak a leírás van meg.\n\n' +
+  'Ne pánikolj ha a vLLM 400-zal visszadob egy túl sok képes promptot: csökkentsd a contextet az utolsó 2 képre és próbáld újra.\n';
+
+const SKILLS_CHEATSHEET_START = '<!-- patch-config:discord-skills-discoverability:start -->';
+const SKILLS_CHEATSHEET_END = '<!-- patch-config:discord-skills-discoverability:end -->';
+const SKILLS_CHEATSHEET_BODY =
+  '## Available tools / skills (when asked "what skills / commands / tools do you have?")\n\n' +
+  'List BOTH skills AND tools. Tools available on this deployment:\n\n' +
+  '- `web_search` — SearxNG meta-search (privacy-first, multi-engine)\n' +
+  '- `comfyui_image__generate` — image generation (Flux / SDXL on GB10)\n' +
+  '- `comfyui_image__generate_video` — text-to-video (LTX-Video 2.3, max FullHD)\n' +
+  '- `tts` — text-to-speech (Fish Audio S2 Pro, EN + HU, Discord voice channel)\n' +
+  '- `python_sandbox__python_exec` — Python sandbox (data-science stack, persistent kernel)\n' +
+  '- `browser` — headless browser automation (`action:"open"/"snapshot"/"screenshot"/"act"`, Playwright over CDP)\n' +
+  '- `canvas` — chat-inline image / video rendering\n' +
+  '- `memory_search` + `memory_get` — long-term memory READ (hybrid BM25+vector search + file read); íráshoz nincs külön tool, `write` egy `memory/*.md` fájlba\n\n' +
+  'Skills (specialized routines): discord, healthcheck, node-connect, openai-whisper-api,\n' +
+  'skill-creator, taskflow, taskflow-inbox-triage, video-frames, weather.\n';
+
+const DEEP_AGENTIC_CHEATSHEET_START = '<!-- patch-config:discord-deep-agentic:start -->';
+const DEEP_AGENTIC_CHEATSHEET_END = '<!-- patch-config:discord-deep-agentic:end -->';
+const DEEP_AGENTIC_CHEATSHEET_BODY =
+  '## Deep agentic — task-mode vs chat-mode\n\n' +
+  '**chat-mode** (1-2 mondat) VS **task-mode** (5-15+ tool-call egy turn-ben). Task-mode ha valódi munka kell (kutatás, több-forrás, fájl-feldolgozás, multi-step). Pl.: "kutass X-nek utána + összefoglaló képpel", "töltsd le a videót + idézetek", "elemezd a képet + keress hasonlót + 3 variáció".\n\n' +
+  '**Protokoll:**\n' +
+  '1. **Plan EMBERI nyelven** (NEM tool-szintaxis): egy rövid mondat MIT csinálsz a user nyelvén (pl. "Megkeresem, kivonatolom, írok egy összefoglalót képpel."). 🚨 SOHA ne írj nyers tool-nevet/hívást a látható szövegbe — a "🔧 tool" sort a stream magától mutatja.\n' +
+  '2. **Láncolj 5-15+ tool-callt**, minden eredményt observe-olva alakítsd a következőt.\n' +
+  '3. **Ne add fel** — tool-fail esetén alternatíva (browser↔python, httpx↔curl).\n' +
+  '4. **Progress** — >30s lépésnél írhatsz egy rövid "még futok" sort a chunkok közé.\n' +
+  '5. **Memory mentés** task végén: a fontos facts-eket `write`-tal `memory/<téma>.md`-be. 🚨 NINCS `memory_write` tool — a memória ÍRÁSA = markdown fájl (`write`/`edit`); `memory_search`+`memory_get` CSAK olvas. Roadmap/TODO → `create_goal` VAGY `memory/roadmap.md`-be append.\n\n' +
+  '🚨 **EXECUTE, ne csak BEJELENTSD:** ha kimondod hogy "megcsinálom X-et" / "megyek és..." / "következő lépés Y", AKKOR CSINÁLD MOST, UGYANABBAN a turn-ben (hívd tovább a tool-okat) — NE fejezd be a turn-t puszta szándék-bejelentés után. A "Megyek a dokumentációval" után a SAME turn-ben ÍRD IS MEG (write/python_exec). Csak akkor állj meg, ha a feladat KÉSZ, vagy valódi user-DÖNTÉS kell — NE állj le "folytathatom?"-ért.\n' +
+  '**NE chain-elj feleslegesen** (egyszerű kérdés 1-2 tool). Az `idleTimeoutSeconds=1800` alatt akármilyen lánc belefér; csak a Discord 15-perc interaction-cap-et tartsd észben.\n';
+
+const HONESTY_CHEATSHEET_START = '<!-- patch-config:discord-honesty:start -->';
+const HONESTY_CHEATSHEET_END = '<!-- patch-config:discord-honesty:end -->';
+const HONESTY_CHEATSHEET_BODY =
+  '## Honesty — ne találj ki képességet, ne ígérj háttér-munkát\n\n' +
+  '**1. NE hallucinálj KITALÁLT NEVŰ subagentet** (`code_architect` stb. — nincs ilyen, `coding-agent` CLI sincs). DE a VALÓDI `sessions_spawn`+`sessions_yield` LÉTEZIK — nehéz/nagy feladatot DELEGÁLJ vele izolált sub-agentnek + `sessions_yield`-del várd meg (lásd Sub-agent blokk). A tilalom CSAK a kitalált-nevű subagentre + hamis jelentésre vonatkozik. Kis kódot magad is megírhatsz python_sandbox-szal. 🚨 A delegált eredmény a yield után UGYANEBBEN az interakcióban jön — NE ígérj jövőbeli/háttér-kézbesítést.\n\n' +
+  '**2. NE ígérj "háttérben dolgozom" / "miközben alszol" / "12 óra múlva visszajövök"-et** — nincs background runner, a turn végén leállsz. (Valós ismétlődő emlékeztetőre `cron`, lásd a cron-blokkot; egyébként mondd hogy a következő interakciónál folytatod.)\n\n' +
+  '**3. NE jelentsd hogy egy kutatás/subagent "végzett/összeállította"** ha valójában csak a saját tudásodból fogalmaztál — ha nem hívtál `web_search`/`browser`-t, mondd ki: "a saját tudásom alapján ezt tudom; valódi friss adathoz hajtsunk végre web_search+browser láncot".\n\n' +
+  '**4. NE tagadd meg a `web_search`-et** "túl általános"/"nincs konkrét szöveg" indokkal — trigger-szóra (`keress`/`a neten`/`google`/`youtube`/`dalszöveg`) KÖTELEZŐ a `web_search` a best-guess query-vel; a search dönti el van-e találat, nem te (csak 0 result után mondd hogy nincs).\n\n' +
+  '**A user reakciója a hazugságra mindig negatív** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40 / "buta mint a fasz" — 2026-06-08 00:38). Az őszinte "nem tudom megtenni de ezt tudom" válasz mindig jobb — de a "próbáltam de fail-elt" még őszintébb mint a "nem érdemes próbálni".\n';
+
+// Sub-agent delegation cheatsheet. The sessions_spawn/sessions_yield tools are real
+// (exposed by the "full" profile) and the Gemma MoE drives them correctly (gate-tested
+// 2026-06-08). This block turns the honesty block's old blanket "no subagents" stance
+// into a positive, bounded delegation recipe. Env-gated OPENCLAW_DISCORD_AGENT_SUBAGENTS.
+const SUBAGENT_DELEGATION_CHEATSHEET_START = '<!-- patch-config:discord-subagent-delegation:start -->';
+const SUBAGENT_DELEGATION_CHEATSHEET_END = '<!-- patch-config:discord-subagent-delegation:end -->';
+const SUBAGENT_DELEGATION_CHEATSHEET_BODY =
+  '## Sub-agent delegálás — `sessions_spawn` (nehéz/hosszú feladatra)\n\n' +
+  'Nehéz, többlépéses feladatot (mély kutatás+összegzés, nagy vagy több-komponensű coding-projekt, sok-forrásos gyűjtés) NE told egyetlen turn-be — **delegáld egy izolált sub-agentnek**. A `sessions_spawn`+`sessions_yield` VALÓDI tool-ok a katalógusodban (NEM kitalált név). A sub-agent TISZTA kontextusban dolgozik (a te ~36 KB-os persona-promptod NÉLKÜL → gyors prefill, fókusz), és minden coding-tool-od megvan neki (python_sandbox, browser, web_search).\n\n' +
+  '**Protokoll — PONTOSAN ez a sorrend:**\n' +
+  '1. `sessions_spawn` `{"context":"isolated","task":"<önálló, részletes feladat-leírás — a sub-agent NEM látja a chat-historyt, ezért írj le MINDEN szükséges kontextust>"}` → non-blocking, visszaad egy runId-t.\n' +
+  '2. `sessions_yield` → befejezi a turn-öd és MEGVÁRJA a gyereket. Az eredmény **auto-announce**-szal magától visszajön a következő üzenetként, UGYANEBBEN az interakcióban.\n' +
+  '3. Az eredményt foglald össze a usernek (a nyers child-output hosszú lehet).\n\n' +
+  '🚨 **SOHA ne pollozz** — `sessions_list`/`sessions_history` loopban várni a befejezésre TILOS, a `yield` elintézi. 🚨 **NE ígérj jövőbeli/háttér-kézbesítést** ("háttérben folytatom", "12 óra múlva kész") — a yield UTÁN, MOST kapod meg.\n\n' +
+  '**Nagy projekt = több komponens párhuzamosan:** spawn-olj KOMPONENSENKÉNT egy-egy sub-agentet (pl. egy játékhoz külön Combat / Movement / Scoring / Resource sub-agent), yield, majd szintetizáld az eredményeket. Limit: max 3 egyidejű gyerek, ~10 perc/gyerek (a Discord 15-perc interaction-cap miatt).\n' +
+  '**Mikor NE delegálj:** egyszerű 1-2 tool-os kérésre (időjárás, egy kép, egy keresés) felesleges — azt inline, magad csináld.\n';
+
+const SENDER_IDENTITY_CHEATSHEET_START = '<!-- patch-config:discord-sender-identity:start -->';
+const SENDER_IDENTITY_CHEATSHEET_END = '<!-- patch-config:discord-sender-identity:end -->';
+const SENDER_IDENTITY_CHEATSHEET_BODY =
+  '## Ki kivel beszél — sender-azonosítás (guild channel = TÖBB user)\n\n' +
+  'Egy guild csatornában TÖBB ember ír ugyanabba a beszélgetésbe (pl. Nilatah, Yagi, KOFOLA egyszerre). A te session-öd a CSATORNÁHOZ tartozik, NEM egy emberhez — ezért MINDEN üzenetnél külön meg kell nézned ki a feladó. A feladó MINDEN üzenet metadatájában ott van:\n' +
+  '```json\n' +
+  '{ "sender_id": "<szám>", "sender": "<név>" }\n' +
+  '```\n' +
+  '- **Az AKTUÁLIS üzenet `sender_id`-ja az aktív beszélő — mindig.** SOHA ne a beszélgetés-history-ból tippeld ki ki ír; a history-ban több user üzenete keveredik. A friss üzenet `sender` mezője a megszólítandó név.\n' +
+  '- **User-specifikus dolog (becenév, köszöntés, ígéret, preferencia, egyedi szabály) CSAK az adott `sender_id`-re érvényes.** Két különböző `sender_id` = két különböző ember, akkor is ha ugyanabban a csatornában írnak. Amit az egyik user kért magának, azt SOHA ne alkalmazd a másikra.\n' +
+  '- **Megszólításkor mindig az aktuális `sender` nevet használd**, ne egy korábbi üzenet feladójáét. Ha nem vagy biztos, inkább név nélkül válaszolj, mint rossz névvel.\n' +
+  '- 🚨 **A FELADÓ (`sender_id`/`sender`) ≠ az üzenetben EMLÍTETT személy.** Ha a feladó a szövegben mást említ — pl. ChesTeR (sender) ezt írja: *"miért nem válaszolsz kerajoenak"* — akkor a BESZÉLŐ ChesTeR, és Kerajoe egy HARMADIK ember akiről ChesTeR beszél. NE hidd hogy Kerajoe szólt hozzád csak mert a nevét említették. A beszélő MINDIG a `sender` mező, az üzenet szövegében szereplő egyéb nevek más emberek.\n' +
+  '- Per-user tényt a `memory/users/<sender_id>.md` fájlba írj (a feladó snowflake-jével kulcsolva), NE egy közös napi memóriába — különben minden userre rákeveredik.\n\n' +
+  '**Anti-példa:** Yagi-nak (`sender:"Yagi"`) NE add Nilatah köszöntését/szabályát csak mert a history/memória-recall felhozta — az AKTUÁLIS `sender_id` dönt, a más userre vonatkozó szabályt ne alkalmazd rá.\n';
+
+const I2I_CHEATSHEET_START = '<!-- patch-config:discord-i2i:start -->';
+const I2I_CHEATSHEET_END = '<!-- patch-config:discord-i2i:end -->';
+const I2I_CHEATSHEET_BODY =
+  '## Image-to-image — modify an attached image\n\n' +
+  'When the user **attaches an image** AND asks to modify, restyle, edit, or transform it (key phrases: "alakítsd át", "csinálj belőle", "változtasd", "edit this", "stylize as…", "make it look like…", "tegyél rá…"), use **`comfyui_image__generate_i2i`** — NOT the plain `comfyui_image__generate` (that one is text-to-image only and ignores attachments).\n\n' +
+  '**Call shape:**\n' +
+  '- `init_image_url`: filesystem path of the attachment. Discord uploads land at `/home/node/.openclaw/media/inbound/<uuid>.<ext>` — pass that path verbatim. The bridge has the same path bind-mounted; no HTTP fetch needed.\n' +
+  '- `prompt`: a text description of how to transform it. Be SPECIFIC about the change ("turn into anime style", "cyberpunk neon-lit reinterpretation", "remove the background, replace with beach"). Vague prompts give vague results.\n' +
+  '- `denoise`: how much to change the source. Default 0.7. Use 0.3-0.5 for "tweak slightly" (keep face, change lighting); 0.6-0.75 for "restyle but keep structure"; 0.8-0.95 for "completely transform, source as anchor only".\n\n' +
+  '**Examples:**\n' +
+  '- User attaches photo + "tedd cyberpunk stílusúvá" → `denoise=0.8, prompt="cyberpunk neon-lit reinterpretation, futuristic city lights, vivid magenta and cyan, dramatic shadows"`\n' +
+  '- User attaches photo + "kicsit változtass rajta színeken" → `denoise=0.35, prompt="<keep original subject and composition>, vibrant saturated colors, warm golden-hour lighting"`\n' +
+  '- User attaches photo + "anime stílusra" → `denoise=0.75, prompt="anime art style, cel shading, detailed lineart, vivid colors, studio ghibli inspired"`\n\n' +
+  '**Adult / NSFW variant:** pass `workflow="flux-krea-2k-i2i-adult"` to use the uncensored LoRA. Same call shape otherwise.\n\n' +
+  '**Output:** the tool returns the modified image URL in `display_markdown`. Paste it verbatim at the START of your reply (Discord auto-embeds the URL as inline image preview).\n';
+
+const TOOL_ORCHESTRATION_CHEATSHEET_START = '<!-- patch-config:discord-tool-orchestration:start -->';
+const TOOL_ORCHESTRATION_CHEATSHEET_END = '<!-- patch-config:discord-tool-orchestration:end -->';
+const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
+  '## Tool orchestration — COMBINE tools, never refuse early\n\n' +
+  '**Browser tool API (2026.6.1+):** egyetlen `browser` tool, `action` paraméterrel (a régi `browser__navigate/screenshot` neveket nyugdíjazták). Action-ök: `open`{url,label} → stabil `targetId`-t ad; `snapshot`{targetId,refs:"aria"} → DOM+elem-refs klikkhez; `screenshot`{targetId} → PNG bytes (Discord auto-csatolja fájlként); `act`{targetId,ref,…} klikk/gépelés; `tabs` / `close`{targetId}. A default profile `self-hosted` (openclaw-browser sidecar) — NE adj `target="sandbox/host"`-ot (a gateway containerben nincs browser binary).\n\n' +
+  'When a user asks something that needs MORE than one tool, CHAIN them:\n\n' +
+  '- **"csinálj screenshotot X-ről"** → `browser({action:"open", url:"X", label:"shot"})` → `browser({action:"screenshot", targetId:"shot"})` → reply with the PNG (Discord auto-attaches the byte content).\n' +
+  '- **"olvasd el ezt a cikket / mi van X oldalon"** → `browser({action:"open", url, label:"read"})` → `browser({action:"snapshot", targetId:"read"})` → summarize.\n' +
+  '- **"találj/keress nekem képet X-ről"** → `web_search` (find article URLs) → `browser({action:"open", url, label:"img"})` → `browser({action:"snapshot", targetId:"img", urls:true})` → extract image URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → save under `~/.openclaw/canvas/`.\n' +
+  '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` with `yt-dlp` (pre-installed, with ffmpeg) or `requests`, then `video-frames` on the file.\n' +
+  '- **időjárás** ("milyen idő lesz / hány fok X napon") → NE web_search; `python_exec` + **open-meteo** (kulcs nélkül, 7-16 nap): geokód `geocoding-api.open-meteo.com/v1/search?name=<város>&count=1` → lat/lon → `api.open-meteo.com/v1/forecast?latitude=&longitude=&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&hourly=temperature_2m,precipitation_probability&timezone=auto&forecast_days=7`. 🚨 SZÁMOLD KI a cél-dátumot `datetime`-mal a prompt mai dátumából (pl. kedd→csütörtök=+2nap), és PONTOSAN azt a napot indexeld a `daily.time[]`/`hourly.time[]`-ból, NE a mait. "Este"=18-22h hourly. WMO: 0-3 derült/felhős, 45-48 köd, 51-67 eső, 71-77 hó, 80-82 zápor, 95-99 zivatar. EGY hívás=teljes hét. 🚨 Időjárás SOHA nem cron/emlékeztető — előrejelzés MOST.\n' +
+  '- **transzkripció** ("írd le / mit mondanak / feliratozd") → (1) `python_exec` yt-dlp: `subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"],timeout=110)`, `timeout_s:120`. 🚨 FIX ascii `-o` név (`clip.mp3`), SOHA `%(title)s` (fullwidth karakter → "file not found"). (2) `python_sandbox__transcribe_audio` path=.../clip.mp3 (+`language` opc.). Whisper turbo best-effort (zajos/zenei beszéden pontatlan), nem hivatalos lyric.\n' +
+  '- **"küldd el / töltsd fel a hangot / fájlt attachmentként"** → a Discord **`upload-file`** action, `path="/home/node/.openclaw/canvas/<file>"` (+ `filename=` opcionális). 🚨 A fájl CSAK `/home/node/.openclaw/canvas/` alatt lehet (media-local-roots) — a `/workspace/`-ban lévő NEM tölthető fel. A `media` param publikus HTTP URL-t is vesz (pl. comfyui fetch URL → valódi attachment, nem csak embed).\n' +
+  '- **"csinálj nekem ilyen képet"** → `comfyui_image__generate(prompt=..., resolution=fullhd)` — TWO underscores in the tool name.\n' +
+  '- **"csinálj nekem videót"** → `comfyui_image__generate_video(prompt=..., resolution=fullhd)` — also TWO underscores. Common typo: `comfyui_imagegenerate_video` (no underscores) → does NOT exist, fails silently.\n' +
+  '\n' +
+  '**🚨 MANDATORY OUTPUT CONTRACT for media tools (image, video, screenshot):** when a tool-call returns a `display_markdown` field, your reply MUST start with the EXACT VERBATIM contents of that field — first line is a markdown link `[📷/🎬 fname](url)`, second line is the raw URL (Discord auto-embeds the raw URL into a preview). DO NOT rewrite the filename, DO NOT strip the token from the URL, DO NOT replace the URL with a placeholder. The user wants the file embedded; Discord can only auto-embed a raw URL it can fetch.\n' +
+  '\n' +
+  '**🚨 ON TOOL FAILURE:** if a tool-call returns an error (or you mis-typed the tool name and there is no response), DO NOT fabricate a success reply. Tell the user the exact error string verbatim. Do not say "íme a kép" / "here is the screenshot" / "I generated the video" unless you actually received a `display_markdown` from a successful tool call. 🚨 **NE hívd újra UGYANAZT a sikertelen tool-hívást** (a loop-detection ~20 azonos hívás után blokkol). Ha az `edit` "Could not find the exact text"-et ad: az ok általában rossz újsor-escapelés vagy megváltozott szöveg — előbb `read`-eld be a fájl PONTOS aktuális tartalmát, VAGY használd a `write` toolt az EGÉSZ fájl felülírásához (az `edit` whitespace-érzékeny). Max 2 próba, aztán válts megközelítést.\n' +
+  '\n' +
+  '**🚨 USER TRIGGER PHRASES — MUST call `web_search` FIRST, NEVER refuse with "túl általános" / "nincs konkrét szöveg":**\n' +
+  '- "keress" / "keresd meg" / "kerss" / "keress rá"\n' +
+  '- "a neten" / "az interneten" / "google-ozd" / "guglizd"\n' +
+  '- "youtube" / "yt" / "találd meg" (zenei kontextus → YouTube/lyrics oldal)\n' +
+  '- "szövegét" / "lyricset" / "dalszöveget"\n' +
+  '\n' +
+  'Ha a user EZEKBŐL bármelyiket használja, **azonnal hívd a `web_search` tool-t** a saját interpretációddal a query-ben — NE kérdezz vissza hogy "mire gondolsz pontosan?", NE mondd hogy "túl általános a kérdés". A `web_search` döntse el van-e találat. CSAK ha 0 result jön vissza, akkor mondd hogy nincs eredmény.\n' +
+  '\n' +
+  '**MAGYAR "szám" = (a) NUMBER** (ID/sorszám/telefonszám) **VAGY (b) DAL.** "ennek a SZÁMNAK a SZÖVEGÉT / LYRICS-ét" / "kerss rá a NETEN a SZÁMRA" → KÖTELEZŐEN (b) DAL → `web_search` lyrics-re → `browser` open a találatra → kivonatold → `write`-tal `memory/*.md`-be. SOHA NE értelmezd user-ID/sorszámként a "szám szövege" kérést.\n' +
+  '- **"ki van a képen?"** → use the `image` vision tool (built-in, Gemma 4 vision tower) on the attached file.\n' +
+  '- **kódolás** ("írj scriptet/boilerplate-et/projektet/remake-et") → NE hallucinálj kitalált-nevű subagentet (`code_architect` stb.), NE várj külső coding-CLI-re. Kis/közepes: TE írd meg + `python_sandbox__python_exec`-szel hozd létre a fájlokat (`base="/home/node/.openclaw/canvas/<projekt>"; os.makedirs(base+"/Source",exist_ok=True); open(base+"/Source/Main.cpp","w").write("""<kód>")`), majd `shutil.make_archive`+`upload-file`. Nagy, több-komponensű projekt: komponensenként `sessions_spawn`→`sessions_yield` (lásd Sub-agent blokk). Valódi fájlokat adj, ne ígéretet.\n' +
+  '  Sandbox **dev-toolchain**: `git`, `java` (JDK21), `node`/`npm`/`ng`, `go`, `make`, `cmake` — `subprocess.run([...])`-tel a python_exec-ben.\n' +
+  '  **Webes app hostolás** (`https://sandbox.petyuspolisz.com/<path>/`, a 8095 port NPM-proxyzva). SPA-nál (Angular/React/Vite) a BUILDET szolgáld, NEM a forrást:\n' +
+  '    1. `npm install` HOSSZÚ timeout-tal: `python_exec(timeout_s=300)` (Angular install 1-3 perc; default 30s félúton megöli → hiányos node_modules → build-fail).\n' +
+  '    2. Build (NE `ng serve`): `npx ng build --base-href /<path>/` (a base-href KÖTELEZŐ, különben JS/CSS 404; kimenet `dist/<app>/browser/`). 🚨 `src/index.html` = Angular TEMPLATE: CSAK `<app-root>`+meta+`<base href="/<path>/">`. SOHA ne hardcode-olj build-asset taget (`<script src=main-*.js>`/`<link styles-*.css>`) — az `ng` injektálja `type=module`-lal; beégetve → dupla/classic script → `import` syntax-error → nincs bootstrap (üres app-root, csak CSS-háttér: a "tájkép" bug). Ne fűzz hozzá másik HTML doksit. 🚨 Tailwind class-oknál (`flex`,`bg-*`,`text-*`) KONFIGURÁLD is: `tailwind.config.js` (`content:["./src/**/*.{html,ts}"]`+custom színek) + `src/styles.css`-be `@tailwind base/components/utilities`. VERIFY a buildelt `styles-*.css` >5KB (ha ~700B → Tailwind nem fut → stílustalan oldal). Custom nem-utility osztály = sima CSS a styles.css-be.\n' +
+  '    3. Szolgáld a BUILDET dedikált webrootból: symlink `dist/<app>/browser` → `canvas/_site/<path>`; ha még nem fut: `http.server 8095 --bind 0.0.0.0 --directory canvas/_site` (ha már fut, csak a symlinket állítsd). Sima statikus HTML-t (nincs build) közvetlenül linkeld.\n' +
+  '    4. 🚨 VERIFY siker-jelentés ELŐTT: `requests.get("https://sandbox.petyuspolisz.com/<path>/").status_code`==200 ÉS a body az új buildet adja (`main-` script). `ng new`/scaffold ≠ kész; csak buildelt+szolgált+200-verifikált oldal kész (különben a user "ugyanaz az oldal" hibát lát).\n\n' +
+  '- **"pushold / mentsd GitHubra a projektet"** → `python_sandbox__git_push` tool: `git_push(repo_path="/home/node/.openclaw/canvas/<projekt>", repo="<projekt-nev>", commit_message="<rovid mit-csinaltam>")`. A `repo` a GitHub-repo NEVE (pl. `"max-payne-2"`) — a bot accountja alá AUTOMATIKUSAN létrejön ha még nincs (NEM kell előre repót csinálni); minden projekthez adj egyértelmű nevet. Token/auth NEM kell (szerver-oldali), force-push nélkül. Ha még nincs git a projekten, előbb `python_exec`: `subprocess.run(["git","init"], cwd="/home/node/.openclaw/canvas/<projekt>", check=True)`. A tool visszaad egy GitHub-URL-t — azt add vissza a usernek. Ha `not configured` hibát ad → mondd őszintén hogy az operátornak be kell állítania a `GITHUB_TOKEN`-t (ne tégy úgy mintha pusholtál volna). 🚨 Ha a git_push **"fetch first" / "rejected (non-fast-forward)"** hibát ad: a repo MÁR létezik más tartalommal (history-divergencia) — NE reset-eld a history-t és NE próbáld újra ugyanúgy. Adj `force=true`-t a SAJÁT throwaway-repód FELÜLÍRÁSÁHOZ, VAGY használj ÚJ repo-nevet. Projekt közben commitolj inkrementálisan (ne `git reset` push után). 🚨 **MINDEN értelmes coding-lépés után AZONNAL `git_push`** — SOHA ne hagyj kód-munkát unpushed/local-only! A `canvas/` mappa törölhető (2026-06-09: egy cleanup törölte a local projekteket → az unpushed C++ elveszett). Ha egy projekten iterálsz: lépésenként commit+push, hogy a GitHub MINDIG a friss állapotot tükrözze (a GitHub a védőháló, nem a local).\n' +
+  '**NEVER say "I cannot download/access/copy that" without first TRYING the chain.** You have:\n' +
+  '- `browser` (full headless Chromium via CDP — can load any public URL, snapshot DOM, take screenshots, click, type)\n' +
+  '- `python_sandbox__python_exec` (urllib/requests/yt-dlp to fetch bytes, full Python data-science stack)\n' +
+  '- `canvas` (write files into `~/.openclaw/canvas/` and emit `[embed url="..." /]` shortcode for inline render in chat)\n\n' +
+  '**Workflow for "show me an image / take a screenshot" requests:**\n' +
+  '1. Say what you are about to do in ONE natural human sentence in the user\'s language (e.g. "Egy pillanat, csinálok egy képernyőképet."). Do NOT print raw tool names or call syntax (NOT "Tervem: comfyui_image__generate(...)"). The "🔧 tool" status line is shown automatically by the stream.\n' +
+  '2. Execute the tools — pass `label="<short>"` to `open`, then `targetId="<short>"` to follow-ups.\n' +
+  '3. If a tool fails, try an alternate (snapshot fallback for screenshot timeout; python fallback for browser 403) before giving up.\n' +
+  '4. Report failure with the ACTUAL ERROR STRING, not a guess.\n\n' +
+  'The user prefers a 60-second attempt that fails honestly over an instant "I cannot" that bypasses tools you actually have.\n';
+
+// Idempotent REMOVAL of a marker-delimited block. If the markers are present,
+// strip them and the body between them. No-op when the markers don't exist.
+// Used when an env-knob explicitly toggles a block OFF — without this, the
+// upsert keeps stale blocks around forever after the operator opts out.
+function removeMarkedBlock(content, startMarker, endMarker, label) {
+  const startIdx = content.indexOf(startMarker);
+  const endIdx = content.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    return { content, changed: false, label: '' };
+  }
+  // Also consume a trailing newline if present, so we don't leave a blank gap.
+  let cutEnd = endIdx + endMarker.length;
+  if (content[cutEnd] === '\n') cutEnd += 1;
+  // And one preceding newline so the surrounding text stays tight.
+  let cutStart = startIdx;
+  if (cutStart > 0 && content[cutStart - 1] === '\n') cutStart -= 1;
+  return {
+    content: content.slice(0, cutStart) + content.slice(cutEnd),
+    changed: true,
+    label: `-= ${label} (env explicitly off)`,
+  };
+}
+
+const isEnvOff = (v) => v === 'off' || v === '0' || v === 'false' || v === 'no';
 
 // Idempotent upsert of a marker-delimited block. If the markers are not
 // present, append the block. If they are, swap the body in-place when it
@@ -2487,7 +3049,216 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       console.log(`[patch-config] workspace-discord/AGENTS.md ${ltxVideoUpsert.label}`);
     }
   }
+  // Step XXa — Discord message-format rules (Reverend Green review).
+  if (isEnvOn(DISCORD_AGENT_FORMAT_RULES_ENV)) {
+    const formatRulesUpsert = upsertMarkedBlock(
+      agentsMd, FORMAT_RULES_CHEATSHEET_START, FORMAT_RULES_CHEATSHEET_END,
+      FORMAT_RULES_CHEATSHEET_BODY, 'discord-format-rules cheatsheet',
+    );
+    if (formatRulesUpsert.changed) {
+      agentsMd = formatRulesUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${formatRulesUpsert.label}`);
+    }
+  }
+  // Step XXb — Multi-modal image-history discipline (vLLM prefill drag defense).
+  if (isEnvOn(DISCORD_AGENT_IMAGE_HISTORY_RULE_ENV)) {
+    const imageHistoryUpsert = upsertMarkedBlock(
+      agentsMd, IMAGE_HISTORY_RULE_CHEATSHEET_START, IMAGE_HISTORY_RULE_CHEATSHEET_END,
+      IMAGE_HISTORY_RULE_CHEATSHEET_BODY, 'discord-image-history-rule cheatsheet',
+    );
+    if (imageHistoryUpsert.changed) {
+      agentsMd = imageHistoryUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${imageHistoryUpsert.label}`);
+    }
+  }
+  // Step XXc — Skills discoverability cheatsheet (Reverend Green: /skill lista hiányos).
+  if (isEnvOn(DISCORD_AGENT_SKILLS_CHEATSHEET_ENV)) {
+    const skillsUpsert = upsertMarkedBlock(
+      agentsMd, SKILLS_CHEATSHEET_START, SKILLS_CHEATSHEET_END,
+      SKILLS_CHEATSHEET_BODY, 'discord-skills-discoverability cheatsheet',
+    );
+    if (skillsUpsert.changed) {
+      agentsMd = skillsUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${skillsUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_SKILLS_CHEATSHEET_ENV)) {
+    const skillsRemove = removeMarkedBlock(
+      agentsMd, SKILLS_CHEATSHEET_START, SKILLS_CHEATSHEET_END,
+      'discord-skills-discoverability cheatsheet',
+    );
+    if (skillsRemove.changed) {
+      agentsMd = skillsRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${skillsRemove.label}`);
+    }
+  }
+  // Step XXd — Tool orchestration rules (Reverend Green 2nd round: bot refuses
+  // tasks it could complete by chaining web_search + browser + python + canvas).
+  if (isEnvOn(DISCORD_AGENT_TOOL_ORCHESTRATION_ENV)) {
+    const orchestrationUpsert = upsertMarkedBlock(
+      agentsMd, TOOL_ORCHESTRATION_CHEATSHEET_START, TOOL_ORCHESTRATION_CHEATSHEET_END,
+      TOOL_ORCHESTRATION_CHEATSHEET_BODY, 'discord-tool-orchestration cheatsheet',
+    );
+    if (orchestrationUpsert.changed) {
+      agentsMd = orchestrationUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${orchestrationUpsert.label}`);
+    }
+  }
+  // Step XXe — img2img cheatsheet (Flux image-to-image, 2026-06-06). Tells the
+  // agent to route attached-image-modify requests to comfyui_image__generate_i2i
+  // (NOT plain generate which is t2i-only and ignores attachments).
+  if (isEnvOn(DISCORD_AGENT_I2I_CHEATSHEET_ENV)) {
+    const i2iUpsert = upsertMarkedBlock(
+      agentsMd, I2I_CHEATSHEET_START, I2I_CHEATSHEET_END,
+      I2I_CHEATSHEET_BODY, 'discord-i2i cheatsheet',
+    );
+    if (i2iUpsert.changed) {
+      agentsMd = i2iUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${i2iUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_I2I_CHEATSHEET_ENV)) {
+    const i2iRemove = removeMarkedBlock(
+      agentsMd, I2I_CHEATSHEET_START, I2I_CHEATSHEET_END,
+      'discord-i2i cheatsheet',
+    );
+    if (i2iRemove.changed) {
+      agentsMd = i2iRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${i2iRemove.label}`);
+    }
+  }
+  // Step XXf — Deep agentic multi-step task decomposition cheatsheet (Block F,
+  // 2026-06-06). Teaches the agent to chain 5-15+ tool calls on deep tasks
+  // and post a Plan-first preamble at the start of long runs. Paired with
+  // idleTimeoutSeconds=1800 to give the chain time to complete.
+  if (isEnvOn(DISCORD_AGENT_DEEP_AGENTIC_ENV)) {
+    const deepUpsert = upsertMarkedBlock(
+      agentsMd, DEEP_AGENTIC_CHEATSHEET_START, DEEP_AGENTIC_CHEATSHEET_END,
+      DEEP_AGENTIC_CHEATSHEET_BODY, 'discord-deep-agentic cheatsheet',
+    );
+    if (deepUpsert.changed) {
+      agentsMd = deepUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${deepUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_DEEP_AGENTIC_ENV)) {
+    const deepRemove = removeMarkedBlock(
+      agentsMd, DEEP_AGENTIC_CHEATSHEET_START, DEEP_AGENTIC_CHEATSHEET_END,
+      'discord-deep-agentic cheatsheet',
+    );
+    if (deepRemove.changed) {
+      agentsMd = deepRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${deepRemove.label}`);
+    }
+  }
+  if (isEnvOn(DISCORD_AGENT_HONESTY_ENV)) {
+    const honestyUpsert = upsertMarkedBlock(
+      agentsMd, HONESTY_CHEATSHEET_START, HONESTY_CHEATSHEET_END,
+      HONESTY_CHEATSHEET_BODY, 'discord-honesty cheatsheet',
+    );
+    if (honestyUpsert.changed) {
+      agentsMd = honestyUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${honestyUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_HONESTY_ENV)) {
+    const honestyRemove = removeMarkedBlock(
+      agentsMd, HONESTY_CHEATSHEET_START, HONESTY_CHEATSHEET_END,
+      'discord-honesty cheatsheet',
+    );
+    if (honestyRemove.changed) {
+      agentsMd = honestyRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${honestyRemove.label}`);
+    }
+  }
+  // Sub-agent delegation recipe (sessions_spawn → sessions_yield → auto-announce).
+  // Pairs with the (5b) subagents-bounds config step. Gate-tested 2026-06-08: the MoE
+  // drives the protocol. Default-on via compose; explicit off removes the block.
+  if (isEnvOn(DISCORD_AGENT_SUBAGENTS_ENV)) {
+    const subagentUpsert = upsertMarkedBlock(
+      agentsMd, SUBAGENT_DELEGATION_CHEATSHEET_START, SUBAGENT_DELEGATION_CHEATSHEET_END,
+      SUBAGENT_DELEGATION_CHEATSHEET_BODY, 'discord-subagent-delegation cheatsheet',
+    );
+    if (subagentUpsert.changed) {
+      agentsMd = subagentUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${subagentUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_SUBAGENTS_ENV)) {
+    const subagentRemove = removeMarkedBlock(
+      agentsMd, SUBAGENT_DELEGATION_CHEATSHEET_START, SUBAGENT_DELEGATION_CHEATSHEET_END,
+      'discord-subagent-delegation cheatsheet',
+    );
+    if (subagentRemove.changed) {
+      agentsMd = subagentRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${subagentRemove.label}`);
+    }
+  }
+  // Sender-identity discipline (guild channels are multi-user; the agent must
+  // key per-user rules on the CURRENT sender_id, never carry one user's rule
+  // onto another). Default-on via compose; explicit off removes the block.
+  if (isEnvOn(DISCORD_AGENT_SENDER_IDENTITY_ENV)) {
+    const senderUpsert = upsertMarkedBlock(
+      agentsMd, SENDER_IDENTITY_CHEATSHEET_START, SENDER_IDENTITY_CHEATSHEET_END,
+      SENDER_IDENTITY_CHEATSHEET_BODY, 'discord-sender-identity cheatsheet',
+    );
+    if (senderUpsert.changed) {
+      agentsMd = senderUpsert.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${senderUpsert.label}`);
+    }
+  } else if (isEnvOff(DISCORD_AGENT_SENDER_IDENTITY_ENV)) {
+    const senderRemove = removeMarkedBlock(
+      agentsMd, SENDER_IDENTITY_CHEATSHEET_START, SENDER_IDENTITY_CHEATSHEET_END,
+      'discord-sender-identity cheatsheet',
+    );
+    if (senderRemove.changed) {
+      agentsMd = senderRemove.content;
+      mdChanged = true;
+      console.log(`[patch-config] workspace-discord/AGENTS.md ${senderRemove.label}`);
+    }
+  }
   if (mdChanged) {
+    // Defensive size guard — OpenClaw 2026.4.22 runtime silently truncates the
+    // injected workspace bootstrap context past 20000 chars, which corrupts
+    // critical scaffolding and causes guild-channel discord sessions to stick
+    // in queueDepth=1 pre-vLLM dispatch until idleTimeout fires (30 min by
+    // default). Confirmed root cause for the 2026-06-07 incident — five
+    // cheatsheet blocks compounded to ~26 KB and silently killed the bot on
+    // guild channels (DM dispatch path is unaffected). Warn loudly here so the
+    // operator catches it at deploy time instead of via mysterious stuck-loop
+    // sessions in production.
+    // The OpenClaw runtime caps each injected workspace bootstrap file at
+    // `agents.defaults.bootstrapMaxChars` chars (default 20000 in 2026.4.x,
+    // 20000 still in 2026.6.x out-of-box). Going past the cap silently
+    // truncates the injected context, which causes the agent to lose
+    // late-block cheatsheet rules. 2026-06-07: discovered the operator can
+    // raise this cap explicitly via the WebGUI (Settings → AI & Agents →
+    // Agent Defaults → Bootstrap Max Chars) — typically bumping to 60000
+    // gives every cheatsheet block room to breathe. Read the live config
+    // cap so the warning matches the operator's chosen ceiling instead of
+    // the upstream default.
+    const liveCap = config.agents?.defaults?.bootstrapMaxChars ?? 20000;
+    const sz = Buffer.byteLength(agentsMd, 'utf8');
+    if (sz > liveCap) {
+      console.warn(
+        `[patch-config] WARNING: workspace-discord/AGENTS.md is ${sz} bytes ` +
+        `(> agents.defaults.bootstrapMaxChars=${liveCap} cap) — OpenClaw ` +
+        `runtime will silently truncate the injected context. Either raise ` +
+        `bootstrapMaxChars in the WebGUI / openclaw.json, or disable lower-` +
+        `priority cheatsheet env knobs (OPENCLAW_DISCORD_AGENT_{DEEP_AGENTIC,` +
+        `I2I_CHEATSHEET,TOOL_ORCHESTRATION,IMAGE_HISTORY_RULE,FORMAT_RULES,` +
+        `HONESTY,SKILLS_CHEATSHEET}=off) until under cap.`,
+      );
+    }
     fs.writeFileSync(WORKSPACE_DISCORD_AGENTS_PATH, agentsMd);
   }
 } else {
