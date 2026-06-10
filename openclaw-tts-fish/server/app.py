@@ -100,6 +100,44 @@ for _field, _env, _cast in _SAMPLING_ENV_SPEC:
                 "ignoring %s=%r (not a valid %s)", _env, _raw, _cast.__name__
             )
 
+# Shim-side voice alias map. Why here and not (only) in openclaw.json's
+# voiceAliases: in practice every OpenClaw client path observed so far —
+# `openclaw infer tts convert` AND the Discord-routed tts tool — passes the
+# agent's voice string to the provider RAW, without resolving voiceAliases
+# (first live Discord test 2026-06-10: Gemma asked for OpenAI's `coral`,
+# the shim 404'd, 4 retries, no audio on the channel). The shim is the one
+# chokepoint every request crosses, so aliases live here. Defaults cover the
+# 10 OpenAI voice names (LLMs reach for these uninvited — they're in every
+# training set) plus the friendly handles the patcher advertises. Override/
+# extend via TTS_FISH_VOICE_ALIASES="name:target,name2:target2".
+_DEFAULT_VOICE_ALIASES = {
+    # OpenAI standard voices -> closest bundled timbre
+    "alloy": "default_en", "ash": "michael", "ballad": "emma",
+    "coral": "bella", "echo": "michael", "fable": "emma",
+    "onyx": "fenrir", "nova": "nicole", "sage": "nicole",
+    "shimmer": "bella",
+    # Friendly handles (same set patcher step 11 writes into openclaw.json)
+    "english": "default_en", "narrator": "default_en",
+    "female": "bella", "male": "michael", "british": "emma",
+    "deep": "fenrir", "soft": "nicole",
+    "magyar": "default_hu", "hungarian": "default_hu",
+}
+VOICE_ALIASES = dict(_DEFAULT_VOICE_ALIASES)
+for _pair in os.environ.get("TTS_FISH_VOICE_ALIASES", "").split(","):
+    if ":" in _pair:
+        _name, _target = _pair.split(":", 1)
+        if _name.strip():
+            VOICE_ALIASES[_name.strip().lower()] = _target.strip()
+
+# What to do when a requested voice resolves to nothing on disk:
+#   fallback (default) — synthesize with TTS_FISH_DEFAULT_VOICE and log a
+#                        warning. A bot surface should speak in the wrong
+#                        timbre rather than stay silent.
+#   reject             — 404 with the available-voices list (the pre-2026-06-10
+#                        behavior; right for API-first deployments where a
+#                        wrong voice means a caller bug worth surfacing).
+UNKNOWN_VOICE_POLICY = os.environ.get("TTS_FISH_UNKNOWN_VOICE_POLICY", "fallback").lower()
+
 UPSTREAM_HOST = os.environ.get("FISH_ENGINE_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("FISH_ENGINE_PORT", "9090"))
 UPSTREAM_BASE = f"http://{UPSTREAM_HOST}:{UPSTREAM_PORT}"
@@ -195,19 +233,37 @@ def seed_voices() -> None:
 
 def resolve_voice(voice: str) -> tuple[str, str]:
     """Resolve <voice> to (audio_path, transcript). Returns absolute paths
-    valid inside the container (the child process runs in the same fs)."""
+    valid inside the container (the child process runs in the same fs).
+
+    Resolution order: exact file match -> alias map -> unknown-voice policy.
+    A real file always wins over an alias of the same name, so an operator
+    can shadow any alias by `docker cp`-ing a clip with that exact name."""
     wav = VOICES_DIR / f"{voice}.wav"
     txt = VOICES_DIR / f"{voice}.txt"
     if not wav.exists():
-        available = sorted(p.stem for p in VOICES_DIR.glob("*.wav"))
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"voice '{voice}' not found at {wav}. "
-                f"Available voices: {available}. "
-                f"Add one with `docker cp <name>.wav openclaw-tts-fish:/app/voices/`."
-            ),
-        )
+        alias_target = VOICE_ALIASES.get(voice.strip().lower())
+        if alias_target and (VOICES_DIR / f"{alias_target}.wav").exists():
+            log.info("voice alias: %r -> %r", voice, alias_target)
+            wav = VOICES_DIR / f"{alias_target}.wav"
+            txt = VOICES_DIR / f"{alias_target}.txt"
+        elif UNKNOWN_VOICE_POLICY == "fallback" and (VOICES_DIR / f"{DEFAULT_VOICE}.wav").exists():
+            log.warning(
+                "unknown voice %r — falling back to default %r "
+                "(set TTS_FISH_UNKNOWN_VOICE_POLICY=reject to 404 instead)",
+                voice, DEFAULT_VOICE,
+            )
+            wav = VOICES_DIR / f"{DEFAULT_VOICE}.wav"
+            txt = VOICES_DIR / f"{DEFAULT_VOICE}.txt"
+        else:
+            available = sorted(p.stem for p in VOICES_DIR.glob("*.wav"))
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"voice '{voice}' not found at {wav}. "
+                    f"Available voices: {available}. "
+                    f"Add one with `docker cp <name>.wav openclaw-tts-fish:/app/voices/`."
+                ),
+            )
     if not txt.exists():
         raise HTTPException(
             status_code=400,

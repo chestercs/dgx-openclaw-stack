@@ -145,6 +145,8 @@ subsequent builds hit the layer cache.
 |-----|---------|---------|
 | `TTS_API_TOKEN` | *(required)* | Bearer auth — startup fails fast if unset |
 | `TTS_FISH_DEFAULT_VOICE` | `default_en` | Voice used when client omits `voice` |
+| `TTS_FISH_VOICE_ALIASES` | *(built-ins)* | Shim-side alias map, `name:target,…`. Built-ins cover the 10 OpenAI voice names + friendly handles — OpenClaw client paths pass the agent's voice string raw, and LLMs ask for OpenAI names uninvited |
+| `TTS_FISH_UNKNOWN_VOICE_POLICY` | `fallback` | Unknown voice → speak with the default voice + warning; `reject` restores the strict 404 |
 | `TTS_FISH_DEVICE` | `cuda` | Set to `cpu` for slow CPU fallback |
 | `TTS_FISH_LEADING_SILENCE_MS` | `300` | Onset pad to defend against Whisper STT clip ("Szia" → "Zia"). Set 0 to skip |
 | `TTS_FISH_TEMPERATURE` | *(unset)* | Deploy-wide sampling baseline (request wins) |

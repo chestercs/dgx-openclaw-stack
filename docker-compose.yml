@@ -611,6 +611,16 @@ services:
       # Voice picked when the gateway doesn't override. Must match a file
       # pair in /app/voices/ (default_en + default_hu ship by default).
       TTS_FISH_DEFAULT_VOICE: ${TTS_FISH_DEFAULT_VOICE:-default_en}
+      # Shim-side voice aliases + unknown-voice policy. OpenClaw client paths
+      # pass the agent's voice string RAW (voiceAliases in openclaw.json are
+      # not resolved on the infer/Discord-tool paths — first live test:
+      # Gemma asked for OpenAI's "coral", got a 404, channel got no audio).
+      # The shim ships a built-in map for the 10 OpenAI voice names + the
+      # friendly handles; extend with "name:target,name2:target2". Unknown
+      # voices fall back to the default voice (log-warned) — set
+      # TTS_FISH_UNKNOWN_VOICE_POLICY=reject for the strict 404 behavior.
+      TTS_FISH_VOICE_ALIASES: ${TTS_FISH_VOICE_ALIASES:-}
+      TTS_FISH_UNKNOWN_VOICE_POLICY: ${TTS_FISH_UNKNOWN_VOICE_POLICY:-fallback}
       # cuda by default; set cpu for a slow CPU fallback (useful on a remote
       # vLLM deployment where this host has no GPU).
       TTS_FISH_DEVICE: ${TTS_FISH_DEVICE:-cuda}
