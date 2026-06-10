@@ -139,11 +139,19 @@ RUN pip install --no-deps --force-reinstall --index-url https://download.pytorch
         "torch==2.9.1+cu130" "torchvision==0.24.1" "torchaudio==2.9.1" \
     && pip install --no-deps --force-reinstall \
         "sgl-kernel @ https://github.com/sgl-project/whl/releases/download/v0.3.21/sgl_kernel-0.3.21+cu130-cp310-abi3-manylinux2014_aarch64.whl" \
-    && python -c "import torch, importlib.metadata as md; \
+    && python -c "import torch, pathlib, importlib.metadata as md; \
 assert torch.version.cuda and torch.version.cuda.startswith('13'), f'torch {torch.__version__} is not a cu13 build'; \
-v = md.version('sgl-kernel'); \
-assert 'cu130' in v, f'sgl-kernel {v} is not the cu130 build'; \
-print('build-verify OK: torch', torch.__version__, '| sgl-kernel', v)"
+d = md.distribution('sgl-kernel'); du = d.read_text('direct_url.json'); \
+assert du and 'cu130' in du, f'sgl-kernel not installed from the cu130 wheel (direct_url={du})'; \
+p = pathlib.Path(str(d.locate_file('sgl_kernel'))); \
+print('build-verify OK: torch', torch.__version__, '| sgl-kernel', md.version('sgl-kernel'), \
+'variants', sorted(x.name for x in p.iterdir() if x.name.startswith('sm') or 'common_ops' in x.name))"
+# ^ provenance check via direct_url.json, NOT the version string: the +cu130
+#   wheel's internal metadata says plain `0.3.21` (the local tag exists only in
+#   the filename), so `md.version()` can't tell the cu12 PyPI wheel from the
+#   cu130 release wheel. pip records the install-source URL for direct-URL
+#   installs — that string is the only reliable discriminator. (PyPI installs
+#   have no direct_url.json at all, so a swapped wheel fails the assert too.)
 
 # 3) Bake s2-pro weights at build time (~11 GB: 2 safetensors shards + codec.pth
 #    + tokenizer). Public HF repo, no token required at time of writing, but
