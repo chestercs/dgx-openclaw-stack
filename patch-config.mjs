@@ -1436,9 +1436,12 @@ if (ttsRouterKey) {
     // audio on GB10) — the first long-read Discord test produced four
     // consecutive "tts failed: request timed out" on ~2000-char chunks.
     // Dist oracle (tts-runtime resolveSpeechProviderTimeoutMs): an operator-
-    // set messages.tts.timeoutMs overrides the 30 s default. 180 s covers
-    // ~3000-char chunks; cloud-fast TTS deployments can lower it via env.
-    timeoutMs: parseInt(process.env.OPENCLAW_TTS_TIMEOUT_MS || '180000', 10),
+    // set messages.tts.timeoutMs overrides the 30 s default. The config
+    // schema HARD-CAPS this at 120000 — a first attempt with 180000
+    // crash-looped the gateway with `messages.tts.timeoutMs: Invalid input
+    // (maximum: 120000)`, hence the clamp. 120 s still covers the bot's
+    // typical ~2000-char read-aloud chunks (~60-110 s each).
+    timeoutMs: Math.min(parseInt(process.env.OPENCLAW_TTS_TIMEOUT_MS || '120000', 10) || 120000, 120000),
   };
   for (const [k, v] of Object.entries(desiredTopLevel)) {
     if (config.messages.tts[k] !== v) {
