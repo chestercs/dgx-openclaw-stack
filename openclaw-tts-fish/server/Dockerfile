@@ -72,8 +72,14 @@ WORKDIR /app
 #    silently replaced cu130 torch with `2.9.1+cpu`, so the engine later
 #    reported "CPU/No GPU detected". Pre-pinning + the index flags in step 2
 #    + the re-pin in step 2c keep the GPU build in place end to end.
+#
+#    Wheel-naming gotcha: on this index only torch carries the `+cu130` local
+#    tag for aarch64; torchvision/torchaudio publish UNSUFFIXED versions
+#    (0.24.1 / 2.9.1) that are nonetheless cu130 builds. Pin them plain here
+#    (sourced exclusively from the cu130 index, so they can't be the PyPI CPU
+#    wheels) — `+cu130` pins on those two fail with "no matching distribution".
 RUN pip install --index-url https://download.pytorch.org/whl/cu130 \
-        "torch==2.9.1+cu130" "torchvision==0.24.1+cu130" "torchaudio==2.9.1+cu130" \
+        "torch==2.9.1+cu130" "torchvision==0.24.1" "torchaudio==2.9.1" \
     && python -c "import torch; \
 print('torch', torch.__version__, 'cuda_built', torch.version.cuda, \
 'arch', torch.cuda.get_arch_list() if hasattr(torch,'cuda') else 'no-runtime-gpu')"
@@ -121,13 +127,16 @@ RUN git clone --depth 1 https://github.com/sgl-project/sglang-omni.git ${SGLANG_
 # 2c) Re-pin the GPU stack + fail the BUILD (not the 2am runtime) if the omni
 #     resolution still swapped anything for a CPU/cu12 build. `--no-deps`
 #     keeps this surgical — only the four packages move, nothing else
-#     re-resolves. The exact `+cu130` local-version pins make pip a no-op when
-#     step 2b behaved, and a corrective reinstall when it didn't.
+#     re-resolves. `--force-reinstall` is mandatory, not paranoia: the aarch64
+#     torchvision/torchaudio wheels on the cu130 index are version-identical
+#     to the PyPI CPU builds (no `+cu130` local tag — see step 1), so a plain
+#     `pip install` would report "already satisfied" and happily keep a CPU
+#     wheel the omni resolve smuggled in.
 #     sgl_kernel itself can't be imported here (its loader dlopens libcuda,
 #     which only exists at runtime via the NVIDIA container toolkit), so the
 #     check asserts on package metadata instead of an import.
-RUN pip install --no-deps --index-url https://download.pytorch.org/whl/cu130 \
-        "torch==2.9.1+cu130" "torchvision==0.24.1+cu130" "torchaudio==2.9.1+cu130" \
+RUN pip install --no-deps --force-reinstall --index-url https://download.pytorch.org/whl/cu130 \
+        "torch==2.9.1+cu130" "torchvision==0.24.1" "torchaudio==2.9.1" \
     && pip install --no-deps --force-reinstall \
         "sgl-kernel @ https://github.com/sgl-project/whl/releases/download/v0.3.21/sgl_kernel-0.3.21+cu130-cp310-abi3-manylinux2014_aarch64.whl" \
     && python -c "import torch, importlib.metadata as md; \
