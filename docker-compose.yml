@@ -1548,7 +1548,9 @@ services:
       # Native reply threading: the first message of a run replies to the
       # triggering message (multi-user guild channels: which answer belongs
       # to which question). Enum: off | first | all | batched.
-      OPENCLAW_DISCORD_REPLY_TO_MODE: ${OPENCLAW_DISCORD_REPLY_TO_MODE:-first}
+      # `${VAR-default}` (no colon) so an explicitly EMPTY .env value passes
+      # through and skips the step (the `:-` form would swallow it).
+      OPENCLAW_DISCORD_REPLY_TO_MODE: ${OPENCLAW_DISCORD_REPLY_TO_MODE-first}
       # Short-lived follow-up memory — the bot notices promised work /
       # check-in opportunities and resurfaces them via heartbeat.
       OPENCLAW_COMMITMENTS: ${OPENCLAW_COMMITMENTS:-on}
@@ -1556,8 +1558,8 @@ services:
       # Mid-run steering: follow-up messages inject at the next model boundary
       # instead of waiting for the run to end. Enum: steer | followup |
       # collect | interrupt. (Upstream docs are self-contradictory on the
-      # default, so we pin it.)
-      OPENCLAW_MESSAGES_QUEUE_MODE: ${OPENCLAW_MESSAGES_QUEUE_MODE:-steer}
+      # default, so we pin it.) `${VAR-default}` (no colon): empty = skip.
+      OPENCLAW_MESSAGES_QUEUE_MODE: ${OPENCLAW_MESSAGES_QUEUE_MODE-steer}
       # Dreaming deep-phase promotion cap (tokens per snippet promoted into
       # MEMORY.md — which is injected into EVERY session). Default 80 halves
       # the upstream 160 to slow MEMORY.md growth.
