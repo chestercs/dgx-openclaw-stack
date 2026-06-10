@@ -257,9 +257,22 @@ file before changing the area.
 - Loader is `sgl-project/sglang-omni`, NOT the legacy `fishaudio/fish-speech`
   `tools/api_server.py` (which targets the 1.x LLaMA2 arch and does NOT load
   the s2-pro Qwen3-omni checkpoint).
-- Upstream `frankleeeee/sglang-omni:dev` is amd64-only — we build a custom
-  image on `nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04` so sgl-kernel can
-  compile from source on aarch64 + sm_120.
+- Upstream `lmsysorg/sglang-omni:dev` is amd64-only — we build a custom
+  image on `nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04`. Two aarch64 wheel
+  traps shaped the Dockerfile: PyPI's `sgl_kernel` aarch64 wheel is a CUDA 12
+  build (dlopen fails on `libnvrtc.so.12` in a cu13 image — use the `+cu130`
+  wheel from the sgl-project/whl GitHub releases) and PyPI torch aarch64
+  wheels are CPU-only (the omni resolve silently swaps cu130 torch out —
+  pinned + re-pinned + build-asserted via `direct_url.json`).
+- sm_121 runs the cu130 sgl-kernel via PTX forward-compat JIT (wheel ships
+  sm90/sm100 SASS only). First boot pays a multi-minute JIT toll; the cache
+  persists on `tts-fish-cuda-jit-cache` (CUDA_CACHE_MAXSIZE raised to 4 GB).
+- SGLang-Omni's upstream pipeline defaults assume a dedicated GPU
+  (`mem_fraction_static: 0.85` sized from memory-visible-at-startup, startup
+  torch-compile + CUDA-graph capture). On the shared unified pool that
+  wedged the host (swap thrash, frozen userspace). The image defaults to the
+  GB10-calibrated `configs/s2pro_tts_gb10.yaml` via `FISH_S2PRO_CONFIG` —
+  re-diff it against upstream when bumping the sglang-omni clone.
 - Voice cloning is via mounted file paths, **NOT inline base64** (SGLang-Omni
   upstream schema accepts `references[].audio_path`). The shim resolves the
   OpenAI-style `voice` field to `/app/voices/<voice>.{wav,txt}` at request
