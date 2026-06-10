@@ -57,9 +57,10 @@ if not TOKEN:
 if not BRIDGE_TOKEN:
     raise SystemExit("IMAGE_GEN_API_TOKEN is not set — the bridge would reject every call.")
 
-# Slash commands need no privileged intents; the non-privileged default set is
-# enough to connect and register the command.
-intents = discord.Intents.none()
+# Slash commands need no PRIVILEGED intents, but discord.py warns (and can hit
+# guild-state issues) with Intents.none(); the non-privileged default set
+# includes the guilds intent and is the standard for a slash-only bot.
+intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
