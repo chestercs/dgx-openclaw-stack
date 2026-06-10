@@ -138,6 +138,29 @@ for _pair in os.environ.get("TTS_FISH_VOICE_ALIASES", "").split(","):
 #                        wrong voice means a caller bug worth surfacing).
 UNKNOWN_VOICE_POLICY = os.environ.get("TTS_FISH_UNKNOWN_VOICE_POLICY", "fallback").lower()
 
+# Hungarian autoroute — port of the proven legacy-router behavior. S2 Pro
+# clones the reference clip's ACCENT along with the timbre, so Hungarian text
+# spoken with an English reference comes out English-accented (second live
+# Discord test, 2026-06-10: Gemma picked `coral` for a Hungarian tale →
+# bella's EN clip → "angol akcentus"). When the input text looks Hungarian
+# and the requested voice doesn't resolve to a Hungarian reference, reroute
+# to TTS_FISH_HU_AUTOROUTE_VOICE. Set it empty to disable; extend
+# TTS_FISH_HU_VOICES (comma list) when adding more Hungarian clones so they
+# count as already-Hungarian and are never rerouted away from.
+HU_AUTOROUTE_VOICE = os.environ.get("TTS_FISH_HU_AUTOROUTE_VOICE", "default_hu").strip()
+HU_VOICES = {
+    v.strip() for v in os.environ.get("TTS_FISH_HU_VOICES", "default_hu").split(",") if v.strip()
+}
+
+
+def looks_hungarian(text: str) -> bool:
+    """Diacritics heuristic from the legacy router: ő/ű are uniquely
+    Hungarian among the languages this deployment sees; otherwise three or
+    more generic accented letters is a strong-enough signal."""
+    if any(c in text for c in "őűŐŰ"):
+        return True
+    return sum(text.count(c) for c in "áéíóöüúÁÉÍÓÖÜÚ") >= 3
+
 UPSTREAM_HOST = os.environ.get("FISH_ENGINE_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("FISH_ENGINE_PORT", "9090"))
 UPSTREAM_BASE = f"http://{UPSTREAM_HOST}:{UPSTREAM_PORT}"
@@ -474,6 +497,15 @@ async def synthesize(request: Request) -> Response:
     voice = (body.get("voice") or DEFAULT_VOICE).strip()
     if not body.get("input"):
         raise HTTPException(status_code=400, detail="`input` is required")
+
+    # Hungarian autoroute: an EN reference clip reads HU text with an English
+    # accent (cloning carries the accent), so Hungarian-looking input always
+    # wins over the requested voice unless that voice is itself Hungarian.
+    if HU_AUTOROUTE_VOICE and looks_hungarian(body["input"]):
+        resolved_id = VOICE_ALIASES.get(voice.lower(), voice)
+        if resolved_id not in HU_VOICES:
+            log.info("HU autoroute: text looks Hungarian, voice %r -> %r", voice, HU_AUTOROUTE_VOICE)
+            voice = HU_AUTOROUTE_VOICE
 
     audio_path, ref_text = resolve_voice(voice)
 

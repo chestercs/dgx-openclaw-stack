@@ -621,6 +621,13 @@ services:
       # TTS_FISH_UNKNOWN_VOICE_POLICY=reject for the strict 404 behavior.
       TTS_FISH_VOICE_ALIASES: ${TTS_FISH_VOICE_ALIASES:-}
       TTS_FISH_UNKNOWN_VOICE_POLICY: ${TTS_FISH_UNKNOWN_VOICE_POLICY:-fallback}
+      # Hungarian autoroute (legacy-router behavior, reborn): S2 Pro clones
+      # the reference clip's ACCENT, so HU text + EN reference = English
+      # accent. Hungarian-looking input (ő/ű, or 3+ accented letters) reroutes
+      # to this voice unless the requested voice is already in
+      # TTS_FISH_HU_VOICES. Empty = off.
+      TTS_FISH_HU_AUTOROUTE_VOICE: ${TTS_FISH_HU_AUTOROUTE_VOICE:-default_hu}
+      TTS_FISH_HU_VOICES: ${TTS_FISH_HU_VOICES:-default_hu}
       # cuda by default; set cpu for a slow CPU fallback (useful on a remote
       # vLLM deployment where this host has no GPU).
       TTS_FISH_DEVICE: ${TTS_FISH_DEVICE:-cuda}

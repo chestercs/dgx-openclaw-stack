@@ -147,6 +147,8 @@ subsequent builds hit the layer cache.
 | `TTS_FISH_DEFAULT_VOICE` | `default_en` | Voice used when client omits `voice` |
 | `TTS_FISH_VOICE_ALIASES` | *(built-ins)* | Shim-side alias map, `name:target,…`. Built-ins cover the 10 OpenAI voice names + friendly handles — OpenClaw client paths pass the agent's voice string raw, and LLMs ask for OpenAI names uninvited |
 | `TTS_FISH_UNKNOWN_VOICE_POLICY` | `fallback` | Unknown voice → speak with the default voice + warning; `reject` restores the strict 404 |
+| `TTS_FISH_HU_AUTOROUTE_VOICE` | `default_hu` | Hungarian-looking input (ő/ű or 3+ accented letters) reroutes to this voice — cloning carries the reference clip's accent, so HU text + EN reference = English accent. Empty = off |
+| `TTS_FISH_HU_VOICES` | `default_hu` | Comma list of voices that count as Hungarian (never rerouted away from) |
 | `TTS_FISH_DEVICE` | `cuda` | Set to `cpu` for slow CPU fallback |
 | `TTS_FISH_LEADING_SILENCE_MS` | `300` | Onset pad to defend against Whisper STT clip ("Szia" → "Zia"). Set 0 to skip |
 | `TTS_FISH_TEMPERATURE` | *(unset)* | Deploy-wide sampling baseline (request wins) |
