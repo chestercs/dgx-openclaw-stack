@@ -1761,6 +1761,12 @@ services:
       # falling back to a link (default ~9 MiB, safe under the 10 MiB
       # non-boosted cap; raise on a boosted/Nitro server).
       IMG_DISCORD_MAX_BYTES: ${IMG_DISCORD_MAX_BYTES:-9437184}
+      # Default workflow for the `!img` script when no --nsfw/--sfw flag is
+      # given (the short `!img <prompt>` form). Empty → flux-krea-2k (SFW). Set
+      # to flux-krea-2k-adult on a private adult deploy so a bare prompt is
+      # NSFW. DISTINCT from IMAGE_GEN_DEFAULT_WORKFLOW (that one is the bridge's
+      # default for the LLM-driven comfyui_image__generate tool).
+      IMG_DEFAULT_WORKFLOW: ${IMG_DEFAULT_WORKFLOW:-}
       # MCP request-timeout ceiling. Upstream @modelcontextprotocol/sdk
       # hardcodes a 60 s default for client.request() and OpenClaw's
       # runtime calls callTool without a per-server override, so any

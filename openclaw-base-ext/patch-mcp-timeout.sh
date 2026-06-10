@@ -67,6 +67,15 @@ patch_pass || echo "[mcp-patch] phase 1: nothing to patch (already done or prist
     echo "[mcp-patch] phase 2: 30s sweep complete (loop hit max iterations)" >&2
 ) &
 
+# Put the config-volume bin dir on PATH so the `!`-bash Discord directive
+# can resolve short command names like `img` (-> ~/.openclaw/bin/img, the
+# patcher-written image-gen script). The directive runs `bash --noprofile
+# --norc -c "<cmd>"` (verified in the gateway's shell-utils), so it sources
+# NO profile/rc — the only PATH it sees is the one the gateway process
+# inherits from here. Appended (not prepended) so a script in the volume
+# can never shadow a system binary. Harmless in config-init / cli too.
+export PATH="${PATH}:/home/node/.openclaw/bin"
+
 # Hand off to whatever the container was supposed to run. The compose
 # service either sets `command:` (gateway, config-init) or `entrypoint:`
 # (cli) — in either case the original args land here as "$@".

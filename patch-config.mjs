@@ -4489,9 +4489,11 @@ const IMG_BASH_SCRIPT = `#!/usr/bin/env node
 // PATCHER-OWNED (patch-config.mjs -> IMG_BASH_SCRIPT). Do NOT hand-edit;
 // openclaw-config-init overwrites this on every run.
 //
-// Usage: !~/.openclaw/bin/img [--nsfw|--adult]
+// Usage (short form needs ~/.openclaw/bin on PATH — set in the base-ext
+// entrypoint): !img [--nsfw|--adult|--sfw|--safe]
 //          [--hd|--2k|--portrait|--pano|--square] [--w=N] [--h=N] [--seed=N]
-//          "<prompt>"
+//          <prompt>     (long form: !~/.openclaw/bin/img ...)
+// Default workflow = IMG_DEFAULT_WORKFLOW env (flux-krea-2k unless overridden).
 
 const fs = require('fs');
 
@@ -4510,11 +4512,15 @@ const PRESETS = {
 };
 
 function parseArgs(argv) {
-  let workflow = 'flux-krea-2k';
+  // Default workflow is operator-configurable (IMG_DEFAULT_WORKFLOW). On a
+  // private adult deploy set it to flux-krea-2k-adult so a bare prompt is
+  // NSFW; --sfw/--safe forces flux-krea-2k, --nsfw/--adult forces adult.
+  let workflow = process.env.IMG_DEFAULT_WORKFLOW || 'flux-krea-2k';
   let width = null, height = null, seed = null;
   const parts = [];
   for (const a of argv) {
     if (a === '--nsfw' || a === '--adult') workflow = 'flux-krea-2k-adult';
+    else if (a === '--sfw' || a === '--safe') workflow = 'flux-krea-2k';
     else if (a === '--hd') { width = PRESETS.hd[0]; height = PRESETS.hd[1]; }
     else if (a === '--2k') { width = PRESETS['2k'][0]; height = PRESETS['2k'][1]; }
     else if (a === '--portrait') { width = PRESETS.portrait[0]; height = PRESETS.portrait[1]; }
@@ -4585,7 +4591,7 @@ async function uploadFile(url, headers, bytes, filename, caption) {
 (async function () {
   const a = parseArgs(process.argv.slice(2));
   if (!a.prompt) {
-    console.log('usage: !~/.openclaw/bin/img [--nsfw] [--hd|--2k|--portrait|--pano|--square] [--w=N --h=N] [--seed=N] "<prompt>"');
+    console.log('usage: !img [--nsfw|--sfw] [--hd|--2k|--portrait|--pano|--square] [--w=N --h=N] [--seed=N] <prompt>');
     return;
   }
   if (!BRIDGE_TOKEN) {

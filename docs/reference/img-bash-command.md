@@ -28,18 +28,30 @@ prompt; nothing in the path applies safety filtering or rewrites.
 
 ## Usage
 
-Top-level command (must start with `!`, must be from the operator):
+The message **must start with `!`** (no `@mention` before it) and come from a
+trusted user. A short and a long form both work:
 
 ```
-!~/.openclaw/bin/img [flags] "<prompt>"
+!img [flags] <prompt>              # short — needs ~/.openclaw/bin on PATH
+!~/.openclaw/bin/img [flags] <prompt>   # long — always works
 ```
+
+⚠ **Do NOT @mention the bot.** `@Bot !img …` starts with the mention, so
+OpenClaw routes it to the LLM (the `!`-directive only fires on a leading `!`),
+and Gemma's RLHF then refuses adult prompts. Start the message with `!`.
+
+The default workflow is set by `IMG_DEFAULT_WORKFLOW` (empty → `flux-krea-2k`
+SFW). On an adult deploy set it to `flux-krea-2k-adult` so a bare `!img
+<prompt>` is NSFW; `--sfw` forces SFW per call.
 
 ### Flags
 
 | Flag         | Effect                                              |
 |--------------|-----------------------------------------------------|
-| `--nsfw`     | Use the `flux-krea-2k-adult` workflow (flux-uncensored-v2 LoRA at strength 1.5). Without this flag, runs `flux-krea-2k` (SFW). |
+| `--nsfw`     | Force the `flux-krea-2k-adult` workflow (flux-uncensored-v2 LoRA at strength 1.5). |
 | `--adult`    | Alias for `--nsfw`.                                 |
+| `--sfw`      | Force the `flux-krea-2k` SFW workflow (overrides an adult `IMG_DEFAULT_WORKFLOW`). |
+| `--safe`     | Alias for `--sfw`.                                  |
 | `--2k`       | 2048×2048 square. Default is 1280×720.              |
 | `--hd`       | 1280×720 (the default — included for explicitness). |
 | `--portrait` | 768×1280.                                           |
