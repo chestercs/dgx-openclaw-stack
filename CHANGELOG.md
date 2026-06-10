@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Discord agentic coding: exec + chat-side approvals, thread-per-task, long-run knobs
+
+Outcome of a full upstream-docs sweep (docs.openclaw.ai, ~150 pages) compared
+against this stack's config. See the new
+[`docs/reference/agentic-coding.md`](docs/reference/agentic-coding.md).
+
+- **`tools.exec` coding surface (patcher step 31)** — `security: allowlist` +
+  `ask: on-miss` + `strictInlineEval` + `safeBins` + workspace-only
+  `applyPatch`. The documented middle ground between default-deny (bot can't
+  code) and the `security: full` footgun (still deliberately not wired).
+- **`exec-approvals.json` seeding (step 32)** — developer-toolchain allowlist
+  (git/npm/node/python3/…) for the Discord-routed agent. Strictly additive;
+  learned `/approve … allow-always` grants are never touched.
+- **Discord approval routing (step 33)** — unlisted exec commands arrive as
+  interactive prompts in approver DMs (`/approve <id>
+  allow-once|allow-always|deny`). Approver chain refuses wildcards.
+- **Sub-agent bounds, schema-gated (step 5b rework)** — the documented
+  `agents.defaults.subagents` block (`maxSpawnDepth: 2`, `runTimeoutSeconds:
+  0` = the "work on it for a day" enabler) behind `OPENCLAW_SUBAGENTS_BOUNDS`
+  (default **off**; the hand-written variant crash-looped 2026.6.1). The
+  proven self-heal removal stays on the off path.
+- **Long-run hardening (steps 8h/8i/8j)** — loop-detection threshold relax
+  knobs for legitimate build loops; `agents.defaults.timeoutSeconds`
+  (600→1800, matches the vLLM request ceiling) and `contextTokens` /
+  `contextPruning cache-ttl` — all schema-gated (empty env = skip, `off` =
+  self-heal).
+- **Thread-per-task** — `discord-thread-tasks` AGENTS.md policy block
+  (coding/long tasks spawn into their own Discord thread via `sessions_spawn
+  {thread:true}`), threadBindings lifetime knobs (step 29c), schema-gated
+  `session.threadBindings` spawn knobs (step 29d, default off).
+- **Workboard plugin (step 34, tri-state)** — `/workboard
+  create|list|show|dispatch` card tracking for multi-hour work.
+
+### Added — Discord bot polish (steps 35–39)
+
+- `messages.statusReactions` (step 35) — queued→thinking→tool→done/error emoji
+  lifecycle (distinct pipeline from the #46024 ackReaction defense, which
+  stays off).
+- `channels.discord.autoPresence` (step 36) — presence mirrors runtime health.
+- `channels.discord.replyToMode = "first"` (step 37) — native reply threading
+  in multi-user guild channels.
+- `commitments` (step 38) — the bot notices promised work and resurfaces it
+  via heartbeat (`maxPerDay: 3`).
+- `messages.queue.mode = "steer"` (step 39) — mid-run follow-ups inject at the
+  next model boundary (upstream docs are self-contradictory on the default).
+
+### Changed — workspace docs diet: recipes move to on-demand skills
+
+`OPENCLAW_AGENT_DOCS_MODE=skills` (new default): tool-usage recipes (cron,
+browser, image-gen, video, i2i, media-downloads, weather, coding-projects,
+workboard) become workspace skill files (`<workspace>/skills/<name>/SKILL.md`,
+one-line prompt cost, body loads on demand) instead of always-injected
+AGENTS.md blocks. AGENTS.md keeps policy/persona + a skill router; the
+8.2 KB tool-orchestration block is split into a ~1.5 KB always-on policy core
+plus three skills. Discord workspace bootstrap drops from ~37.5 KB to ~17 KB
+(≈ half the cold-prefill cost per fresh session on the GB10).
+`OPENCLAW_AGENT_DOCS_MODE=agentsmd` restores the legacy layout (rollback
+path). Honesty rule 2 reworded: background work may be promised only when a
+spawn actually happened (runId exists). Dreaming deep-phase promotions capped
+at 80 tokens/snippet (`OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS`) to slow
+MEMORY.md growth.
+
+### Fixed
+
+- **Five patcher env vars were never declared in the `openclaw-config-init`
+  environment block** (`LLM_CONTEXT_WINDOW`, `LLM_REQUEST_TIMEOUT_SECONDS`,
+  `LLM_REASONING_ENABLED`, `LLM_MODEL_ID`, `LLM_DENSE_BASE_URL`) — operator
+  overrides of them silently never reached the patcher.
+- `vllm-dense` provider request timeout now defaults to 1800s like the MoE
+  provider (was 300s — tripped on cold multi-step runs).
+- `.env.example` `OPENCLAW_BOOTSTRAP_MAX_CHARS` example updated to the real
+  compose default (60000; the stale 20000 predated the 2026-06-07 bump).
+- `BROWSER_DEFAULT_TIMEOUT_MS` `.env.example` note updated to the 60000
+  compose default (2026-06-08 live fix).
+
 ## [0.12.0] - 2026-06-08
 
 ### Added — Discord media pipeline: download → transcribe → attach

@@ -1173,6 +1173,16 @@ services:
       # layout. See docs/CUSTOMIZATION.md → "Run with a remote vLLM backend".
       LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm-llm:8004/v1/}
       EMBED_BASE_URL: ${EMBED_BASE_URL:-http://vllm-embedding:8005/v1/}
+      # These five were read by the patcher all along but never declared here —
+      # compose does NOT pass .env into containers implicitly, so operator
+      # overrides of them silently never reached the patcher (fixed 2026-06-10).
+      # Defaults mirror the patcher-side fallbacks so the declared wiring is a
+      # no-op for existing deploys.
+      LLM_DENSE_BASE_URL: ${LLM_DENSE_BASE_URL:-http://vllm-llm-dense:8005/v1/}
+      LLM_MODEL_ID: ${LLM_MODEL_ID:-}
+      LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-131072}
+      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-1800}
+      LLM_REASONING_ENABLED: ${LLM_REASONING_ENABLED:-true}
       # TTS provider wiring. When set, patcher step 11 writes
       # messages.tts.providers.openai.{baseUrl,apiKey,model,voiceId,voiceAliases}
       # pointing at the openclaw-tts-fish service (Fish Audio S2 Pro via
@@ -1450,6 +1460,108 @@ services:
       # opts out — patcher removes the entry from openclaw.json.
       IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
       IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
+      # ── Workspace docs mode (skills vs AGENTS.md blocks) ───────────────────
+      # `skills` (default): tool recipes live in on-demand workspace skill
+      # files; AGENTS.md keeps only policy/persona + a short router. Cuts the
+      # discord bootstrap prefill by ~20 KB. `agentsmd`: legacy all-in-
+      # AGENTS.md layout (rollback path if the model ignores skill bodies).
+      OPENCLAW_AGENT_DOCS_MODE: ${OPENCLAW_AGENT_DOCS_MODE:-skills}
+      # Thread-per-task policy block: coding / long tasks spawn into their own
+      # Discord thread (sessions_spawn thread:true) instead of camping on the
+      # main channel. Default on; off removes the block.
+      OPENCLAW_DISCORD_AGENT_THREAD_TASKS: ${OPENCLAW_DISCORD_AGENT_THREAD_TASKS:-on}
+      # ── Agentic coding: exec + approvals (patcher steps 31-33) ─────────────
+      # tools.exec posture: security=allowlist + ask=on-miss + strictInlineEval
+      # + safeBins + workspace-scoped applyPatch. Known-safe commands (seeded
+      # by step 32) run without friction; anything unlisted becomes an approval
+      # prompt on Discord (step 33). `off` removes tools.exec (upstream
+      # default-deny applies again).
+      OPENCLAW_TOOLS_EXEC: ${OPENCLAW_TOOLS_EXEC:-on}
+      OPENCLAW_EXEC_TIMEOUT_SEC: ${OPENCLAW_EXEC_TIMEOUT_SEC:-1800}
+      OPENCLAW_EXEC_SAFE_BINS: ${OPENCLAW_EXEC_SAFE_BINS:-}
+      # Seed ~/.openclaw/exec-approvals.json with a developer-toolchain
+      # allowlist (git/npm/node/python3/...) for the Discord-routed agent.
+      # Strictly additive — learned allow-always entries are NEVER touched.
+      OPENCLAW_EXEC_APPROVALS_SEED: ${OPENCLAW_EXEC_APPROVALS_SEED:-on}
+      # Exec approval prompts on Discord (buttons + /approve <id> ...), routed
+      # to the approvers' DMs. Approver chain: OPENCLAW_EXEC_APPROVERS →
+      # OPENCLAW_DISCORD_OWNER_IDS → concrete OPENCLAW_DISCORD_COMMAND_OWNERS.
+      # Never "*" — without a concrete snowflake the step skips with a warning.
+      OPENCLAW_DISCORD_EXEC_APPROVALS: ${OPENCLAW_DISCORD_EXEC_APPROVALS:-on}
+      OPENCLAW_EXEC_APPROVERS: ${OPENCLAW_EXEC_APPROVERS:-}
+      # ── Sub-agent bounds (patcher step 5b) — KNOWN-CRASHER GATE ───────────
+      # `agents.defaults.subagents` crash-looped the 2026.6.1 gateway when
+      # hand-written (2026-06-08). Upstream docs now document the path; flip to
+      # `on` ONLY after validating the schema on your live gateway (WebGUI
+      # oracle → see docs/reference/agentic-coding.md). Anything but `on`
+      # keeps the proven self-heal removal.
+      OPENCLAW_SUBAGENTS_BOUNDS: ${OPENCLAW_SUBAGENTS_BOUNDS:-off}
+      OPENCLAW_SUBAGENTS_MAX_SPAWN_DEPTH: ${OPENCLAW_SUBAGENTS_MAX_SPAWN_DEPTH:-}
+      OPENCLAW_SUBAGENTS_MAX_CHILDREN: ${OPENCLAW_SUBAGENTS_MAX_CHILDREN:-}
+      OPENCLAW_SUBAGENTS_MAX_CONCURRENT: ${OPENCLAW_SUBAGENTS_MAX_CONCURRENT:-}
+      OPENCLAW_SUBAGENTS_RUN_TIMEOUT_SECONDS: ${OPENCLAW_SUBAGENTS_RUN_TIMEOUT_SECONDS:-}
+      OPENCLAW_SUBAGENTS_ANNOUNCE_TIMEOUT_MS: ${OPENCLAW_SUBAGENTS_ANNOUNCE_TIMEOUT_MS:-}
+      OPENCLAW_SUBAGENTS_ARCHIVE_AFTER_MINUTES: ${OPENCLAW_SUBAGENTS_ARCHIVE_AFTER_MINUTES:-}
+      OPENCLAW_SUBAGENTS_DELEGATION_MODE: ${OPENCLAW_SUBAGENTS_DELEGATION_MODE:-}
+      # ── Long-run hardening (patcher steps 8h/8i/8j) ────────────────────────
+      # Loop-detection threshold relax for long builds (repeated `npm run
+      # build` is legitimate, not a loop). Empty = upstream defaults.
+      OPENCLAW_TOOLS_LOOP_DETECTION_HISTORY_SIZE: ${OPENCLAW_TOOLS_LOOP_DETECTION_HISTORY_SIZE:-}
+      OPENCLAW_TOOLS_LOOP_DETECTION_WARNING_THRESHOLD: ${OPENCLAW_TOOLS_LOOP_DETECTION_WARNING_THRESHOLD:-}
+      OPENCLAW_TOOLS_LOOP_DETECTION_CRITICAL_THRESHOLD: ${OPENCLAW_TOOLS_LOOP_DETECTION_CRITICAL_THRESHOLD:-}
+      # agents.defaults.timeoutSeconds / contextTokens / contextPruning —
+      # agents.defaults family (two crash-loop precedents): empty = skip,
+      # value = write, off = self-heal removal. Validate via the WebGUI
+      # oracle before first enable. Suggested: TIMEOUT=1800 (match
+      # LLM_REQUEST_TIMEOUT_SECONDS), CONTEXT_TOKENS=$LLM_CONTEXT_WINDOW,
+      # PRUNING_MODE=cache-ttl for multi-hour tool-heavy coding runs.
+      OPENCLAW_AGENT_TIMEOUT_SECONDS: ${OPENCLAW_AGENT_TIMEOUT_SECONDS:-}
+      OPENCLAW_AGENT_CONTEXT_TOKENS: ${OPENCLAW_AGENT_CONTEXT_TOKENS:-}
+      OPENCLAW_AGENT_CONTEXT_PRUNING_MODE: ${OPENCLAW_AGENT_CONTEXT_PRUNING_MODE:-}
+      OPENCLAW_AGENT_CONTEXT_PRUNING_TTL: ${OPENCLAW_AGENT_CONTEXT_PRUNING_TTL:-}
+      # ── Thread-bound task sessions (patcher steps 29c/29d) ────────────────
+      # Lifetime tuning for Discord thread bindings (empty = upstream
+      # defaults: idle 24h, max-age disabled). Suggested for thread-per-task
+      # coding: IDLE_HOURS=48, MAX_AGE_HOURS=336.
+      OPENCLAW_DISCORD_THREAD_IDLE_HOURS: ${OPENCLAW_DISCORD_THREAD_IDLE_HOURS:-}
+      OPENCLAW_DISCORD_THREAD_MAX_AGE_HOURS: ${OPENCLAW_DISCORD_THREAD_MAX_AGE_HOURS:-}
+      # session.threadBindings spawn knobs — unverified schema on 2026.6.1,
+      # gated off; `on` writes spawnSessions=true + defaultSpawnContext.
+      OPENCLAW_SESSION_THREAD_SPAWN: ${OPENCLAW_SESSION_THREAD_SPAWN:-}
+      OPENCLAW_SESSION_THREAD_SPAWN_CONTEXT: ${OPENCLAW_SESSION_THREAD_SPAWN_CONTEXT:-isolated}
+      # ── Workboard plugin (patcher step 34) — tri-state ─────────────────────
+      # `on` enables /workboard create|list|show|dispatch (card-based long-task
+      # tracking); explicit `off` scrubs; empty = no-op. Flip to `on` after the
+      # schema-gate run (docs/reference/agentic-coding.md).
+      OPENCLAW_WORKBOARD: ${OPENCLAW_WORKBOARD:-}
+      # ── Bot polish (patcher steps 35-39) ───────────────────────────────────
+      # Emoji status lifecycle on the inbound message (queued→thinking→tool→
+      # done/error). Different pipeline from ackReactionScope (#46024 — that
+      # stays off); kill switch here if reaction-cycling ever reappears.
+      OPENCLAW_STATUS_REACTIONS: ${OPENCLAW_STATUS_REACTIONS:-on}
+      OPENCLAW_STATUS_REACTIONS_EMOJIS: ${OPENCLAW_STATUS_REACTIONS_EMOJIS:-}
+      # Presence mirrors runtime health (healthy/degraded/exhausted texts).
+      OPENCLAW_DISCORD_AUTO_PRESENCE: ${OPENCLAW_DISCORD_AUTO_PRESENCE:-on}
+      OPENCLAW_DISCORD_AUTO_PRESENCE_HEALTHY_TEXT: ${OPENCLAW_DISCORD_AUTO_PRESENCE_HEALTHY_TEXT:-}
+      OPENCLAW_DISCORD_AUTO_PRESENCE_DEGRADED_TEXT: ${OPENCLAW_DISCORD_AUTO_PRESENCE_DEGRADED_TEXT:-}
+      OPENCLAW_DISCORD_AUTO_PRESENCE_EXHAUSTED_TEXT: ${OPENCLAW_DISCORD_AUTO_PRESENCE_EXHAUSTED_TEXT:-}
+      # Native reply threading: the first message of a run replies to the
+      # triggering message (multi-user guild channels: which answer belongs
+      # to which question). Enum: off | first | all | batched.
+      OPENCLAW_DISCORD_REPLY_TO_MODE: ${OPENCLAW_DISCORD_REPLY_TO_MODE:-first}
+      # Short-lived follow-up memory — the bot notices promised work /
+      # check-in opportunities and resurfaces them via heartbeat.
+      OPENCLAW_COMMITMENTS: ${OPENCLAW_COMMITMENTS:-on}
+      OPENCLAW_COMMITMENTS_MAX_PER_DAY: ${OPENCLAW_COMMITMENTS_MAX_PER_DAY:-3}
+      # Mid-run steering: follow-up messages inject at the next model boundary
+      # instead of waiting for the run to end. Enum: steer | followup |
+      # collect | interrupt. (Upstream docs are self-contradictory on the
+      # default, so we pin it.)
+      OPENCLAW_MESSAGES_QUEUE_MODE: ${OPENCLAW_MESSAGES_QUEUE_MODE:-steer}
+      # Dreaming deep-phase promotion cap (tokens per snippet promoted into
+      # MEMORY.md — which is injected into EVERY session). Default 80 halves
+      # the upstream 160 to slow MEMORY.md growth.
+      OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS: ${OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

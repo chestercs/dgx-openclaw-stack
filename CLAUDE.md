@@ -312,16 +312,40 @@ file before changing the area.
 (operator config / patcher overrides) and [`docs/reference/discord-text-agent.md`](docs/reference/discord-text-agent.md)
 (agent design) / [`docs/reference/discord-voice-agent.md`](docs/reference/discord-voice-agent.md) (voice)
 
-- The patcher writes 11 Discord-related fields (steps 20-30). All env-gated. The
+- The patcher writes Discord-related fields across steps 20-39. All env-gated. The
   "At a glance" table in `discord-config.md` lists every override, the default value,
   and the env knob that disables it / restores vanilla upstream behaviour.
 - Override categories: bug workarounds (20, 21), UX improvements for slow LLMs (24),
   capability widening for the Discord-routed agent (22, 25), doc-side cheatsheets
-  (26, 27), homelab policy choices (28, 29, 30).
+  (26, 27), homelab policy choices (28, 29, 30), agentic coding (31-34), bot polish
+  (35-39).
 - Two layers that are easy to conflate: `channels.discord.guilds["*"].requireMention`
   is the **gate** (config); `/activation mention|always` is the **LLM behaviour hint**
   inside the gate. See `discord-config.md` → "Discord mention gate vs `/activation`
   slash" before debugging *"slash doesn't behave like I thought"*.
+
+**Agentic coding (exec / approvals / long tasks / skills)** → [`docs/reference/agentic-coding.md`](docs/reference/agentic-coding.md)
+
+- Exec is a 3-layer surface: `tools.exec` policy (step 31, deterministic write —
+  a drifted `security: "full"` cannot survive a recreate), the
+  `exec-approvals.json` allowlist file (step 32 — strictly additive, learned
+  `/approve … allow-always` grants must NEVER be clobbered), and Discord
+  approval routing (step 33 — refuses wildcard approvers).
+- The `agents.defaults.*` family has crash-looped the gateway twice
+  (`agents.defaults.llm`, hand-written `agents.defaults.subagents`). Every new
+  key in that family ships schema-gated: empty env = skip, `on`/value = write,
+  `off` = self-heal removal. Validate via the WebGUI oracle (set in GUI → Save
+  → read persisted JSON via SSH) BEFORE enabling on a live host — see the
+  schema-gate runbook in `agentic-coding.md`.
+- `OPENCLAW_AGENT_DOCS_MODE=skills` (default) puts tool recipes in workspace
+  skill files; AGENTS.md keeps policy/persona only. Skill files are 100%
+  patcher-owned (operator edits overwritten); AGENTS.md marker blocks remain
+  the shared-ownership surface. `agentsmd` is the frozen-legacy rollback
+  layout — don't add new content to the legacy block constants.
+- "Work on it for a day" = `subagents.runTimeoutSeconds: 0` (step 5b, gated) +
+  thread-per-task (`sessions_spawn {thread:true}`) + queue.mode=steer for
+  mid-run redirects. The honesty rule: background work may only be promised
+  when a spawn actually happened (runId exists).
 
 ## Verification recipes
 
@@ -358,6 +382,18 @@ docker exec ${PROJ}openclaw-cli sh -c \
    echo "Gemma 4 26B-A4B MoE NVFP4 runs at ~52 tok/s on GB10." > ~/.openclaw/workspace/memory/test.md'
 docker exec ${PROJ}openclaw-cli openclaw memory index --force
 docker exec ${PROJ}openclaw-cli openclaw memory search "How fast is Gemma on GB10?"
+
+# 4. Agentic-coding / skills smoke (after the 2026-06-10 upgrade)
+# Skills materialized + AGENTS.md slimmed (skills mode):
+docker exec ${PROJ}openclaw-gateway sh -lc \
+  'ls /home/node/.openclaw/workspace-discord/skills/ && wc -c /home/node/.openclaw/workspace-discord/AGENTS.md'
+# exec-approvals contract: a learned allow-always entry must survive a patcher re-run
+docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/exec-approvals.json | jq '.agents'
+docker compose run --rm openclaw-config-init
+docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/exec-approvals.json | jq '.agents'
+# Schema-gated keys (subagents bounds, 8i/8j, 29d, workboard): follow the
+# schema-gate runbook in docs/reference/agentic-coding.md — one knob per
+# recreate, healthz watch, rollback = knob off + force-recreate.
 ```
 
 ## When in doubt

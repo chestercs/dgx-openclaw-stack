@@ -26,9 +26,10 @@ research rationale behind the chosen LLM / TTS stack, this is where to look.
 
 | File | Topic |
 |---|---|
-| [`discord-config.md`](./discord-config.md) | Patcher overrides at a glance (11 steps, env knobs, vanilla restore recipe), slash-command authz (#19310), slash command matrix, mention gate vs `/activation` slash |
+| [`discord-config.md`](./discord-config.md) | Patcher overrides at a glance (steps 20–39, env knobs, vanilla restore recipe), slash-command authz (#19310), slash command matrix, mention gate vs `/activation` slash |
 | [`discord-text-agent.md`](./discord-text-agent.md) | Text-channel agent design: mention pill, `tools.profile` gating, `message` tool, ackReactionScope cycle bug + agent-driven workaround, progressive streaming UX, TTS opt-in, verify checklist |
 | [`discord-voice-agent.md`](./discord-voice-agent.md) | Voice-channel agent: schema, workspace isolation, threat model, DAVE E2E notes |
+| [`agentic-coding.md`](./agentic-coding.md) | Agentic coding from Discord: exec + chat-side approvals (3-layer surface, exec-approvals.json contract), thread-per-task, workboard, long-run knobs ("work on it for a day"), skills layout / docs diet, schema-gate runbook |
 
 ## Tool services
 

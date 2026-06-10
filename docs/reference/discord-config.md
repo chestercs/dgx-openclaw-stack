@@ -35,17 +35,32 @@ replicates upstream defaults without disabling the step.
 | 24 (sub) | `draftChunk.minChars` / `_MAX_CHARS` / `_BREAK_PREFERENCE`. | `OPENCLAW_DISCORD_DRAFTCHUNK_*` | unset (OpenClaw docs default: 200 / 800 / `paragraph`) | Each knob is independently optional. |
 | 24 (sub) | `streaming.preview.toolProgress`. | `OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS` | unset (upstream default `true`) | Set to `false` to suppress mid-stream tool-name lines (workaround for Discord italic-mangling of `__` names). |
 | 25 | Discord-routed agent `tools.profile = "full"`. Without this the agent inherits the global `coding` default, which excludes `browser`, `tts`, `canvas`. | `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE` | `full` | Set to `coding` / `messaging` / `minimal` for a narrower bot. Empty string disables the step (operator picks). |
-| 25c | Discord-routed agent reasoning preset. | `OPENCLAW_DISCORD_AGENT_THINKING` | `minimal` | Set to `off` to disable reasoning on Discord replies entirely. `low` / `medium` / `high` / `xhigh` for more. Empty string disables the step. |
+| 25c | Discord-routed agent reasoning preset. | `OPENCLAW_DISCORD_AGENT_THINKING` | `high` (bumped 2026-06-08 — at `minimal` Gemma 4 skips tool calls on nuanced prompts) | Set to `medium` / `low` for snappier replies, `off` to disable reasoning. Empty string disables the step. |
 | 26 | `<!-- patch-config:cron-tools:* -->` and `<!-- patch-config:browser-tools:* -->` cheatsheet blocks in `workspace-discord/AGENTS.md`. Doc-side fix because Gemma 4 doesn't surface tools from the catalog alone. | (no env knob) | always on when file exists | Delete the marked block by hand if you don't want it. The patcher won't rewrite it once removed inside the markers. |
 | 27 | `<!-- patch-config:image-gen-tools:* -->` workflow-picker block in `workspace-discord/AGENTS.md`. Tells the agent which workflow to pass for SFW / adult / fast / etc. | `IMAGE_GEN_DEFAULT_WORKFLOW` (presence) | written iff env is set | Unset `IMAGE_GEN_DEFAULT_WORKFLOW` to skip. |
 | 28 | `channels.discord.{allowFrom, dmPolicy, groupPolicy}` — opens guild access for the bot (homelab default). Without this, slash commands work in DM but fail in guild ([#19310](https://github.com/openclaw/openclaw/issues/19310)). | `OPENCLAW_DISCORD_AUTHZ` | `open` | `allowlist` to skip the step entirely and keep upstream's locked-down default. `owner-only` to lock to `OPENCLAW_DISCORD_OWNER_IDS` snowflakes. |
 | 29 | `channels.discord.voice.enabled` + `channels.discord.threadBindings.enabled`. Without this, `/vc`, `/focus`, `/agents`, `/session` slash commands don't even register in Discord's autocomplete. | `OPENCLAW_DISCORD_VOICE` / `OPENCLAW_DISCORD_THREAD_BINDINGS` | `stt-tts` / `on` | Set either to `off` to disable that feature gate. |
 | 30 | `channels.discord.guilds["*"].requireMention = false` — opens the message gate for every guild the bot joins. Without this, the bot only replies to explicit mentions. | `OPENCLAW_DISCORD_REQUIRE_MENTION` | `off` | Set to `on` to restore upstream mention-required default. See "Discord mention gate vs `/activation` slash" below. |
+| 29c | `channels.discord.threadBindings.{idleHours, maxAgeHours}` — binding lifetimes for thread-per-task coding sessions. | `OPENCLAW_DISCORD_THREAD_IDLE_HOURS` / `_MAX_AGE_HOURS` | unset (upstream: 24h idle, max-age disabled) | Each independently optional. Suggested for thread-per-task: 48 / 336. |
+| 29d | `session.threadBindings.{spawnSessions, defaultSpawnContext}` — lets `sessions_spawn {thread:true}` mint thread-bound sessions. **Schema-gated** (unverified on 2026.6.1). | `OPENCLAW_SESSION_THREAD_SPAWN` | unset (no-op) | `on` writes, `off` self-heals (removes), empty leaves operator values alone. |
+| 31 | `tools.exec` — `security=allowlist` + `ask=on-miss` + `strictInlineEval` + `safeBins` + workspace-scoped `applyPatch`. The agentic-coding shell surface. | `OPENCLAW_TOOLS_EXEC` (+ `_TIMEOUT_SEC`, `_SAFE_BINS`) | `on` | `off` removes `tools.exec` → upstream default-deny (the bot can't shell). Detail: [`agentic-coding.md`](./agentic-coding.md). |
+| 32 | Seeds `~/.openclaw/exec-approvals.json` (defaults + dev-toolchain allowlist for the Discord agent). Strictly additive — learned `/approve … allow-always` grants are never touched. | `OPENCLAW_EXEC_APPROVALS_SEED` | `on` | `off` skips seeding (never deletes the file). |
+| 33 | `channels.discord.execApprovals = {enabled, approvers, target:"dm"}` — unlisted exec commands arrive as approval prompts in approver DMs. | `OPENCLAW_DISCORD_EXEC_APPROVALS` (+ `OPENCLAW_EXEC_APPROVERS`) | `on` | `off` removes the block. With no concrete approver snowflake anywhere, the step skips loudly. |
+| 34 | `plugins.entries.workboard.enabled = true` — `/workboard create\|list\|show\|dispatch` card tracking for long tasks. | `OPENCLAW_WORKBOARD` | unset (no-op) | Tri-state: `on` enables, explicit `off` scrubs, empty leaves config alone. |
+| 35 | `messages.statusReactions` — run-state emoji lifecycle (queued→thinking→tool→done/error) on the inbound message. Different pipeline from step 20's ackReaction (#46024 defense stays in place). | `OPENCLAW_STATUS_REACTIONS` (+ `_EMOJIS` JSON) | `on` | `off` removes the block — also the kill switch if reaction-cycling ever reappears. |
+| 36 | `channels.discord.autoPresence` — bot presence mirrors runtime health (healthy/degraded/exhausted). | `OPENCLAW_DISCORD_AUTO_PRESENCE` (+ 3 text knobs) | `on` | `off` removes the block (static presence). |
+| 37 | `channels.discord.replyToMode = "first"` — first message of a run is a native reply to the triggering message. | `OPENCLAW_DISCORD_REPLY_TO_MODE` | `first` | `off` restores flat delivery (also the upstream default). `all` / `batched` for heavier threading. Empty skips. |
+| 38 | `commitments = {enabled:true, maxPerDay:3}` — the bot notices promised work / check-in opportunities and resurfaces them via heartbeat. | `OPENCLAW_COMMITMENTS` (+ `_MAX_PER_DAY`) | `on` | `off` removes the block (upstream default: disabled). |
+| 39 | `messages.queue.mode = "steer"` — mid-run follow-ups inject at the next model boundary instead of queueing until the run ends. | `OPENCLAW_MESSAGES_QUEUE_MODE` | `steer` | Set `followup` / `collect` / `interrupt`, or empty to skip (upstream docs are self-contradictory on the default, hence the pin). |
+| docs | `OPENCLAW_AGENT_DOCS_MODE` — recipe placement: on-demand workspace **skills** (default, ~20 KB lighter bootstrap) vs legacy always-injected AGENTS.md blocks. | `OPENCLAW_AGENT_DOCS_MODE` | `skills` | `agentsmd` restores the legacy layout and removes the skill files (rollback path). |
+| docs | `<!-- patch-config:discord-thread-tasks:* -->` policy block — coding / long tasks spawn into their own Discord thread. | `OPENCLAW_DISCORD_AGENT_THREAD_TASKS` | `on` | `off` removes the block. |
 
 `patch-config.mjs`'s top docblock has the full per-step rationale; the env
 knobs in `.env.example` have a one-paragraph trade-off comment each. Anything
 this stack writes goes through user-managed protection: if you hand-set the
-field in `openclaw.json`, the patcher leaves it alone.
+field in `openclaw.json`, the patcher leaves it alone — except where the row
+above says otherwise (step 31 is deliberately deterministic so a drifted
+`security: "full"` can't survive a recreate).
 
 ## How much do we override upstream?
 
@@ -88,6 +103,14 @@ OPENCLAW_DISCORD_AUTHZ=allowlist              # skip step 28, keep upstream lock
 OPENCLAW_DISCORD_REQUIRE_MENTION=on           # skip step 30, keep mention gate
 OPENCLAW_DISCORD_VOICE=off
 OPENCLAW_DISCORD_THREAD_BINDINGS=off
+OPENCLAW_TOOLS_EXEC=off                       # remove tools.exec (upstream default-deny)
+OPENCLAW_DISCORD_EXEC_APPROVALS=off
+OPENCLAW_STATUS_REACTIONS=off
+OPENCLAW_DISCORD_AUTO_PRESENCE=off
+OPENCLAW_DISCORD_REPLY_TO_MODE=               # empty — skip step 37
+OPENCLAW_COMMITMENTS=off
+OPENCLAW_MESSAGES_QUEUE_MODE=                 # empty — skip step 39
+OPENCLAW_DISCORD_AGENT_THREAD_TASKS=off
 ```
 
 Then force-recreate:
