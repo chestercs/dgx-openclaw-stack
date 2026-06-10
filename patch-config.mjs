@@ -3737,9 +3737,9 @@ const TOOL_ORCHESTRATION_CHEATSHEET_START = '<!-- patch-config:discord-tool-orch
 const TOOL_ORCHESTRATION_CHEATSHEET_END = '<!-- patch-config:discord-tool-orchestration:end -->';
 const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '## Tool orchestration — COMBINE tools, never refuse early\n\n' +
-  '**Browser tool API (2026.6.1+):** egyetlen `browser` tool, `action` paraméterrel (a régi `browser__navigate/screenshot` neveket nyugdíjazták). Action-ök: `open`{url,label} → stabil `targetId`-t ad; `snapshot`{targetId,refs:"aria"} → DOM+elem-refs klikkhez; `screenshot`{targetId} → PNG bytes (Discord auto-csatolja fájlként); `act`{targetId,ref,…} klikk/gépelés; `tabs` / `close`{targetId}. A default profile `self-hosted` (openclaw-browser sidecar) — NE adj `target="sandbox/host"`-ot (a gateway containerben nincs browser binary).\n\n' +
+  '**Browser tool API (2026.6.1+):** egyetlen `browser` tool, `action` paraméterrel (a régi `browser__navigate/screenshot` neveket nyugdíjazták). Action-ök: `open`{url,label} → stabil `targetId`-t ad; `snapshot`{targetId,refs:"aria"} → DOM+elem-refs klikkhez; `screenshot`{targetId} → szöveges vision-leírás (a PNG a `/home/node/.openclaw/media/browser/<uuid>.png` alá mentődik, a path a resultban NEM látszik); `act`{targetId,ref,…} klikk/gépelés; `tabs` / `close`{targetId}. A default profile `self-hosted` (openclaw-browser sidecar) — NE adj `target="sandbox/host"`-ot (a gateway containerben nincs browser binary).\n\n' +
   'When a user asks something that needs MORE than one tool, CHAIN them:\n\n' +
-  '- **"csinálj screenshotot X-ről"** → `browser({action:"open", url:"X", label:"shot"})` → `browser({action:"screenshot", targetId:"shot"})` → reply with the PNG (Discord auto-attaches the byte content).\n' +
+  '- **"csinálj screenshotot X-ről"** → `browser({action:"open", url:"X", label:"shot"})` → `browser({action:"screenshot", targetId:"shot"})` → `exec({command:"ls -t /home/node/.openclaw/media/browser/*.png | head -1"})` → a válasz UTOLSÓ sora önálló `MEDIA:<path>` sor (abból lesz a Discord-attachment; a screenshot-result magától SEMMIT nem csatol).\n' +
   '- **"olvasd el ezt a cikket / mi van X oldalon"** → `browser({action:"open", url, label:"read"})` → `browser({action:"snapshot", targetId:"read"})` → summarize.\n' +
   '- **"találj/keress nekem képet X-ről"** → `web_search` (find article URLs) → `browser({action:"open", url, label:"img"})` → `browser({action:"snapshot", targetId:"img", urls:true})` → extract image URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → save under `~/.openclaw/canvas/`.\n' +
   '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` with `yt-dlp` (pre-installed, with ffmpeg) or `requests`, then `video-frames` on the file.\n' +
@@ -3925,7 +3925,10 @@ const SKILL_ROUTER_BODY =
   '3. Ha a read nem megy, a fenti tools-listából improvizálj — de SOHA ne mondd hogy "nincs ilyen tool-om", és ne add fel.\n\n' +
   'Mikor melyik skillt olvasd (trigger → skill):\n\n' +
   '- "emlékeztess / X múlva szólj / minden reggel" → `cron-reminders`\n' +
-  '- weboldal megnyitás / screenshot / kattintás / űrlap → `browser-automation` (browser.act param-formák!)\n' +
+  '- weboldal megnyitás / screenshot / kattintás / űrlap → `browser-automation` (browser.act param-formák!). ' +
+  '**Screenshot CSATOLÁSA (inline mag):** a screenshot tool-result csak szöveges leírás, magától SEMMI nem csatolódik — ' +
+  'a PNG-t `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1` adja vissza, és a válaszod UTOLSÓ sora ' +
+  'egy önálló `MEDIA:<path>` sor legyen (abból lesz a Discord-attachment).\n' +
   '- képgenerálás → `image-generation` (workflow- és felbontás-receptek)\n' +
   '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
   '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n' +
@@ -3975,15 +3978,32 @@ const THREAD_TASKS_BODY =
 // browser-automation skill = the browser action API + chain recipes (carved
 // from the orchestration block) + the param-shape cheatsheet that already
 // exists as TOOLS_CHEATSHEET_BODY (defined above, reused verbatim).
+//
+// Screenshot-attach recipe (2026-06-11): the screenshot action does NOT
+// auto-attach anything. The gateway saves the PNG to
+// ~/.openclaw/media/browser/<uuid>.png, vision-describes it, and hands the
+// model ONLY the text description — the file path travels in the tool
+// result's `details`, which the model never sees (verified in the live
+// trajectory + dist: plugin-service describeBrowserScreenshot). The working
+// chain is exec-ls for the newest PNG + a trailing `MEDIA:<path>` reply line
+// (payloads MEDIA_TOKEN_RE → channel attachment; <stateDir>/media is in
+// buildMediaLocalRoots, so the path passes the local-roots check).
 const BROWSER_SKILL_BODY =
   '## Browser tool — action API és láncok\n\n' +
   'Egyetlen `browser` tool van, `action` paraméterrel (a régi `browser__navigate/screenshot` neveket nyugdíjazták). ' +
   'Action-ök: `open`{url,label} → stabil `targetId`-t ad; `snapshot`{targetId,refs:"aria"} → DOM+elem-refs klikkhez; ' +
-  '`screenshot`{targetId} → PNG bytes (Discord auto-csatolja fájlként); `act`{targetId,ref,…} klikk/gépelés; ' +
+  '`screenshot`{targetId} → a tool-result CSAK szöveges vision-leírás a képről; maga a PNG a gateway-en a ' +
+  '`/home/node/.openclaw/media/browser/<uuid>.png` alá mentődik, de a pontos path NEM látszik a resultban — csatoláshoz lásd a screenshot-láncot lent; ' +
+  '`act`{targetId,ref,…} klikk/gépelés; ' +
   '`tabs` / `close`{targetId}. A default profile `self-hosted` (openclaw-browser sidecar) — NE adj `target="sandbox/host"`-ot ' +
   '(a gateway containerben nincs browser binary).\n\n' +
   '**Láncok:**\n' +
-  '- "csinálj screenshotot X-ről" → `browser({action:"open", url:"X", label:"shot"})` → `browser({action:"screenshot", targetId:"shot"})` → a PNG-t a Discord auto-csatolja.\n' +
+  '- **"csinálj screenshotot X-ről" (a user CSATOLT képet vár):** (1) `browser({action:"open", url:"X", label:"shot"})`; ' +
+  '(2) `browser({action:"screenshot", targetId:"shot"})`; ' +
+  '(3) a friss PNG path-ját kérd el: `exec({command:"ls -t /home/node/.openclaw/media/browser/*.png | head -1"})` — KÖZVETLENÜL a screenshot után hívd; ' +
+  '(4) a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor (pl. `MEDIA:/home/node/.openclaw/media/browser/ab12….png`) — ezt a sort a Discord valódi kép-attachmentté alakítja. ' +
+  '🚨 A screenshot tool-result magától SEMMIT nem csatol (csak leírás-szöveg) — MEDIA-sor nélkül a user nem kap képet; SOHA ne írj "nézd meg a csatolt fájlt"-ot MEDIA-sor nélkül. ' +
+  'A MEDIA-sorban nyers abszolút path legyen (backtick és szóköz nélkül), és utána már semmi más szöveg.\n' +
   '- "olvasd el ezt a cikket / mi van X oldalon" → `open` → `snapshot` → foglald össze.\n' +
   '- "találj nekem képet X-ről" → `web_search` (cikk-URL-ek) → `browser open` → `snapshot urls:true` → kép-URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → mentés `~/.openclaw/canvas/` alá.\n\n' +
   '**Workflow screenshot-kérésre:** (1) egy rövid emberi mondat a user nyelvén ("Egy pillanat, csinálok egy képernyőképet.") — NE nyers tool-szintaxis; (2) tool-hívások `label=`/`targetId=` párosítással; (3) hiba esetén alternatíva (snapshot-fallback screenshot-timeoutra, python-fallback browser-403-ra); (4) bukásnál a VALÓDI hibaszöveg.\n' +
