@@ -729,6 +729,41 @@ if (dreamingEnabled) {
       }
     }
   }
+
+  // (6b) DREAMS.md size-triggered rotation. The Dream Diary grows unbounded
+  // (~50 KB per workspace by 2026-06); past the threshold the patcher moves
+  // it into memory/dreams-archive/ — still indexed by memorySearch (the
+  // diary stays searchable), no longer an ever-growing file. The dreaming
+  // pipeline recreates DREAMS.md from scratch on its next nightly run (it
+  // created the file in the first place). OPENCLAW_DREAMS_ROTATE_BYTES
+  // tunes the threshold; 0 disables rotation.
+  const rotateBytes = parseInt(process.env.OPENCLAW_DREAMS_ROTATE_BYTES?.trim() || '32768', 10);
+  if (Number.isFinite(rotateBytes) && rotateBytes > 0) {
+    for (const wsRoot of ['/home/node/.openclaw/workspace', '/home/node/.openclaw/workspace-discord']) {
+      const dreamsPath = path.join(wsRoot, 'DREAMS.md');
+      if (!fs.existsSync(dreamsPath)) continue;
+      let size;
+      try { size = fs.statSync(dreamsPath).size; } catch { continue; }
+      if (size <= rotateBytes) continue;
+      try {
+        const archiveDir = path.join(wsRoot, 'memory', 'dreams-archive');
+        fs.mkdirSync(archiveDir, { recursive: true, mode: 0o755 });
+        const stamp = new Date().toISOString().slice(0, 10);
+        let archivePath = path.join(archiveDir, `DREAMS-${stamp}.md`);
+        let n = 1;
+        while (fs.existsSync(archivePath)) {
+          archivePath = path.join(archiveDir, `DREAMS-${stamp}-${n++}.md`);
+        }
+        fs.renameSync(dreamsPath, archivePath);
+        console.log(
+          `[patch-config] rotated ${dreamsPath} (${size} bytes > ${rotateBytes}) -> ${archivePath} ` +
+          `(dreaming recreates the diary on its next run; archive stays memory-searchable)`,
+        );
+      } catch (err) {
+        console.warn(`[patch-config] DREAMS.md rotation failed for ${wsRoot}: ${err.message}`);
+      }
+    }
+  }
 } else {
   if (config.plugins?.entries?.['memory-core'] !== undefined) {
     delete config.plugins.entries['memory-core'];

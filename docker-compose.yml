@@ -1562,6 +1562,10 @@ services:
       # MEMORY.md — which is injected into EVERY session). Default 80 halves
       # the upstream 160 to slow MEMORY.md growth.
       OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS: ${OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS:-}
+      # DREAMS.md size-triggered rotation threshold (bytes; 0 disables).
+      # Past this the patcher archives the diary into memory/dreams-archive/
+      # (stays memory-searchable) and dreaming recreates it on the next run.
+      OPENCLAW_DREAMS_ROTATE_BYTES: ${OPENCLAW_DREAMS_ROTATE_BYTES:-32768}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into
