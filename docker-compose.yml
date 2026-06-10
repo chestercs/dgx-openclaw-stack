@@ -590,6 +590,16 @@ services:
     ports:
       - "${TTS_FISH_BIND:-127.0.0.1}:${TTS_FISH_PORT:-8091}:8080"
     environment:
+      # Thread caps — the second half of the containment story. Run-2 autopsy
+      # (2026-06-10): with a correctly capped KV pool and 13.6 GB headroom the
+      # host STILL livelocked during "Loading Fish audio decoder", at load
+      # average ~384 on 20 cores — a thread storm (BLAS/OMP defaults spawn
+      # ncores threads per stage process), not a memory squeeze. The cpu
+      # quota throttles them; these caps stop them from being spawned.
+      OMP_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
+      OPENBLAS_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
+      MKL_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
+      NUMEXPR_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
       # Bearer token gating every /v1/* request. Required — the shim refuses
       # to start without it (the s2-pro model is non-commercially licensed
       # and we don't want anonymous LAN clients on it).

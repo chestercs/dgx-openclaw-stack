@@ -12,8 +12,16 @@ set -euo pipefail
 
 docker rm -f tts-fish-poc >/dev/null 2>&1 || true
 
+# Run-2 autopsy: the GB10 yaml DID apply (KV 2.85+2.85 GB, 13.6 GB avail
+# after pool) and the host STILL livelocked at "Loading Fish audio decoder"
+# with load average ~384 on 20 cores — a THREAD storm, not a memory squeeze.
+# Hence the explicit thread caps below on top of the cpu quota.
 docker run -d --name tts-fish-poc --gpus all --dns 8.8.8.8 \
   --memory 26g --memory-swap 26g --cpus 12 \
+  -e OMP_NUM_THREADS=4 \
+  -e OPENBLAS_NUM_THREADS=4 \
+  -e MKL_NUM_THREADS=4 \
+  -e NUMEXPR_NUM_THREADS=4 \
   -e TTS_API_TOKEN=pocsmoke123 \
   -e TTS_FISH_DEFAULT_VOICE=default_hu \
   -e FISH_S2PRO_CONFIG=/opt/configs/s2pro_tts_gb10.yaml \
