@@ -241,6 +241,15 @@ RUN STAGES=/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_
 
 COPY app.py /app/app.py
 
+# Triton runtime-compiles kernels for the AR decode loop and calls its own
+# BUNDLED ptxas, which predates GB10: `ptxas fatal: Value 'sm_121a' is not
+# defined for option 'gpu-name'` (the first synthesis request crashes the
+# scheduler with exactly this). The CUDA 13 system ptxas in this devel base
+# DOES know sm_121a — TRITON_PTXAS_PATH points Triton at it. This is the
+# documented DGX Spark workaround (same bug class as sgl-project/sglang
+# issue #11658's Triton blocker).
+ENV TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+
 EXPOSE 8080
 
 # TTS_API_TOKEN is REQUIRED at runtime — startup fails fast if missing.
