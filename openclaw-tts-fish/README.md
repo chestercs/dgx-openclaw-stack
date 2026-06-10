@@ -41,8 +41,28 @@ including English and Hungarian, with reference-audio voice cloning.
 { "input": "Hello world.", "voice": "default_en", "response_format": "wav" }
 ```
 
-Optional pass-through fields: `speed`, `stream`, `temperature`, `top_p`,
-`top_k`, `repetition_penalty`, `seed`, `max_new_tokens`.
+### Full request-parameter reference
+
+Everything except `voice` passes through to the SGLang-Omni engine verbatim
+(`voice` is resolved by the shim into a `references[]` clone pair). Upstream
+defaults as of 2026-06:
+
+| Field | Type | Upstream default | Notes |
+|-------|------|------------------|-------|
+| `input` | string | *(required)* | Text to synthesize |
+| `voice` | string | `TTS_FISH_DEFAULT_VOICE` | Resolved to `/app/voices/<voice>.{wav,txt}` |
+| `response_format` | string | `wav` | `mp3`/`ogg`/`opus`/`aac`/`flac` transcoded by the shim |
+| `speed` | float | `1.0` | Playback speed multiplier |
+| `stream` | bool | `false` | SSE audio chunks; the onset silence pad is skipped when streaming |
+| `temperature` | float | `0.8` | Sampling temperature |
+| `top_p` | float | `0.8` | Nucleus sampling |
+| `top_k` | int | `30` | **Must be `-1` or `1..30`** — out-of-range fails the S2 Pro pipeline with a 500, not a clean 4xx (upstream limitation) |
+| `repetition_penalty` | float | `1.1` | |
+| `seed` | int | *(unset)* | Set for reproducible audio (regression tests) |
+| `max_new_tokens` | int | `2048` | Semantic-token cap — raise for very long passages |
+
+Deploy-wide baselines for the sampling fields can be set via `TTS_FISH_*` env
+vars (see table below); per-request values always win.
 
 ## Voice cloning workflow
 
@@ -71,23 +91,53 @@ curl -H "Authorization: Bearer $TTS_API_TOKEN" \
 
 ## Default voices shipped
 
-| Voice | Source | License |
-|-------|--------|---------|
-| `default_en` | LibriSpeech (LibriVox excerpt) | Public domain |
-| `default_hu` | KTH/hungarian-single-speaker-tts — Diana Majlinger, "Egri csillagok" | Public domain (LibriVox) |
+Bundled in the repo at `server/voices/` and baked into the image's
+`/app/voices_seed/`; the shim copies them into `/app/voices/` on first start
+without overwriting user voices. (The old HF-dataset fetcher was removed
+2026-06-10 — it soft-failed on every aarch64 build because `datasets` audio
+decoding needs torchcodec, which has no aarch64 wheel, so images shipped with
+an empty seed dir.)
 
-Both are seeded at build time via `fetch_default_voices.py`. They land in
-`/app/voices_seed/` inside the image and get copied into `/app/voices/` on
-first start without overwriting user voices.
+| Voice | Timbre | Source | License |
+|-------|--------|--------|---------|
+| `default_en` | US female, warm | Kokoro 82M `af_heart` synthesis | Apache-2.0 (generated) |
+| `bella` | US female, bright | Kokoro `af_bella` | Apache-2.0 (generated) |
+| `nicole` | US female, soft | Kokoro `af_nicole` | Apache-2.0 (generated) |
+| `michael` | US male, neutral | Kokoro `am_michael` | Apache-2.0 (generated) |
+| `fenrir` | US male, low register | Kokoro `am_fenrir` | Apache-2.0 (generated) |
+| `emma` | UK female | Kokoro `bf_emma` | Apache-2.0 (generated) |
+| `default_hu` | HU female | KTH/hungarian-single-speaker-tts — Diana Majlinger, "Egri csillagok" | Public domain (LibriVox) |
 
-## Why we build from source
+Patcher step 11 maps friendly aliases on top: `english`/`narrator` →
+`default_en`, `female` → `bella`, `male` → `michael`, `british` → `emma`,
+`deep` → `fenrir`, `soft` → `nicole`, `magyar`/`hungarian` → `default_hu`.
 
-The upstream reference image is `frankleeeee/sglang-omni:dev` — amd64-only as
-of 2026-05. GB10 is aarch64 + Blackwell sm_120 + CUDA 13, so we build on a
-`nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04` base and let SGLang-Omni
-compile `sgl-kernel` from source against the cu130 torch wheels. First build
-is long (~15-30 min including the 11 GB model download); subsequent builds
-hit the layer cache.
+## Why we build from source (and the two wheels that bit us)
+
+The upstream reference image is `lmsysorg/sglang-omni:dev` — amd64-only as of
+2026-06. GB10 is aarch64 + Blackwell sm_121 + CUDA 13, so we build on a
+`nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04` base. Two dependency-resolution
+traps shaped the Dockerfile — both produced a container whose engine died
+before ready while the shim's `/healthz` still answered:
+
+1. **PyPI `sgl_kernel` aarch64 wheel is a CUDA 12 build.** Inside a CUDA 13
+   image its `common_ops.abi3.so` dlopen-fails with `libnvrtc.so.12: cannot
+   open shared object file`. Fix: install the `+cu130` aarch64 wheel from the
+   sgl-project/whl GitHub release page (the documented CUDA 13 path in sglang
+   v0.5.8's install.md). The wheel ships sm90/sm100 SASS + embedded PTX — on
+   GB10 (sm_121) the driver JIT-compiles the PTX, the same mechanism the
+   official `lmsysorg/sglang:spark` image relies on.
+2. **PyPI torch wheels for aarch64 are CPU-only.** The sglang-omni dependency
+   resolution silently replaced the cu130 torch with `2.9.1+cpu`, after which
+   the engine reported "CPU/No GPU detected". Fix: exact `+cu130` pre-pins,
+   `--extra-index-url` + `--index-strategy unsafe-best-match` on the omni
+   install, and a surgical `--no-deps --force-reinstall` re-pin afterwards
+   with a build-time assert (provenance-checked via pip's `direct_url.json`,
+   because the cu130 wheel's *internal* version metadata is identical to the
+   cu12 one).
+
+First build is long (~15-30 min including the 11 GB model download);
+subsequent builds hit the layer cache.
 
 ## Env vars
 
@@ -97,6 +147,14 @@ hit the layer cache.
 | `TTS_FISH_DEFAULT_VOICE` | `default_en` | Voice used when client omits `voice` |
 | `TTS_FISH_DEVICE` | `cuda` | Set to `cpu` for slow CPU fallback |
 | `TTS_FISH_LEADING_SILENCE_MS` | `300` | Onset pad to defend against Whisper STT clip ("Szia" → "Zia"). Set 0 to skip |
+| `TTS_FISH_TEMPERATURE` | *(unset)* | Deploy-wide sampling baseline (request wins) |
+| `TTS_FISH_TOP_P` | *(unset)* | " |
+| `TTS_FISH_TOP_K` | *(unset)* | " — must be `-1` or `1..30` |
+| `TTS_FISH_REPETITION_PENALTY` | *(unset)* | " |
+| `TTS_FISH_MAX_NEW_TOKENS` | *(unset)* | " |
+| `TTS_FISH_SPEED` | *(unset)* | " |
+| `TTS_FISH_SEED` | *(unset)* | " — set for reproducible regression audio |
+| `FISH_S2PRO_CONFIG` | `/opt/sglang-omni/examples/configs/s2pro_tts.yaml` | SGLang-Omni pipeline config (`config_cls`, `relay_backend`) |
 | `FISH_ENGINE_PORT` | `9090` | Internal loopback for the SGLang-Omni child process |
 | `FISH_ENGINE_READY_DEADLINE_S` | `600` | How long startup waits for SGLang-Omni's /health to flip |
 

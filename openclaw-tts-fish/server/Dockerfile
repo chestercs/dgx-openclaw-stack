@@ -166,21 +166,28 @@ RUN mkdir -p ${FISH_CHECKPOINT_DIR} \
     && ls -la ${FISH_CHECKPOINT_DIR}/ \
     && du -sh ${FISH_CHECKPOINT_DIR}
 
-# 4) Seed default voices at build time. The fetcher writes to
-#    /app/voices_seed/; the runtime shim copies any missing files into
-#    /app/voices/ on first start (without overwriting user-mounted voices
-#    on the tts-fish-voices volume).
+# 4) Seed default voices from the repo-bundled reference library. The seed
+#    dir is copied into /app/voices/ by the runtime shim on first start
+#    (without overwriting user-mounted voices on the tts-fish-voices volume).
 #
-#    Soft-fail by design: the HuggingFace datasets library on aarch64 may
-#    not have a working audio-decode backend (torchcodec) and the streaming
-#    fetcher can also fail if a dataset is gated, renamed, or temporarily
-#    unreachable. Build progresses regardless; the operator can drop voice
-#    pairs into /app/voices/ at runtime via `docker cp`.
-COPY fetch_default_voices.py /app/fetch_default_voices.py
-RUN mkdir -p ${VOICES_SEED_DIR} \
-    && (VOICES_DIR=${VOICES_SEED_DIR} python /app/fetch_default_voices.py \
-        || echo "[fetch] build-time voice seeding failed — operator must docker cp <name>.{wav,txt} into /app/voices/ at runtime") \
-    && ls -la ${VOICES_SEED_DIR}/ 2>&1
+#    Why bundled files instead of the old HF-dataset fetcher: the fetcher
+#    (fetch_default_voices.py, removed 2026-06-10) soft-failed on every
+#    aarch64 build — `datasets` audio decoding needs torchcodec, which has no
+#    aarch64 wheel — so images shipped with an EMPTY seed dir and every
+#    deployment started life with zero voices until an operator docker-cp'd
+#    clips in. Bundled clips make builds deterministic and offline-safe.
+#
+#    Provenance (safe to redistribute):
+#      default_en / bella / nicole / michael / fenrir / emma — synthesized
+#        with Kokoro 82M (Apache-2.0) from the retired openclaw-tts-en
+#        service; ~12-18 s reads of a fixed pangram-style paragraph.
+#      default_hu — public-domain LibriVox recording via the
+#        KTH/hungarian-single-speaker-tts dataset (the same clip the legacy
+#        F5-TTS HU service used as its reference voice).
+#    Each <name>.wav must have a matching <name>.txt holding its exact
+#    transcript — S2 Pro voice cloning conditions on both.
+COPY voices/ ${VOICES_SEED_DIR}/
+RUN ls -la ${VOICES_SEED_DIR}/
 
 # 5) Shim deps + app source.
 COPY requirements.txt /app/requirements.txt

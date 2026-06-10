@@ -559,7 +559,7 @@ services:
         # Optional — pass through if the operator's HF account is rate-
         # limited or the model becomes gated. Public access works without it.
         HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-    image: openclaw-tts-fish:0.1.0
+    image: openclaw-tts-fish:0.2.0
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish
     hostname: openclaw-tts-fish
     restart: unless-stopped
@@ -585,6 +585,18 @@ services:
       # fine for EN + HU. Set 0 to skip (brings back the onset clip on
       # short HU utterances).
       TTS_FISH_LEADING_SILENCE_MS: ${TTS_FISH_LEADING_SILENCE_MS:-300}
+      # Deploy-wide sampling baselines — applied by the shim only when a
+      # request omits the field (per-request values win). Empty = ride the
+      # upstream S2 Pro defaults (temperature 0.8 / top_p 0.8 / top_k 30 /
+      # repetition_penalty 1.1 / max_new_tokens 2048 / speed 1.0). See
+      # .env.example for the full table incl. the top_k 1..30 range gotcha.
+      TTS_FISH_TEMPERATURE: ${TTS_FISH_TEMPERATURE:-}
+      TTS_FISH_TOP_P: ${TTS_FISH_TOP_P:-}
+      TTS_FISH_TOP_K: ${TTS_FISH_TOP_K:-}
+      TTS_FISH_REPETITION_PENALTY: ${TTS_FISH_REPETITION_PENALTY:-}
+      TTS_FISH_MAX_NEW_TOKENS: ${TTS_FISH_MAX_NEW_TOKENS:-}
+      TTS_FISH_SPEED: ${TTS_FISH_SPEED:-}
+      TTS_FISH_SEED: ${TTS_FISH_SEED:-}
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     volumes:

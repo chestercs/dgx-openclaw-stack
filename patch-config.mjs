@@ -1460,15 +1460,22 @@ if (ttsRouterKey) {
 
   tts.voiceAliases ??= {};
   // Fish Audio S2 Pro voice palette is operator-defined (one file pair per
-  // voice in tts-fish-voices). The seed image ships default_en + default_hu;
-  // these aliases let agents reference them by language without remembering
-  // the file basenames. Add more aliases here when bundling more voice
-  // references (or rely on the agent passing the raw voice id).
+  // voice in tts-fish-voices). The image seeds a 7-voice library from
+  // openclaw-tts-fish/server/voices/ (default_en + default_hu + five extra
+  // English timbres cloned from Kokoro references); these aliases let agents
+  // pick a voice by language/timbre without remembering file basenames.
+  // Raw voice ids (the file basenames) always work too — aliases are sugar.
+  // Add more aliases here when bundling more voice references.
   const desiredAliases = {
     english:   'default_en',
     narrator:  'default_en',
     magyar:    'default_hu',
     hungarian: 'default_hu',
+    female:    'bella',     // US female, bright
+    male:      'michael',   // US male, neutral
+    british:   'emma',      // UK female
+    deep:      'fenrir',    // US male, low register
+    soft:      'nicole',    // US female, breathy/ASMR-leaning
   };
   for (const [k, v] of Object.entries(desiredAliases)) {
     if (tts.voiceAliases[k] !== v) {

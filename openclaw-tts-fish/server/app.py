@@ -72,6 +72,34 @@ DEFAULT_VOICE = os.environ.get("TTS_FISH_DEFAULT_VOICE", os.environ.get("DEFAULT
 DEVICE = os.environ.get("TTS_FISH_DEVICE", os.environ.get("FISH_DEVICE", "cuda"))
 LEADING_SILENCE_MS = int(os.environ.get("TTS_FISH_LEADING_SILENCE_MS", "300"))
 
+# Operator-set sampling defaults, applied only when the request itself omits
+# the field (request values always win — these are deploy-wide baselines, not
+# overrides). Upstream S2 Pro defaults as of 2026-06: temperature 0.8,
+# top_p 0.8, top_k 30, repetition_penalty 1.1, max_new_tokens 2048, speed 1.0.
+# Gotcha worth knowing before tuning: top_k must be -1 or 1..30 — an
+# out-of-range value FAILS the upstream pipeline instead of returning a clean
+# 4xx (documented upstream limitation).
+_SAMPLING_ENV_SPEC = (
+    ("temperature",        "TTS_FISH_TEMPERATURE",        float),
+    ("top_p",              "TTS_FISH_TOP_P",              float),
+    ("top_k",              "TTS_FISH_TOP_K",              int),
+    ("repetition_penalty", "TTS_FISH_REPETITION_PENALTY", float),
+    ("max_new_tokens",     "TTS_FISH_MAX_NEW_TOKENS",     int),
+    ("speed",              "TTS_FISH_SPEED",              float),
+    ("seed",               "TTS_FISH_SEED",               int),
+)
+SAMPLING_DEFAULTS: dict = {}
+for _field, _env, _cast in _SAMPLING_ENV_SPEC:
+    _raw = os.environ.get(_env, "").strip()
+    if _raw:
+        try:
+            SAMPLING_DEFAULTS[_field] = _cast(_raw)
+        except ValueError:
+            # Log-and-skip, don't crash the service over a typo'd tuning knob.
+            logging.getLogger("tts-fish").warning(
+                "ignoring %s=%r (not a valid %s)", _env, _raw, _cast.__name__
+            )
+
 UPSTREAM_HOST = os.environ.get("FISH_ENGINE_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("FISH_ENGINE_PORT", "9090"))
 UPSTREAM_BASE = f"http://{UPSTREAM_HOST}:{UPSTREAM_PORT}"
@@ -396,6 +424,10 @@ async def synthesize(request: Request) -> Response:
     upstream_payload: dict[str, Any] = {
         k: body[k] for k in _PASSTHROUGH_FIELDS if k in body
     }
+    # Deploy-wide sampling baselines from TTS_FISH_* env vars; request fields
+    # take precedence (setdefault never overwrites a client-sent value).
+    for k, v in SAMPLING_DEFAULTS.items():
+        upstream_payload.setdefault(k, v)
     upstream_payload["references"] = [{"audio_path": audio_path, "text": ref_text}]
 
     stream = bool(body.get("stream", False))
