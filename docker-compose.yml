@@ -575,6 +575,20 @@ services:
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish
     hostname: openclaw-tts-fish
     restart: unless-stopped
+    # Boot-order guard — MUST start after vLLM is healthy. SGLang-Omni sizes
+    # its KV pool from the unified memory VISIBLE AT ITS OWN STARTUP
+    # (mem_fraction_static in the s2pro yaml). On a cold boot this service
+    # comes up minutes faster than vLLM's weight load, sizes itself from a
+    # near-empty pool, and vLLM then dies in a crash-loop with "No available
+    # memory for the cache blocks" (observed 2026-06-10 after a hard reset).
+    # Starting after vLLM is healthy makes the sizing deterministic: Fish
+    # always measures the post-vLLM leftover. `required: false` (compose
+    # v2.20+) keeps remote-vLLM deploys working — with vllm-llm parked via
+    # profiles: ["never"], the dependency is simply ignored.
+    depends_on:
+      vllm-llm:
+        condition: service_healthy
+        required: false
     # Containment — non-negotiable on a shared unified-memory box. An
     # uncontained engine start (startup JIT + warmup storm on top of an
     # already-tight pool) once pushed the WHOLE HOST into a reclaim livelock:
