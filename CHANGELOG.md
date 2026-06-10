@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `openclaw-claw-img-bot`: a real `/claw-img` Discord slash command
+
+A standalone opt-in bot (compose profile `claw-img`) that exposes a true
+`/claw-img` slash command and calls the `comfyui_image` bridge **directly**.
+This is the deterministic fix for image generation from Discord after the
+in-OpenClaw paths proved unworkable on 2026.6.1: the agent LLM (mention/slash)
+refuses adult prompts via RLHF, and the only LLM-bypass (`commands.bash`) is
+arbitrary-shell, approval-gated, and not a registered Discord slash command
+(no `/` autocomplete, DM approval prompts).
+
+- `~150 LOC discord.py` bot (`openclaw-claw-img-bot/`), own Discord token (a
+  second application, no conflict with the OpenClaw bot), outbound-only.
+- `/claw-img prompt:<text> [resolution] [width] [height] [seed] [safe]` —
+  defers, calls the bridge with `include_base64`, uploads the PNG as a **true
+  Discord attachment** (link fallback over `CLAW_IMG_MAX_BYTES`).
+- NSFW-by-default via `CLAW_IMG_DEFAULT_WORKFLOW`; `safe:true` forces SFW.
+- Safe to open to everyone in the guild — image-gen only, no shell, no LLM.
+- Setup/invite steps in `openclaw-claw-img-bot/README.md`. Start:
+  `docker compose --profile claw-img up -d --build openclaw-claw-img-bot`.
+
 ### Added — `!~/.openclaw/bin/img` is patcher-managed + delivers Discord attachments
 
 The operator image-gen bash command (`!~/.openclaw/bin/img "<prompt>"`, the

@@ -1864,3 +1864,61 @@ services:
     entrypoint: ["/opt/patch-mcp-timeout.sh", "/bin/sh", "-c", "exec sleep infinity"]
     depends_on:
       - openclaw-gateway
+
+  ######################
+  ## claw-img bot — standalone /claw-img Discord slash command (opt-in)
+  #
+  #  A tiny discord.py bot exposing a REAL /claw-img slash command that calls
+  #  the comfyui_image bridge DIRECTLY — no LLM (so Gemma's RLHF never refuses
+  #  adult prompts), no approval gate, no commands.bash. Uploads the result as
+  #  a true Discord attachment. Uses its OWN bot token (a second Discord app)
+  #  so it never collides with the OpenClaw bot's gateway connection.
+  #
+  #  Opt-in:
+  #    docker compose --profile claw-img up -d --build openclaw-claw-img-bot
+  #  Needs IMAGE_GEN_API_TOKEN (bridge auth) + the openclaw-image-comfyui bridge
+  #  up on this network. See openclaw-claw-img-bot/README.md for the Discord
+  #  app / token / invite steps.
+  ######################
+  openclaw-claw-img-bot:
+    profiles: ["claw-img"]
+    build:
+      context: ./openclaw-claw-img-bot
+    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.1.0}
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-claw-img-bot
+    hostname: openclaw-claw-img-bot
+    restart: unless-stopped
+    # Outbound to Discord's gateway needs working DNS; mirror the gateway's
+    # explicit resolvers (the daemon's 127.0.0.11 forwarder has tripped clients
+    # before — cheap insurance).
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      CLAW_IMG_DISCORD_TOKEN: ${CLAW_IMG_DISCORD_TOKEN:-}
+      # Guild id → instant slash-command registration (global takes ~1h).
+      CLAW_IMG_GUILD_ID: ${CLAW_IMG_GUILD_ID:-}
+      # Reach the bridge over compose DNS (it joins this network from its own
+      # compose file). Same token the gateway uses to call the bridge.
+      IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
+      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
+      # NSFW-by-default: set CLAW_IMG_DEFAULT_WORKFLOW=flux-krea-2k-adult; the
+      # slash `safe:true` option forces CLAW_IMG_SFW_WORKFLOW for that one call.
+      CLAW_IMG_DEFAULT_WORKFLOW: ${CLAW_IMG_DEFAULT_WORKFLOW:-flux-krea-2k}
+      CLAW_IMG_SFW_WORKFLOW: ${CLAW_IMG_SFW_WORKFLOW:-flux-krea-2k}
+      CLAW_IMG_MAX_BYTES: ${CLAW_IMG_MAX_BYTES:-9437184}
+      CLAW_IMG_TIMEOUT_S: ${CLAW_IMG_TIMEOUT_S:-600}
+      TZ: ${TZ:-UTC}
+    cap_drop: [ALL]
+    security_opt:
+      - "no-new-privileges:true"
+    # Tiny footprint (discord.py + aiohttp, no models). mem_limit == memswap_limit
+    # = swap-denied containment, per the stack convention.
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
