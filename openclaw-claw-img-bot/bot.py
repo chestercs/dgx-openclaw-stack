@@ -201,22 +201,38 @@ async def claw_img_error(interaction: discord.Interaction, error: Exception):
         pass
 
 
+async def sync_to_guild(guild: discord.abc.Snowflake):
+    """Register /claw-img on one guild — instant, unlike the ~1 h global sync."""
+    tree.copy_global_to(guild=guild)
+    synced = await tree.sync(guild=guild)
+    log.info("synced %d command(s) to guild %s", len(synced), getattr(guild, "id", guild))
+
+
 @client.event
 async def on_ready():
-    # Guild-scoped sync is instant; global sync takes ~1 h to propagate. Set
-    # CLAW_IMG_GUILD_ID to your server id for immediate availability.
+    # No CLAW_IMG_GUILD_ID → "works on any server it's invited to": register on
+    # every guild the bot is currently in (instant), and on_guild_join covers
+    # servers invited later. A single CLAW_IMG_GUILD_ID still works if set.
     try:
         if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            tree.copy_global_to(guild=guild)
-            synced = await tree.sync(guild=guild)
-            log.info("synced %d command(s) to guild %s", len(synced), GUILD_ID)
+            await sync_to_guild(discord.Object(id=int(GUILD_ID)))
         else:
-            synced = await tree.sync()
-            log.info("synced %d global command(s) (≈1h to appear)", len(synced))
+            for g in client.guilds:
+                await sync_to_guild(g)
+            log.info("registered /claw-img on %d current guild(s)", len(client.guilds))
     except Exception:  # noqa: BLE001
         log.exception("command sync failed")
     log.info("claw-img bot ready as %s (bridge=%s)", client.user, BRIDGE_URL)
+
+
+@client.event
+async def on_guild_join(guild: discord.Guild):
+    # Auto-register the command when the bot is invited to a new server, so the
+    # operator doesn't have to restart the bot or wait for global propagation.
+    try:
+        await sync_to_guild(guild)
+    except Exception:  # noqa: BLE001
+        log.exception("guild-join sync failed for %s", guild.id)
 
 
 if __name__ == "__main__":
