@@ -250,6 +250,22 @@ COPY app.py /app/app.py
 # issue #11658's Triton blocker).
 ENV TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
 
+# 8) Build-time patch: SDPA attention fallback for the audio decoder. The
+#    Fish decoder model code imports FlashAttention-3 DIRECTLY from
+#    sgl_kernel (bypassing sglang's attention_backend setting); FA3 is
+#    Hopper-only SASS with no PTX, so the first synthesis on sm_121 dies
+#    with "no kernel image is available for execution on the device".
+#    fish_sdpa_attn_fallback.py reimplements flash_attn_with_kvcache's
+#    contract (in-place cache append + bottom-right causal alignment) on
+#    torch SDPA — see the module docstring for the full semantics map.
+COPY fish_sdpa_attn_fallback.py /usr/local/lib/python3.12/dist-packages/fish_sdpa_attn_fallback.py
+RUN MODELING=/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_s2_pro/fish_speech/models/text2semantic/modeling.py \
+    && grep -q "from sgl_kernel.flash_attn import flash_attn_with_kvcache" "$MODELING" \
+        || { echo "PATCH TARGET MISSING — upstream modeling.py changed; re-derive the SDPA fallback patch" >&2; exit 1; } \
+    && sed -i 's|from sgl_kernel.flash_attn import flash_attn_with_kvcache|from fish_sdpa_attn_fallback import flash_attn_with_kvcache|' "$MODELING" \
+    && grep -q "fish_sdpa_attn_fallback" "$MODELING" \
+    && python -c "import ast; ast.parse(open('/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_s2_pro/fish_speech/models/text2semantic/modeling.py').read()); import fish_sdpa_attn_fallback; print('SDPA attention fallback patch applied + imports')"
+
 EXPOSE 8080
 
 # TTS_API_TOKEN is REQUIRED at runtime — startup fails fast if missing.
