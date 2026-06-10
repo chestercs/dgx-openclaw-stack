@@ -44,6 +44,9 @@ OpenClaw bot's gateway connection.
 
 ## Usage
 
+`/claw-help` (no arguments) shows an ephemeral cheatsheet of every option for
+both commands.
+
 ```
 /claw-img prompt:<text> [negative:<text>]
           [resolution:square|portrait|landscape|hd|fullhd|2k]

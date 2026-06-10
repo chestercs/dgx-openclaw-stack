@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `/claw-help` cheatsheet
+
+A no-argument `/claw-help` that replies with an ephemeral, formatted embed
+explaining every option of `/claw-img` and `/claw-video` (resolution lists are
+built from the constants so they can't drift from the actual commands).
+
 ### Added — `/claw-video` (LTX-Video) on the claw-img bot
 
 The standalone bot gained a second slash command, `/claw-video`, calling the

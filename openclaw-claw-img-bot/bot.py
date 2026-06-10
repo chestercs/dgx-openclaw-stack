@@ -367,6 +367,48 @@ async def claw_video_error(interaction: discord.Interaction, error: Exception):
         pass
 
 
+@tree.command(name="claw-help", description="How /claw-img and /claw-video work — what each option does.")
+async def claw_help(interaction: discord.Interaction):
+    # Instant, no bridge call — just an ephemeral formatted cheatsheet. Preset
+    # lists are built from the constants so they never drift from the commands.
+    embed = discord.Embed(
+        title="🎨 KozelBot — image & video generation",
+        description="Two slash commands, no chat LLM in the loop. Fill **prompt** and go — everything else is optional.",
+        color=0x5865F2,
+    )
+    embed.add_field(
+        name="🖼 /claw-img",
+        value=(
+            "• **prompt** — what to draw *(required)*\n"
+            "• **negative** — what to keep out\n"
+            f"• **resolution** — `{' / '.join(PRESETS)}`\n"
+            "• **width / height** — custom px (overrides resolution)\n"
+            "• **steps** — more detail vs faster *(default: workflow)*\n"
+            "• **cfg** — how strictly to follow the prompt\n"
+            "• **seed** — reproduce a result\n"
+            "• **safe** — `true` = SFW for this one call"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎬 /claw-video",
+        value=(
+            "• **prompt** — what the clip shows *(required)*\n"
+            "• **image** — attach a picture to **animate it** (image→video)\n"
+            "• **negative** — what to keep out\n"
+            f"• **resolution** — `{' / '.join(VIDEO_PRESETS)}`\n"
+            "• **width / height** — custom px (rounded to ÷32)\n"
+            f"• **seconds** — clip length (max {int(VIDEO_MAX_SECONDS)})\n"
+            "• **fps** — frames per second *(default 24)*\n"
+            "• **audio** — generate a sound track *(default on)*\n"
+            "• **seed** — reproduce a result"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Renders take ~1 min (image) to a few min (video) — just wait for the result.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def sync_to_guild(guild: discord.abc.Snowflake):
     """Register the slash commands on one guild — instant, unlike global sync."""
     tree.copy_global_to(guild=guild)
