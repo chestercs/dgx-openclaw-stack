@@ -54,7 +54,14 @@ approver got a DM" instead of treating a pending approval as an error.
 ### What stays deliberately off
 
 - `tools.exec.security: "full"` — removes the approval gate entirely;
-  arbitrary host commands from any Discord sender. Never wire this.
+  arbitrary commands from any Discord sender run immediately in the gateway
+  container. Off by default, but available as an explicit homelab opt-in via
+  `OPENCLAW_EXEC_SECURITY=full`: the patcher then writes `full` into both
+  `tools.exec.security` and `exec-approvals.json` `defaults.security` (the
+  two layers must agree — a stricter file value would silently re-gate exec).
+  Learned allow-always grants are never touched; they go inert under full and
+  resume on rollback. Rollback = set the knob back to `allowlist` (or unset)
+  and re-run the patcher.
 - `tools.codeMode` — hides normal tools behind an exec-only QuickJS bridge;
   breaks image/browser/etc. on this multi-tool bot.
 

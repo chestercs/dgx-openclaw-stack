@@ -1538,6 +1538,11 @@ services:
       # prompt on Discord (step 33). `off` removes tools.exec (upstream
       # default-deny applies again).
       OPENCLAW_TOOLS_EXEC: ${OPENCLAW_TOOLS_EXEC:-on}
+      # `full` removes the approval gate: every exec command runs immediately,
+      # no allowlist, no approval DM. Homelab opt-in — any sender the bot
+      # listens to can run arbitrary commands in the gateway container. The
+      # default posture stays allowlist+ask; see .env.example before flipping.
+      OPENCLAW_EXEC_SECURITY: ${OPENCLAW_EXEC_SECURITY:-allowlist}
       OPENCLAW_EXEC_TIMEOUT_SEC: ${OPENCLAW_EXEC_TIMEOUT_SEC:-1800}
       OPENCLAW_EXEC_SAFE_BINS: ${OPENCLAW_EXEC_SAFE_BINS:-}
       # Seed ~/.openclaw/exec-approvals.json with a developer-toolchain

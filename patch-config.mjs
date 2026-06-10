@@ -3022,6 +3022,26 @@ if (config.channels?.discord?.enabled === true) {
 const toolsExecOn = !['off', '0', 'false', 'no'].includes(
   (process.env.OPENCLAW_TOOLS_EXEC || 'on').trim().toLowerCase(),
 );
+// OPENCLAW_EXEC_SECURITY=full removes the approval gate entirely: every exec
+// command runs immediately, no allowlist consultation, no Discord approval
+// DM. This is a deliberate homelab posture for operators who'd rather not
+// babysit approval prompts — understand what it means before flipping it:
+// ANY sender the bot listens to (with OPENCLAW_DISCORD_AUTHZ=open that is
+// every guild member) can make the bot run arbitrary commands inside the
+// gateway container, which has the config volume (secrets!) and workspace
+// mounted read-write. The default stays "allowlist"; the same enum is what
+// the WebGUI's exec-security selector writes, so the value is schema-safe.
+// Learned allow-always grants in exec-approvals.json are left untouched in
+// full mode — they're inert while full is active and resume working if the
+// operator rolls back to allowlist.
+const execSecurityRaw = (process.env.OPENCLAW_EXEC_SECURITY || 'allowlist').trim().toLowerCase();
+if (!['allowlist', 'full'].includes(execSecurityRaw)) {
+  console.warn(
+    `[patch-config] OPENCLAW_EXEC_SECURITY=${JSON.stringify(execSecurityRaw)} ` +
+    `not in {allowlist, full} — defaulting to "allowlist".`,
+  );
+}
+const execSecurity = execSecurityRaw === 'full' ? 'full' : 'allowlist';
 if (toolsExecOn) {
   const execTimeoutSec = parseInt(process.env.OPENCLAW_EXEC_TIMEOUT_SEC?.trim() || '1800', 10);
   const safeBins = (process.env.OPENCLAW_EXEC_SAFE_BINS || 'cat,grep,sed,head,tail,cut,wc')
@@ -3030,7 +3050,7 @@ if (toolsExecOn) {
   config.tools.exec ??= {};
   const ex = config.tools.exec;
   const desiredExec = {
-    security: 'allowlist',
+    security: execSecurity,
     ask: 'on-miss',
     strictInlineEval: true,
     timeoutSec: Number.isFinite(execTimeoutSec) && execTimeoutSec > 0 ? execTimeoutSec : 1800,
@@ -3095,13 +3115,23 @@ if (execApprovalsSeedOn && toolsExecOn) {
     ap.defaults ??= {};
     // Only-when-undefined: a runtime- or operator-modified default is
     // authoritative (e.g. the operator relaxed askFallback on purpose).
-    const desiredApDefaults = { security: 'allowlist', ask: 'on-miss', askFallback: 'deny' };
+    const desiredApDefaults = { ask: 'on-miss', askFallback: 'deny' };
     for (const [k, v] of Object.entries(desiredApDefaults)) {
       if (ap.defaults[k] === undefined) {
         ap.defaults[k] = v;
         apChanged = true;
         console.log(`[patch-config] exec-approvals.json defaults.${k} = ${JSON.stringify(v)}`);
       }
+    }
+    // defaults.security is the exception to only-when-undefined: it mirrors
+    // the OPENCLAW_EXEC_SECURITY knob deterministically. The two layers
+    // (tools.exec.security in openclaw.json + defaults.security here) must
+    // agree, or the stricter file value silently re-gates exec after the
+    // operator flipped the knob to full — a confusing half-applied state.
+    if (ap.defaults.security !== execSecurity) {
+      ap.defaults.security = execSecurity;
+      apChanged = true;
+      console.log(`[patch-config] exec-approvals.json defaults.security = ${JSON.stringify(execSecurity)} (mirrors OPENCLAW_EXEC_SECURITY)`);
     }
     // Resolve the Discord-routed agent id(s) from bindings[] (same source as
     // steps 22/25); pre-onboarding fallback is the conventional id.
