@@ -202,6 +202,27 @@ RUN pip install -r /app/requirements.txt
 COPY configs/ /opt/configs/
 ENV FISH_S2PRO_CONFIG=/opt/configs/s2pro_tts_gb10.yaml
 
+# 6) Build-time patch: low-memory audio-decoder load. Upstream
+#    load_audio_decoder() (models/fishaudio_s2_pro/bootstrap.py) calls a bare
+#    `FishQwen3OmniForCausalLM.from_pretrained(checkpoint_dir, config=config)`
+#    just to extract `.audio_decoder` — the HF legacy load path materializes
+#    the FULL ~5B model with fp32 random-init weights (~20 GB), then layers
+#    the ~11 GB checkpoint on top, then `.to(bf16)` copies it AGAIN: a
+#    ~30-40 GB transient CPU-RAM spike for a component worth ~2 GB. On a
+#    128 GB unified-memory box sharing RAM with vLLM that spike is exactly
+#    the available headroom -> direct-reclaim livelock; this wedged the
+#    WHOLE HOST twice on 2026-06-10 (frozen userspace for 1.5 h) before the
+#    cause was isolated. `torch_dtype=bf16 + low_cpu_mem_usage=True` makes
+#    from_pretrained meta-init + stream the checkpoint: peak ~= final size.
+#    Same pattern as the vllm-llm gemma4 loader patch: patch the installed
+#    site-packages copy, fail the build loudly if upstream moved the line.
+RUN BOOTSTRAP=/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_s2_pro/bootstrap.py \
+    && grep -q "FishQwen3OmniForCausalLM.from_pretrained(checkpoint_dir, config=config)" "$BOOTSTRAP" \
+        || { echo "PATCH TARGET MISSING — upstream bootstrap.py changed; re-derive the low-mem patch" >&2; exit 1; } \
+    && sed -i 's/FishQwen3OmniForCausalLM.from_pretrained(checkpoint_dir, config=config)/FishQwen3OmniForCausalLM.from_pretrained(checkpoint_dir, config=config, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)/' "$BOOTSTRAP" \
+    && grep -q "low_cpu_mem_usage=True" "$BOOTSTRAP" \
+    && python -c "import ast,sys; ast.parse(open('/usr/local/lib/python3.12/dist-packages/sglang_omni/models/fishaudio_s2_pro/bootstrap.py').read()); print('low-mem decoder-load patch applied + parses')"
+
 COPY app.py /app/app.py
 
 EXPOSE 8080
