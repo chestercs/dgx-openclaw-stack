@@ -45,9 +45,16 @@ OpenClaw bot's gateway connection.
 ## Usage
 
 ```
-/claw-img prompt:<text> [resolution:hd|2k|portrait|pano|square]
-          [width:<px>] [height:<px>] [seed:<int>] [safe:true]
+/claw-img prompt:<text> [negative:<text>]
+          [resolution:square|portrait|landscape|hd|fullhd|2k]
+          [width:<px>] [height:<px>] [steps:<int>] [cfg:<float>]
+          [seed:<int>] [safe:true]
 ```
+
+- `negative` — what to keep out of the image.
+- `resolution` — size preset; `width`/`height` override it (4K omitted on
+  purpose — it can OOM the box; set width/height by hand if you must).
+- `steps` / `cfg` — quality knobs; omit to use the workflow defaults.
 
 - The default workflow is `CLAW_IMG_DEFAULT_WORKFLOW`. Set it to
   `flux-krea-2k-adult` for an NSFW-by-default deploy; `safe:true` forces the SFW

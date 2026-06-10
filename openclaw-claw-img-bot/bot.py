@@ -43,13 +43,16 @@ SFW_WORKFLOW = os.environ.get("CLAW_IMG_SFW_WORKFLOW", "flux-krea-2k").strip()
 MAX_BYTES = int(os.environ.get("CLAW_IMG_MAX_BYTES", "9437184"))
 TIMEOUT_S = float(os.environ.get("CLAW_IMG_TIMEOUT_S", "600"))
 
-# Resolution presets mirror the bridge's resolver and the !img script.
+# Resolution presets (explicit dims). 4K is deliberately omitted — a 3840px
+# FLUX render peaks ~100+ GB on this box and has livelocked the host; set
+# width/height by hand if you really need it.
 PRESETS = {
-    "hd": (1280, 720),
-    "2k": (2048, 2048),
-    "portrait": (768, 1280),
-    "pano": (1920, 1088),
     "square": (1024, 1024),
+    "portrait": (768, 1280),
+    "landscape": (1280, 768),
+    "hd": (1280, 720),
+    "fullhd": (1920, 1088),
+    "2k": (2048, 2048),
 }
 
 if not TOKEN:
@@ -106,9 +109,12 @@ def extract_result(envelope: dict) -> dict:
 @tree.command(name="claw-img", description="Generate an image (direct, no chat LLM in the loop).")
 @app_commands.describe(
     prompt="What the image should depict.",
+    negative="What to avoid / keep out of the image.",
     resolution="Output size preset (width/height below override it).",
     width="Custom width in px (overrides the preset).",
     height="Custom height in px (overrides the preset).",
+    steps="Sampler steps — higher = more detail/slower (omit = workflow default).",
+    cfg="Guidance scale — how strictly to follow the prompt (omit = workflow default).",
     seed="RNG seed for reproducibility (omit = random).",
     safe="Force the SFW workflow for this one call.",
 )
@@ -118,9 +124,12 @@ def extract_result(envelope: dict) -> dict:
 async def claw_img(
     interaction: discord.Interaction,
     prompt: str,
+    negative: str | None = None,
     resolution: app_commands.Choice[str] | None = None,
     width: int | None = None,
     height: int | None = None,
+    steps: int | None = None,
+    cfg: float | None = None,
     seed: int | None = None,
     safe: bool = False,
 ):
@@ -135,12 +144,18 @@ async def claw_img(
         "include_base64": True,
         "attach_image_content": False,
     }
+    if negative:
+        args["negative"] = negative
     if resolution is not None:
         args["width"], args["height"] = PRESETS[resolution.value]
     if width:
         args["width"] = width
     if height:
         args["height"] = height
+    if steps:
+        args["steps"] = steps
+    if cfg is not None:
+        args["cfg"] = cfg
     if seed is not None:
         args["seed"] = seed
 
