@@ -214,6 +214,8 @@
 //  40. channels.discord.mentionAliases — restart-proof real @mentions: maps
 //      outbound `@handle` text to stable user IDs (the built-in directory is
 //      in-memory only and empties on every gateway restart).
+//  41. channels.discord.allowBots — opt-in bot-to-bot conversations
+//      ("mentions" recommended); upstream botLoopProtection auto-enables.
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -3595,6 +3597,40 @@ if (mentionAliasesRaw && mentionAliasesRaw.toLowerCase() !== 'off') {
   delete config.channels.discord.mentionAliases;
   changed = true;
   console.log('[patch-config] removed channels.discord.mentionAliases (env off — self-heal)');
+}
+
+// ─── 41. channels.discord.allowBots — let bots talk to the bot ───────────────
+// Upstream default drops every bot-authored message before dispatch (the
+// classic author.bot anti-loop guard). This deploy wants bot-to-bot
+// conversations (ImbulClaw ↔ other guild bots), so the knob exposes the
+// plugin's first-class setting:
+//   "mentions" — process bot messages that MENTION this bot (recommended:
+//                a loop can only sustain if both bots keep tagging each
+//                other, and the loop guard caps it);
+//   "true"    — process ALL bot messages (subject to the same mention gate
+//                as humans);
+//   "false"   — explicit upstream default;  "off"/empty — remove/skip.
+// The plugin's botLoopProtection auto-enables whenever allowBots lets bot
+// messages through (defaults: 20 events / 60s sliding window per bot pair,
+// then 60s cooldown) — we deliberately leave those defaults alone; the
+// LLM's own per-reply latency is a stronger rate limiter in practice.
+const allowBotsRaw = (process.env.OPENCLAW_DISCORD_ALLOW_BOTS || '').trim().toLowerCase();
+if (['mentions', 'true', 'false'].includes(allowBotsRaw)) {
+  const desired = allowBotsRaw === 'mentions' ? 'mentions' : allowBotsRaw === 'true';
+  config.channels ??= {};
+  config.channels.discord ??= {};
+  if (config.channels.discord.allowBots !== desired) {
+    const prev = config.channels.discord.allowBots;
+    config.channels.discord.allowBots = desired;
+    changed = true;
+    console.log(`[patch-config] channels.discord.allowBots: ${JSON.stringify(prev) ?? '(unset)'} -> ${JSON.stringify(desired)} (botLoopProtection auto-enables upstream)`);
+  }
+} else if (allowBotsRaw === 'off' && config.channels?.discord?.allowBots !== undefined) {
+  delete config.channels.discord.allowBots;
+  changed = true;
+  console.log('[patch-config] removed channels.discord.allowBots (env off — self-heal)');
+} else if (allowBotsRaw && allowBotsRaw !== '') {
+  console.warn(`[patch-config] OPENCLAW_DISCORD_ALLOW_BOTS=${JSON.stringify(allowBotsRaw)} not in {mentions, true, false, off, ""} — skipping step 41.`);
 }
 
 

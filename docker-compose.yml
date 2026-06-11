@@ -1644,6 +1644,12 @@ services:
       # bot's `@SomeUser` only becomes a real pinging mention if that user
       # has spoken since the gateway last started (in-memory directory).
       OPENCLAW_DISCORD_MENTION_ALIASES: ${OPENCLAW_DISCORD_MENTION_ALIASES:-}
+      # channels.discord.allowBots (patcher step 41) — opt-in bot-to-bot
+      # chat. "mentions" = react to bot messages that mention this bot
+      # (recommended); "true" = all bot messages; empty = upstream default
+      # (drop every bot-authored message). Upstream botLoopProtection
+      # auto-enables with it (20 events/60s per bot pair, 60s cooldown).
+      OPENCLAW_DISCORD_ALLOW_BOTS: ${OPENCLAW_DISCORD_ALLOW_BOTS:-}
       # diagnostics.stuckSessionAbortMs (patcher step 8k) — the stuck-session
       # watchdog must outlast the 30-min MCP tool ceiling, or >6-min video
       # renders get their run aborted mid-flight (mp4 finishes, nobody
