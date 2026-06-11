@@ -1650,6 +1650,12 @@ services:
       # (drop every bot-authored message). Upstream botLoopProtection
       # auto-enables with it (20 events/60s per bot pair, 60s cooldown).
       OPENCLAW_DISCORD_ALLOW_BOTS: ${OPENCLAW_DISCORD_ALLOW_BOTS:-}
+      # Per-channel always-on gate (patcher step 30b) — comma-separated
+      # channel IDs where the bot responds without a mention. Pair with
+      # OPENCLAW_DISCORD_REQUIRE_MENTION=on so everywhere else stays
+      # mention-gated (a globally open gate floods the LLM and lets the
+      # bot chime into every channel of every server).
+      OPENCLAW_DISCORD_ALWAYS_CHANNELS: ${OPENCLAW_DISCORD_ALWAYS_CHANNELS:-}
       # diagnostics.stuckSessionAbortMs (patcher step 8k) — the stuck-session
       # watchdog must outlast the 30-min MCP tool ceiling, or >6-min video
       # renders get their run aborted mid-flight (mp4 finishes, nobody

@@ -3096,6 +3096,57 @@ if (config.channels?.discord?.enabled === true) {
       );
     }
   }
+
+  // (30b) Per-channel always-on gate — OPENCLAW_DISCORD_ALWAYS_CHANNELS.
+  // The wildcard gate above is all-or-nothing across EVERY guild the bot
+  // is in. Opening it globally floods the LLM (observed 2026-06-11: 4-5
+  // parallel sessions, generation collapsed to ~0.2 tok/s) and lets the
+  // bot chime into every channel of every server. The granular posture:
+  // keep the wildcard CLOSED (OPENCLAW_DISCORD_REQUIRE_MENTION=on) and
+  // open the gate only in the channels listed here (comma-separated
+  // channel IDs).
+  //
+  // ⚠ Schema trap this substep must defuse: once a guild entry has a
+  // `channels` map, an UNLISTED channel resolves to `{allowed: false}` —
+  // the bot goes completely silent there, mentions included (live plugin
+  // `resolveDiscordChannelConfig` → `?? { allowed: false }`). The channel
+  // matcher supports a `"*"` wildcard key, so we always write an explicit
+  // `channels["*"]` fallback mirroring the guild-level gate; unlisted
+  // channels then behave exactly as before.
+  //
+  // "off" removes the whole patcher-managed channels map (self-heal);
+  // empty = skip (operator-managed channel entries survive).
+  const alwaysChannelsRaw = (process.env.OPENCLAW_DISCORD_ALWAYS_CHANNELS || '').trim();
+  if (alwaysChannelsRaw && alwaysChannelsRaw.toLowerCase() !== 'off') {
+    const ids = alwaysChannelsRaw.split(',').map((s) => s.trim()).filter((s) => /^\d{17,20}$/.test(s));
+    const badCount = alwaysChannelsRaw.split(',').map((s) => s.trim()).filter(Boolean).length - ids.length;
+    if (badCount > 0) {
+      console.warn(`[patch-config] OPENCLAW_DISCORD_ALWAYS_CHANNELS: ${badCount} entry(ies) skipped (expected 17-20 digit channel IDs).`);
+    }
+    if (ids.length > 0) {
+      const wc = config.channels.discord.guilds['*'];
+      wc.channels ??= {};
+      const guildGate = wc.requireMention === true;
+      const desiredFallback = { requireMention: guildGate };
+      if (JSON.stringify(wc.channels['*']) !== JSON.stringify(desiredFallback)) {
+        wc.channels['*'] = desiredFallback;
+        changed = true;
+        console.log(`[patch-config] guilds["*"].channels["*"] = ${JSON.stringify(desiredFallback)} (explicit fallback — without it, unlisted channels resolve to allowed:false and the bot goes silent there)`);
+      }
+      for (const id of ids) {
+        wc.channels[id] ??= {};
+        if (wc.channels[id].requireMention !== false) {
+          wc.channels[id].requireMention = false;
+          changed = true;
+          console.log(`[patch-config] guilds["*"].channels[${JSON.stringify(id)}].requireMention = false (always-on channel)`);
+        }
+      }
+    }
+  } else if (alwaysChannelsRaw.toLowerCase() === 'off' && config.channels?.discord?.guilds?.['*']?.channels !== undefined) {
+    delete config.channels.discord.guilds['*'].channels;
+    changed = true;
+    console.log('[patch-config] removed guilds["*"].channels (OPENCLAW_DISCORD_ALWAYS_CHANNELS=off — self-heal)');
+  }
 }
 
 // ─── 31. tools.exec — the agentic-coding shell surface ──────────────────────
