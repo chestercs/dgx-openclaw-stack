@@ -6,6 +6,8 @@
 #   1. MCP SDK hardcoded 60s default request timeout -> env-driven.
 #   2. Browser screenshot tool result: append a `[saved: <path>]` header
 #      line so the model learns WHERE each screenshot landed.
+#   3. Discord inbound mention prettify: keep the user ID visible
+#      (`@Name (<@ID>)`) so the model can tag users back.
 #
 # Two-phase strategy:
 #
@@ -92,6 +94,44 @@ console.error("[shot-path-patch] patched " + f);
     done
 }
 shot_path_patch
+
+# ── Patch 3: keep Discord user IDs visible in inbound mention prettify ──────
+#
+# Inbound Discord messages arrive with raw `<@123456…>` mentions; the
+# pipeline's resolveDiscordMentions() replaces them with a readable
+# `@DisplayName` using message.mentionedUsers — and throws the ID away.
+# The model therefore never learns any user's snowflake, so it cannot emit
+# the canonical `<@ID>` outbound mention; its plain `@Name` text only
+# becomes a real ping if the mentionAliases map or the in-memory directory
+# (which empties on every gateway restart) happens to know the handle.
+# Operator expectation (2026-06-11): "I tagged the user in my message —
+# the bot should be able to tag them back." This patch rewrites the
+# replacement to `@DisplayName (<@ID>)`, so the ID rides along in the
+# model-visible text (and survives in session history across restarts);
+# the format-rules cheatsheet teaches the bot to reuse the `<@ID>` form.
+mention_id_patch() {
+    local files f
+    files=$(grep -rl --include='*.js' 'mentionedUsers' /app/dist 2>/dev/null || true)
+    if [ -z "${files}" ]; then
+        echo "[mention-id-patch] no candidate file found under /app/dist — upstream layout changed?" >&2
+        return 0
+    fi
+    for f in ${files}; do
+        node -e '
+const fs = require("fs");
+const f = process.argv[1];
+let s = fs.readFileSync(f, "utf8");
+const anchor = "new RegExp(`<@!?${user.id}>`, \"g\"), `@${label}`)";
+const patched = "new RegExp(`<@!?${user.id}>`, \"g\"), `@${label} (<@${user.id}>)`)";
+if (s.includes(patched)) { process.exit(0); }
+if (!s.includes(anchor)) { process.exit(0); }
+s = s.split(anchor).join(patched);
+fs.writeFileSync(f, s);
+console.error("[mention-id-patch] patched " + f);
+' "${f}"
+    done
+}
+mention_id_patch
 
 # Phase 2 — background sweep. Detach so exec below replaces this
 # process while the loop continues as an orphan (re-parented to PID 1).
