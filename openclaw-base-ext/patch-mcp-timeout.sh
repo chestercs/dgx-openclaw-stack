@@ -30,6 +30,18 @@ NEW_EXPR='(parseInt(process.env.MCP_REQUEST_TIMEOUT_MS,10)||1800000)'
 OLD_LITERAL='DEFAULT_REQUEST_TIMEOUT_MSEC = 60000'
 NEW_LITERAL="DEFAULT_REQUEST_TIMEOUT_MSEC = ${NEW_EXPR}"
 
+# Where patchable dist bundles live. /app/dist is the image's own code;
+# the two config-volume roots hold INSTALLED PLUGINS, which bundle their
+# own copies of the same modules — the Discord plugin
+# (~/.openclaw/npm/projects/openclaw-discord-*/node_modules/@openclaw/
+# discord/dist/) ships its own message-utils, and THAT copy serves the
+# live inbound path (verified 2026-06-11: the /app/dist mention patch
+# applied cleanly but inbound text stayed unpatched until the plugin
+# copy was patched too). Config-volume patches persist across recreates;
+# a plugin upgrade lands in a fresh dir and gets re-patched at the next
+# container start. Missing dirs are fine (grep skips them).
+PATCH_ROOTS="/app/dist /home/node/.openclaw/npm/projects /home/node/.openclaw/extensions"
+
 # sed delimiter: `#` rather than `|`, because the replacement contains
 # `||` (JS logical-or) which would be misparsed as the end of an `s|`
 # command's replacement followed by invalid trailing flags.
@@ -72,9 +84,9 @@ patch_pass || echo "[mcp-patch] phase 1: nothing to patch (already done or prist
 # this patch just removes the failure mode.
 shot_path_patch() {
     local files f
-    files=$(grep -rl --include='*.js' 'media image understanding' /app/dist 2>/dev/null || true)
+    files=$(grep -rl --include='*.js' 'media image understanding' ${PATCH_ROOTS} 2>/dev/null || true)
     if [ -z "${files}" ]; then
-        echo "[shot-path-patch] no candidate file found under /app/dist — upstream layout changed?" >&2
+        echo "[shot-path-patch] no candidate file found under ${PATCH_ROOTS} — upstream layout changed?" >&2
         return 0
     fi
     for f in ${files}; do
@@ -88,7 +100,9 @@ if (s.includes(inject)) { process.exit(0); }
 const i = s.indexOf(anchor);
 if (i < 0) { console.error("[shot-path-patch] anchor not found in " + f + " — skipped (upstream changed?)"); process.exit(0); }
 s = s.slice(0, i + anchor.length) + inject + s.slice(i + anchor.length);
-fs.writeFileSync(f, s);
+const tmp = f + ".patch-tmp-" + process.pid;
+fs.writeFileSync(tmp, s);
+fs.renameSync(tmp, f);
 console.error("[shot-path-patch] patched " + f);
 ' "${f}"
     done
@@ -111,9 +125,9 @@ shot_path_patch
 # the format-rules cheatsheet teaches the bot to reuse the `<@ID>` form.
 mention_id_patch() {
     local files f
-    files=$(grep -rl --include='*.js' 'mentionedUsers' /app/dist 2>/dev/null || true)
+    files=$(grep -rl --include='*.js' 'mentionedUsers' ${PATCH_ROOTS} 2>/dev/null || true)
     if [ -z "${files}" ]; then
-        echo "[mention-id-patch] no candidate file found under /app/dist — upstream layout changed?" >&2
+        echo "[mention-id-patch] no candidate file found under ${PATCH_ROOTS} — upstream layout changed?" >&2
         return 0
     fi
     for f in ${files}; do
@@ -126,7 +140,9 @@ const patched = "new RegExp(`<@!?${user.id}>`, \"g\"), `@${label} (<@${user.id}>
 if (s.includes(patched)) { process.exit(0); }
 if (!s.includes(anchor)) { process.exit(0); }
 s = s.split(anchor).join(patched);
-fs.writeFileSync(f, s);
+const tmp = f + ".patch-tmp-" + process.pid;
+fs.writeFileSync(tmp, s);
+fs.renameSync(tmp, f);
 console.error("[mention-id-patch] patched " + f);
 ' "${f}"
     done
