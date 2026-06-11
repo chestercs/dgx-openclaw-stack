@@ -3106,10 +3106,18 @@ if (toolsExecOn) {
   config.tools ??= {};
   config.tools.exec ??= {};
   const ex = config.tools.exec;
+  // In full mode the approval machinery must REALLY stand down. The gateway
+  // only skips approval handling when security=full AND ask=off AND
+  // strictInlineEval is not true (dist: shouldSkipNodeApprovalPrepare); the
+  // ask mode is additionally merged across layers with stricter-wins
+  // (maxAsk). With ask left at on-miss, strictInlineEval kept pushing every
+  // `python3 -c` / `node -e` one-liner into a Discord approval DM even though
+  // the interpreter binary was allowlisted with allow-always (2026-06-11
+  // operator report) — "full" looked enabled but still nagged.
   const desiredExec = {
     security: execSecurity,
-    ask: 'on-miss',
-    strictInlineEval: true,
+    ask: execSecurity === 'full' ? 'off' : 'on-miss',
+    strictInlineEval: execSecurity !== 'full',
     timeoutSec: Number.isFinite(execTimeoutSec) && execTimeoutSec > 0 ? execTimeoutSec : 1800,
     safeBins,
   };
@@ -3172,13 +3180,28 @@ if (execApprovalsSeedOn && toolsExecOn) {
     ap.defaults ??= {};
     // Only-when-undefined: a runtime- or operator-modified default is
     // authoritative (e.g. the operator relaxed askFallback on purpose).
-    const desiredApDefaults = { ask: 'on-miss', askFallback: 'deny' };
+    const desiredApDefaults = { askFallback: 'deny' };
     for (const [k, v] of Object.entries(desiredApDefaults)) {
       if (ap.defaults[k] === undefined) {
         ap.defaults[k] = v;
         apChanged = true;
         console.log(`[patch-config] exec-approvals.json defaults.${k} = ${JSON.stringify(v)}`);
       }
+    }
+    // defaults.ask follows OPENCLAW_EXEC_SECURITY like defaults.security
+    // below: the runtime merges ask across the two layers with STRICTER-wins
+    // (maxAsk), so a leftover "on-miss" here silently re-gates exec after the
+    // operator flipped the knob to full. Full → force "off"; allowlist →
+    // heal a stale "off" back to "on-miss" (rollback path) but leave an
+    // operator-set stricter "always" alone.
+    const desiredApAsk = execSecurity === 'full' ? 'off' : 'on-miss';
+    const apAskNeedsWrite = execSecurity === 'full'
+      ? ap.defaults.ask !== 'off'
+      : (ap.defaults.ask === undefined || ap.defaults.ask === 'off');
+    if (apAskNeedsWrite && ap.defaults.ask !== desiredApAsk) {
+      ap.defaults.ask = desiredApAsk;
+      apChanged = true;
+      console.log(`[patch-config] exec-approvals.json defaults.ask = ${JSON.stringify(desiredApAsk)} (follows OPENCLAW_EXEC_SECURITY=${execSecurity}; stricter-wins merge would re-gate full mode otherwise)`);
     }
     // defaults.security is the exception to only-when-undefined: it mirrors
     // the OPENCLAW_EXEC_SECURITY knob deterministically. The two layers

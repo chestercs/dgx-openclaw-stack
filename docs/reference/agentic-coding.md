@@ -59,9 +59,22 @@ approver got a DM" instead of treating a pending approval as an error.
   `OPENCLAW_EXEC_SECURITY=full`: the patcher then writes `full` into both
   `tools.exec.security` and `exec-approvals.json` `defaults.security` (the
   two layers must agree — a stricter file value would silently re-gate exec).
+
+  Full mode also has to stand down the *ask* machinery, not just the security
+  enum. The runtime skips approval handling only when `security: "full"` AND
+  `ask: "off"` AND `strictInlineEval` is not true, and the effective ask mode
+  is merged across the two layers with stricter-wins (`maxAsk`). So in full
+  mode the patcher writes `ask: "off"` + `strictInlineEval: false` into
+  `tools.exec` and mirrors `defaults.ask: "off"` into `exec-approvals.json`;
+  with any of those left at the allowlist-mode values, every `python3 -c` /
+  `node -e` one-liner still lands in a Discord approval DM even when the
+  interpreter binary is allowlisted (observed 2026-06-11).
+
   Learned allow-always grants are never touched; they go inert under full and
   resume on rollback. Rollback = set the knob back to `allowlist` (or unset)
-  and re-run the patcher.
+  and re-run the patcher — this restores `ask: "on-miss"` +
+  `strictInlineEval: true` and heals a stale `defaults.ask: "off"` back to
+  `"on-miss"` (an operator-set stricter `"always"` is left alone).
 - `tools.codeMode` — hides normal tools behind an exec-only QuickJS bridge;
   breaks image/browser/etc. on this multi-tool bot.
 
