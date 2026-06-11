@@ -1639,6 +1639,12 @@ services:
       OPENCLAW_AGENT_CONTEXT_TOKENS: ${OPENCLAW_AGENT_CONTEXT_TOKENS:-}
       OPENCLAW_AGENT_CONTEXT_PRUNING_MODE: ${OPENCLAW_AGENT_CONTEXT_PRUNING_MODE:-}
       OPENCLAW_AGENT_CONTEXT_PRUNING_TTL: ${OPENCLAW_AGENT_CONTEXT_PRUNING_TTL:-}
+      # diagnostics.stuckSessionAbortMs (patcher step 8k) — the stuck-session
+      # watchdog must outlast the 30-min MCP tool ceiling, or >6-min video
+      # renders get their run aborted mid-flight (mp4 finishes, nobody
+      # delivers it, channel wedges on the orphaned session lock). Default
+      # 2100000 (35 min); "off" restores the upstream 360s behaviour.
+      OPENCLAW_STUCK_SESSION_ABORT_MS: ${OPENCLAW_STUCK_SESSION_ABORT_MS:-}
       # ── Thread-bound task sessions (patcher steps 29c/29d) ────────────────
       # Lifetime tuning for Discord thread bindings (empty = upstream
       # defaults: idle 24h, max-age disabled). Suggested for thread-per-task

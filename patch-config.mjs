@@ -1331,6 +1331,44 @@ if (ctxPruneModeRaw === 'cache-ttl') {
   );
 }
 
+// (8k) diagnostics.stuckSessionAbortMs — don't let the stuck-session watchdog
+//      kill long MCP tool calls. The 2026.6.1 watchdog abort-drains an embedded
+//      run after max(300s, stuckSessionWarnMs×3) = 360s of "no progress" — but
+//      MCP tool executions (comfyui generate_video, long renders) do NOT emit
+//      the progress events that reset the timer (lastProgress stays at
+//      model_call:ended for the whole render). Net effect on this stack: any
+//      video render > ~6 min got its run aborted mid-flight; ComfyUI finished
+//      the mp4, nobody delivered it, and the aborted run left a session-file
+//      lock behind (17-min maxHold) that made the bot unresponsive on the
+//      channel (observed live 2026-06-11 ~11:20).
+//
+//      Default 2100000 ms (35 min) clears the 30-min MCP request ceiling our
+//      base-ext patch sets (MCP_REQUEST_TIMEOUT_MS default 1800000) — the MCP
+//      layer times out first and surfaces a real error instead of the watchdog
+//      shooting the run. Warn-level diagnostics stay at the upstream 120s
+//      (logs still flag long waits early). Key is zod-schema-validated
+//      (`diagnostics.stuckSessionAbortMs`, WebGUI "Session Abort Threshold").
+//      "off" = remove (self-heal back to upstream default).
+const stuckAbortRaw = process.env.OPENCLAW_STUCK_SESSION_ABORT_MS?.trim() || '2100000';
+if (stuckAbortRaw !== 'off' && stuckAbortRaw !== 'skip') {
+  const n = parseInt(stuckAbortRaw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(`[patch-config] OPENCLAW_STUCK_SESSION_ABORT_MS=${JSON.stringify(stuckAbortRaw)} not a positive integer — skipping step 8k.`);
+  } else {
+    config.diagnostics ??= {};
+    if (config.diagnostics.stuckSessionAbortMs !== n) {
+      const prev = config.diagnostics.stuckSessionAbortMs;
+      config.diagnostics.stuckSessionAbortMs = n;
+      changed = true;
+      console.log(`[patch-config] diagnostics.stuckSessionAbortMs: ${prev ?? '(unset)'} -> ${n} (watchdog must outlast the 30-min MCP tool ceiling)`);
+    }
+  }
+} else if (config.diagnostics?.stuckSessionAbortMs !== undefined) {
+  delete config.diagnostics.stuckSessionAbortMs;
+  changed = true;
+  console.log('[patch-config] removed diagnostics.stuckSessionAbortMs (env off — self-heal)');
+}
+
 // (9) Ensure memorySearch hybrid (BM25 + vector) + MMR diversity rerank.
 //     - vectorWeight 0.7 / textWeight 0.3: vector dominates (semantic retrieval
 //       is the main use case on multilingual content with bge-m3); BM25
