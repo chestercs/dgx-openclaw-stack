@@ -3052,9 +3052,15 @@ if (['on', '1', 'true', 'yes'].includes(sessionThreadSpawnRaw)) {
 // required default. The env value IS the desired `requireMention`
 // posture, so the naming maps 1:1 to the config field semantics.
 //
-// User-managed protection: only writes when `guilds["*"].requireMention`
-// is undefined; if the operator hand-set the wildcard entry, the value
-// survives.
+// Deterministic write (2026-06-11, was write-when-undefined): the wildcard
+// value drifted to `true` on the live host (a WebGUI save or the 2026.6.1
+// upgrade — neither left a trace), and the only operator-facing symptom is
+// maddeningly indirect: "/activation always does nothing" (the slash is the
+// in-gate hint, see below — it cannot open a closed gate). Write-when-
+// undefined could never heal that drift, so the env knob is now the single
+// source of truth for the WILDCARD entry: off → false, on → true. Per-guild
+// entries (`guilds.<id>.requireMention`) stay untouched — that's the
+// supported way to silence the bot in specific guilds.
 //
 // Important: this is the GATE — it decides whether messages reach the
 // agent at all. The `/activation mention|always` slash command is a
@@ -3070,24 +3076,23 @@ if (['on', '1', 'true', 'yes'].includes(sessionThreadSpawnRaw)) {
 if (config.channels?.discord?.enabled === true) {
   const requireMentionRaw =
     (process.env.OPENCLAW_DISCORD_REQUIRE_MENTION?.trim() || 'off').toLowerCase();
-  if (requireMentionRaw === 'on') {
-    // Operator wants upstream-default behavior (mention required) — skip.
-  } else if (requireMentionRaw !== 'off') {
+  if (!['on', 'off'].includes(requireMentionRaw)) {
     console.warn(
       `[patch-config] OPENCLAW_DISCORD_REQUIRE_MENTION=${JSON.stringify(requireMentionRaw)} ` +
       `not in {on, off} — skipping wildcard requireMention substep.`,
     );
   } else {
+    const desiredRequireMention = requireMentionRaw === 'on';
     config.channels.discord.guilds ??= {};
     config.channels.discord.guilds['*'] ??= {};
-    if (config.channels.discord.guilds['*'].requireMention === undefined) {
-      config.channels.discord.guilds['*'].requireMention = false;
+    if (config.channels.discord.guilds['*'].requireMention !== desiredRequireMention) {
+      const prev = config.channels.discord.guilds['*'].requireMention;
+      config.channels.discord.guilds['*'].requireMention = desiredRequireMention;
       changed = true;
       console.log(
-        `[patch-config] channels.discord.guilds["*"].requireMention = false ` +
-        `(bot responds to every guild message via wildcard fallback, no guild ` +
-        `IDs baked in — set OPENCLAW_DISCORD_REQUIRE_MENTION=on to preserve ` +
-        `upstream mention-required default)`,
+        `[patch-config] channels.discord.guilds["*"].requireMention: ${prev ?? '(unset)'} -> ${desiredRequireMention} ` +
+        `(wildcard GATE follows OPENCLAW_DISCORD_REQUIRE_MENTION=${requireMentionRaw}; drift here silently breaks ` +
+        `"/activation always" — per-guild guilds.<id>.requireMention overrides remain untouched)`,
       );
     }
   }
