@@ -4033,7 +4033,9 @@ const BROWSER_SKILL_BODY =
   'A MEDIA-sorban nyers abszolút path legyen (backtick és szóköz nélkül), és utána már semmi más szöveg.\n' +
   '- **"csak ezt a dobozt/szekciót fotózd" (részlet-screenshot):** (1) `open`; (2) `snapshot`{targetId,refs:"aria"} → keresd ki a kért szekció ref-jét (pl. a riasztás-doboz `eNN`-je); ' +
   '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → a mentett PNG MÁR a kivágott elem; (4) exec-ls + `MEDIA:` sor mint fent. ' +
-  'Ez az ELSŐDLEGES út — gyorsabb és pontosabb, mint utólag croppolni.\n' +
+  'Ez az ELSŐDLEGES út — gyorsabb és pontosabb, mint utólag croppolni. ' +
+  '🚨 A `screenshot` TOP-LEVEL action — HELYES: `{action:"screenshot", targetId, ref}`; HIBÁS: `{action:"act", kind:"screenshot", ref}` ' +
+  '(az `act` kind-jai csak klikk/gépelés-félék → "kind: must be equal to one of the allowed values" validation error).\n' +
   '- **Kép-utómunka (crop/resize/annotálás), ha a ref-út nem elég:** 🚨 a gateway python3-ában NINCS PIL/Pillow — az `exec`-ben a `python3 -c "from PIL import …"` MINDIG ModuleNotFoundError. ' +
   'A PIL a python_sandboxban van (a canvas-könyvtár közös, a media/browser NEM látszik át): ' +
   '(1) `exec({command:"cp /home/node/.openclaw/media/browser/<uuid>.png /home/node/.openclaw/canvas/shot.png"})`; ' +
