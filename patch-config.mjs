@@ -3950,8 +3950,8 @@ const SKILL_ROUTER_BODY =
   '- "emlékeztess / X múlva szólj / minden reggel" → `cron-reminders`\n' +
   '- weboldal megnyitás / screenshot / kattintás / űrlap → `browser-automation` (browser.act param-formák!). ' +
   '**Screenshot CSATOLÁSA (inline mag):** a screenshot tool-result csak szöveges leírás, magától SEMMI nem csatolódik — ' +
-  'a PNG-t `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1` adja vissza, és a válaszod UTOLSÓ sora ' +
-  'egy önálló `MEDIA:<path>` sor legyen (abból lesz a Discord-attachment). ' +
+  'a PNG path-ja a result `[saved: …]` sorában van; a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor legyen, ' +
+  'a path-t a `[saved:]`-ből SZÓ SZERINT másolva (SOHA fejből — kitalált path = Media failed; fallback: exec `ls -t …/media/browser/*.png | head -1`). ' +
   '**"Csak ezt a dobozt/részt"** → snapshot-ref + `screenshot{targetId,ref:"eNN"}` (elem-screenshot, NE utólagos crop). ' +
   '🚨 Kép-crop az `exec`-ben TILOS (`python3 -c "from PIL…"` = ModuleNotFoundError, a gateway-ben nincs Pillow) — ' +
   'PIL CSAK a python_sandboxban; a media→canvas másolás receptje a skillben.\n' +
@@ -4026,13 +4026,15 @@ const BROWSER_SKILL_BODY =
   '(a gateway containerben nincs browser binary).\n\n' +
   '**Láncok:**\n' +
   '- **"csinálj screenshotot X-ről" (a user CSATOLT képet vár):** (1) `browser({action:"open", url:"X", label:"shot"})`; ' +
-  '(2) `browser({action:"screenshot", targetId:"shot"})`; ' +
-  '(3) a friss PNG path-ját kérd el: `exec({command:"ls -t /home/node/.openclaw/media/browser/*.png | head -1"})` — KÖZVETLENÜL a screenshot után hívd; ' +
-  '(4) a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor (pl. `MEDIA:/home/node/.openclaw/media/browser/ab12….png`) — ezt a sort a Discord valódi kép-attachmentté alakítja. ' +
-  '🚨 A screenshot tool-result magától SEMMIT nem csatol (csak leírás-szöveg) — MEDIA-sor nélkül a user nem kap képet; SOHA ne írj "nézd meg a csatolt fájlt"-ot MEDIA-sor nélkül. ' +
-  'A MEDIA-sorban nyers abszolút path legyen (backtick és szóköz nélkül), és utána már semmi más szöveg.\n' +
-  '- **"csak ezt a dobozt/szekciót fotózd" (részlet-screenshot):** (1) `open`; (2) `snapshot`{targetId,refs:"aria"} → keresd ki a kért szekció ref-jét (pl. a riasztás-doboz `eNN`-je); ' +
-  '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → a mentett PNG MÁR a kivágott elem; (4) exec-ls + `MEDIA:` sor mint fent. ' +
+  '(2) `browser({action:"screenshot", targetId:"shot"})` → a tool-result fejlécében ott a `[saved: /home/node/.openclaw/media/browser/<uuid>.png]` sor; ' +
+  '(3) a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor, a path a CSATOLNI KÍVÁNT screenshot `[saved: …]` sorából SZÓ SZERINT másolva — ezt a sort a Discord valódi kép-attachmentté alakítja. ' +
+  '🚨 A MEDIA-path-ot SOHA ne írd fejből/emlékezetből: ha nincs meg a `[saved:]` sor, kérd el `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1`-gyel — kitalált/régi path = "Media failed" + rossz kép. ' +
+  '🚨 A screenshot magától SEMMIT nem csatol — MEDIA-sor nélkül a user nem kap képet; SOHA ne írj "nézd meg a csatolt fájlt"-ot MEDIA-sor nélkül. ' +
+  'A MEDIA-sorban nyers abszolút path legyen (backtick és szóköz nélkül), utána semmi más szöveg; turn-önként EGY képet csatolj (a legjobbat), ne többet.\n' +
+  '- **"csak ezt a dobozt/szekciót fotózd" (részlet-screenshot):** (1) `open`; (2) `snapshot`{targetId,refs:"aria"} → a hierarchiából válaszd ki a kért szekció KONTÉNER-refjét ' +
+  '(parent-doboz kérésnél a kért elemet TARTALMAZÓ ref-et, NE próbálgasd sorban a refeket); ' +
+  '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → a mentett PNG MÁR a kivágott elem, a path a result `[saved: …]` sorában; ' +
+  '(4) ellenőrizd a vision-leírásból hogy a jó kivágás-e — ha igen, ÁLLJ LE és csatold a `MEDIA:` sorral; max 2-3 ref-próba, utána a teljes oldalt add. ' +
   'Ez az ELSŐDLEGES út — gyorsabb és pontosabb, mint utólag croppolni. ' +
   '🚨 A `screenshot` TOP-LEVEL action — HELYES: `{action:"screenshot", targetId, ref}`; HIBÁS: `{action:"act", kind:"screenshot", ref}` ' +
   '(az `act` kind-jai csak klikk/gépelés-félék → "kind: must be equal to one of the allowed values" validation error).\n' +

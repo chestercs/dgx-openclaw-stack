@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Patch the MCP SDK's hardcoded 60s default request timeout. Runs at
-# every openclaw container start as the entrypoint wrapper. See
-# openclaw-base-ext/Dockerfile for the full rationale.
+# Runtime dist patches for the upstream openclaw image. Runs at every
+# container start as the entrypoint wrapper. See
+# openclaw-base-ext/Dockerfile for the full rationale. Two patches:
+#
+#   1. MCP SDK hardcoded 60s default request timeout -> env-driven.
+#   2. Browser screenshot tool result: append a `[saved: <path>]` header
+#      line so the model learns WHERE each screenshot landed.
 #
 # Two-phase strategy:
 #
@@ -43,6 +47,51 @@ patch_pass() {
 
 # Phase 1 — synchronous pass.
 patch_pass || echo "[mcp-patch] phase 1: nothing to patch (already done or pristine image)" >&2
+
+# ── Patch 2: surface the browser screenshot's saved file path to the model ──
+#
+# The gateway saves every `browser screenshot` PNG under
+# ~/.openclaw/media/browser/<uuid>.png, vision-describes it, and returns
+# ONLY the text description to the model — the path travels in the tool
+# result's `details`, which the model never sees. The agent therefore
+# cannot attach the screenshot (`MEDIA:<path>` reply line) without an
+# exec-ls side channel, and live runs (2026-06-11 03:21) showed Gemma
+# skipping that step and HALLUCINATING paths (it copied the 16-hex id of
+# the SECURITY-NOTICE wrapper as a filename -> "Media failed" on Discord).
+#
+# This patch appends `[saved: <path>]` to the vision header lines of the
+# screenshot tool result, so every screenshot's real path is in the
+# model-visible text. Anchored on the unique `[analyzed by ...]`
+# headerLines template in the bundled plugin-service; the inject is
+# guarded with `typeof screenshotPath` so a file that matches the anchor
+# but lacks the variable degrades to a no-op instead of a ReferenceError.
+# Idempotent (includes-check); loud warning when the anchor vanishes
+# after an upstream bump — the skill's exec-ls fallback keeps working,
+# this patch just removes the failure mode.
+shot_path_patch() {
+    local files f
+    files=$(grep -rl --include='*.js' 'media image understanding' /app/dist 2>/dev/null || true)
+    if [ -z "${files}" ]; then
+        echo "[shot-path-patch] no candidate file found under /app/dist — upstream layout changed?" >&2
+        return 0
+    fi
+    for f in ${files}; do
+        node -e '
+const fs = require("fs");
+const f = process.argv[1];
+let s = fs.readFileSync(f, "utf8");
+const anchor = "\"media image understanding\"}]`];";
+const inject = " if (typeof screenshotPath === \"string\" && screenshotPath && typeof headerLines !== \"undefined\") headerLines.push(\"[saved: \" + screenshotPath + \"]\");";
+if (s.includes(inject)) { process.exit(0); }
+const i = s.indexOf(anchor);
+if (i < 0) { console.error("[shot-path-patch] anchor not found in " + f + " — skipped (upstream changed?)"); process.exit(0); }
+s = s.slice(0, i + anchor.length) + inject + s.slice(i + anchor.length);
+fs.writeFileSync(f, s);
+console.error("[shot-path-patch] patched " + f);
+' "${f}"
+    done
+}
+shot_path_patch
 
 # Phase 2 — background sweep. Detach so exec below replaces this
 # process while the loop continues as an orphan (re-parented to PID 1).
