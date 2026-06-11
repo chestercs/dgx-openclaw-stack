@@ -3951,7 +3951,10 @@ const SKILL_ROUTER_BODY =
   '- weboldal megnyitás / screenshot / kattintás / űrlap → `browser-automation` (browser.act param-formák!). ' +
   '**Screenshot CSATOLÁSA (inline mag):** a screenshot tool-result csak szöveges leírás, magától SEMMI nem csatolódik — ' +
   'a PNG-t `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1` adja vissza, és a válaszod UTOLSÓ sora ' +
-  'egy önálló `MEDIA:<path>` sor legyen (abból lesz a Discord-attachment).\n' +
+  'egy önálló `MEDIA:<path>` sor legyen (abból lesz a Discord-attachment). ' +
+  '**"Csak ezt a dobozt/részt"** → snapshot-ref + `screenshot{targetId,ref:"eNN"}` (elem-screenshot, NE utólagos crop). ' +
+  '🚨 Kép-crop az `exec`-ben TILOS (`python3 -c "from PIL…"` = ModuleNotFoundError, a gateway-ben nincs Pillow) — ' +
+  'PIL CSAK a python_sandboxban; a media→canvas másolás receptje a skillben.\n' +
   '- képgenerálás → `image-generation` (workflow- és felbontás-receptek)\n' +
   '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
   '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n' +
@@ -4017,6 +4020,7 @@ const BROWSER_SKILL_BODY =
   'Action-ök: `open`{url,label} → stabil `targetId`-t ad; `snapshot`{targetId,refs:"aria"} → DOM+elem-refs klikkhez; ' +
   '`screenshot`{targetId} → a tool-result CSAK szöveges vision-leírás a képről; maga a PNG a gateway-en a ' +
   '`/home/node/.openclaw/media/browser/<uuid>.png` alá mentődik, de a pontos path NEM látszik a resultban — csatoláshoz lásd a screenshot-láncot lent; ' +
+  '`screenshot`{targetId,ref:"eNN"} → CSAK az adott elem (snapshot-ref) képe, NEM a teljes oldal — "csak ezt a dobozt/részt fotózd" kéréshez EZT használd, ne utólagos crop-ot; ' +
   '`act`{targetId,ref,…} klikk/gépelés; ' +
   '`tabs` / `close`{targetId}. A default profile `self-hosted` (openclaw-browser sidecar) — NE adj `target="sandbox/host"`-ot ' +
   '(a gateway containerben nincs browser binary).\n\n' +
@@ -4027,6 +4031,14 @@ const BROWSER_SKILL_BODY =
   '(4) a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor (pl. `MEDIA:/home/node/.openclaw/media/browser/ab12….png`) — ezt a sort a Discord valódi kép-attachmentté alakítja. ' +
   '🚨 A screenshot tool-result magától SEMMIT nem csatol (csak leírás-szöveg) — MEDIA-sor nélkül a user nem kap képet; SOHA ne írj "nézd meg a csatolt fájlt"-ot MEDIA-sor nélkül. ' +
   'A MEDIA-sorban nyers abszolút path legyen (backtick és szóköz nélkül), és utána már semmi más szöveg.\n' +
+  '- **"csak ezt a dobozt/szekciót fotózd" (részlet-screenshot):** (1) `open`; (2) `snapshot`{targetId,refs:"aria"} → keresd ki a kért szekció ref-jét (pl. a riasztás-doboz `eNN`-je); ' +
+  '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → a mentett PNG MÁR a kivágott elem; (4) exec-ls + `MEDIA:` sor mint fent. ' +
+  'Ez az ELSŐDLEGES út — gyorsabb és pontosabb, mint utólag croppolni.\n' +
+  '- **Kép-utómunka (crop/resize/annotálás), ha a ref-út nem elég:** 🚨 a gateway python3-ában NINCS PIL/Pillow — az `exec`-ben a `python3 -c "from PIL import …"` MINDIG ModuleNotFoundError. ' +
+  'A PIL a python_sandboxban van (a canvas-könyvtár közös, a media/browser NEM látszik át): ' +
+  '(1) `exec({command:"cp /home/node/.openclaw/media/browser/<uuid>.png /home/node/.openclaw/canvas/shot.png"})`; ' +
+  '(2) `python_sandbox__python_exec` PIL-lel a `/home/node/.openclaw/canvas/shot.png`-n, mentés `/home/node/.openclaw/canvas/<out>.png`-be; ' +
+  '(3) a válasz utolsó sora `MEDIA:/home/node/.openclaw/canvas/<out>.png`.\n' +
   '- "olvasd el ezt a cikket / mi van X oldalon" → `open` → `snapshot` → foglald össze.\n' +
   '- "találj nekem képet X-ről" → `web_search` (cikk-URL-ek) → `browser open` → `snapshot urls:true` → kép-URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → mentés `~/.openclaw/canvas/` alá.\n\n' +
   '**Workflow screenshot-kérésre:** (1) egy rövid emberi mondat a user nyelvén ("Egy pillanat, csinálok egy képernyőképet.") — NE nyers tool-szintaxis; (2) tool-hívások `label=`/`targetId=` párosítással; (3) hiba esetén alternatíva (snapshot-fallback screenshot-timeoutra, python-fallback browser-403-ra); (4) bukásnál a VALÓDI hibaszöveg.\n' +
