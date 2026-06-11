@@ -1639,6 +1639,11 @@ services:
       OPENCLAW_AGENT_CONTEXT_TOKENS: ${OPENCLAW_AGENT_CONTEXT_TOKENS:-}
       OPENCLAW_AGENT_CONTEXT_PRUNING_MODE: ${OPENCLAW_AGENT_CONTEXT_PRUNING_MODE:-}
       OPENCLAW_AGENT_CONTEXT_PRUNING_TTL: ${OPENCLAW_AGENT_CONTEXT_PRUNING_TTL:-}
+      # channels.discord.mentionAliases (patcher step 40) — restart-proof
+      # real @mentions: "Handle=snowflake,Other=snowflake". Without it the
+      # bot's `@SomeUser` only becomes a real pinging mention if that user
+      # has spoken since the gateway last started (in-memory directory).
+      OPENCLAW_DISCORD_MENTION_ALIASES: ${OPENCLAW_DISCORD_MENTION_ALIASES:-}
       # diagnostics.stuckSessionAbortMs (patcher step 8k) — the stuck-session
       # watchdog must outlast the 30-min MCP tool ceiling, or >6-min video
       # renders get their run aborted mid-flight (mp4 finishes, nobody

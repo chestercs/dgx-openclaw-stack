@@ -211,6 +211,9 @@
 //  38. commitments — short-lived follow-up memory (bot remembers promises).
 //  39. messages.queue.mode — explicit queue posture (default "steer": mid-run
 //      follow-ups are injected at the next model boundary, not queued blind).
+//  40. channels.discord.mentionAliases — restart-proof real @mentions: maps
+//      outbound `@handle` text to stable user IDs (the built-in directory is
+//      in-memory only and empties on every gateway restart).
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -3541,6 +3544,59 @@ if (queueMode !== '') {
   }
 }
 
+// ─── 40. channels.discord.mentionAliases — restart-proof real @mentions ──────
+// The Discord plugin rewrites plain `@handle` text in outbound replies into a
+// real pinging mention (`<@id>`) when it can resolve the handle — from the
+// `mentionAliases` map first, then from an IN-MEMORY directory of users seen
+// since the gateway booted (extensions/discord directory-cache). The
+// directory resets on every gateway restart, so right after a restart the
+// bot's `@SomeUser` renders as dead grey text until that user happens to
+// speak (observed live 2026-06-11 12:09: bot tagged @RuinBot minutes after a
+// recreate — no rewrite, no ping). The alias map closes that gap for the
+// regulars.
+//
+// Env format: OPENCLAW_DISCORD_MENTION_ALIASES="Handle=123456789012345678,
+// Other Handle=234…" (comma-separated, handle may contain spaces; matching
+// downstream is case- and @-prefix-insensitive, discriminator-insensitive).
+// Merge is ADDITIVE per listed handle — operator/GUI-added entries we don't
+// know about are never removed. "off" deletes the whole map (self-heal).
+const mentionAliasesRaw = process.env.OPENCLAW_DISCORD_MENTION_ALIASES?.trim();
+if (mentionAliasesRaw && mentionAliasesRaw.toLowerCase() !== 'off') {
+  const entries = mentionAliasesRaw.split(',')
+    .map((s) => s.trim()).filter(Boolean)
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      if (eq <= 0) return null;
+      const handle = pair.slice(0, eq).trim();
+      const id = pair.slice(eq + 1).trim();
+      if (!handle || !/^\d{17,20}$/.test(id)) return null;
+      return [handle, id];
+    });
+  const bad = entries.filter((e) => e === null).length;
+  if (bad > 0) {
+    console.warn(`[patch-config] OPENCLAW_DISCORD_MENTION_ALIASES: ${bad} malformed pair(s) skipped (expected "Handle=17-20 digit snowflake").`);
+  }
+  const valid = entries.filter(Boolean);
+  if (valid.length > 0) {
+    config.channels ??= {};
+    config.channels.discord ??= {};
+    config.channels.discord.mentionAliases ??= {};
+    const ma = config.channels.discord.mentionAliases;
+    for (const [handle, id] of valid) {
+      if (ma[handle] !== id) {
+        const prev = ma[handle];
+        ma[handle] = id;
+        changed = true;
+        console.log(`[patch-config] channels.discord.mentionAliases[${JSON.stringify(handle)}]: ${prev ?? '(unset)'} -> ${id}`);
+      }
+    }
+  }
+} else if (mentionAliasesRaw?.toLowerCase() === 'off' && config.channels?.discord?.mentionAliases !== undefined) {
+  delete config.channels.discord.mentionAliases;
+  changed = true;
+  console.log('[patch-config] removed channels.discord.mentionAliases (env off — self-heal)');
+}
+
 
 // ─── 26. Workspace-discord AGENTS.md patcher-managed blocks ──────────────────
 // The discord-friend agent has its own workspace at
@@ -3691,7 +3747,8 @@ const FORMAT_RULES_CHEATSHEET_BODY =
   '- Long answers (>6 lines) MUST use bullet points or a numbered list.\n' +
   '- When a tool call is in flight, the streaming preview surfaces a one-line "🔧 tool: …" status automatically — do NOT also embed manual "calling tool…" text in your reply.\n' +
   '- Magyar beszédben magyar szavakat használj — ne keverj idegen (francia/angol) szavakat. "Már" nem "Déjà".\n' +
-  '- 🚨 **Linkek = NYERS URL, SOHA ne `[szöveg](url)` masked markdown!** Discord sima (nem-embed) üzenetben a `[szöveg](url)` NYERS szövegként jelenik meg (`[...](...)`), nem kattintható link, és nem is embedel. Add ki a TELJES nyers URL-t önálló sorban (`https://example.com/path`) — az kattintható ÉS auto-embedel (preview). Web_search-forrásnál is nyers URL, NE `[domain](url)`. (A masked-link CSAK rich-embedben működne; a bot sima üzenetként küld, ezért tilos.)\n\n' +
+  '- 🚨 **Linkek = NYERS URL, SOHA ne `[szöveg](url)` masked markdown!** Discord sima (nem-embed) üzenetben a `[szöveg](url)` NYERS szövegként jelenik meg (`[...](...)`), nem kattintható link, és nem is embedel. Add ki a TELJES nyers URL-t önálló sorban (`https://example.com/path`) — az kattintható ÉS auto-embedel (preview). Web_search-forrásnál is nyers URL, NE `[domain](url)`. (A masked-link CSAK rich-embedben működne; a bot sima üzenetként küld, ezért tilos.)\n' +
+  '- **User-tagelés:** sima `@Handle` a PONTOS névvel (pl. `@RuinBot`) — a rendszer kimenőben valódi, pingelő mentionné írja át, ha ismeri a usert (mentionAliases-térkép, vagy bárki aki a gateway indulása óta írt). Ha tudod a numerikus user-ID-t (pl. a `sender_id` metaadatból), írj közvetlenül `<@ID>`-t — az MINDIG valódi mention. SOHA ne tageld backtick-ben vagy markdown-linkként (úgy halott szürke szöveg marad).\n\n' +
   '## Kinek válaszolj — MINDENKINEK (nem csak az ownernek)\n\n' +
   '🚨 A guild csatornákban ÉS a DM-ekben EGYARÁNT MINDENKINEK teljes értékű választ adsz, aki hozzád szól (guild-ben @mention-nel). NINCS owner-only korlátozás. Yagi, Nilatah, KOFOLA, Kerajoe, Reverend Green és bárki más PONTOSAN ugyanolyan kiszolgálást kap, mint az admin (ChesTeR / 244049593338167296). SOHA ne tagadd meg a választ azért, mert a feladó nem az owner, és SOHA ne mondd hogy "csak az owner-rel beszélgetek". Az admin nem kivételezett — csak egy a userek közül.\n';
 
