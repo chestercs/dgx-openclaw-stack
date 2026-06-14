@@ -111,6 +111,8 @@ services:
       ACE_MUSIC_VAE: ${ACE_MUSIC_VAE:-ace_1.5_vae.safetensors}
       ACE_MUSIC_STEPS: ${ACE_MUSIC_STEPS:-8}
       ACE_MUSIC_TIMEOUT_S: ${ACE_MUSIC_TIMEOUT_S:-600}
+      # Default lyrics language when /claw-music gets no `language` arg.
+      ACE_MUSIC_DEFAULT_LANGUAGE: ${ACE_MUSIC_DEFAULT_LANGUAGE:-hu}
     volumes:
       # workflows/ is COPYed into the image AND bind-mounted ro so
       # operators can drop new templates without rebuilding. The bridge

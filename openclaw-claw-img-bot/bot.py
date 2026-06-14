@@ -510,7 +510,7 @@ async def claw_img_to_img_error(interaction: discord.Interaction, error: Excepti
     lyrics="Optional lyrics for a sung track — leave empty for instrumental. Use \\n between lines.",
     duration=f"Clip length in seconds (default 60, max {int(MUSIC_MAX_SECONDS)}).",
     bpm="Tempo in beats per minute (10-300, default 120).",
-    language="Lyrics language code (en, hu, es, ja, … — default en; ignored for instrumentals).",
+    language="Lyrics language code (hu, en, es, ja, … — default hu; ignored for instrumentals).",
     key="Musical key, e.g. 'C major', 'E minor', 'A minor' (default 'C major').",
     timesignature="Time signature: 2, 3, 4, or 6 (default 4).",
     seed="RNG seed for reproducibility (omit = random).",
@@ -754,7 +754,7 @@ async def claw_help(interaction: discord.Interaction):
             "(`\\n` between lines)\n"
             f"• **duration** — seconds (default 60, max {int(MUSIC_MAX_SECONDS)})\n"
             "• **bpm** — tempo *(default 120)*\n"
-            "• **language** — lyrics language *(default en)*\n"
+            "• **language** — lyrics language *(default hu)*\n"
             "• **key** — e.g. `C major`, `E minor`\n"
             "• **timesignature** — `2 / 3 / 4 / 6` *(default 4)*\n"
             "• **seed** — reproduce a result"

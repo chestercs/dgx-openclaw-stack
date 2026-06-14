@@ -106,6 +106,9 @@ ACE_MUSIC_VAE = os.environ.get("ACE_MUSIC_VAE", "ace_1.5_vae.safetensors").strip
 ACE_MUSIC_MAX_SECONDS = float(os.environ.get("ACE_MUSIC_MAX_SECONDS", "120"))
 ACE_MUSIC_STEPS = int(os.environ.get("ACE_MUSIC_STEPS", "8"))  # turbo checkpoint
 ACE_MUSIC_TIMEOUT_S = float(os.environ.get("ACE_MUSIC_TIMEOUT_S", "600"))
+# Default lyrics language when the caller doesn't pass one. Hungarian deploy
+# → "hu"; only matters for sung (lyrics) tracks, ignored for instrumentals.
+ACE_MUSIC_DEFAULT_LANGUAGE = os.environ.get("ACE_MUSIC_DEFAULT_LANGUAGE", "hu").strip()
 ACE_MUSIC_LANGUAGES = [
     'ar', 'az', 'bg', 'bn', 'ca', 'cs', 'da', 'de', 'el', 'en', 'es', 'fa', 'fi',
     'fr', 'he', 'hi', 'hr', 'ht', 'hu', 'id', 'is', 'it', 'ja', 'ko', 'la', 'lt',
@@ -487,7 +490,7 @@ TOOLS = [
                 "lyrics":    {"type": "string", "description": "Optional lyrics for a sung track. Empty = instrumental. Newlines separate lines; [verse]/[chorus]/[bridge] structure tags are supported.", "default": ""},
                 "duration":  {"type": "number", "description": f"Clip length in seconds. Default 60, max {int(ACE_MUSIC_MAX_SECONDS)}.", "default": 60},
                 "bpm":       {"type": "integer", "description": "Tempo in beats per minute (10-300). Default 120.", "default": 120},
-                "language":  {"type": "string", "description": "Lyrics language code (en, hu, es, ja, …). Default en. Ignored for instrumentals.", "default": "en"},
+                "language":  {"type": "string", "description": f"Lyrics language code (hu, en, es, ja, …). Default {ACE_MUSIC_DEFAULT_LANGUAGE}. Ignored for instrumentals.", "default": ACE_MUSIC_DEFAULT_LANGUAGE},
                 "keyscale":  {"type": "string", "description": "Musical key, e.g. 'C major' / 'E minor' / 'A minor'. Default 'C major'."},
                 "timesignature": {"type": "string", "description": "Time signature: '2', '3', '4', or '6'. Default '4'.", "default": "4"},
                 "cfg_scale": {"type": "number", "description": "Prompt-adherence for the audio-code LLM. Default 2.0.", "default": 2.0},
@@ -1728,9 +1731,9 @@ async def _tool_generate_music(args: dict) -> dict:
     timesignature = str(args.get("timesignature") or "4")
     if timesignature not in ("2", "3", "4", "6"):
         timesignature = "4"
-    language = (args.get("language") or "en").strip()
+    language = (args.get("language") or ACE_MUSIC_DEFAULT_LANGUAGE).strip()
     if language not in ACE_MUSIC_LANGUAGES:
-        language = "en"
+        language = ACE_MUSIC_DEFAULT_LANGUAGE if ACE_MUSIC_DEFAULT_LANGUAGE in ACE_MUSIC_LANGUAGES else "en"
     keyscale = (args.get("keyscale") or "C major").strip()
     try:
         cfg_scale = float(args.get("cfg_scale") or 2.0)

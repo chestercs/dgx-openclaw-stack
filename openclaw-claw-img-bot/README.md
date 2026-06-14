@@ -125,7 +125,7 @@ both commands.
   `[verse]` / `[chorus]` structure tags work.
 - `duration` — seconds (default 60, capped at `CLAW_MUSIC_MAX_SECONDS`,
   default 120). `bpm` tempo (default 120). `key` e.g. `C major` / `E minor`.
-  `language` for the lyrics (default `en`).
+  `language` for the lyrics (default `hu`, set via `ACE_MUSIC_DEFAULT_LANGUAGE`).
 - Returns one MP3 as a Discord attachment. The bridge runs the validated
   ACE-Step graph directly (not via the image/video workflow loader). Default
   variant is set by the bridge env (`ACE_MUSIC_UNET` / `ACE_MUSIC_CLIP2` /
