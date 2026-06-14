@@ -1907,7 +1907,7 @@ services:
     profiles: ["claw-img"]
     build:
       context: ./openclaw-claw-img-bot
-    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.1.0}
+    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.2.0}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-claw-img-bot
     hostname: openclaw-claw-img-bot
     restart: unless-stopped
@@ -1929,6 +1929,11 @@ services:
       # slash `safe:true` option forces CLAW_IMG_SFW_WORKFLOW for that one call.
       CLAW_IMG_DEFAULT_WORKFLOW: ${CLAW_IMG_DEFAULT_WORKFLOW:-flux-krea-2k}
       CLAW_IMG_SFW_WORKFLOW: ${CLAW_IMG_SFW_WORKFLOW:-flux-krea-2k}
+      # /claw-img-to-img (img2img) — separate workflow knobs so i2i can be
+      # NSFW-by-default independently of /claw-img (set =flux-krea-2k-i2i-adult);
+      # the slash `safe:true` option forces CLAW_IMG2IMG_SFW_WORKFLOW per call.
+      CLAW_IMG2IMG_DEFAULT_WORKFLOW: ${CLAW_IMG2IMG_DEFAULT_WORKFLOW:-flux-krea-2k-i2i}
+      CLAW_IMG2IMG_SFW_WORKFLOW: ${CLAW_IMG2IMG_SFW_WORKFLOW:-flux-krea-2k-i2i}
       CLAW_IMG_MAX_BYTES: ${CLAW_IMG_MAX_BYTES:-9437184}
       CLAW_IMG_TIMEOUT_S: ${CLAW_IMG_TIMEOUT_S:-600}
       # /claw-video (LTX-Video) — slower renders + bigger mp4; own timeout and a

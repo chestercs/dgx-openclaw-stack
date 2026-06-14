@@ -38,6 +38,12 @@ BRIDGE_TOKEN = os.environ.get("IMAGE_GEN_API_TOKEN", "").strip()
 # option then forces the SFW workflow per call.
 DEFAULT_WORKFLOW = os.environ.get("CLAW_IMG_DEFAULT_WORKFLOW", "flux-krea-2k").strip()
 SFW_WORKFLOW = os.environ.get("CLAW_IMG_SFW_WORKFLOW", "flux-krea-2k").strip()
+# Image-to-image workflows (separate knobs so i2i can be NSFW-by-default
+# independently of /claw-img — set CLAW_IMG2IMG_DEFAULT_WORKFLOW to
+# flux-krea-2k-i2i-adult to match an NSFW-default /claw-img posture). The
+# `safe` option always forces the SFW i2i workflow for that one call.
+I2I_DEFAULT_WORKFLOW = os.environ.get("CLAW_IMG2IMG_DEFAULT_WORKFLOW", "flux-krea-2k-i2i").strip()
+I2I_SFW_WORKFLOW = os.environ.get("CLAW_IMG2IMG_SFW_WORKFLOW", "flux-krea-2k-i2i").strip()
 # ~9 MiB keeps us under Discord's 10 MiB non-boosted upload cap; over this the
 # bot posts the public link instead of an attachment.
 MAX_BYTES = int(os.environ.get("CLAW_IMG_MAX_BYTES", "9437184"))
@@ -367,13 +373,136 @@ async def claw_video_error(interaction: discord.Interaction, error: Exception):
         pass
 
 
-@tree.command(name="claw-help", description="How /claw-img and /claw-video work — what each option does.")
+@tree.command(name="claw-img-to-img", description="Transform an attached image with a prompt (img2img, direct — no chat LLM).")
+@app_commands.describe(
+    image="Source image to transform (required).",
+    prompt="How to transform it / what the result should look like.",
+    denoise="Transform strength 0.0-1.0 (default 0.7): 0.3-0.5 subtle, 0.6-0.75 moderate, 0.8-0.95 heavy.",
+    negative="What to avoid / keep out of the result.",
+    resolution="Output size preset (width/height below override; omit = source aspect).",
+    width="Custom width in px (overrides the preset).",
+    height="Custom height in px (overrides the preset).",
+    steps="Sampler steps — higher = more detail/slower (omit = workflow default).",
+    cfg="Guidance scale — how strictly to follow the prompt (omit = workflow default).",
+    seed="RNG seed for reproducibility (omit = random).",
+    safe="Force the SFW workflow for this one call.",
+)
+@app_commands.choices(
+    resolution=[app_commands.Choice(name=k, value=k) for k in PRESETS]
+)
+async def claw_img_to_img(
+    interaction: discord.Interaction,
+    image: discord.Attachment,
+    prompt: str,
+    denoise: float | None = None,
+    negative: str | None = None,
+    resolution: app_commands.Choice[str] | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    steps: int | None = None,
+    cfg: float | None = None,
+    seed: int | None = None,
+    safe: bool = False,
+):
+    await interaction.response.defer(thinking=True)
+
+    if not (image.content_type or "").startswith("image/"):
+        await interaction.followup.send("the `image` attachment must be an image (png/jpg/webp).")
+        return
+
+    workflow = I2I_SFW_WORKFLOW if safe else I2I_DEFAULT_WORKFLOW
+    # KozelBot's uploads don't land in the bridge's media dir, so the
+    # filesystem-path route (init_image_url) isn't available — base64 is the
+    # portable input, same as /claw-video's I2V path.
+    raw_img = await image.read()
+    args = {
+        "prompt": prompt,
+        "workflow": workflow,
+        "init_image_base64": base64.b64encode(raw_img).decode("ascii"),
+        "include_base64": True,
+        "attach_image_content": False,
+    }
+    if denoise is not None:
+        args["denoise"] = denoise
+    if negative:
+        args["negative"] = negative
+    if resolution is not None:
+        args["width"], args["height"] = PRESETS[resolution.value]
+    if width:
+        args["width"] = width
+    if height:
+        args["height"] = height
+    if steps:
+        args["steps"] = steps
+    if cfg is not None:
+        args["cfg"] = cfg
+    if seed is not None:
+        args["seed"] = seed
+
+    try:
+        envelope = await call_bridge(args, tool="generate_i2i")
+    except asyncio.TimeoutError:
+        await interaction.followup.send("⌛ img2img timed out — try again or a smaller size.")
+        return
+    except Exception as e:  # noqa: BLE001
+        log.exception("i2i bridge call failed")
+        await interaction.followup.send(f"img2img request failed: {e}")
+        return
+
+    data = extract_result(envelope)
+    if data.get("error"):
+        await interaction.followup.send(f"img2img error: {data.get('message', data['error'])}")
+        return
+
+    images = data.get("images") or []
+    img = images[0] if images else {}
+    summary = (
+        f"`{data.get('workflow_used', workflow)}` "
+        f"{img.get('width', '?')}x{img.get('height', '?')} — "
+        f"denoise {args.get('denoise', 0.7)}, "
+        f"{data.get('elapsed_s', '?')}s, seed {data.get('seed_used', '?')}"
+    )
+
+    b64 = img.get("base64")
+    if not b64:
+        link = data.get("display_markdown") or "(no image returned)"
+        await interaction.followup.send(f"{summary}\n{link}")
+        return
+
+    raw = base64.b64decode(b64)
+    filename = img.get("filename") or "image.png"
+    if len(raw) <= MAX_BYTES:
+        await interaction.followup.send(
+            content=summary,
+            file=discord.File(io.BytesIO(raw), filename=filename),
+        )
+    else:
+        link = data.get("display_markdown") or ""
+        await interaction.followup.send(
+            f"{summary}\n(image is {len(raw) // 1024} KiB — over the attachment cap, linking instead)\n{link}"
+        )
+
+
+@claw_img_to_img.error
+async def claw_img_to_img_error(interaction: discord.Interaction, error: Exception):
+    log.exception("claw-img-to-img command error: %s", error)
+    msg = f"⚠️ command failed: {error}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@tree.command(name="claw-help", description="How /claw-img, /claw-img-to-img and /claw-video work — what each option does.")
 async def claw_help(interaction: discord.Interaction):
     # Instant, no bridge call — just an ephemeral formatted cheatsheet. Preset
     # lists are built from the constants so they never drift from the commands.
     embed = discord.Embed(
         title="🎨 KozelBot — image & video generation",
-        description="Two slash commands, no chat LLM in the loop. Fill **prompt** and go — everything else is optional.",
+        description="Three slash commands, no chat LLM in the loop. Fill **prompt** and go — everything else is optional.",
         color=0x5865F2,
     )
     embed.add_field(
@@ -386,6 +515,22 @@ async def claw_help(interaction: discord.Interaction):
             "• **steps** — more detail vs faster *(default: workflow)*\n"
             "• **cfg** — how strictly to follow the prompt\n"
             "• **seed** — reproduce a result\n"
+            "• **safe** — `true` = SFW for this one call"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🪄 /claw-img-to-img",
+        value=(
+            "Transform an **attached image** with a prompt (img2img).\n"
+            "• **image** — the source picture to transform *(required)*\n"
+            "• **prompt** — how to change it / target look *(required)*\n"
+            "• **denoise** — change strength `0.0-1.0` *(default 0.7)*: "
+            "`0.3-0.5` subtle, `0.6-0.75` moderate, `0.8-0.95` heavy\n"
+            "• **negative** — what to keep out\n"
+            f"• **resolution** — `{' / '.join(PRESETS)}` *(omit = source aspect)*\n"
+            "• **width / height** — custom px (overrides resolution)\n"
+            "• **steps / cfg / seed** — as in /claw-img\n"
             "• **safe** — `true` = SFW for this one call"
         ),
         inline=False,

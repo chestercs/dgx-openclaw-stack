@@ -1,8 +1,9 @@
 # `openclaw-claw-img-bot` — standalone `/claw-img` Discord slash command
 
-A ~150-line Discord bot that exposes a real **`/claw-img`** slash command and
-generates images by calling the `comfyui_image` bridge **directly** — the LLM is
-never in the loop.
+A small Discord bot that exposes real **`/claw-img`** (text→image),
+**`/claw-img-to-img`** (img2img), and **`/claw-video`** (LTX-Video) slash
+commands and generates media by calling the `comfyui_image` bridge
+**directly** — the LLM is never in the loop. `/claw-help` lists every option.
 
 ## Why this exists
 
@@ -59,6 +60,29 @@ both commands.
   purpose — it can OOM the box; set width/height by hand if you must).
 - `steps` / `cfg` — quality knobs; omit to use the workflow defaults.
 
+### `/claw-img-to-img` (img2img)
+
+```
+/claw-img-to-img image:<attachment> prompt:<text> [denoise:<0.0-1.0>]
+                 [negative:<text>]
+                 [resolution:square|portrait|landscape|hd|fullhd|2k]
+                 [width:<px>] [height:<px>] [steps:<int>] [cfg:<float>]
+                 [seed:<int>] [safe:true]
+```
+
+- **`image`** — the source picture to transform *(required)*; the bot reads the
+  attachment and passes it to the bridge's `generate_i2i` as base64 (KozelBot
+  uploads don't reach the bridge media dir, so the filesystem-path route isn't
+  available).
+- **`prompt`** — how to change it / the target look *(required)*.
+- **`denoise`** — transform strength `0.0-1.0` (default `0.7`): `0.3-0.5` subtle
+  (color/lighting), `0.6-0.75` moderate restyle (keep structure), `0.8-0.95`
+  heavy transform (source as anchor only).
+- `resolution` / `width` / `height` — omit to keep the source aspect.
+- Default workflow `CLAW_IMG2IMG_DEFAULT_WORKFLOW` (`flux-krea-2k-i2i`); set it
+  to `flux-krea-2k-i2i-adult` for NSFW-by-default; `safe:true` forces the SFW
+  i2i workflow per call.
+
 ### `/claw-video` (LTX-Video 2.3)
 
 ```
@@ -96,5 +120,7 @@ both commands.
 | `IMAGE_GEN_API_TOKEN` | (required) | Bridge bearer token. |
 | `CLAW_IMG_DEFAULT_WORKFLOW` | `flux-krea-2k` | Workflow for a bare prompt. |
 | `CLAW_IMG_SFW_WORKFLOW` | `flux-krea-2k` | Workflow when `safe:true`. |
+| `CLAW_IMG2IMG_DEFAULT_WORKFLOW` | `flux-krea-2k-i2i` | `/claw-img-to-img` workflow (set `-adult` for NSFW-default). |
+| `CLAW_IMG2IMG_SFW_WORKFLOW` | `flux-krea-2k-i2i` | `/claw-img-to-img` workflow when `safe:true`. |
 | `CLAW_IMG_MAX_BYTES` | `9437184` | Max attachment size before link fallback. |
 | `CLAW_IMG_TIMEOUT_S` | `600` | Per-render bridge timeout. |
