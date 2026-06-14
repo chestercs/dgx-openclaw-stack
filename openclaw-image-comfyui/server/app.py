@@ -105,6 +105,11 @@ ACE_MUSIC_CLIP2 = os.environ.get("ACE_MUSIC_CLIP2", "qwen_1.7b_ace15.safetensors
 ACE_MUSIC_VAE = os.environ.get("ACE_MUSIC_VAE", "ace_1.5_vae.safetensors").strip()
 ACE_MUSIC_MAX_SECONDS = float(os.environ.get("ACE_MUSIC_MAX_SECONDS", "120"))
 ACE_MUSIC_STEPS = int(os.environ.get("ACE_MUSIC_STEPS", "8"))  # turbo checkpoint
+# KSampler CFG (classifier-free guidance). The turbo checkpoint distills
+# guidance in and uses cfg=1; the SFT/base 50-step variants need a real
+# CFG — the official ComfyUI XL templates use cfg=6. Default 6 matches the
+# 50-step quality tier; set 1 if you revert ACE_MUSIC_UNET to a turbo model.
+ACE_MUSIC_CFG = float(os.environ.get("ACE_MUSIC_CFG", "6"))
 ACE_MUSIC_TIMEOUT_S = float(os.environ.get("ACE_MUSIC_TIMEOUT_S", "600"))
 # Default lyrics language when the caller doesn't pass one. Hungarian deploy
 # → "hu"; only matters for sung (lyrics) tracks, ignored for instrumentals.
@@ -1700,7 +1705,7 @@ def _build_ace_music_graph(
         "11": {"class_type": "KSampler", "inputs": {
             "model": ["7", 0], "positive": ["8", 0], "negative": ["9", 0],
             "latent_image": ["10", 0], "seed": seed, "steps": ACE_MUSIC_STEPS,
-            "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+            "cfg": ACE_MUSIC_CFG, "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
         }},
         "12": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["11", 0], "vae": ["6", 0]}},
         "13": {"class_type": "SaveAudioMP3", "inputs": {"audio": ["12", 0], "filename_prefix": "claw_music", "quality": "V0"}},

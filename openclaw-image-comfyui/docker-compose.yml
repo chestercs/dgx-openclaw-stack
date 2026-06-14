@@ -110,6 +110,8 @@ services:
       ACE_MUSIC_CLIP2: ${ACE_MUSIC_CLIP2:-qwen_1.7b_ace15.safetensors}
       ACE_MUSIC_VAE: ${ACE_MUSIC_VAE:-ace_1.5_vae.safetensors}
       ACE_MUSIC_STEPS: ${ACE_MUSIC_STEPS:-8}
+      # KSampler CFG: turbo=1, SFT/base 50-step=6 (official XL template value).
+      ACE_MUSIC_CFG: ${ACE_MUSIC_CFG:-6}
       ACE_MUSIC_TIMEOUT_S: ${ACE_MUSIC_TIMEOUT_S:-600}
       # Default lyrics language when /claw-music gets no `language` arg.
       ACE_MUSIC_DEFAULT_LANGUAGE: ${ACE_MUSIC_DEFAULT_LANGUAGE:-hu}
