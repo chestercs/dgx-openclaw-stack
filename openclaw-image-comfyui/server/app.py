@@ -499,6 +499,7 @@ TOOLS = [
                 "keyscale":  {"type": "string", "description": "Musical key, e.g. 'C major' / 'E minor' / 'A minor'. Default 'C major'."},
                 "timesignature": {"type": "string", "description": "Time signature: '2', '3', '4', or '6'. Default '4'.", "default": "4"},
                 "cfg_scale": {"type": "number", "description": "Prompt-adherence for the audio-code LLM. Default 2.0.", "default": 2.0},
+                "steps":     {"type": "integer", "description": f"Sampler steps — more = more detail/slower. Default {ACE_MUSIC_STEPS} (workflow base), max 200.", "default": ACE_MUSIC_STEPS},
                 "seed":      {"type": "integer", "description": "Seed; -1 = random.", "default": -1},
                 "timeout_s": {"type": "number", "description": f"Per-call timeout. Default {ACE_MUSIC_TIMEOUT_S}s."},
                 "include_base64": {"type": "boolean", "description": "Embed the MP3 bytes as base64 in the response. Default false.", "default": False},
@@ -532,6 +533,7 @@ TOOLS = [
                 "keyscale":  {"type": "string", "description": "Musical key, e.g. 'C major'."},
                 "timesignature": {"type": "string", "description": "2/3/4/6. Default 4.", "default": "4"},
                 "cfg_scale": {"type": "number", "description": "Audio-code LLM guidance. Default 2.0.", "default": 2.0},
+                "steps":     {"type": "integer", "description": f"Sampler steps. Default {ACE_MUSIC_STEPS} (workflow base), max 200.", "default": ACE_MUSIC_STEPS},
                 "duration":  {"type": "number", "description": f"Conditioning length hint (s); actual length follows the source. Default 60, max {int(ACE_MUSIC_MAX_SECONDS)}.", "default": 60},
                 "seed":      {"type": "integer", "description": "Seed; -1 = random.", "default": -1},
                 "timeout_s": {"type": "number"},
@@ -1716,7 +1718,7 @@ async def _tool_generate_video(args: dict) -> dict:
 
 def _build_ace_music_graph(
     *, tags: str, lyrics: str, seconds: float, bpm: int, timesignature: str,
-    language: str, keyscale: str, cfg_scale: float, seed: int,
+    language: str, keyscale: str, cfg_scale: float, seed: int, steps: int,
 ) -> dict:
     """ACE-Step v1.5 turbo API graph (validated end-to-end on GB10
     2026-06-14). Built directly rather than via the workflow loader because
@@ -1738,7 +1740,7 @@ def _build_ace_music_graph(
         "10": {"class_type": "EmptyAceStep1.5LatentAudio", "inputs": {"seconds": seconds, "batch_size": 1}},
         "11": {"class_type": "KSampler", "inputs": {
             "model": ["7", 0], "positive": ["8", 0], "negative": ["9", 0],
-            "latent_image": ["10", 0], "seed": seed, "steps": ACE_MUSIC_STEPS,
+            "latent_image": ["10", 0], "seed": seed, "steps": steps,
             "cfg": ACE_MUSIC_CFG, "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
         }},
         "12": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["11", 0], "vae": ["6", 0]}},
@@ -1793,10 +1795,15 @@ async def _tool_generate_music(args: dict) -> dict:
         timeout_s = ACE_MUSIC_TIMEOUT_S
 
     include_base64 = bool(args.get("include_base64", False))
+    try:
+        steps = int(args.get("steps") or ACE_MUSIC_STEPS)
+    except (TypeError, ValueError):
+        steps = ACE_MUSIC_STEPS
+    steps = max(1, min(steps, 200))
     prompt_dict = _build_ace_music_graph(
         tags=tags, lyrics=lyrics, seconds=seconds, bpm=bpm,
         timesignature=timesignature, language=language, keyscale=keyscale,
-        cfg_scale=cfg_scale, seed=seed_val,
+        cfg_scale=cfg_scale, seed=seed_val, steps=steps,
     )
     client_id = uuid.uuid4().hex
     started = time.monotonic()
@@ -1897,7 +1904,7 @@ async def _tool_generate_music(args: dict) -> dict:
 def _build_ace_repaint_graph(
     *, init_audio_filename: str, tags: str, lyrics: str, denoise: float,
     bpm: int, timesignature: str, language: str, keyscale: str,
-    cfg_scale: float, seed: int, duration: float,
+    cfg_scale: float, seed: int, duration: float, steps: int,
 ) -> dict:
     """ACE-Step 1.5 audio repaint / audio2audio: encode a SOURCE audio to
     latent (LoadAudio → VAEEncodeAudio) and run the sampler from it at
@@ -1921,7 +1928,7 @@ def _build_ace_repaint_graph(
         "15": {"class_type": "VAEEncodeAudio", "inputs": {"audio": ["14", 0], "vae": ["6", 0]}},
         "11": {"class_type": "KSampler", "inputs": {
             "model": ["7", 0], "positive": ["8", 0], "negative": ["9", 0],
-            "latent_image": ["15", 0], "seed": seed, "steps": ACE_MUSIC_STEPS,
+            "latent_image": ["15", 0], "seed": seed, "steps": steps,
             "cfg": ACE_MUSIC_CFG, "sampler_name": "euler", "scheduler": "simple",
             "denoise": denoise,
         }},
@@ -1992,10 +1999,15 @@ async def _tool_generate_music_repaint(args: dict) -> dict:
     if not init_name:
         raise ComfyUIError(f"audio upload to ComfyUI failed: {up}")
 
+    try:
+        steps = int(args.get("steps") or ACE_MUSIC_STEPS)
+    except (TypeError, ValueError):
+        steps = ACE_MUSIC_STEPS
+    steps = max(1, min(steps, 200))
     prompt_dict = _build_ace_repaint_graph(
         init_audio_filename=init_name, tags=tags, lyrics=lyrics, denoise=denoise,
         bpm=bpm, timesignature=timesignature, language=language, keyscale=keyscale,
-        cfg_scale=cfg_scale, seed=seed_val, duration=duration,
+        cfg_scale=cfg_scale, seed=seed_val, duration=duration, steps=steps,
     )
     client_id = uuid.uuid4().hex
     started = time.monotonic()

@@ -513,6 +513,7 @@ async def claw_img_to_img_error(interaction: discord.Interaction, error: Excepti
     language="Lyrics language code (hu, en, es, ja, … — default hu; ignored for instrumentals).",
     key="Musical key, e.g. 'C major', 'E minor', 'A minor' (default 'C major').",
     timesignature="Time signature: 2, 3, 4, or 6 (default 4).",
+    steps="Sampler steps — more = more detail/slower (omit = workflow default).",
     seed="RNG seed for reproducibility (omit = random).",
 )
 @app_commands.choices(
@@ -527,6 +528,7 @@ async def claw_music(
     language: str | None = None,
     key: str | None = None,
     timesignature: app_commands.Choice[str] | None = None,
+    steps: int | None = None,
     seed: int | None = None,
 ):
     await interaction.response.defer(thinking=True)
@@ -548,6 +550,8 @@ async def claw_music(
         args["keyscale"] = key
     if timesignature is not None:
         args["timesignature"] = timesignature.value
+    if steps is not None:
+        args["steps"] = steps
     if seed is not None:
         args["seed"] = seed
 
@@ -618,6 +622,7 @@ async def claw_music_error(interaction: discord.Interaction, error: Exception):
     bpm="Tempo in BPM (default 120).",
     language="Lyrics language code (default hu).",
     key="Musical key, e.g. 'C major'.",
+    steps="Sampler steps — more = more detail/slower (omit = workflow default).",
     seed="RNG seed (omit = random).",
 )
 async def claw_music_repaint(
@@ -629,6 +634,7 @@ async def claw_music_repaint(
     bpm: int | None = None,
     language: str | None = None,
     key: str | None = None,
+    steps: int | None = None,
     seed: int | None = None,
 ):
     await interaction.response.defer(thinking=True)
@@ -653,6 +659,8 @@ async def claw_music_repaint(
         args["language"] = language
     if key:
         args["keyscale"] = key
+    if steps is not None:
+        args["steps"] = steps
     if seed is not None:
         args["seed"] = seed
 
@@ -856,6 +864,7 @@ async def claw_help(interaction: discord.Interaction):
             "• **language** — lyrics language *(default hu)*\n"
             "• **key** — e.g. `C major`, `E minor`\n"
             "• **timesignature** — `2 / 3 / 4 / 6` *(default 4)*\n"
+            "• **steps** — sampler steps *(default: workflow base)*\n"
             "• **seed** — reproduce a result"
         ),
         inline=False,
