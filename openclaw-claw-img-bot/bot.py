@@ -608,6 +608,105 @@ async def claw_music_error(interaction: discord.Interaction, error: Exception):
         pass
 
 
+@tree.command(name="claw-music-repaint", description="Restyle an attached audio track (ACE-Step repaint / audio2audio).")
+@app_commands.guild_only()
+@app_commands.describe(
+    audio="Source audio track to restyle (required, mp3/wav/flac/ogg).",
+    tags="Target style / mood / instrumentation, comma-separated (required).",
+    denoise="How much to change it 0.05-1.0 (default 0.6): low = subtle restyle, high = heavy rework.",
+    lyrics="Optional lyrics for a sung result — empty keeps it instrumental. Use \\n between lines.",
+    bpm="Tempo in BPM (default 120).",
+    language="Lyrics language code (default hu).",
+    key="Musical key, e.g. 'C major'.",
+    seed="RNG seed (omit = random).",
+)
+async def claw_music_repaint(
+    interaction: discord.Interaction,
+    audio: discord.Attachment,
+    tags: str,
+    denoise: float | None = None,
+    lyrics: str | None = None,
+    bpm: int | None = None,
+    language: str | None = None,
+    key: str | None = None,
+    seed: int | None = None,
+):
+    await interaction.response.defer(thinking=True)
+
+    ctype = (audio.content_type or "")
+    if not (ctype.startswith("audio/") or audio.filename.lower().endswith((".mp3", ".wav", ".flac", ".ogg", ".m4a"))):
+        await interaction.followup.send("the `audio` attachment must be an audio file (mp3/wav/flac/ogg/m4a).")
+        return
+    raw_audio = await audio.read()
+    args = {
+        "tags": tags,
+        "init_audio_base64": base64.b64encode(raw_audio).decode("ascii"),
+        "include_base64": True,
+    }
+    if denoise is not None:
+        args["denoise"] = denoise
+    if lyrics:
+        args["lyrics"] = lyrics.replace("\\n", "\n")
+    if bpm is not None:
+        args["bpm"] = bpm
+    if language:
+        args["language"] = language
+    if key:
+        args["keyscale"] = key
+    if seed is not None:
+        args["seed"] = seed
+
+    try:
+        envelope = await call_bridge(args, tool="generate_music_repaint", timeout_s=MUSIC_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("⌛ repaint timed out — try a shorter source or fewer changes.")
+        return
+    except Exception as e:  # noqa: BLE001
+        log.exception("music repaint bridge call failed")
+        await interaction.followup.send(f"repaint request failed: {e}")
+        return
+
+    data = extract_result(envelope)
+    if data.get("error"):
+        await interaction.followup.send(f"repaint error: {data.get('message', data['error'])}")
+        return
+
+    tracks = data.get("audio") or []
+    track = tracks[0] if tracks else {}
+    summary = (
+        f"🎚 `{data.get('model_used', 'acestep_v1.5')}` repaint — "
+        f"denoise {data.get('denoise', '?')}, "
+        f"{'instrumental' if data.get('instrumental') else 'vocal'}, "
+        f"seed {data.get('seed_used', '?')} (rendered {data.get('elapsed_s', '?')}s)"
+    )
+    b64 = track.get("base64")
+    if not b64:
+        await interaction.followup.send(f"{summary}\n{data.get('display_markdown', '(no audio returned)')}")
+        return
+    raw = base64.b64decode(b64)
+    filename = track.get("filename") or "repaint.mp3"
+    if len(raw) <= MAX_BYTES:
+        await interaction.followup.send(content=summary, file=discord.File(io.BytesIO(raw), filename=filename))
+    else:
+        await interaction.followup.send(
+            f"{summary}\n(audio is {len(raw) // 1024} KiB — over the attachment cap, linking instead)\n"
+            f"{data.get('display_markdown', '')}"
+        )
+
+
+@claw_music_repaint.error
+async def claw_music_repaint_error(interaction: discord.Interaction, error: Exception):
+    log.exception("claw-music-repaint command error: %s", error)
+    msg = f"⚠️ command failed: {error}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg)
+        else:
+            await interaction.response.send_message(msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @tree.command(name="claw-queue", description="Show the current generation queue (visible to everyone).")
 @app_commands.guild_only()
 async def claw_queue(interaction: discord.Interaction):
@@ -758,6 +857,18 @@ async def claw_help(interaction: discord.Interaction):
             "• **key** — e.g. `C major`, `E minor`\n"
             "• **timesignature** — `2 / 3 / 4 / 6` *(default 4)*\n"
             "• **seed** — reproduce a result"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎚 /claw-music-repaint",
+        value=(
+            "Restyle an **attached audio track** (audio2audio).\n"
+            "• **audio** — the source track *(required)*\n"
+            "• **tags** — target style *(required)*\n"
+            "• **denoise** — how much to change `0.05-1.0` *(default 0.6)*: "
+            "low = subtle restyle, high = heavy rework\n"
+            "• **lyrics / bpm / language / key / seed** — as in /claw-music"
         ),
         inline=False,
     )

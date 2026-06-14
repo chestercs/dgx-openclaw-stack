@@ -508,6 +508,40 @@ TOOLS = [
         },
     },
     {
+        "name": "generate_music_repaint",
+        "description": (
+            "ACE-Step v1.5 audio REPAINT (audio2audio): take a SOURCE track "
+            "and regenerate it in a new style described by `tags`. The audio "
+            "analogue of img2img — `denoise` controls how much changes (low = "
+            "subtle restyle keeping melody/structure, high = heavy rework). "
+            "Use when the user attaches/references an existing track and wants "
+            "it transformed, restyled, or re-instrumented.\n\n"
+            "MANDATORY OUTPUT CONTRACT — reply MUST start with the verbatim "
+            "`display_markdown`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tags":      {"type": "string", "description": "Target style/mood/instrumentation, comma-separated."},
+                "init_audio_url":    {"type": "string", "description": "Source audio: filesystem path or http(s) URL (NOT yet supported for audio — prefer init_audio_base64)."},
+                "init_audio_base64": {"type": "string", "description": "Source audio as base64 or data: URI (the track to repaint). REQUIRED."},
+                "denoise":   {"type": "number", "description": "How much to change the source, 0.05-1.0. Default 0.6. Lower = closer to original.", "default": 0.6},
+                "lyrics":    {"type": "string", "description": "Optional lyrics (empty = instrumental).", "default": ""},
+                "bpm":       {"type": "integer", "description": "Tempo. Default 120.", "default": 120},
+                "language":  {"type": "string", "description": f"Lyrics language. Default {ACE_MUSIC_DEFAULT_LANGUAGE}.", "default": ACE_MUSIC_DEFAULT_LANGUAGE},
+                "keyscale":  {"type": "string", "description": "Musical key, e.g. 'C major'."},
+                "timesignature": {"type": "string", "description": "2/3/4/6. Default 4.", "default": "4"},
+                "cfg_scale": {"type": "number", "description": "Audio-code LLM guidance. Default 2.0.", "default": 2.0},
+                "duration":  {"type": "number", "description": f"Conditioning length hint (s); actual length follows the source. Default 60, max {int(ACE_MUSIC_MAX_SECONDS)}.", "default": 60},
+                "seed":      {"type": "integer", "description": "Seed; -1 = random.", "default": -1},
+                "timeout_s": {"type": "number"},
+                "include_base64": {"type": "boolean", "default": False},
+            },
+            "required": ["tags", "init_audio_base64"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "cancel",
         "description": (
             "Best-effort cancel of an in-flight prompt by id. Useful if a "
@@ -1860,11 +1894,178 @@ async def _tool_generate_music(args: dict) -> dict:
         return await _run()
 
 
+def _build_ace_repaint_graph(
+    *, init_audio_filename: str, tags: str, lyrics: str, denoise: float,
+    bpm: int, timesignature: str, language: str, keyscale: str,
+    cfg_scale: float, seed: int, duration: float,
+) -> dict:
+    """ACE-Step 1.5 audio repaint / audio2audio: encode a SOURCE audio to
+    latent (LoadAudio → VAEEncodeAudio) and run the sampler from it at
+    denoise<1 instead of from an empty latent — the audio analogue of
+    img2img. Output length follows the source. Same model/encoder/cfg as
+    _build_ace_music_graph."""
+    return {
+        "4":  {"class_type": "UNETLoader", "inputs": {"unet_name": ACE_MUSIC_UNET, "weight_dtype": "default"}},
+        "5":  {"class_type": "DualCLIPLoader", "inputs": {"clip_name1": ACE_MUSIC_CLIP1, "clip_name2": ACE_MUSIC_CLIP2, "type": "ace", "device": "default"}},
+        "6":  {"class_type": "VAELoader", "inputs": {"vae_name": ACE_MUSIC_VAE}},
+        "7":  {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["4", 0], "shift": 3}},
+        "8":  {"class_type": "TextEncodeAceStepAudio1.5", "inputs": {
+            "clip": ["5", 0], "tags": tags, "lyrics": lyrics, "seed": seed,
+            "bpm": bpm, "duration": duration, "timesignature": timesignature,
+            "language": language, "keyscale": keyscale,
+            "generate_audio_codes": True, "cfg_scale": cfg_scale,
+            "temperature": 0.85, "top_p": 0.9, "top_k": 0, "min_p": 0.0,
+        }},
+        "9":  {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["8", 0]}},
+        "14": {"class_type": "LoadAudio", "inputs": {"audio": init_audio_filename}},
+        "15": {"class_type": "VAEEncodeAudio", "inputs": {"audio": ["14", 0], "vae": ["6", 0]}},
+        "11": {"class_type": "KSampler", "inputs": {
+            "model": ["7", 0], "positive": ["8", 0], "negative": ["9", 0],
+            "latent_image": ["15", 0], "seed": seed, "steps": ACE_MUSIC_STEPS,
+            "cfg": ACE_MUSIC_CFG, "sampler_name": "euler", "scheduler": "simple",
+            "denoise": denoise,
+        }},
+        "12": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["11", 0], "vae": ["6", 0]}},
+        "13": {"class_type": "SaveAudioMP3", "inputs": {"audio": ["12", 0], "filename_prefix": "claw_repaint", "quality": "V0"}},
+    }
+
+
+async def _tool_generate_music_repaint(args: dict) -> dict:
+    """ACE-Step 1.5 audio repaint: take a SOURCE audio + tags and regenerate
+    it in that style (audio2audio). `denoise` controls how much changes."""
+    tags = (args.get("tags") or "").strip()
+    if not tags:
+        raise ValueError("`tags` is required — describe the target style.")
+    init_audio_b64 = args.get("init_audio_base64")
+    if not init_audio_b64:
+        raise ValueError("`init_audio_base64` is required (the source track to repaint).")
+    lyrics = args.get("lyrics") or ""
+    try:
+        denoise = float(args.get("denoise") if args.get("denoise") is not None else 0.6)
+    except (TypeError, ValueError):
+        denoise = 0.6
+    denoise = max(0.05, min(denoise, 1.0))
+    try:
+        bpm = int(args.get("bpm") or 120)
+    except (TypeError, ValueError):
+        bpm = 120
+    bpm = max(10, min(bpm, 300))
+    timesignature = str(args.get("timesignature") or "4")
+    if timesignature not in ("2", "3", "4", "6"):
+        timesignature = "4"
+    language = (args.get("language") or ACE_MUSIC_DEFAULT_LANGUAGE).strip()
+    if language not in ACE_MUSIC_LANGUAGES:
+        language = ACE_MUSIC_DEFAULT_LANGUAGE if ACE_MUSIC_DEFAULT_LANGUAGE in ACE_MUSIC_LANGUAGES else "en"
+    keyscale = (args.get("keyscale") or "C major").strip()
+    try:
+        cfg_scale = float(args.get("cfg_scale") or 2.0)
+    except (TypeError, ValueError):
+        cfg_scale = 2.0
+    try:
+        duration = float(args.get("duration") or 60)
+    except (TypeError, ValueError):
+        duration = 60.0
+    duration = max(1.0, min(duration, ACE_MUSIC_MAX_SECONDS))
+    raw_seed = args.get("seed", -1)
+    try:
+        seed_val = int(raw_seed)
+    except (TypeError, ValueError):
+        seed_val = -1
+    if seed_val < 0:
+        seed_val = random.randint(0, 2**32 - 1)
+    try:
+        timeout_s = float(args.get("timeout_s") or ACE_MUSIC_TIMEOUT_S)
+    except (TypeError, ValueError):
+        timeout_s = ACE_MUSIC_TIMEOUT_S
+    include_base64 = bool(args.get("include_base64", False))
+
+    # Decode + upload the source audio to ComfyUI's input/ dir so LoadAudio
+    # can reference it (same /upload/image endpoint as image init frames —
+    # ComfyUI accepts audio there, verified).
+    b64_text = init_audio_b64.split(",", 1)[1] if init_audio_b64.startswith("data:") else init_audio_b64
+    try:
+        src_bytes = base64.b64decode(b64_text)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"init_audio_base64 not valid base64: {e}") from e
+    up = await comfy.upload_image(src_bytes, f"claw_repaint_src_{uuid.uuid4().hex[:8]}.mp3")
+    init_name = up.get("name")
+    if not init_name:
+        raise ComfyUIError(f"audio upload to ComfyUI failed: {up}")
+
+    prompt_dict = _build_ace_repaint_graph(
+        init_audio_filename=init_name, tags=tags, lyrics=lyrics, denoise=denoise,
+        bpm=bpm, timesignature=timesignature, language=language, keyscale=keyscale,
+        cfg_scale=cfg_scale, seed=seed_val, duration=duration,
+    )
+    client_id = uuid.uuid4().hex
+    started = time.monotonic()
+
+    async def _run() -> dict:
+        await _prepare_gen("music", f"repaint: {tags}")
+        prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
+        try:
+            entry = await comfy.wait_for_completion(prompt_id, timeout_s)
+        except ComfyUITimeout:
+            await comfy.cancel(prompt_id)
+            raise
+        audio_out = None
+        for node_out in (entry.get("outputs") or {}).values():
+            if isinstance(node_out, dict):
+                arr = node_out.get("audio") or []
+                if arr and arr[0].get("filename"):
+                    audio_out = arr[0]
+                    break
+        if audio_out is None:
+            raise ComfyUIError(f"prompt {prompt_id} completed but produced no audio")
+        data = await comfy.fetch_image(
+            audio_out["filename"], image_type=audio_out.get("type", "output"),
+            subfolder=audio_out.get("subfolder", ""),
+        )
+        if len(data) > MAX_OUTPUT_BYTES:
+            raise ComfyUIError(f"audio exceeded IMAGE_GEN_MAX_OUTPUT_BYTES ({MAX_OUTPUT_BYTES} B)")
+        b64 = base64.b64encode(data).decode("ascii")
+        from urllib.parse import quote
+        fname = audio_out["filename"]
+        view_qs = (
+            f"filename={quote(fname, safe='')}"
+            f"&type={quote(audio_out.get('type', 'output'), safe='')}"
+            f"&subfolder={quote(audio_out.get('subfolder', ''), safe='')}"
+        )
+        if COMFYUI_VIEW_TOKEN:
+            view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
+        url = f"{COMFYUI_EXTERNAL_URL}/view?{view_qs}"
+        display_url = f"{url}#{fname}" if "." in fname else url
+        audio_entry = {
+            "format": "mp3", "filename": fname,
+            "subfolder": audio_out.get("subfolder", ""), "type": audio_out.get("type", "output"),
+            "byte_size": len(data), "fetch_url_path": f"/view?{view_qs}",
+        }
+        if include_base64:
+            audio_entry["base64"] = b64
+        audio_entry["_bytes_b64"] = b64
+        return {
+            "prompt_id": prompt_id, "model_used": ACE_MUSIC_UNET, "seed_used": seed_val,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "denoise": denoise, "instrumental": not bool(lyrics.strip()),
+            "include_base64": include_base64,
+            "comfyui_base_url": COMFYUI_URL, "comfyui_external_url": COMFYUI_EXTERNAL_URL,
+            "display_markdown": f"[🎵 {fname}]({display_url})\n\n{display_url}",
+            "agent_hint": "MANDATORY: start your reply with the EXACT `display_markdown` value. Add commentary AFTER.",
+            "audio": [audio_entry],
+        }
+
+    if _gen_sem is None:
+        return await _run()
+    async with _gen_sem:
+        return await _run()
+
+
 TOOL_HANDLERS = {
     "generate":        _tool_generate,
     "generate_video":  _tool_generate_video,
     "generate_i2i":    _tool_generate_i2i,
     "generate_music":  _tool_generate_music,
+    "generate_music_repaint": _tool_generate_music_repaint,
     "list_workflows":  _tool_list_workflows,
     "cancel":          _tool_cancel,
     "queue_status":    _tool_queue_status,
