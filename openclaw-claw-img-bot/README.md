@@ -4,7 +4,15 @@ A small Discord bot that exposes real **`/claw-img`** (text→image),
 **`/claw-img-to-img`** (img2img), **`/claw-video`** (LTX-Video), and
 **`/claw-music`** (ACE-Step text→music) slash commands and generates media
 by calling the `comfyui_image` bridge **directly** — the LLM is never in the
-loop. `/claw-help` lists every option.
+loop. Plus utility commands **`/claw-queue`** (queue status), **`/claw-free`**
+(unload models / free GPU memory), and **`/claw-help`** — these three reply
+**publicly** (visible to the whole channel). `/claw-help` lists every option.
+
+Generation jobs run **one at a time** (the bridge serializes), and switching
+between image / video / music model families auto-calls ComfyUI's `/free`
+first so the previous big model is evicted before the next loads — this keeps
+the GB10 unified-memory pool from OOMing when, say, an image gen is followed
+by a music gen.
 
 ## Why this exists
 
@@ -118,10 +126,23 @@ both commands.
 - `duration` — seconds (default 60, capped at `CLAW_MUSIC_MAX_SECONDS`,
   default 120). `bpm` tempo (default 120). `key` e.g. `C major` / `E minor`.
   `language` for the lyrics (default `en`).
-- Returns one MP3 as a Discord attachment. Renders are quick (~40-90 s) — the
-  ACE-Step turbo model is light (~10 GB), well clear of the Flux.2 memory
-  envelope. The bridge runs the validated ACE-Step graph directly (not via the
-  image/video workflow loader).
+- Returns one MP3 as a Discord attachment. The bridge runs the validated
+  ACE-Step graph directly (not via the image/video workflow loader). Default
+  variant is set by the bridge env (`ACE_MUSIC_UNET` / `ACE_MUSIC_CLIP2` /
+  `ACE_MUSIC_STEPS` — on this deploy the XL-SFT 4B + qwen-4B + 50 steps
+  quality tier).
+
+### Utility commands (public replies)
+
+```
+/claw-queue     # how many jobs running/pending + current job + elapsed
+/claw-free      # unload all ComfyUI models, free the GPU/unified pool
+/claw-help      # this cheatsheet
+```
+
+These three reply **publicly** (not ephemeral) so the whole channel sees the
+status. `/claw-free` is handy if generation seems stuck or memory is tight —
+the next gen reloads its model cold.
 
 - The default workflow is `CLAW_IMG_DEFAULT_WORKFLOW`. Set it to
   `flux-krea-2k-adult` for an NSFW-by-default deploy; `safe:true` forces the SFW

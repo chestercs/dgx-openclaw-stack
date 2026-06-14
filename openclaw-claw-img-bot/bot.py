@@ -604,7 +604,86 @@ async def claw_music_error(interaction: discord.Interaction, error: Exception):
         pass
 
 
-@tree.command(name="claw-help", description="How /claw-img, /claw-img-to-img, /claw-video and /claw-music work.")
+@tree.command(name="claw-queue", description="Show the current generation queue (visible to everyone).")
+async def claw_queue(interaction: discord.Interaction):
+    # Public (not ephemeral) so the whole channel sees the status.
+    await interaction.response.defer(thinking=True)
+    try:
+        envelope = await call_bridge({}, tool="queue_status", timeout_s=30)
+    except Exception as e:  # noqa: BLE001
+        await interaction.followup.send(f"queue check failed: {e}")
+        return
+    data = extract_result(envelope)
+    if data.get("error"):
+        await interaction.followup.send(f"queue error: {data.get('message', data['error'])}")
+        return
+
+    running = data.get("running", 0)
+    pending = data.get("pending", 0)
+    embed = discord.Embed(title="🎛 Generation queue", color=0x5865F2)
+    if data.get("idle"):
+        embed.description = "✅ Idle — nothing rendering, queue empty."
+    else:
+        embed.description = f"**{running}** running · **{pending}** waiting · {data.get('queue_remaining', '?')} total in queue"
+        cur = data.get("current_job") or {}
+        if cur:
+            fam = cur.get("family", "?")
+            label = (cur.get("label") or "").strip()
+            secs = cur.get("running_for_s", "?")
+            line = f"**{fam}** — running for {secs}s"
+            if label:
+                line += f"\n> {label[:180]}"
+            embed.add_field(name="Now working on", value=line, inline=False)
+    if data.get("last_model_family"):
+        embed.set_footer(text=f"last model family loaded: {data['last_model_family']}")
+    await interaction.followup.send(embed=embed)
+
+
+@claw_queue.error
+async def claw_queue_error(interaction: discord.Interaction, error: Exception):
+    log.exception("claw-queue command error: %s", error)
+    msg = f"⚠️ command failed: {error}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg)
+        else:
+            await interaction.response.send_message(msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@tree.command(name="claw-free", description="Unload ComfyUI models to free GPU memory (visible to everyone).")
+async def claw_free(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    try:
+        envelope = await call_bridge({}, tool="free_memory", timeout_s=60)
+    except Exception as e:  # noqa: BLE001
+        await interaction.followup.send(f"free failed: {e}")
+        return
+    data = extract_result(envelope)
+    if data.get("error"):
+        await interaction.followup.send(f"free error: {data.get('message', data['error'])}")
+        return
+    if data.get("freed"):
+        await interaction.followup.send("🧹 Freed ComfyUI memory — all models unloaded. The next generation reloads its model cold.")
+    else:
+        await interaction.followup.send(f"⚠️ free returned HTTP {data.get('http_status', '?')} — models may not have been unloaded.")
+
+
+@claw_free.error
+async def claw_free_error(interaction: discord.Interaction, error: Exception):
+    log.exception("claw-free command error: %s", error)
+    msg = f"⚠️ command failed: {error}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg)
+        else:
+            await interaction.response.send_message(msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@tree.command(name="claw-help", description="How every /claw command works (visible to everyone).")
 async def claw_help(interaction: discord.Interaction):
     # Instant, no bridge call — just an ephemeral formatted cheatsheet. Preset
     # lists are built from the constants so they never drift from the commands.
@@ -675,8 +754,19 @@ async def claw_help(interaction: discord.Interaction):
         ),
         inline=False,
     )
+    embed.add_field(
+        name="🎛 utility",
+        value=(
+            "• **/claw-queue** — show what's rendering + how many jobs are waiting\n"
+            "• **/claw-free** — unload models to free GPU memory (use if things get stuck/slow)\n"
+            "• **/claw-help** — this card\n"
+            "*(jobs run one at a time; switching between image / video / music auto-frees "
+            "the previous model so they don't fight for memory)*"
+        ),
+        inline=False,
+    )
     embed.set_footer(text="Renders take ~1 min (image/music) to a few min (video) — just wait for the result.")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 async def sync_to_guild(guild: discord.abc.Snowflake):

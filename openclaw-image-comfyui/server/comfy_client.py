@@ -245,6 +245,40 @@ class ComfyClient:
         r.raise_for_status()
         return r.json()
 
+    async def get_queue(self) -> dict:
+        """ComfyUI /queue — {queue_running: [...], queue_pending: [...]}.
+        Each item is [number, prompt_id, prompt_graph, extra_data,
+        outputs_to_execute]. Used by the queue_status tool."""
+        r = await self._client.get("/queue")
+        r.raise_for_status()
+        return r.json()
+
+    async def queue_remaining(self) -> int:
+        """exec_info.queue_remaining from /prompt — the count ComfyUI
+        itself reports (running + pending)."""
+        try:
+            r = await self._client.get("/prompt")
+            r.raise_for_status()
+            return int((r.json().get("exec_info") or {}).get("queue_remaining", 0))
+        except (httpx.RequestError, ValueError, TypeError):
+            return 0
+
+    async def free(self, unload_models: bool = True, free_memory: bool = True) -> int:
+        """POST /free — unload models and/or free the cached/intermediate
+        memory ComfyUI holds. On the GB10 unified pool this is the only
+        reliable way to evict a previously-loaded big model (Flux.2, ACE
+        XL) before loading a different one; ComfyUI's own free-memory
+        estimate under-counts on unified memory and won't always evict on
+        its own (root cause of the recurring OOM). Best-effort: returns
+        the HTTP status, never raises."""
+        try:
+            r = await self._client.post(
+                "/free", json={"unload_models": unload_models, "free_memory": free_memory}
+            )
+            return r.status_code
+        except httpx.RequestError:
+            return 0
+
 
 _VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".gif")
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff")

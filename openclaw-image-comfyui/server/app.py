@@ -515,6 +515,26 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "queue_status",
+        "description": (
+            "Report ComfyUI's current generation queue: how many jobs are "
+            "running and pending, and (if the bridge submitted it) what the "
+            "current job is and how long it's been running. Useful for a "
+            "status command."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "free_memory",
+        "description": (
+            "Unload all ComfyUI models and free cached/intermediate memory "
+            "(POST /free). Use to reclaim the GB10 unified pool between heavy "
+            "models, or to recover headroom. The next gen reloads its model "
+            "cold. Safe to call when idle."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 ]
 
 
@@ -534,6 +554,36 @@ comfy = ComfyClient(
     poll_interval_s=POLL_INTERVAL_S,
     poll_backoff_max_s=POLL_BACKOFF_MAX_S,
 )
+
+# ── OOM-safe model switching + in-flight tracking ────────────────────
+# The bridge serializes gens (MAX_CONCURRENCY=1), but ComfyUI caches the
+# previous model in the GB10 unified pool and its free-memory estimate
+# under-counts on unified memory — so loading a new big model (image ↔
+# video ↔ music) on top of the cached one can OOM the host (observed 3×).
+# Before a gen whose model FAMILY differs from the last, POST ComfyUI
+# /free to evict the old model first. This runs INSIDE the gen semaphore
+# (called from each handler's _run), so a free can never race a running
+# gen. Known limitation: switching between two image checkpoints (e.g.
+# flux2 33GB → flux-krea 23GB) is the same "image" family and won't auto-
+# free — those rely on ComfyUI's own per-checkpoint eviction.
+_last_gen_family: Optional[str] = None
+# Current in-flight job for queue_status ("what are we working on + since
+# when"). Serialized, so at most one; queue_status cross-checks ComfyUI's
+# live /queue so a stale value is never shown as running.
+_current_job: Optional[dict] = None
+
+
+async def _prepare_gen(family: str, label: str) -> None:
+    """Call as the FIRST await inside a handler's _run (under the gen
+    semaphore). Frees ComfyUI's loaded models when the family changes
+    (OOM-safe switch) and records the current job."""
+    global _last_gen_family, _current_job
+    if _last_gen_family is not None and _last_gen_family != family:
+        status = await comfy.free(unload_models=True, free_memory=True)
+        log.info("gen family switch %s -> %s: ComfyUI /free -> %s", _last_gen_family, family, status)
+    _last_gen_family = family
+    _current_job = {"family": family, "label": (label or "")[:140], "started_at": time.monotonic()}
+
 
 app = FastAPI(title="openclaw-image-comfyui", version="0.1.0")
 bearer = HTTPBearer(auto_error=False)
@@ -641,6 +691,51 @@ async def _tool_cancel(args: dict) -> dict:
     return await comfy.cancel(prompt_id)
 
 
+async def _tool_queue_status(_args: dict) -> dict:
+    """Report ComfyUI's queue + the bridge's current in-flight job."""
+    try:
+        q = await comfy.get_queue()
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"could not reach ComfyUI /queue: {e}") from e
+    running = q.get("queue_running") or []
+    pending = q.get("queue_pending") or []
+    remaining = await comfy.queue_remaining()
+
+    # ComfyUI queue item shape: [number, prompt_id, prompt_graph, extra, outs].
+    def _pid(item):
+        return item[1] if isinstance(item, list) and len(item) > 1 else None
+
+    running_ids = [_pid(x) for x in running if _pid(x)]
+    current = None
+    # Only surface the bridge's _current_job as "running" if ComfyUI agrees
+    # something is actually executing (avoids showing a stale finished job).
+    if running and _current_job is not None:
+        current = {
+            "family": _current_job.get("family"),
+            "label": _current_job.get("label"),
+            "running_for_s": round(time.monotonic() - _current_job.get("started_at", time.monotonic()), 1),
+        }
+    return {
+        "running": len(running),
+        "pending": len(pending),
+        "queue_remaining": remaining,
+        "running_prompt_ids": running_ids,
+        "current_job": current,
+        "last_model_family": _last_gen_family,
+        "idle": (len(running) == 0 and len(pending) == 0),
+    }
+
+
+async def _tool_free_memory(_args: dict) -> dict:
+    """Unload ComfyUI models + free cached memory; reset the family tracker
+    so the next gen is treated as a fresh load."""
+    global _last_gen_family, _current_job
+    status = await comfy.free(unload_models=True, free_memory=True)
+    _last_gen_family = None
+    _current_job = None
+    return {"freed": status == 200, "http_status": status}
+
+
 async def _tool_generate(args: dict) -> dict:
     # Default-cascade order for the workflow:
     #   1. explicit `workflow=` arg from the caller
@@ -712,6 +807,7 @@ async def _tool_generate(args: dict) -> dict:
     started = time.monotonic()
 
     async def _run() -> dict:
+        await _prepare_gen("image", args.get("prompt") or "")
         prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
         try:
             entry = await comfy.wait_for_completion(prompt_id, timeout_s)
@@ -1028,6 +1124,7 @@ async def _tool_generate_i2i(args: dict) -> dict:
     started = time.monotonic()
 
     async def _run() -> dict:
+        await _prepare_gen("image", args.get("prompt") or "")
         prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
         try:
             entry = await comfy.wait_for_completion(prompt_id, timeout_s)
@@ -1395,6 +1492,7 @@ async def _tool_generate_video(args: dict) -> dict:
     started = time.monotonic()
 
     async def _run() -> dict:
+        await _prepare_gen("video", args.get("prompt") or "")
         prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
         try:
             entry = await comfy.wait_for_completion(prompt_id, timeout_s)
@@ -1662,6 +1760,7 @@ async def _tool_generate_music(args: dict) -> dict:
     started = time.monotonic()
 
     async def _run() -> dict:
+        await _prepare_gen("music", tags)
         prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
         try:
             entry = await comfy.wait_for_completion(prompt_id, timeout_s)
@@ -1760,6 +1859,8 @@ TOOL_HANDLERS = {
     "generate_music":  _tool_generate_music,
     "list_workflows":  _tool_list_workflows,
     "cancel":          _tool_cancel,
+    "queue_status":    _tool_queue_status,
+    "free_memory":     _tool_free_memory,
 }
 
 
