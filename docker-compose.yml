@@ -1907,7 +1907,7 @@ services:
     profiles: ["claw-img"]
     build:
       context: ./openclaw-claw-img-bot
-    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.4.0}
+    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.4.1}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-claw-img-bot
     hostname: openclaw-claw-img-bot
     restart: unless-stopped

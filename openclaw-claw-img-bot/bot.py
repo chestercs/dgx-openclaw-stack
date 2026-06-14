@@ -146,6 +146,7 @@ def extract_result(envelope: dict) -> dict:
 
 
 @tree.command(name="claw-img", description="Generate an image (direct, no chat LLM in the loop).")
+@app_commands.guild_only()
 @app_commands.describe(
     prompt="What the image should depict.",
     negative="What to avoid / keep out of the image.",
@@ -256,6 +257,7 @@ async def claw_img_error(interaction: discord.Interaction, error: Exception):
 
 
 @tree.command(name="claw-video", description="Generate a short video (LTX-Video 2.3, direct — no chat LLM).")
+@app_commands.guild_only()
 @app_commands.describe(
     prompt="What the video should depict (and, if audio on, sound like).",
     image="Optional source image to animate (image-to-video).",
@@ -378,6 +380,7 @@ async def claw_video_error(interaction: discord.Interaction, error: Exception):
 
 
 @tree.command(name="claw-img-to-img", description="Transform an attached image with a prompt (img2img, direct — no chat LLM).")
+@app_commands.guild_only()
 @app_commands.describe(
     image="Source image to transform (required).",
     prompt="How to transform it / what the result should look like.",
@@ -501,6 +504,7 @@ async def claw_img_to_img_error(interaction: discord.Interaction, error: Excepti
 
 
 @tree.command(name="claw-music", description="Generate music from a text description (ACE-Step v1.5, direct — no chat LLM).")
+@app_commands.guild_only()
 @app_commands.describe(
     tags="Musical style / mood / instrumentation, comma-separated (required).",
     lyrics="Optional lyrics for a sung track — leave empty for instrumental. Use \\n between lines.",
@@ -605,6 +609,7 @@ async def claw_music_error(interaction: discord.Interaction, error: Exception):
 
 
 @tree.command(name="claw-queue", description="Show the current generation queue (visible to everyone).")
+@app_commands.guild_only()
 async def claw_queue(interaction: discord.Interaction):
     # Public (not ephemeral) so the whole channel sees the status.
     await interaction.response.defer(thinking=True)
@@ -653,6 +658,7 @@ async def claw_queue_error(interaction: discord.Interaction, error: Exception):
 
 
 @tree.command(name="claw-free", description="Unload ComfyUI models to free GPU memory (visible to everyone).")
+@app_commands.guild_only()
 async def claw_free(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
     try:
@@ -684,6 +690,7 @@ async def claw_free_error(interaction: discord.Interaction, error: Exception):
 
 
 @tree.command(name="claw-help", description="How every /claw command works (visible to everyone).")
+@app_commands.guild_only()
 async def claw_help(interaction: discord.Interaction):
     # Instant, no bridge call — just an ephemeral formatted cheatsheet. Preset
     # lists are built from the constants so they never drift from the commands.
