@@ -52,6 +52,10 @@ TIMEOUT_S = float(os.environ.get("CLAW_IMG_TIMEOUT_S", "600"))
 VIDEO_TIMEOUT_S = float(os.environ.get("CLAW_VIDEO_TIMEOUT_S", "900"))
 # Max seconds of video (the bridge also caps via LTX_VIDEO_MAX_DURATION_S).
 VIDEO_MAX_SECONDS = float(os.environ.get("CLAW_VIDEO_MAX_SECONDS", "10"))
+# Music (ACE-Step v1.5 turbo) — ~40-90 s render; the bridge caps duration
+# via ACE_MUSIC_MAX_SECONDS (default 120).
+MUSIC_TIMEOUT_S = float(os.environ.get("CLAW_MUSIC_TIMEOUT_S", "600"))
+MUSIC_MAX_SECONDS = float(os.environ.get("CLAW_MUSIC_MAX_SECONDS", "120"))
 
 # Resolution presets (explicit dims). 4K is deliberately omitted — a 3840px
 # FLUX render peaks ~100+ GB on this box and has livelocked the host; set
@@ -496,13 +500,117 @@ async def claw_img_to_img_error(interaction: discord.Interaction, error: Excepti
         pass
 
 
-@tree.command(name="claw-help", description="How /claw-img, /claw-img-to-img and /claw-video work — what each option does.")
+@tree.command(name="claw-music", description="Generate music from a text description (ACE-Step v1.5, direct — no chat LLM).")
+@app_commands.describe(
+    tags="Musical style / mood / instrumentation, comma-separated (required).",
+    lyrics="Optional lyrics for a sung track — leave empty for instrumental. Use \\n between lines.",
+    duration=f"Clip length in seconds (default 60, max {int(MUSIC_MAX_SECONDS)}).",
+    bpm="Tempo in beats per minute (10-300, default 120).",
+    language="Lyrics language code (en, hu, es, ja, … — default en; ignored for instrumentals).",
+    key="Musical key, e.g. 'C major', 'E minor', 'A minor' (default 'C major').",
+    timesignature="Time signature: 2, 3, 4, or 6 (default 4).",
+    seed="RNG seed for reproducibility (omit = random).",
+)
+@app_commands.choices(
+    timesignature=[app_commands.Choice(name=t, value=t) for t in ("2", "3", "4", "6")]
+)
+async def claw_music(
+    interaction: discord.Interaction,
+    tags: str,
+    lyrics: str | None = None,
+    duration: float | None = None,
+    bpm: int | None = None,
+    language: str | None = None,
+    key: str | None = None,
+    timesignature: app_commands.Choice[str] | None = None,
+    seed: int | None = None,
+):
+    await interaction.response.defer(thinking=True)
+
+    args = {
+        "tags": tags,
+        "include_base64": True,
+    }
+    if lyrics:
+        # Discord single-line input → allow literal "\n" to mean a newline.
+        args["lyrics"] = lyrics.replace("\\n", "\n")
+    if duration is not None:
+        args["duration"] = max(1.0, min(duration, MUSIC_MAX_SECONDS))
+    if bpm is not None:
+        args["bpm"] = bpm
+    if language:
+        args["language"] = language
+    if key:
+        args["keyscale"] = key
+    if timesignature is not None:
+        args["timesignature"] = timesignature.value
+    if seed is not None:
+        args["seed"] = seed
+
+    try:
+        envelope = await call_bridge(args, tool="generate_music", timeout_s=MUSIC_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("⌛ music render timed out — try a shorter duration.")
+        return
+    except Exception as e:  # noqa: BLE001
+        log.exception("music bridge call failed")
+        await interaction.followup.send(f"music request failed: {e}")
+        return
+
+    data = extract_result(envelope)
+    if data.get("error"):
+        await interaction.followup.send(f"music error: {data.get('message', data['error'])}")
+        return
+
+    tracks = data.get("audio") or []
+    track = tracks[0] if tracks else {}
+    summary = (
+        f"🎵 `{data.get('model_used', 'acestep_v1.5')}` — "
+        f"{data.get('duration_s', '?')}s, "
+        f"{'instrumental' if data.get('instrumental') else 'vocal'}, "
+        f"seed {data.get('seed_used', '?')} (rendered {data.get('elapsed_s', '?')}s)"
+    )
+
+    b64 = track.get("base64")
+    if not b64:
+        link = data.get("display_markdown") or "(no audio returned)"
+        await interaction.followup.send(f"{summary}\n{link}")
+        return
+
+    raw = base64.b64decode(b64)
+    filename = track.get("filename") or "music.mp3"
+    if len(raw) <= MAX_BYTES:
+        await interaction.followup.send(
+            content=summary,
+            file=discord.File(io.BytesIO(raw), filename=filename),
+        )
+    else:
+        link = data.get("display_markdown") or ""
+        await interaction.followup.send(
+            f"{summary}\n(audio is {len(raw) // 1024} KiB — over the attachment cap, linking instead)\n{link}"
+        )
+
+
+@claw_music.error
+async def claw_music_error(interaction: discord.Interaction, error: Exception):
+    log.exception("claw-music command error: %s", error)
+    msg = f"⚠️ command failed: {error}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@tree.command(name="claw-help", description="How /claw-img, /claw-img-to-img, /claw-video and /claw-music work.")
 async def claw_help(interaction: discord.Interaction):
     # Instant, no bridge call — just an ephemeral formatted cheatsheet. Preset
     # lists are built from the constants so they never drift from the commands.
     embed = discord.Embed(
-        title="🎨 KozelBot — image & video generation",
-        description="Three slash commands, no chat LLM in the loop. Fill **prompt** and go — everything else is optional.",
+        title="🎨 KozelBot — image, video & music generation",
+        description="Four slash commands, no chat LLM in the loop. Fill the required field and go — everything else is optional.",
         color=0x5865F2,
     )
     embed.add_field(
@@ -550,7 +658,24 @@ async def claw_help(interaction: discord.Interaction):
         ),
         inline=False,
     )
-    embed.set_footer(text="Renders take ~1 min (image) to a few min (video) — just wait for the result.")
+    embed.add_field(
+        name="🎵 /claw-music",
+        value=(
+            "Generate music (ACE-Step v1.5).\n"
+            "• **tags** — style/mood/instruments, comma-separated *(required)*\n"
+            "  e.g. `lo-fi hip hop, mellow, jazzy piano, instrumental`\n"
+            "• **lyrics** — fill for a **sung** track, empty = instrumental "
+            "(`\\n` between lines)\n"
+            f"• **duration** — seconds (default 60, max {int(MUSIC_MAX_SECONDS)})\n"
+            "• **bpm** — tempo *(default 120)*\n"
+            "• **language** — lyrics language *(default en)*\n"
+            "• **key** — e.g. `C major`, `E minor`\n"
+            "• **timesignature** — `2 / 3 / 4 / 6` *(default 4)*\n"
+            "• **seed** — reproduce a result"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Renders take ~1 min (image/music) to a few min (video) — just wait for the result.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

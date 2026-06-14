@@ -1,9 +1,10 @@
 # `openclaw-claw-img-bot` — standalone `/claw-img` Discord slash command
 
 A small Discord bot that exposes real **`/claw-img`** (text→image),
-**`/claw-img-to-img`** (img2img), and **`/claw-video`** (LTX-Video) slash
-commands and generates media by calling the `comfyui_image` bridge
-**directly** — the LLM is never in the loop. `/claw-help` lists every option.
+**`/claw-img-to-img`** (img2img), **`/claw-video`** (LTX-Video), and
+**`/claw-music`** (ACE-Step text→music) slash commands and generates media
+by calling the `comfyui_image` bridge **directly** — the LLM is never in the
+loop. `/claw-help` lists every option.
 
 ## Why this exists
 
@@ -101,6 +102,27 @@ both commands.
   offered for video. Returns the mp4 as an attachment (link fallback if it's
   over the Discord upload cap). Cold-cache renders take a few minutes.
 
+### `/claw-music` (ACE-Step v1.5 turbo)
+
+```
+/claw-music tags:<text> [lyrics:<text>] [duration:<float>] [bpm:<int>]
+            [language:<code>] [key:<text>] [timesignature:2|3|4|6] [seed:<int>]
+```
+
+- **`tags`** *(required)* — musical style / mood / instrumentation,
+  comma-separated (e.g. `lo-fi hip hop, mellow, jazzy piano, instrumental`).
+  This is the main creative control.
+- **`lyrics`** — fill it for a **sung** track; leave empty for an instrumental.
+  Discord single-line input, so type `\n` where you want a line break;
+  `[verse]` / `[chorus]` structure tags work.
+- `duration` — seconds (default 60, capped at `CLAW_MUSIC_MAX_SECONDS`,
+  default 120). `bpm` tempo (default 120). `key` e.g. `C major` / `E minor`.
+  `language` for the lyrics (default `en`).
+- Returns one MP3 as a Discord attachment. Renders are quick (~40-90 s) — the
+  ACE-Step turbo model is light (~10 GB), well clear of the Flux.2 memory
+  envelope. The bridge runs the validated ACE-Step graph directly (not via the
+  image/video workflow loader).
+
 - The default workflow is `CLAW_IMG_DEFAULT_WORKFLOW`. Set it to
   `flux-krea-2k-adult` for an NSFW-by-default deploy; `safe:true` forces the SFW
   workflow per call.
@@ -122,5 +144,7 @@ both commands.
 | `CLAW_IMG_SFW_WORKFLOW` | `flux-krea-2k` | Workflow when `safe:true`. |
 | `CLAW_IMG2IMG_DEFAULT_WORKFLOW` | `flux-krea-2k-i2i` | `/claw-img-to-img` workflow (set `-adult` for NSFW-default). |
 | `CLAW_IMG2IMG_SFW_WORKFLOW` | `flux-krea-2k-i2i` | `/claw-img-to-img` workflow when `safe:true`. |
+| `CLAW_MUSIC_TIMEOUT_S` | `600` | `/claw-music` per-render bridge timeout. |
+| `CLAW_MUSIC_MAX_SECONDS` | `120` | `/claw-music` max clip length (bot-side clamp). |
 | `CLAW_IMG_MAX_BYTES` | `9437184` | Max attachment size before link fallback. |
 | `CLAW_IMG_TIMEOUT_S` | `600` | Per-render bridge timeout. |

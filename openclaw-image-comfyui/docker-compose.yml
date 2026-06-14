@@ -100,6 +100,17 @@ services:
       LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
       LTX_VIDEO_DEFAULT_AUDIO: ${LTX_VIDEO_DEFAULT_AUDIO:-on}
       LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}
+      # ACE-Step v1.5 turbo music generation (generate_music tool). Model
+      # filenames default to the Comfy-Org split-file names; override only
+      # if you installed different quants. ACE_MUSIC_MAX_SECONDS is the hard
+      # duration cap enforced before submit.
+      ACE_MUSIC_MAX_SECONDS: ${ACE_MUSIC_MAX_SECONDS:-120}
+      ACE_MUSIC_UNET: ${ACE_MUSIC_UNET:-acestep_v1.5_turbo.safetensors}
+      ACE_MUSIC_CLIP1: ${ACE_MUSIC_CLIP1:-qwen_0.6b_ace15.safetensors}
+      ACE_MUSIC_CLIP2: ${ACE_MUSIC_CLIP2:-qwen_1.7b_ace15.safetensors}
+      ACE_MUSIC_VAE: ${ACE_MUSIC_VAE:-ace_1.5_vae.safetensors}
+      ACE_MUSIC_STEPS: ${ACE_MUSIC_STEPS:-8}
+      ACE_MUSIC_TIMEOUT_S: ${ACE_MUSIC_TIMEOUT_S:-600}
     volumes:
       # workflows/ is COPYed into the image AND bind-mounted ro so
       # operators can drop new templates without rebuilding. The bridge

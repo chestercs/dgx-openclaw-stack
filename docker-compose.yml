@@ -1907,7 +1907,7 @@ services:
     profiles: ["claw-img"]
     build:
       context: ./openclaw-claw-img-bot
-    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.2.0}
+    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.3.0}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-claw-img-bot
     hostname: openclaw-claw-img-bot
     restart: unless-stopped
@@ -1940,6 +1940,11 @@ services:
       # duration cap (the bridge also enforces LTX_VIDEO_MAX_DURATION_S).
       CLAW_VIDEO_TIMEOUT_S: ${CLAW_VIDEO_TIMEOUT_S:-900}
       CLAW_VIDEO_MAX_SECONDS: ${CLAW_VIDEO_MAX_SECONDS:-10}
+      # /claw-music (ACE-Step v1.5 turbo) — text→music. The bridge enforces
+      # the hard duration cap via ACE_MUSIC_MAX_SECONDS; this is the bot-side
+      # clamp shown to users.
+      CLAW_MUSIC_TIMEOUT_S: ${CLAW_MUSIC_TIMEOUT_S:-600}
+      CLAW_MUSIC_MAX_SECONDS: ${CLAW_MUSIC_MAX_SECONDS:-120}
       TZ: ${TZ:-UTC}
     cap_drop: [ALL]
     security_opt:

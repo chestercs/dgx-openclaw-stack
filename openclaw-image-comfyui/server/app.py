@@ -92,6 +92,27 @@ MAX_CONCURRENCY = int(os.environ.get("IMAGE_GEN_MAX_CONCURRENCY", "1"))
 POLL_INTERVAL_S = float(os.environ.get("IMAGE_GEN_POLL_INTERVAL_S", "0.5"))
 POLL_BACKOFF_MAX_S = float(os.environ.get("IMAGE_GEN_POLL_BACKOFF_MAX_S", "2.0"))
 
+# ── ACE-Step v1.5 music generation (generate_music tool) ──────────────
+# Unlike image/video, the music tool does NOT go through the workflow
+# loader/bind system — ACE-Step's semantic params (tags/lyrics/bpm/
+# duration/keyscale) don't map onto the image-oriented bind keys, and
+# keeping it self-contained means a music change can't break the shared
+# image/video templates. The handler patches the API-format graph below
+# (validated end-to-end on GB10 2026-06-14) by node id.
+ACE_MUSIC_UNET = os.environ.get("ACE_MUSIC_UNET", "acestep_v1.5_turbo.safetensors").strip()
+ACE_MUSIC_CLIP1 = os.environ.get("ACE_MUSIC_CLIP1", "qwen_0.6b_ace15.safetensors").strip()
+ACE_MUSIC_CLIP2 = os.environ.get("ACE_MUSIC_CLIP2", "qwen_1.7b_ace15.safetensors").strip()
+ACE_MUSIC_VAE = os.environ.get("ACE_MUSIC_VAE", "ace_1.5_vae.safetensors").strip()
+ACE_MUSIC_MAX_SECONDS = float(os.environ.get("ACE_MUSIC_MAX_SECONDS", "120"))
+ACE_MUSIC_STEPS = int(os.environ.get("ACE_MUSIC_STEPS", "8"))  # turbo checkpoint
+ACE_MUSIC_TIMEOUT_S = float(os.environ.get("ACE_MUSIC_TIMEOUT_S", "600"))
+ACE_MUSIC_LANGUAGES = [
+    'ar', 'az', 'bg', 'bn', 'ca', 'cs', 'da', 'de', 'el', 'en', 'es', 'fa', 'fi',
+    'fr', 'he', 'hi', 'hr', 'ht', 'hu', 'id', 'is', 'it', 'ja', 'ko', 'la', 'lt',
+    'ms', 'ne', 'nl', 'no', 'pa', 'pl', 'pt', 'ro', 'ru', 'sa', 'sk', 'sr', 'sv',
+    'sw', 'ta', 'te', 'th', 'tl', 'tr', 'uk', 'ur', 'vi', 'yue', 'zh', 'unknown',
+]
+
 WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 
 # Path A: same-origin chat-side image rendering via the [embed] shortcode.
@@ -439,6 +460,42 @@ TOOLS = [
                 "attach_image_content": {"type": "boolean", "default": True},
             },
             "required": ["prompt"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "generate_music",
+        "description": (
+            "Generate MUSIC / audio from a text description (ACE-Step v1.5 "
+            "turbo). Use this when the user asks for a song, a track, a beat, "
+            "background music, a jingle, or any audio that isn't speech. NOT "
+            "for text-to-speech — this is instrumental + sung music.\n\n"
+            "`tags` (REQUIRED) is the musical style / mood / instrumentation, "
+            "comma-separated (e.g. 'lo-fi hip hop, mellow, jazzy piano, vinyl "
+            "crackle, instrumental'). `lyrics` is OPTIONAL: leave empty for an "
+            "instrumental track; fill it for a sung vocal (use newlines for "
+            "lines, and [verse]/[chorus] structure tags work). `duration` is "
+            f"seconds (max {int(ACE_MUSIC_MAX_SECONDS)}). Returns one MP3.\n\n"
+            "MANDATORY OUTPUT CONTRACT — your reply MUST start with the EXACT "
+            "verbatim contents of the `display_markdown` field so Discord can "
+            "deliver the audio. Add commentary AFTER."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tags":      {"type": "string", "description": "Musical style/mood/instrumentation, comma-separated. The main creative control. E.g. 'synthwave, retro, driving bassline, analog synths, instrumental'."},
+                "lyrics":    {"type": "string", "description": "Optional lyrics for a sung track. Empty = instrumental. Newlines separate lines; [verse]/[chorus]/[bridge] structure tags are supported.", "default": ""},
+                "duration":  {"type": "number", "description": f"Clip length in seconds. Default 60, max {int(ACE_MUSIC_MAX_SECONDS)}.", "default": 60},
+                "bpm":       {"type": "integer", "description": "Tempo in beats per minute (10-300). Default 120.", "default": 120},
+                "language":  {"type": "string", "description": "Lyrics language code (en, hu, es, ja, …). Default en. Ignored for instrumentals.", "default": "en"},
+                "keyscale":  {"type": "string", "description": "Musical key, e.g. 'C major' / 'E minor' / 'A minor'. Default 'C major'."},
+                "timesignature": {"type": "string", "description": "Time signature: '2', '3', '4', or '6'. Default '4'.", "default": "4"},
+                "cfg_scale": {"type": "number", "description": "Prompt-adherence for the audio-code LLM. Default 2.0.", "default": 2.0},
+                "seed":      {"type": "integer", "description": "Seed; -1 = random.", "default": -1},
+                "timeout_s": {"type": "number", "description": f"Per-call timeout. Default {ACE_MUSIC_TIMEOUT_S}s."},
+                "include_base64": {"type": "boolean", "description": "Embed the MP3 bytes as base64 in the response. Default false.", "default": False},
+            },
+            "required": ["tags"],
             "additionalProperties": False,
         },
     },
@@ -1517,10 +1574,190 @@ async def _tool_generate_video(args: dict) -> dict:
         return await _run()
 
 
+def _build_ace_music_graph(
+    *, tags: str, lyrics: str, seconds: float, bpm: int, timesignature: str,
+    language: str, keyscale: str, cfg_scale: float, seed: int,
+) -> dict:
+    """ACE-Step v1.5 turbo API graph (validated end-to-end on GB10
+    2026-06-14). Built directly rather than via the workflow loader because
+    ACE's params don't fit the image/video bind keys — keeping it inline
+    means a music change can't break the shared image/video templates."""
+    return {
+        "4":  {"class_type": "UNETLoader", "inputs": {"unet_name": ACE_MUSIC_UNET, "weight_dtype": "default"}},
+        "5":  {"class_type": "DualCLIPLoader", "inputs": {"clip_name1": ACE_MUSIC_CLIP1, "clip_name2": ACE_MUSIC_CLIP2, "type": "ace", "device": "default"}},
+        "6":  {"class_type": "VAELoader", "inputs": {"vae_name": ACE_MUSIC_VAE}},
+        "7":  {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["4", 0], "shift": 3}},
+        "8":  {"class_type": "TextEncodeAceStepAudio1.5", "inputs": {
+            "clip": ["5", 0], "tags": tags, "lyrics": lyrics, "seed": seed,
+            "bpm": bpm, "duration": seconds, "timesignature": timesignature,
+            "language": language, "keyscale": keyscale,
+            "generate_audio_codes": True, "cfg_scale": cfg_scale,
+            "temperature": 0.85, "top_p": 0.9, "top_k": 0, "min_p": 0.0,
+        }},
+        "9":  {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["8", 0]}},
+        "10": {"class_type": "EmptyAceStep1.5LatentAudio", "inputs": {"seconds": seconds, "batch_size": 1}},
+        "11": {"class_type": "KSampler", "inputs": {
+            "model": ["7", 0], "positive": ["8", 0], "negative": ["9", 0],
+            "latent_image": ["10", 0], "seed": seed, "steps": ACE_MUSIC_STEPS,
+            "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+        }},
+        "12": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["11", 0], "vae": ["6", 0]}},
+        "13": {"class_type": "SaveAudioMP3", "inputs": {"audio": ["12", 0], "filename_prefix": "claw_music", "quality": "V0"}},
+    }
+
+
+async def _tool_generate_music(args: dict) -> dict:
+    """ACE-Step v1.5 turbo text-to-music. tags (required) describe style;
+    lyrics (optional) make it sung vs instrumental. Self-contained — does
+    NOT use the image/video workflow loader (see _build_ace_music_graph)."""
+    tags = (args.get("tags") or "").strip()
+    if not tags:
+        raise ValueError("`tags` is required — describe the musical style/mood (e.g. 'lo-fi hip hop, mellow, instrumental').")
+    lyrics = args.get("lyrics") or ""
+
+    try:
+        seconds = float(args.get("duration") or 60)
+    except (TypeError, ValueError):
+        seconds = 60.0
+    seconds = max(1.0, min(seconds, ACE_MUSIC_MAX_SECONDS))
+
+    try:
+        bpm = int(args.get("bpm") or 120)
+    except (TypeError, ValueError):
+        bpm = 120
+    bpm = max(10, min(bpm, 300))
+
+    timesignature = str(args.get("timesignature") or "4")
+    if timesignature not in ("2", "3", "4", "6"):
+        timesignature = "4"
+    language = (args.get("language") or "en").strip()
+    if language not in ACE_MUSIC_LANGUAGES:
+        language = "en"
+    keyscale = (args.get("keyscale") or "C major").strip()
+    try:
+        cfg_scale = float(args.get("cfg_scale") or 2.0)
+    except (TypeError, ValueError):
+        cfg_scale = 2.0
+
+    raw_seed = args.get("seed", -1)
+    try:
+        seed_val = int(raw_seed)
+    except (TypeError, ValueError):
+        seed_val = -1
+    if seed_val < 0:
+        seed_val = random.randint(0, 2**32 - 1)
+
+    try:
+        timeout_s = float(args.get("timeout_s") or ACE_MUSIC_TIMEOUT_S)
+    except (TypeError, ValueError):
+        timeout_s = ACE_MUSIC_TIMEOUT_S
+
+    include_base64 = bool(args.get("include_base64", False))
+    prompt_dict = _build_ace_music_graph(
+        tags=tags, lyrics=lyrics, seconds=seconds, bpm=bpm,
+        timesignature=timesignature, language=language, keyscale=keyscale,
+        cfg_scale=cfg_scale, seed=seed_val,
+    )
+    client_id = uuid.uuid4().hex
+    started = time.monotonic()
+
+    async def _run() -> dict:
+        prompt_id = await comfy.submit_prompt(prompt_dict, client_id)
+        try:
+            entry = await comfy.wait_for_completion(prompt_id, timeout_s)
+        except ComfyUITimeout:
+            await comfy.cancel(prompt_id)
+            raise
+        # extract_media_outputs() only walks images/videos/gifs buckets, so
+        # read the `audio` bucket from the history entry directly.
+        audio_out = None
+        for node_out in (entry.get("outputs") or {}).values():
+            if isinstance(node_out, dict):
+                arr = node_out.get("audio") or []
+                if arr and arr[0].get("filename"):
+                    audio_out = arr[0]
+                    break
+        if audio_out is None:
+            raise ComfyUIError(
+                f"prompt {prompt_id} completed but produced no audio "
+                "(check the workflow has a SaveAudioMP3 node)"
+            )
+
+        data = await comfy.fetch_image(
+            audio_out["filename"],
+            image_type=audio_out.get("type", "output"),
+            subfolder=audio_out.get("subfolder", ""),
+        )
+        if len(data) > MAX_OUTPUT_BYTES:
+            raise ComfyUIError(
+                f"audio exceeded IMAGE_GEN_MAX_OUTPUT_BYTES ({MAX_OUTPUT_BYTES} B) "
+                "— shorten the duration"
+            )
+        b64 = base64.b64encode(data).decode("ascii")
+        from urllib.parse import quote
+        view_qs = (
+            f"filename={quote(audio_out['filename'], safe='')}"
+            f"&type={quote(audio_out.get('type', 'output'), safe='')}"
+            f"&subfolder={quote(audio_out.get('subfolder', ''), safe='')}"
+        )
+        if COMFYUI_VIEW_TOKEN:
+            view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
+        url = f"{COMFYUI_EXTERNAL_URL}/view?{view_qs}"
+        fname = audio_out["filename"]
+        # "#<name>.mp3" fragment makes Discord's crawler treat the URL as
+        # media for auto-embed; not sent in the actual GET.
+        display_url = f"{url}#{fname}" if "." in fname else url
+        display_markdown = f"[🎵 {fname}]({display_url})\n\n{display_url}"
+
+        audio_entry = {
+            "format": "mp3",
+            "filename": fname,
+            "subfolder": audio_out.get("subfolder", ""),
+            "type": audio_out.get("type", "output"),
+            "byte_size": len(data),
+            "duration_s": round(seconds, 2),
+            "bpm": bpm,
+            "fetch_url_path": f"/view?{view_qs}",
+        }
+        if include_base64:
+            audio_entry["base64"] = b64
+        # base64 is always returned for the bot's attachment path (it asks
+        # with include_base64=true); when false we still hand back bytes so
+        # the slash bot can attach without a second fetch, but the agent
+        # context stays light because the bot, not the LLM, consumes it.
+        audio_entry["_bytes_b64"] = b64
+
+        return {
+            "prompt_id": prompt_id,
+            "model_used": ACE_MUSIC_UNET,
+            "seed_used": seed_val,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "instrumental": not bool(lyrics.strip()),
+            "duration_s": round(seconds, 2),
+            "include_base64": include_base64,
+            "comfyui_base_url": COMFYUI_URL,
+            "comfyui_external_url": COMFYUI_EXTERNAL_URL,
+            "display_markdown": display_markdown,
+            "agent_hint": (
+                "MANDATORY: start your reply with the EXACT `display_markdown` "
+                "value (a clickable link line + a raw audio URL line). Add "
+                "commentary AFTER. Don't describe the music in prose instead "
+                "of delivering the link."
+            ),
+            "audio": [audio_entry],
+        }
+
+    if _gen_sem is None:
+        return await _run()
+    async with _gen_sem:
+        return await _run()
+
+
 TOOL_HANDLERS = {
     "generate":        _tool_generate,
     "generate_video":  _tool_generate_video,
     "generate_i2i":    _tool_generate_i2i,
+    "generate_music":  _tool_generate_music,
     "list_workflows":  _tool_list_workflows,
     "cancel":          _tool_cancel,
 }
