@@ -1912,10 +1912,13 @@ async def _tool_generate_music(args: dict) -> dict:
             "display_markdown": display_markdown,
             "canvas_path": canvas_path,
             "agent_hint": (
-                "DELIVER THE AUDIO ON DISCORD with the `upload-file` action: "
-                f"path=\"{canvas_path}\" (the file is already saved there). "
-                "The /view URL is NOT publicly reachable, so do NOT just paste "
-                "a link — upload the file. Then add a short comment."
+                "DELIVER THE AUDIO ON DISCORD — call the `message` tool with "
+                "EXACTLY this shape (flat `path`, NOT an attachments array):\n"
+                f'message({{"action":"upload-file","path":"{canvas_path}"}})\n'
+                "WRONG (fails with 'requires filePath, path, or media'): putting "
+                "the file under attachments:[{media:...}]. The path goes at the "
+                "TOP LEVEL. The /view URL is NOT publicly reachable — never just "
+                "paste a link. After the upload-file succeeds, add a short comment."
                 if canvas_path else
                 "Paste the EXACT `display_markdown` value at the start of your reply."
             ),
@@ -2092,8 +2095,10 @@ async def _tool_generate_music_repaint(args: dict) -> dict:
             "display_markdown": f"[🎵 {fname}]({display_url})\n\n{display_url}",
             "canvas_path": canvas_path,
             "agent_hint": (
-                f"DELIVER ON DISCORD with the `upload-file` action: path=\"{canvas_path}\". "
-                "Do NOT just paste a link (the /view URL is not publicly reachable)."
+                "DELIVER ON DISCORD — call `message` with EXACTLY: "
+                f'message({{"action":"upload-file","path":"{canvas_path}"}}) — '
+                "flat `path` at the TOP LEVEL, NOT attachments:[{media:...}]. "
+                "Never just paste a link (the /view URL is not publicly reachable)."
                 if canvas_path else
                 "Paste the EXACT `display_markdown` value at the start of your reply."
             ),

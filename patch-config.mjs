@@ -3826,8 +3826,13 @@ const MUSIC_CHEATSHEET_BODY =
   '- `comfyui_image__generate_music({"tags":"<stílus/hangulat/hangszerek, vesszővel>", "lyrics":"<opcionális>", "duration":<mp>})` — KÉT aláhúzás a tool-névben.\n' +
   '- `tags` KÖTELEZŐ, ez a fő kreatív kontroll (pl. `lo-fi hip hop, mellow, jazzy piano, vinyl crackle, instrumental`). `lyrics` opcionális: ÜRES = instrumentális, kitöltve = ÉNEKES dal (soronként `\\n`, `[verse]`/`[chorus]` struktúra-tagek mennek). A nyelv alapból magyar.\n' +
   '- További opciók: `duration` (mp, max ~120), `bpm`, `language`, `keyscale` (pl. `C major`), `steps`.\n\n' +
-  '🚨 **KÉZBESÍTÉS DISCORDON — KÖTELEZŐ `upload-file`, NEM link:** a válasz `canvas_path` mezőjét add a Discord **`upload-file`** action `path=`-jának: `upload-file` `{"path":"<canvas_path>"}`. A fájl MÁR ott van mentve a canvasban. SOHA ne csak linket ragassz be — a `/view` URL NEM publikus (401-et ad, nem kattintható, nem játszható le). Upload-file UTÁN írj egy rövid magyar kommentet. (A render ~1-2 perc — jelezd a usernek hogy dolgozol rajta, ne tagadd meg.)\n' +
-  '- **Meglévő track átstílusozása** ("alakítsd át ezt a zenét", "csináld lo-fivá") + csatolt audio → `comfyui_image__generate_music_repaint` (`init_audio_base64` a csatolt fájlból + `denoise` 0.05-1.0, alacsony=finom). Ugyanaz a `canvas_path` → `upload-file` kézbesítés.\n';
+  '🚨 **KÉZBESÍTÉS DISCORDON — a válasz `canvas_path` mezőjét töltsd fel, NE linkként.** A `message` toolt hívd PONTOSAN ÍGY (lapos `path`, NEM attachments-tömb):\n' +
+  '```\n' +
+  'message({"action":"upload-file","path":"<canvas_path>"})\n' +
+  '```\n' +
+  '🚫 HIBÁS (ettől jön a `"upload-file requires filePath, path, or media"` hiba): `{"action":"upload-file","attachments":[{"media":"..."}]}` — a path a FELSŐ szinten van, NEM attachments-ben. A `/view` URL NEM publikus (401) — SOHA ne csak linket ragassz. Az upload-file SIKERE UTÁN írj egy rövid magyar kommentet. (Render ~1-2 perc — jelezd hogy dolgozol rajta, ne tagadd meg.)\n' +
+  '🚨 **A tool-hívást VALÓDIBAN hívd meg — SOHA ne írd ki szövegként** (pl. `comfyui_image__generate_music(tags=...)` mint sima szöveg a chatre = HIBA, a user 0 zenét kap). Ha kimondod hogy generálsz, ténylegesen hívd a toolt ugyanabban a turn-ben.\n' +
+  '- **Meglévő track átstílusozása** ("alakítsd át ezt a zenét", "csináld lo-fivá") + csatolt audio → `comfyui_image__generate_music_repaint` (`init_audio_base64` a csatolt fájlból + `denoise` 0.05-1.0, alacsony=finom). Ugyanaz a `canvas_path` → `upload-file` kézbesítés (lapos `path`!).\n';
 
 // Step XXa/b/c — Discord agent UX cheatsheet blocks (Reverend Green's first-pass
 // review, 2026-06-06: format spam, lobster emoji at every reply, missing skills
