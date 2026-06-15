@@ -480,10 +480,19 @@ TOOLS = [
             "for text-to-speech — this is instrumental + sung music.\n\n"
             "`tags` (REQUIRED) is the musical style / mood / instrumentation, "
             "comma-separated (e.g. 'lo-fi hip hop, mellow, jazzy piano, vinyl "
-            "crackle, instrumental'). `lyrics` is OPTIONAL: leave empty for an "
-            "instrumental track; fill it for a sung vocal (use newlines for "
-            "lines, and [verse]/[chorus] structure tags work). `duration` is "
-            f"seconds (max {int(ACE_MUSIC_MAX_SECONDS)}). Returns one MP3.\n\n"
+            "crackle').\n\n"
+            "SUNG vs INSTRUMENTAL — decide from the request:\n"
+            "• SUNG song (user says 'sing', names a singer's voice/style, gives "
+            "a theme to sing ABOUT, or asks for words/lyrics): you MUST pass "
+            "`lyrics` containing the ACTUAL WORDS you wrote — newlines per line, "
+            "[verse]/[chorus] tags work — AND you MUST NOT put 'instrumental' "
+            "(or 'no vocals') in `tags`. Writing the words only in your "
+            "reasoning does NOT make the track sung; the words must be in the "
+            "`lyrics` ARGUMENT or the output is a wordless instrumental.\n"
+            "• INSTRUMENTAL (user explicitly wants no vocals / a beat / "
+            "background music): leave `lyrics` empty; you may add 'instrumental' "
+            "to `tags`.\n"
+            f"`duration` is seconds (max {int(ACE_MUSIC_MAX_SECONDS)}). Returns one MP3.\n\n"
             "MANDATORY OUTPUT CONTRACT — your reply MUST start with the EXACT "
             "verbatim contents of the `display_markdown` field so Discord can "
             "deliver the audio. Add commentary AFTER."
@@ -491,8 +500,8 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "tags":      {"type": "string", "description": "Musical style/mood/instrumentation, comma-separated. The main creative control. E.g. 'synthwave, retro, driving bassline, analog synths, instrumental'."},
-                "lyrics":    {"type": "string", "description": "Optional lyrics for a sung track. Empty = instrumental. Newlines separate lines; [verse]/[chorus]/[bridge] structure tags are supported.", "default": ""},
+                "tags":      {"type": "string", "description": "Musical style/mood/instrumentation, comma-separated. The main creative control. E.g. 'synthwave, retro, driving bassline, analog synths'. Add 'instrumental' ONLY when the user wants NO vocals — never for a sung song (it muzzles the lyrics)."},
+                "lyrics":    {"type": "string", "description": "The actual words to be sung. REQUIRED for a sung song — put the real lyrics here, not just in your reasoning. Empty = wordless instrumental. Newlines separate lines; [verse]/[chorus]/[bridge] structure tags are supported.", "default": ""},
                 "duration":  {"type": "number", "description": f"Clip length in seconds. Default 60, max {int(ACE_MUSIC_MAX_SECONDS)}.", "default": 60},
                 "bpm":       {"type": "integer", "description": "Tempo in beats per minute (10-300). Default 120.", "default": 120},
                 "language":  {"type": "string", "description": f"Lyrics language code (hu, en, es, ja, …). Default {ACE_MUSIC_DEFAULT_LANGUAGE}. Ignored for instrumentals.", "default": ACE_MUSIC_DEFAULT_LANGUAGE},
@@ -1737,6 +1746,38 @@ def _mirror_audio_to_canvas(data: bytes, prompt_id: str, filename: str) -> Optio
     return f"/home/node/.openclaw/canvas/{base_name}"
 
 
+# A sung request that still carries an "instrumental" style tag is the single
+# most common ACE-Step footgun: the model treats "instrumental" (and friends)
+# as an explicit "no vocals" instruction, so a tag-list the LLM copied from the
+# instrumental-flavoured examples silently muzzles a track the user asked to be
+# SUNG. When `lyrics` is present the two are contradictory, so we strip the
+# muzzle tokens — the lyrics then actually get sung. Exact comma-segment match
+# only (never a substring, so "experimental" / "instrumental break" survive).
+# Observed live 2026-06-15: Gemma called generate_music with tags "…, deep male
+# voice, …, instrumental, …" and NO lyrics for a "sing a country song" request.
+_INSTRUMENTAL_TAGS = {
+    "instrumental", "instrumental only", "instrumental track", "no vocals",
+    "no vocal", "no singing", "without vocals", "vocals off", "vocal-free",
+}
+
+
+def _sanitize_music_tags(tags: str, lyrics: str) -> str:
+    """Drop 'instrumental'-family tags when lyrics are present (they contradict
+    a sung request). No-op for genuinely instrumental tracks (empty lyrics)."""
+    if not (lyrics or "").strip():
+        return tags  # genuinely instrumental — leave tags untouched
+    kept, dropped = [], []
+    for seg in tags.split(","):
+        (dropped if seg.strip().lower() in _INSTRUMENTAL_TAGS else kept).append(seg)
+    if dropped:
+        log.warning(
+            "generate_music: lyrics present but tags carried %r — stripped so "
+            "the track is actually sung (not muzzled to instrumental)",
+            [d.strip() for d in dropped],
+        )
+    return ",".join(kept).strip(", ")
+
+
 def _build_ace_music_graph(
     *, tags: str, lyrics: str, seconds: float, bpm: int, timesignature: str,
     language: str, keyscale: str, cfg_scale: float, seed: int, steps: int,
@@ -1775,8 +1816,9 @@ async def _tool_generate_music(args: dict) -> dict:
     NOT use the image/video workflow loader (see _build_ace_music_graph)."""
     tags = (args.get("tags") or "").strip()
     if not tags:
-        raise ValueError("`tags` is required — describe the musical style/mood (e.g. 'lo-fi hip hop, mellow, instrumental').")
+        raise ValueError("`tags` is required — describe the musical style/mood (e.g. 'lo-fi hip hop, mellow, jazzy piano').")
     lyrics = args.get("lyrics") or ""
+    tags = _sanitize_music_tags(tags, lyrics)
 
     try:
         seconds = float(args.get("duration") or 60)
@@ -1977,6 +2019,7 @@ async def _tool_generate_music_repaint(args: dict) -> dict:
     if not init_audio_b64:
         raise ValueError("`init_audio_base64` is required (the source track to repaint).")
     lyrics = args.get("lyrics") or ""
+    tags = _sanitize_music_tags(tags, lyrics)
     try:
         denoise = float(args.get("denoise") if args.get("denoise") is not None else 0.6)
     except (TypeError, ValueError):

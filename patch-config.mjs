@@ -3824,7 +3824,10 @@ const MUSIC_CHEATSHEET_BODY =
   '\n## Zenegenerálás — `comfyui_image__generate_music` (ACE-Step 1.5)\n\n' +
   'Ha a user zenét / dalt / számot / aláfestést / beatet kér ("csinálj egy zenét", "írj egy dalt", "kéne egy lo-fi beat"):\n' +
   '- `comfyui_image__generate_music({"tags":"<stílus/hangulat/hangszerek, vesszővel>", "lyrics":"<opcionális>", "duration":<mp>})` — KÉT aláhúzás a tool-névben.\n' +
-  '- `tags` KÖTELEZŐ, ez a fő kreatív kontroll (pl. `lo-fi hip hop, mellow, jazzy piano, vinyl crackle, instrumental`). `lyrics` opcionális: ÜRES = instrumentális, kitöltve = ÉNEKES dal (soronként `\\n`, `[verse]`/`[chorus]` struktúra-tagek mennek). A nyelv alapból magyar.\n' +
+  '- `tags` KÖTELEZŐ, ez a fő kreatív kontroll (pl. `lo-fi hip hop, mellow, jazzy piano, vinyl crackle`). A nyelv alapból magyar.\n' +
+  '🚨 **ÉNEKES vs INSTRUMENTÁLIS — a kéréstől függ, és ELRONTHATÓ:**\n' +
+  '  • Ha a user ÉNEKES dalt kér ("énekelj arról hogy…", "írj egy dalt a … -ról", énekes/előadó-stílus, "legyen szövege"): a `lyrics` paramétert KÖTELEZŐ kitöltened a TÉNYLEGES, megírt szöveggel (soronként `\\n`, `[verse]`/`[chorus]` tagek mennek), ÉS TILOS az `instrumental` (vagy `no vocals`) szót a `tags`-be tenni. A szöveget a `lyrics` ARGUMENTUMBAN add át — ha csak a gondolkodásodban írod meg, a dal NÉMA instrumentális lesz (ez konkrétan elromlott 2026-06-15-kor).\n' +
+  '  • Csak akkor hagyd ÜRESEN a `lyrics`-et (és tehetsz `instrumental` tag-et), ha a user kifejezetten ÉNEK NÉLKÜLI zenét/beatet/aláfestést kér.\n' +
   '- További opciók: `duration` (mp, max ~120), `bpm`, `language`, `keyscale` (pl. `C major`), `steps`.\n\n' +
   '🚨 **KÉZBESÍTÉS DISCORDON — a válasz `canvas_path` mezőjét töltsd fel, NE linkként.** A `message` toolt hívd PONTOSAN ÍGY (lapos `path`, NEM attachments-tömb):\n' +
   '```\n' +
