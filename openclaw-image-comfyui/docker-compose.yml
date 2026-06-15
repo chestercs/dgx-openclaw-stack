@@ -143,7 +143,12 @@ services:
       # docs/reference/image-comfyui-bridge.md → "Path A" (verify the
       # canvas dir host path on your deploy + that [embed] accepts .png
       # MIME on your openclaw version).
-      # - ${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw
+      #
+      # ACTIVATED 2026-06-15: the OpenClaw agent (ImbulClaw) delivers
+      # generated MUSIC by writing the MP3 here and Discord-upload-file'ing
+      # the gateway-side path — the /view proxy URL is Basic-auth walled
+      # (401, not Discord-fetchable). Also unblocks the image [embed] path.
+      - ${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw
     cap_drop: [ALL]
     security_opt:
       - "no-new-privileges:true"

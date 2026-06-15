@@ -3812,6 +3812,23 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   'Blank-line után a kommentárod magyarul. SOHA ne hagyd ki — anélkül a user 0\n' +
   'videót lát, csak szöveget.\n';
 
+// Music-generation skill (ACE-Step 1.5). The bridge generate_music tool is
+// MCP-discovered; this recipe teaches the agent WHEN to call it and — the
+// critical part — HOW to DELIVER the result on Discord: the /view proxy URL
+// is Basic-auth walled (401, not Discord-fetchable), so the bridge mirrors
+// the MP3 into the shared canvas dir and returns `canvas_path`; the agent
+// MUST `upload-file path=<canvas_path>` rather than paste a link.
+const MUSIC_CHEATSHEET_START = '<!-- patch-config:music-tools:start -->';
+const MUSIC_CHEATSHEET_END = '<!-- patch-config:music-tools:end -->';
+const MUSIC_CHEATSHEET_BODY =
+  '\n## Zenegenerálás — `comfyui_image__generate_music` (ACE-Step 1.5)\n\n' +
+  'Ha a user zenét / dalt / számot / aláfestést / beatet kér ("csinálj egy zenét", "írj egy dalt", "kéne egy lo-fi beat"):\n' +
+  '- `comfyui_image__generate_music({"tags":"<stílus/hangulat/hangszerek, vesszővel>", "lyrics":"<opcionális>", "duration":<mp>})` — KÉT aláhúzás a tool-névben.\n' +
+  '- `tags` KÖTELEZŐ, ez a fő kreatív kontroll (pl. `lo-fi hip hop, mellow, jazzy piano, vinyl crackle, instrumental`). `lyrics` opcionális: ÜRES = instrumentális, kitöltve = ÉNEKES dal (soronként `\\n`, `[verse]`/`[chorus]` struktúra-tagek mennek). A nyelv alapból magyar.\n' +
+  '- További opciók: `duration` (mp, max ~120), `bpm`, `language`, `keyscale` (pl. `C major`), `steps`.\n\n' +
+  '🚨 **KÉZBESÍTÉS DISCORDON — KÖTELEZŐ `upload-file`, NEM link:** a válasz `canvas_path` mezőjét add a Discord **`upload-file`** action `path=`-jának: `upload-file` `{"path":"<canvas_path>"}`. A fájl MÁR ott van mentve a canvasban. SOHA ne csak linket ragassz be — a `/view` URL NEM publikus (401-et ad, nem kattintható, nem játszható le). Upload-file UTÁN írj egy rövid magyar kommentet. (A render ~1-2 perc — jelezd a usernek hogy dolgozol rajta, ne tagadd meg.)\n' +
+  '- **Meglévő track átstílusozása** ("alakítsd át ezt a zenét", "csináld lo-fivá") + csatolt audio → `comfyui_image__generate_music_repaint` (`init_audio_base64` a csatolt fájlból + `denoise` 0.05-1.0, alacsony=finom). Ugyanaz a `canvas_path` → `upload-file` kézbesítés.\n';
+
 // Step XXa/b/c — Discord agent UX cheatsheet blocks (Reverend Green's first-pass
 // review, 2026-06-06: format spam, lobster emoji at every reply, missing skills
 // list, no mid-turn tool-status visibility, sluggish multi-image turns). Each
@@ -4123,7 +4140,8 @@ function removeSkillFile(workspaceRoot, name) {
 const SKILL_ROUTER_BODY =
   '## Tools & skills — router\n\n' +
   'Tools ezen a deployon: `web_search` (SearxNG) · `comfyui_image__generate` (kép, KÉT aláhúzás!) · ' +
-  '`comfyui_image__generate_i2i` (csatolt kép átalakítása) · `comfyui_image__generate_video` (videó) · `tts` · ' +
+  '`comfyui_image__generate_i2i` (csatolt kép átalakítása) · `comfyui_image__generate_video` (videó) · ' +
+  '`comfyui_image__generate_music` (zene, ACE-Step) · `comfyui_image__generate_music_repaint` (zene-átstílozás) · `tts` · ' +
   '`python_sandbox__python_exec` (Python + dev-toolchain) · `python_sandbox__transcribe_audio` · ' +
   '`python_sandbox__git_push` · `browser` (action-alapú) · `canvas` · `exec` (shell, approval-gated) · ' +
   '`memory_search`+`memory_get` (olvasás; ÍRÁS = `write` egy `memory/*.md` fájlba, NINCS memory_write tool) · ' +
@@ -4145,6 +4163,7 @@ const SKILL_ROUTER_BODY =
   '- képgenerálás → `image-generation` (workflow- és felbontás-receptek)\n' +
   '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
   '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n' +
+  '- **zene / dal / beat generálás → `music-generation`** (ACE-Step; tags kötelező, lyrics opcionális). 🚨 KÉZBESÍTÉS: a `canvas_path`-ot `upload-file`-lal csatold, NE linket ragassz (a /view 401-es).\n' +
   '- letöltés / transzkripció / fájl-feltöltés / kép-keresés → `media-downloads`\n' +
   '- **"milyen idő / hány fok lesz" → AZONNAL `python_exec`, SOHA nem cron és SOHA nem web_search.** A teljes recept inline: ' +
   '(1) geokód: `https://geocoding-api.open-meteo.com/v1/search?name=<város>&count=1` → lat/lon; ' +
@@ -4358,6 +4377,17 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       LTX_VIDEO_CHEATSHEET_BODY,
     );
   }
+  // Step 27c — Music cheatsheet (ACE-Step 1.5). Always-on in skills mode:
+  // the generate_music tool is MCP-discovered and the models are installed.
+  // The recipe's key job is the Discord delivery (upload-file canvas_path,
+  // not the auth-walled /view URL).
+  placeRecipe(
+    true,
+    MUSIC_CHEATSHEET_START, MUSIC_CHEATSHEET_END, MUSIC_CHEATSHEET_BODY, 'music-tools cheatsheet',
+    'music-generation',
+    'Zenegenerálás a comfyui_image__generate_music toollal (ACE-Step 1.5) — tags (kötelező) + opcionális lyrics, instrumentális vagy énekes; kézbesítés Discordon upload-file-lal a canvas_path-ról (NEM link, a /view auth-walled). Repaint: generate_music_repaint csatolt audióra.',
+    MUSIC_CHEATSHEET_BODY,
+  );
   // Step XXa — Discord message-format rules (Reverend Green review).
   if (isEnvOn(DISCORD_AGENT_FORMAT_RULES_ENV)) {
     const formatRulesUpsert = upsertMarkedBlock(

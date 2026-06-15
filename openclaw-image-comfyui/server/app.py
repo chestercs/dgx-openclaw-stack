@@ -1716,6 +1716,27 @@ async def _tool_generate_video(args: dict) -> dict:
         return await _run()
 
 
+def _mirror_audio_to_canvas(data: bytes, prompt_id: str, filename: str) -> Optional[str]:
+    """Write the generated MP3 into the shared canvas dir so the OpenClaw
+    agent can deliver it on Discord via `upload-file` (the /view proxy URL
+    is Basic-auth walled — 401, not Discord-fetchable, not clickable). The
+    bridge's /canvas bind-mounts the gateway's canvas dir, so the file the
+    bridge writes at IMAGE_GEN_CANVAS_DIR/<name> is visible to the gateway
+    at /home/node/.openclaw/canvas/<name>. Returns that GATEWAY-side path,
+    or None when canvas isn't configured/writable (bot path uses base64,
+    unaffected)."""
+    if not IMAGE_GEN_CANVAS_DIR:
+        return None
+    base_name = f"clawmusic-{prompt_id[:8]}-{filename}"
+    try:
+        with open(os.path.join(IMAGE_GEN_CANVAS_DIR, base_name), "wb") as f:
+            f.write(data)
+    except OSError as e:  # noqa: BLE001
+        log.warning("music canvas mirror failed (%s): %s", base_name, e)
+        return None
+    return f"/home/node/.openclaw/canvas/{base_name}"
+
+
 def _build_ace_music_graph(
     *, tags: str, lyrics: str, seconds: float, bpm: int, timesignature: str,
     language: str, keyscale: str, cfg_scale: float, seed: int, steps: int,
@@ -1856,6 +1877,9 @@ async def _tool_generate_music(args: dict) -> dict:
         # media for auto-embed; not sent in the actual GET.
         display_url = f"{url}#{fname}" if "." in fname else url
         display_markdown = f"[🎵 {fname}]({display_url})\n\n{display_url}"
+        # Mirror to the shared canvas so the agent can upload-file it on
+        # Discord (the /view URL is auth-walled).
+        canvas_path = _mirror_audio_to_canvas(data, prompt_id, fname)
 
         audio_entry = {
             "format": "mp3",
@@ -1886,11 +1910,14 @@ async def _tool_generate_music(args: dict) -> dict:
             "comfyui_base_url": COMFYUI_URL,
             "comfyui_external_url": COMFYUI_EXTERNAL_URL,
             "display_markdown": display_markdown,
+            "canvas_path": canvas_path,
             "agent_hint": (
-                "MANDATORY: start your reply with the EXACT `display_markdown` "
-                "value (a clickable link line + a raw audio URL line). Add "
-                "commentary AFTER. Don't describe the music in prose instead "
-                "of delivering the link."
+                "DELIVER THE AUDIO ON DISCORD with the `upload-file` action: "
+                f"path=\"{canvas_path}\" (the file is already saved there). "
+                "The /view URL is NOT publicly reachable, so do NOT just paste "
+                "a link — upload the file. Then add a short comment."
+                if canvas_path else
+                "Paste the EXACT `display_markdown` value at the start of your reply."
             ),
             "audio": [audio_entry],
         }
@@ -2047,6 +2074,7 @@ async def _tool_generate_music_repaint(args: dict) -> dict:
             view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
         url = f"{COMFYUI_EXTERNAL_URL}/view?{view_qs}"
         display_url = f"{url}#{fname}" if "." in fname else url
+        canvas_path = _mirror_audio_to_canvas(data, prompt_id, fname)
         audio_entry = {
             "format": "mp3", "filename": fname,
             "subfolder": audio_out.get("subfolder", ""), "type": audio_out.get("type", "output"),
@@ -2062,7 +2090,13 @@ async def _tool_generate_music_repaint(args: dict) -> dict:
             "include_base64": include_base64,
             "comfyui_base_url": COMFYUI_URL, "comfyui_external_url": COMFYUI_EXTERNAL_URL,
             "display_markdown": f"[🎵 {fname}]({display_url})\n\n{display_url}",
-            "agent_hint": "MANDATORY: start your reply with the EXACT `display_markdown` value. Add commentary AFTER.",
+            "canvas_path": canvas_path,
+            "agent_hint": (
+                f"DELIVER ON DISCORD with the `upload-file` action: path=\"{canvas_path}\". "
+                "Do NOT just paste a link (the /view URL is not publicly reachable)."
+                if canvas_path else
+                "Paste the EXACT `display_markdown` value at the start of your reply."
+            ),
             "audio": [audio_entry],
         }
 
