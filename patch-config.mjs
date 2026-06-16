@@ -3776,6 +3776,12 @@ const LTX_VIDEO_DEFAULT_FPS_ENV = (process.env.LTX_VIDEO_DEFAULT_FPS || '24').tr
 const LTX_VIDEO_MAX_DURATION_S_ENV = (process.env.LTX_VIDEO_MAX_DURATION_S || '10').trim();
 const LTX_VIDEO_CHEATSHEET_BODY =
   '\n## Videógenerálás — `comfyui_image__generate_video` (LTX-Video 2.3)\n\n' +
+  '🚨 **Videóhoz KIZÁRÓLAG a `comfyui_image__generate_video` tool (KÉT aláhúzás) a helyes.** ' +
+  'A beépített `video_generate` / `video_generation` toolok TILTOTTAK — azok egy OpenAI ' +
+  'Sora-endpointot hívnak, amihez NINCS API-kulcs beállítva → `HTTP 401 Incorrect API key` ' +
+  'hiba, a user 0 videót kap (pontosan ez rontotta el 2026-06-16-án az "animáld ezt a képet" ' +
+  'kérést). Akár szöveg→videó, akár kép→videó: MINDIG a `comfyui_image__generate_video` — ' +
+  'a helyi ComfyUI/LTX-en fut, kulcs nélkül. SOHA ne hívd a `video_generate`/`video_generation`-t.\n\n' +
   'Ugyanaz a bridge, mint a képeknél, csak más tool. Két mód:\n\n' +
   '- **T2V** (text-to-video): csak `prompt` kell → bridge `ltx-2.3-t2v` workflow.\n' +
   '- **I2V** (image-to-video): `prompt` + `init_image_url` → bridge `ltx-2.3-i2v`.\n' +
@@ -3982,7 +3988,7 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '- **transzkripció** ("írd le / mit mondanak / feliratozd") → (1) `python_exec` yt-dlp: `subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"],timeout=110)`, `timeout_s:120`. 🚨 FIX ascii `-o` név (`clip.mp3`), SOHA `%(title)s` (fullwidth karakter → "file not found"). (2) `python_sandbox__transcribe_audio` path=.../clip.mp3 (+`language` opc.). Whisper turbo best-effort (zajos/zenei beszéden pontatlan), nem hivatalos lyric.\n' +
   '- **"küldd el / töltsd fel a hangot / fájlt attachmentként"** → a Discord **`upload-file`** action, `path="/home/node/.openclaw/canvas/<file>"` (+ `filename=` opcionális). 🚨 A fájl CSAK `/home/node/.openclaw/canvas/` alatt lehet (media-local-roots) — a `/workspace/`-ban lévő NEM tölthető fel. A `media` param publikus HTTP URL-t is vesz (pl. comfyui fetch URL → valódi attachment, nem csak embed).\n' +
   '- **"csinálj nekem ilyen képet"** → `comfyui_image__generate(prompt=..., resolution=fullhd)` — TWO underscores in the tool name.\n' +
-  '- **"csinálj nekem videót"** → `comfyui_image__generate_video(prompt=..., resolution=fullhd)` — also TWO underscores. Common typo: `comfyui_imagegenerate_video` (no underscores) → does NOT exist, fails silently.\n' +
+  '- **"csinálj nekem videót" (T2V) / "animáld ezt a képet" (I2V, csatolt képpel)** → `comfyui_image__generate_video` (TWO underscores; T2V: `prompt`; I2V: `prompt` + `init_image_url=/home/node/.openclaw/media/inbound/<uuid>.png`). 🚨 SOHA NE a beépített `video_generate` / `video_generation` toolt hívd — azok OpenAI Sora-endpointot kérnek (nincs kulcs → HTTP 401, 0 videó). Typo `comfyui_imagegenerate_video` (no underscores) → nem létezik.\n' +
   '\n' +
   '**🚨 MANDATORY OUTPUT CONTRACT for media tools (image, video, screenshot):** when a tool-call returns a `display_markdown` field, your reply MUST start with the EXACT VERBATIM contents of that field — first line is a markdown link `[📷/🎬 fname](url)`, second line is the raw URL (Discord auto-embeds the raw URL into a preview). DO NOT rewrite the filename, DO NOT strip the token from the URL, DO NOT replace the URL with a placeholder. The user wants the file embedded; Discord can only auto-embed a raw URL it can fetch.\n' +
   '\n' +

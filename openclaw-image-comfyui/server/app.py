@@ -690,6 +690,15 @@ async def _fetch_and_upload_init_image(
             src = init_image_url
             if src.startswith("file://"):
                 src = src[len("file://"):]
+            elif src.startswith("media://"):
+                # OpenClaw media reference, e.g. media://inbound/<uuid>.png. The
+                # gateway's media dir is bind-mounted into the bridge at the same
+                # /home/node/.openclaw/media/<...> path, so resolve the scheme to
+                # that absolute path (then the "/"-prefixed branch reads it). The
+                # Discord I2V agent flow sometimes emits this scheme instead of a
+                # bare filesystem path (observed 2026-06-16) — accepting it keeps
+                # the call working regardless of which form the agent picks.
+                src = "/home/node/.openclaw/media/" + src[len("media://"):].lstrip("/")
             if src.startswith("/"):
                 if not os.path.isfile(src):
                     raise ValueError(
