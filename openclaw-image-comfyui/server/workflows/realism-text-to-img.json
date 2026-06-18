@@ -1,7 +1,7 @@
 {
   "_metadata": {
     "name": "realism-text-to-img",
-    "description": "Photorealistic text-to-image — SDXL (Juggernaut-XL v9 RunDiffusionPhoto) + the 'Realism by Stable Yogi' LoRA on the UNet @ 0.8. Unlike the old FLUX build, the LoRA is an SDXL LoRA so on this SDXL base it ACTUALLY loads and contributes. Select it when the user references 'realism-text-to-img' or asks for a realistic / photoreal portrait or scene. Default 1024x1024 (SDXL native). SDXL works best near 1024 — use the aspect buckets, NOT the FLUX 2K recipes: portrait 832x1216, landscape 1216x832, wide-ish 1344x768. Going much above ~1.3MP causes SDXL duplication/anatomy artifacts. LoRA strength baked at 0.8 (edit the JSON to tune); trained for Pony but applies on any SDXL UNet.",
+    "description": "Photorealistic text-to-image — SDXL (Juggernaut-XL v9 RunDiffusionPhoto) + the 'Realism by Stable Yogi' LoRA on the UNet @ 1.0. Unlike the old FLUX build, the LoRA is an SDXL LoRA so on this SDXL base it ACTUALLY loads and contributes. Select it when the user references 'realism-text-to-img' or asks for a realistic / photoreal portrait or scene. Default 1024x1024 (SDXL native). SDXL works best near 1024 — use the aspect buckets, NOT the FLUX 2K recipes: portrait 832x1216, landscape 1216x832, wide-ish 1344x768. Going much above ~1.3MP causes SDXL duplication/anatomy artifacts. LoRA strength baked at 1.0 (edit the JSON to tune); trained for Pony but applies on any SDXL UNet.",
     "checkpoint_required": false,
     "defaults": {
       "steps": 30,
@@ -36,7 +36,7 @@
     "inputs": {
       "model": ["1", 0],
       "lora_name": "Realism_Lora_By_Stable_Yogi_V3_Lite.safetensors",
-      "strength_model": 0.8
+      "strength_model": 1.0
     }
   },
   "2": {
