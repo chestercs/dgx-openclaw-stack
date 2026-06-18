@@ -3765,11 +3765,16 @@ const IMAGE_GEN_CHEATSHEET_END = '<!-- patch-config:image-gen-tools:end -->';
 const IMAGE_GEN_DEFAULT_WORKFLOW = (process.env.IMAGE_GEN_DEFAULT_WORKFLOW || '').trim();
 const IMAGE_GEN_CHEATSHEET_BODY =
   '\n## Képgenerálás — `comfyui_image__generate` workflow picker\n\n' +
-  'Két workflow ezen a deploy-on (FLUX.1-Krea-dev alapú, single-stage):\n\n' +
+  'Workflow-k ezen a deploy-on (FLUX.1-Krea-dev alapú, single-stage):\n\n' +
   '- SFW: hagyd ki a `workflow=`-t — a bridge a beállított\n' +
   `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-2k'}\`-t használja.\n` +
   '- Adult/NSFW: `workflow="flux-krea-2k-adult"` — ugyanaz a pipeline +\n' +
-  '  flux-uncensored-v2 LoRA. Adult-policy a `USER.md`-ben.\n\n' +
+  '  flux-uncensored-v2 LoRA. Adult-policy a `USER.md`-ben.\n' +
+  '- Realism / fotorealisztikus portré v. jelenet, VAGY ha a user a\n' +
+  '  `realism-text-to-img` workflow-ra hivatkozik (akár név szerint kéri):\n' +
+  '  `workflow="realism-text-to-img"` (FLUX.1-Krea-dev 1280×720, operátor-\n' +
+  '  épített realizmus-workflow). Csak erre a névre / explicit realizmus-\n' +
+  '  kérésre add meg; egyébként hagyd a default-ot.\n\n' +
   'Felbontás — `width`+`height` MINDIG párban (különben aspect-mismatch). Default\n' +
   '1280×720 (HD 16:9); a "2K" jellemzően "2K HD 16:9", nem négyzet (csak explicit\n' +
   '"square/négyzet" → 1:1). Recipek (kérés → `width×height`): "2K"/"2K HD"/"1080p"/\n' +

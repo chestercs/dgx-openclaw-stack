@@ -1,0 +1,119 @@
+{
+  "_metadata": {
+    "name": "realism-text-to-img",
+    "description": "Photorealistic text-to-image — FLUX.1-Krea-dev at 1280x720 (16:9 widescreen, ~30s warm) with the 'Realism by Stable Yogi' LoRA on the model. Operator-built workflow (matches the realism-text-to-img graph saved in ComfyUI): select it when the user references 'realism-text-to-img' or asks for a realistic / photoreal portrait or scene. NOTE: 'Realism by Stable Yogi' is an SDXL LoRA, so on this FLUX base it loads as a no-op (FLUX ignores the SDXL UNet keys) — the realism comes from FLUX.1-Krea-dev itself, which is already photoreal. For the LoRA to actually contribute it needs an SDXL base (e.g. Juggernaut-XL); ask the operator if a true SDXL realism variant is wanted.",
+    "checkpoint_required": false,
+    "defaults": {
+      "steps": 30,
+      "cfg": 3.5,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "width": 1280,
+      "height": 720,
+      "batch_size": 1,
+      "negative": ""
+    },
+    "targets": {
+      "prompt":     {"node": "10", "input": "text"},
+      "negative":   {"node": "11", "input": "text"},
+      "width":      [
+        {"node": "20", "input": "width"},
+        {"node": "21", "input": "width"}
+      ],
+      "height":     [
+        {"node": "20", "input": "height"},
+        {"node": "21", "input": "height"}
+      ],
+      "batch_size": {"node": "20", "input": "batch_size"},
+      "seed":       {"node": "30", "input": "noise_seed"},
+      "steps":      {"node": "31", "input": "steps"},
+      "cfg":        {"node": "12", "input": "guidance"},
+      "sampler":    {"node": "32", "input": "sampler_name"},
+      "scheduler":  {"node": "31", "input": "scheduler"}
+    }
+  },
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {"unet_name": "flux1-krea-dev.safetensors", "weight_dtype": "fp8_e4m3fn"}
+  },
+  "2": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "t5xxl_fp16.safetensors",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "5": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {"model": ["1", 0], "lora_name": "Realism_Lora_By_Stable_Yogi_V3_Lite.safetensors", "strength_model": 1.5}
+  },
+  "10": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "11": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["2", 0]}
+  },
+  "12": {
+    "class_type": "FluxGuidance",
+    "inputs": {"guidance": 3.5, "conditioning": ["10", 0]}
+  },
+  "13": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {"conditioning": ["11", 0]}
+  },
+  "20": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {"width": 1280, "height": 720, "batch_size": 1}
+  },
+  "21": {
+    "class_type": "ModelSamplingFlux",
+    "inputs": {
+      "model": ["5", 0],
+      "max_shift": 1.15,
+      "base_shift": 0.5,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "30": {
+    "class_type": "RandomNoise",
+    "inputs": {"noise_seed": 0}
+  },
+  "31": {
+    "class_type": "BasicScheduler",
+    "inputs": {"scheduler": "simple", "steps": 30, "denoise": 1.0, "model": ["21", 0]}
+  },
+  "32": {
+    "class_type": "KSamplerSelect",
+    "inputs": {"sampler_name": "euler"}
+  },
+  "33": {
+    "class_type": "BasicGuider",
+    "inputs": {"model": ["21", 0], "conditioning": ["12", 0]}
+  },
+  "34": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise":         ["30", 0],
+      "guider":        ["33", 0],
+      "sampler":       ["32", 0],
+      "sigmas":        ["31", 0],
+      "latent_image":  ["20", 0]
+    }
+  },
+  "40": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["34", 0], "vae": ["3", 0]}
+  },
+  "50": {
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "openclaw-bridge/realism-text-to-img", "images": ["40", 0]}
+  }
+}
