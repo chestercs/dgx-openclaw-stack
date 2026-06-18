@@ -1489,8 +1489,15 @@ services:
       # Plus total-cap raised: per-file 60k, total 80k.
       OPENCLAW_BOOTSTRAP_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_MAX_CHARS:-60000}
       OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS:-80000}
-      # 2026.6.1+ sandbox-browser enable for `browser` tool target="sandbox".
-      OPENCLAW_SANDBOX_BROWSER: ${OPENCLAW_SANDBOX_BROWSER:-on}
+      # Sandbox-browser feature (browser tool target="sandbox"). OFF by default:
+      # this stack runs NO OpenClaw-native sandbox-browser container, so enabling
+      # it gives no working browser — it only injects a sandbox/noVNC hint that
+      # tempts the model to call browser with target="sandbox" → "Sandbox browser
+      # is unavailable". The working browser is the CDP openclaw-browser sidecar
+      # via the default target="host". See patch-config.mjs step 8c (which also
+      # self-heals a stale enabled flag). Set =on ONLY if you run the OpenClaw
+      # sandbox-browser image.
+      OPENCLAW_SANDBOX_BROWSER: ${OPENCLAW_SANDBOX_BROWSER:-off}
       # Default CDP profile when `browser` tool called without explicit profile.
       OPENCLAW_BROWSER_DEFAULT_PROFILE: ${OPENCLAW_BROWSER_DEFAULT_PROFILE:-self-hosted}
       # 2026.6.1 regression-fix: Discord plugin default suppressEmbeds=true
