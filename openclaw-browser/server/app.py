@@ -45,7 +45,9 @@ from extract import extract_markdown
 from ratelimit import RateLimiter
 from supervise import (
     DEFAULT_PROFILE_NAME,
+    JANITOR_ENABLED,
     LoginHelper,
+    PageJanitor,
     Supervisor,
     VncBridge,
     parse_profile_names,
@@ -93,6 +95,7 @@ vnc_bridge = VncBridge(VNC_PASSWORD, vnc_port=VNC_PORT)
 login_helper = LoginHelper(supervisor, vnc_bridge)
 blocklist = Blocklist()
 limiter = RateLimiter()
+page_janitor: Optional[PageJanitor] = None
 
 
 app = FastAPI(title="openclaw-browser", version="0.1.0")
@@ -126,10 +129,21 @@ def on_startup() -> None:
         except Exception as exc:
             log.exception("profile %s failed to launch: %s", name, exc)
 
+    # Page janitor — reap lingering tabs so ad-heavy pages can't pile up and
+    # wedge connectOverCDP's autoAttach (the 2026-06-18 screenshot regression).
+    if JANITOR_ENABLED:
+        global page_janitor
+        page_janitor = PageJanitor(supervisor, login_helper)
+        page_janitor.start()
+    else:
+        log.info("page-janitor disabled (BROWSER_JANITOR_ENABLED=off)")
+
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     log.info("shutdown: stopping all Chromium processes")
+    if page_janitor is not None:
+        page_janitor.stop()
     if login_helper.is_active():
         try:
             login_helper.cancel()
@@ -151,6 +165,10 @@ def healthz() -> dict:
         "vnc_port": vnc_bridge.vnc_port,
         "login_helper_active": login_helper.is_active(),
         "login_helper_profile": login_helper.active_profile(),
+        "page_janitor": {
+            "enabled": JANITOR_ENABLED,
+            "running": page_janitor is not None and page_janitor.is_alive(),
+        },
         "uptime_s": time.time() - START_TIME,
     }
 

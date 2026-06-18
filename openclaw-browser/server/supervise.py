@@ -48,6 +48,23 @@ INTERNAL_PORT_BASE = int(os.environ.get("BROWSER_INTERNAL_PORT_BASE", "19222"))
 MAX_PROFILES = int(os.environ.get("BROWSER_MAX_PROFILES", "20"))
 DISPLAY_FOR_HEADFUL = os.environ.get("BROWSER_DISPLAY", ":99")
 
+# --- Page janitor (2026-06-18) -------------------------------------------
+# Defends against the connectOverCDP-wedge regression. The OpenClaw `browser`
+# tool leaves a page open after every screenshot/scrape (no auto-close), so
+# pages pile up over time; a host OOM-livelock then made Chrome session-restore
+# resurrect the leftovers across restarts. A pile of stuck ad-heavy tabs
+# (idokep.hu was the trigger, 30 ad-iframes each) makes Playwright's
+# connectOverCDP `Target.setAutoAttach` hang → 20 s timeout → the agent sees
+# "external CDP unreachable" even though /json/version answers in 2 ms.
+# The janitor closes page targets that linger past PAGE_TTL_SEC and caps the
+# page count per profile; start_profile also wipes the tab-restore state on
+# headless launch so an unclean exit can't bring the stuck tabs back.
+JANITOR_ENABLED = os.environ.get("BROWSER_JANITOR_ENABLED", "on").strip().lower() in ("on", "true", "1")
+JANITOR_INTERVAL_SEC = float(os.environ.get("BROWSER_JANITOR_INTERVAL_SEC", "120"))
+PAGE_TTL_SEC = float(os.environ.get("BROWSER_PAGE_TTL_SEC", "600"))
+MAX_PAGES_PER_PROFILE = int(os.environ.get("BROWSER_MAX_PAGES_PER_PROFILE", "10"))
+CLEAR_SESSION_RESTORE = os.environ.get("BROWSER_CLEAR_SESSION_RESTORE", "on").strip().lower() in ("on", "true", "1")
+
 
 _chromium_executable: Optional[str] = None
 
@@ -117,6 +134,9 @@ class Supervisor:
         STORAGE_DIR.mkdir(parents=True, exist_ok=True)
         self._profiles: dict[str, Profile] = {}
         self._lock = threading.RLock()
+        # target-id -> first-seen epoch, for the page janitor. Touched only by
+        # the janitor thread (reap_stale_pages), so it needs no lock.
+        self._page_first_seen: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Port allocation. Default = PORT_BASE; named profiles are 1-indexed
@@ -181,6 +201,14 @@ class Supervisor:
 
             user_data_dir = STORAGE_DIR / name
             user_data_dir.mkdir(parents=True, exist_ok=True)
+
+            # On a headless (re)launch, wipe Chromium's tab-restore state so an
+            # unclean prior exit (host OOM-livelock) can't resurrect leftover
+            # stuck tabs — those wedge connectOverCDP. Cookies / localStorage /
+            # auth live in separate files and are left intact. Skipped for the
+            # headful login-helper flow (the operator is actively driving it).
+            if not headful and CLEAR_SESSION_RESTORE:
+                self._clear_session_restore(user_data_dir)
 
             port = existing.port if existing else self.assign_port(name)
             internal_port = self._internal_port_for(port)
@@ -304,6 +332,91 @@ class Supervisor:
         log.warning("Chromium debug port %s did not open within %ss", port, timeout)
         return False
 
+    # ------------------------------------------------------------------
+    # Page janitor — see the module-level knobs. Keeps lingering tabs from
+    # piling up and wedging connectOverCDP's autoAttach.
+    # ------------------------------------------------------------------
+    def _clear_session_restore(self, user_data_dir: Path) -> None:
+        """Remove Chromium's tab/session restore state (NOT cookies/storage).
+        Targets both the user-data-dir root and the `Default` profile subdir so
+        it works regardless of Chromium's per-version layout. Best-effort: a
+        missing file on a fresh profile is fine."""
+        for base in (user_data_dir, user_data_dir / "Default"):
+            try:
+                shutil.rmtree(base / "Sessions", ignore_errors=True)
+                for fn in ("Current Session", "Current Tabs", "Last Session", "Last Tabs"):
+                    try:
+                        (base / fn).unlink()
+                    except (FileNotFoundError, IsADirectoryError):
+                        pass
+                    except OSError as exc:
+                        log.debug("clear-session-restore: %s: %s", fn, exc)
+            except Exception as exc:  # never let cleanup block a launch
+                log.debug("clear-session-restore base=%s: %s", base, exc)
+
+    def _cdp_get(self, port: int, path: str, *, timeout: float = 5.0) -> bytes:
+        """GET against the per-profile CDP HTTP endpoint on loopback. Goes via
+        the external port (cdp_proxy rewrites Host so Chrome >=136 accepts it)."""
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as resp:
+            return resp.read()
+
+    def reap_stale_pages(self, *, skip_profiles: frozenset[str] = frozenset()) -> int:
+        """One janitor sweep. Returns the number of page targets closed.
+
+        Lock discipline: snapshot the profile list under the lock, then do all
+        CDP HTTP I/O outside it (urlopen can block for seconds and must not
+        stall start/stop). `_page_first_seen` is touched only by the janitor
+        thread, so it needs no lock."""
+        import json
+        now = time.time()
+        with self._lock:
+            snap = [
+                (p.name, p.port)
+                for p in self._profiles.values()
+                if p.is_running() and not p.headful and p.name not in skip_profiles
+            ]
+        seen_now: set[str] = set()
+        closed = 0
+        for name, port in snap:
+            try:
+                targets = json.loads(self._cdp_get(port, "/json").decode("utf-8", "replace"))
+            except Exception as exc:
+                log.debug("janitor: /json failed profile=%s port=%s: %s", name, port, exc)
+                continue
+            aged: list[tuple[float, str, dict, str]] = []
+            for t in targets:
+                tid = t.get("id")
+                if t.get("type") != "page" or not tid:
+                    continue
+                key = f"{name}:{tid}"
+                seen_now.add(key)
+                first = self._page_first_seen.setdefault(key, now)
+                aged.append((now - first, tid, t, key))
+            # 1) pages that have lingered past the TTL
+            to_close: dict[str, tuple[str, dict]] = {
+                key: (tid, t) for (age, tid, t, key) in aged if age > PAGE_TTL_SEC
+            }
+            # 2) hard cap: among the still-fresh pages, drop the oldest extras
+            rest = sorted(
+                [(age, tid, t, key) for (age, tid, t, key) in aged if key not in to_close],
+                key=lambda x: x[0], reverse=True,
+            )
+            for _age, tid, t, key in rest[MAX_PAGES_PER_PROFILE:]:
+                to_close[key] = (tid, t)
+            for key, (tid, t) in to_close.items():
+                try:
+                    self._cdp_get(port, f"/json/close/{tid}", timeout=4.0)
+                    self._page_first_seen.pop(key, None)
+                    closed += 1
+                    log.info("janitor: closed lingering page profile=%s url=%s", name, (t.get("url") or "")[:80])
+                except Exception as exc:
+                    log.debug("janitor: close failed profile=%s id=%s: %s", name, tid, exc)
+        # forget targets that no longer exist so the map can't grow unbounded
+        for key in [k for k in self._page_first_seen if k not in seen_now]:
+            self._page_first_seen.pop(key, None)
+        return closed
+
     def _stop_locked(self, profile: Profile, *, timeout: float = 10.0) -> bool:
         # Stop Chromium first (so it can flush cookies cleanly), then socat.
         # If we kill socat first, Chromium thinks its CDP client crashed and
@@ -360,6 +473,49 @@ class Supervisor:
         with self._lock:
             for name in list(self._profiles.keys()):
                 self.stop_profile(name)
+
+
+class PageJanitor(threading.Thread):
+    """Daemon thread that periodically calls Supervisor.reap_stale_pages.
+
+    Started from the FastAPI startup hook (after profiles launch), stopped on
+    shutdown. Skips whichever profile a login-helper session currently owns so
+    it never closes a tab the operator is driving headful."""
+
+    def __init__(
+        self,
+        supervisor: "Supervisor",
+        login_helper: "LoginHelper | None" = None,
+        interval: float = JANITOR_INTERVAL_SEC,
+    ) -> None:
+        super().__init__(name="page-janitor", daemon=True)
+        self._sup = supervisor
+        self._login_helper = login_helper
+        self._interval = max(15.0, interval)
+        self._stop = threading.Event()
+
+    def run(self) -> None:
+        log.info(
+            "page-janitor: interval=%.0fs ttl=%.0fs max_pages=%d clear_restore=%s",
+            self._interval, PAGE_TTL_SEC, MAX_PAGES_PER_PROFILE, CLEAR_SESSION_RESTORE,
+        )
+        # Give profiles a moment to finish their first launch before sweeping.
+        if self._stop.wait(min(30.0, self._interval)):
+            return
+        while not self._stop.is_set():
+            try:
+                active = self._login_helper.active_profile() if self._login_helper else None
+                skip = frozenset({active}) if active else frozenset()
+                n = self._sup.reap_stale_pages(skip_profiles=skip)
+                if n:
+                    log.info("page-janitor: closed %d lingering page(s)", n)
+            except Exception:
+                log.exception("page-janitor: sweep error")
+            if self._stop.wait(self._interval):
+                return
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 # ----------------------------------------------------------------------

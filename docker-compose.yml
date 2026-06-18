@@ -930,6 +930,17 @@ services:
       # YouTube `snapshot` even though `open` succeeded and the tab was live.
       # 60s covers the worst real pages without hanging the agent turn.
       BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-60000}
+      # Page janitor (2026-06-18). The `browser` tool leaves a tab open after
+      # every screenshot; left unchecked they pile up and ad-heavy ones wedge
+      # connectOverCDP's autoAttach → "external CDP unreachable" (the idokep.hu
+      # screenshot regression). The janitor closes tabs idle past PAGE_TTL_SEC
+      # and caps tabs per profile; CLEAR_SESSION_RESTORE wipes Chrome's tab-
+      # restore state on headless launch so a crash can't resurrect stuck tabs.
+      BROWSER_JANITOR_ENABLED: ${BROWSER_JANITOR_ENABLED:-on}
+      BROWSER_JANITOR_INTERVAL_SEC: ${BROWSER_JANITOR_INTERVAL_SEC:-120}
+      BROWSER_PAGE_TTL_SEC: ${BROWSER_PAGE_TTL_SEC:-600}
+      BROWSER_MAX_PAGES_PER_PROFILE: ${BROWSER_MAX_PAGES_PER_PROFILE:-10}
+      BROWSER_CLEAR_SESSION_RESTORE: ${BROWSER_CLEAR_SESSION_RESTORE:-on}
       BROWSER_STORAGE_DIR: /storage
     volumes:
       - browser-storage:/storage
