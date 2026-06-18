@@ -3772,9 +3772,11 @@ const IMAGE_GEN_CHEATSHEET_BODY =
   '  flux-uncensored-v2 LoRA. Adult-policy a `USER.md`-ben.\n' +
   '- Realism / fotorealisztikus portré v. jelenet, VAGY ha a user a\n' +
   '  `realism-text-to-img` workflow-ra hivatkozik (akár név szerint kéri):\n' +
-  '  `workflow="realism-text-to-img"` (FLUX.1-Krea-dev 1280×720, operátor-\n' +
-  '  épített realizmus-workflow). Csak erre a névre / explicit realizmus-\n' +
-  '  kérésre add meg; egyébként hagyd a default-ot.\n\n' +
+  '  `workflow="realism-text-to-img"` (SDXL: Juggernaut-XL + Realism LoRA).\n' +
+  '  🚨 EZ SDXL, NEM Flux → a natív felbontás ~1024; NE a fenti 2K/FullHD\n' +
+  '  Flux-recepteket add rá (SDXL duplikál/torzul fölötte). SDXL-bucketek:\n' +
+  '  négyzet 1024×1024 (default), portré 832×1216, fekvő 1216×832. Csak erre\n' +
+  '  a névre / explicit realizmus-kérésre add meg; egyébként hagyd a default-ot.\n\n' +
   'Felbontás — `width`+`height` MINDIG párban (különben aspect-mismatch). Default\n' +
   '1280×720 (HD 16:9); a "2K" jellemzően "2K HD 16:9", nem négyzet (csak explicit\n' +
   '"square/négyzet" → 1:1). Recipek (kérés → `width×height`): "2K"/"2K HD"/"1080p"/\n' +
