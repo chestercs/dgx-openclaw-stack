@@ -961,13 +961,26 @@ if (config.agents.defaults.bootstrapTotalMaxChars !== desiredBootstrapTotalMaxCh
   console.log(`[patch-config] agents.defaults.bootstrapTotalMaxChars: ${prev ?? '(unset)'} -> ${desiredBootstrapTotalMaxChars}`);
 }
 
-// (8c) Sandbox browser enable — 2026.6.1+ feature.
-// The `browser` tool with target="sandbox" needs this enabled to use the
-// runtime's bundled headless browser. Otherwise calls fail with
-// "Sandbox browser is unavailable." Env knob OPENCLAW_SANDBOX_BROWSER
-// (default on). Set =off to skip if running a stack without browser tools.
-const sandboxBrowserRaw = (process.env.OPENCLAW_SANDBOX_BROWSER || 'on').trim().toLowerCase();
-if (sandboxBrowserRaw === 'on' || sandboxBrowserRaw === 'true' || sandboxBrowserRaw === '1') {
+// (8c) Sandbox browser — OFF by default (2026-06-18 regression fix).
+// OpenClaw's `browser` tool resolves its target as
+//   params.target ?? (sandboxBridgeUrl ? "sandbox" : "host")
+// (dist/plugin-service: `browser is unavailable` site). This stack runs NO
+// OpenClaw-native sandbox-browser container, so there's no sandboxBridgeUrl and
+// an *omitted* target correctly defaults to "host" → the CDP openclaw-browser
+// sidecar wired in 8d/15. Enabling agents.defaults.sandbox.browser.enabled does
+// NOT give us a working sandbox browser (no backing container); it only injects a
+// noVNC/sandbox hint into the agent system prompt (docs/gateway/config-agents.md
+// "noVNC URL injected into system prompt"), which tempts the model to call the
+// browser with an explicit target="sandbox" — that then throws "Sandbox browser
+// is unavailable. … or use target=\"host\"" because normalizedSandbox is false.
+// That was the screenshot breakage on 2026-06-18 (bot did `target="sandbox"`).
+// So keep it OFF unless you actually run OpenClaw's sandbox-browser image, and
+// self-heal a previously-enabled flag back to false so the prompt hint disappears
+// and the tool falls back to the working CDP "host" path. Env knob
+// OPENCLAW_SANDBOX_BROWSER (default off); set =on ONLY if you run that container.
+const sandboxBrowserRaw = (process.env.OPENCLAW_SANDBOX_BROWSER || 'off').trim().toLowerCase();
+const sandboxBrowserOn = sandboxBrowserRaw === 'on' || sandboxBrowserRaw === 'true' || sandboxBrowserRaw === '1';
+if (sandboxBrowserOn) {
   config.agents.defaults.sandbox ??= {};
   config.agents.defaults.sandbox.browser ??= {};
   if (config.agents.defaults.sandbox.browser.enabled !== true) {
@@ -975,6 +988,12 @@ if (sandboxBrowserRaw === 'on' || sandboxBrowserRaw === 'true' || sandboxBrowser
     changed = true;
     console.log(`[patch-config] agents.defaults.sandbox.browser.enabled = true (sandbox-browser for target="sandbox" calls)`);
   }
+} else if (config.agents?.defaults?.sandbox?.browser?.enabled === true) {
+  // self-heal: clear a stale enabled flag so the agent stops being told it has a
+  // sandbox browser (and stops calling target="sandbox" → "unavailable").
+  config.agents.defaults.sandbox.browser.enabled = false;
+  changed = true;
+  console.log(`[patch-config] agents.defaults.sandbox.browser.enabled = false (no sandbox-browser container; browser uses CDP target="host")`);
 }
 
 // (8d) Browser defaultProfile — picks which CDP profile gets used when the
