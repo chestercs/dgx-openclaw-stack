@@ -3855,7 +3855,7 @@ const MUSIC_CHEATSHEET_END = '<!-- patch-config:music-tools:end -->';
 const MUSIC_CHEATSHEET_BODY =
   '\n## Zenegenerálás — `comfyui_image__generate_music` (ACE-Step 1.5)\n\n' +
   'Ha a user zenét / dalt / számot / aláfestést / beatet kér ("csinálj egy zenét", "írj egy dalt", "kéne egy lo-fi beat"):\n' +
-  '- `comfyui_image__generate_music({"tags":"<stílus/hangulat/hangszerek, vesszővel>", "lyrics":"<opcionális>", "duration":<mp>})` — KÉT aláhúzás a tool-névben.\n' +
+  '- Hívd a `comfyui_image__generate_music` toolt (KÉT aláhúzás a névben). Paraméterek: `tags` (kötelező), `lyrics` (opcionális), `duration` (mp). A pontos hívás-formátumot a tool-katalógusból veszed — NE a chat-szövegbe írd be a hívást.\n' +
   '- `tags` KÖTELEZŐ, ez a fő kreatív kontroll (pl. `lo-fi hip hop, mellow, jazzy piano, vinyl crackle`). A nyelv alapból magyar.\n' +
   '🚨 **ÉNEKES vs INSTRUMENTÁLIS — a kéréstől függ, és ELRONTHATÓ:**\n' +
   '  • Ha a user ÉNEKES dalt kér ("énekelj arról hogy…", "írj egy dalt a … -ról", énekes/előadó-stílus, "legyen szövege"): a `lyrics` paramétert KÖTELEZŐ kitöltened a TÉNYLEGES, megírt szöveggel (soronként `\\n`, `[verse]`/`[chorus]` tagek mennek), ÉS TILOS az `instrumental` (vagy `no vocals`) szót a `tags`-be tenni. A szöveget a `lyrics` ARGUMENTUMBAN add át — ha csak a gondolkodásodban írod meg, a dal NÉMA instrumentális lesz (ez konkrétan elromlott 2026-06-15-kor).\n' +
@@ -3866,7 +3866,7 @@ const MUSIC_CHEATSHEET_BODY =
   'message({"action":"upload-file","path":"<canvas_path>"})\n' +
   '```\n' +
   '🚫 HIBÁS (ettől jön a `"upload-file requires filePath, path, or media"` hiba): `{"action":"upload-file","attachments":[{"media":"..."}]}` — a path a FELSŐ szinten van, NEM attachments-ben. A `/view` URL NEM publikus (401) — SOHA ne csak linket ragassz. Az upload-file SIKERE UTÁN írj egy rövid magyar kommentet. (Render ~1-2 perc — jelezd hogy dolgozol rajta, ne tagadd meg.)\n' +
-  '🚨 **A tool-hívást VALÓDIBAN hívd meg — SOHA ne írd ki szövegként** (pl. `comfyui_image__generate_music(tags=...)` mint sima szöveg a chatre = HIBA, a user 0 zenét kap). Ha kimondod hogy generálsz, ténylegesen hívd a toolt ugyanabban a turn-ben.\n' +
+  '🚨 **VALÓDI tool-hívás kell, NEM szöveg — ez a leggyakoribb hiba.** A generálás CSAK akkor indul el, ha a toolt ténylegesen MEGHÍVOD (a stream „🔧 tool" sora jelzi, hogy elindult). Ha a látható válaszodba beírod a tool nevét zárójellel/argumentumokkal — mintha függvényt írnál ki —, az NEM hívás, csak szöveg: a user 0 zenét kap. Ezért: max EGY rövid „egy pillanat" mondat, és RÖGTÖN a valódi tool-hívás UGYANEBBEN a turn-ben. NE sorold fel/komponáld a tageket prózában a hívás előtt — a user szavait/stílusát add át közvetlenül a `tags`-be és hívj.\n' +
   '- **Meglévő track átstílusozása** ("alakítsd át ezt a zenét", "csináld lo-fivá") + csatolt audio → `comfyui_image__generate_music_repaint` (`init_audio_base64` a csatolt fájlból + `denoise` 0.05-1.0, alacsony=finom). Ugyanaz a `canvas_path` → `upload-file` kézbesítés (lapos `path`!).\n';
 
 // Step XXa/b/c — Discord agent UX cheatsheet blocks (Reverend Green's first-pass
@@ -4043,7 +4043,7 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '- `python_sandbox__python_exec` (urllib/requests/yt-dlp to fetch bytes, full Python data-science stack)\n' +
   '- `canvas` (write files into `~/.openclaw/canvas/` and emit `[embed url="..." /]` shortcode for inline render in chat)\n\n' +
   '**Workflow for "show me an image / take a screenshot" requests:**\n' +
-  '1. Say what you are about to do in ONE natural human sentence in the user\'s language (e.g. "Egy pillanat, csinálok egy képernyőképet."). Do NOT print raw tool names or call syntax (NOT "Tervem: comfyui_image__generate(...)"). The "🔧 tool" status line is shown automatically by the stream.\n' +
+  '1. Say what you are about to do in ONE short natural sentence in the user\'s language (e.g. "Egy pillanat, csinálok egy képernyőképet."), then IMMEDIATELY emit the REAL tool call in the SAME turn. 🚨 NEVER write a tool name followed by parentheses/arguments in your visible reply — that is TEXT, not a call, so the tool never runs and the user gets nothing (this is the #1 failure for image/video/music/screenshot gen). A real call shows the "🔧 tool" status line automatically; if you don\'t see it, you wrote text instead of calling. Do not narrate the prompt/tags/params in prose before calling — pass the user\'s request straight into the call and fire it.\n' +
   '2. Execute the tools — pass `label="<short>"` to `open`, then `targetId="<short>"` to follow-ups.\n' +
   '3. If a tool fails, try an alternate (snapshot fallback for screenshot timeout; python fallback for browser 403) before giving up.\n' +
   '4. Report failure with the ACTUAL ERROR STRING, not a guess.\n\n' +
