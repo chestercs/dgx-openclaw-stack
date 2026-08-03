@@ -487,7 +487,7 @@ class GatewayClient:
             self._pending.pop(req_id, None)
 
     async def agent_turn(self, message, session_key, extra_prompt=None,
-                         agent_id=None):
+                         agent_id=None, on_run_id=None):
         """One agent run; returns plain reply text.
 
         Contract (verified against the live gateway's AgentParamsSchema +
@@ -519,6 +519,8 @@ class GatewayClient:
         if not run_id:
             # Defensive: some completion paths may answer inline.
             return extract_payload_text(payload)
+        if on_run_id:
+            on_run_id(run_id)   # lets the caller target this run with an abort
         rec = self._run_record(run_id)
         try:
             await asyncio.wait_for(rec["done"].wait(),
@@ -542,6 +544,7 @@ class MeshSide:
         self.on_message = on_message  # async callback(peer, text)
         self._send_lock = asyncio.Lock()
         self._last_rx = {}  # peer → (text, monotonic) dup guard
+        self._last_meta = {}  # peer → {snr, path_len, at} from the last RX
         self._unwatched_seen = set()  # channel slots already reported once
 
     async def connect(self):
@@ -644,6 +647,37 @@ class MeshSide:
                 await self._refresh_contacts()
         return None
 
+    async def battery(self):
+        """Radio battery in millivolts, or None. Mostly a liveness probe when
+        the node runs on USB, and the real thing when it runs on a cell."""
+        get_bat = getattr(self.mc.commands, "get_bat", None)
+        if get_bat is None:
+            return None
+        try:
+            result = await asyncio.wait_for(get_bat(), timeout=10)
+        except asyncio.TimeoutError:
+            return None
+        if result is None or result.type == EventType.ERROR:
+            return None
+        payload = result.payload
+        if isinstance(payload, dict):
+            for key in ("level", "battery", "voltage", "bat"):
+                if isinstance(payload.get(key), (int, float)):
+                    return payload[key]
+        return payload if isinstance(payload, (int, float)) else None
+
+    async def send_advert(self, flood=False):
+        """Re-announce this node so neighbours refresh their routes — the fix
+        when a contact's stored path has gone stale and messages stop landing."""
+        send = getattr(self.mc.commands, "send_advert", None)
+        if send is None:
+            return False
+        result = await send(flood) if flood else await send()
+        return result is not None and result.type != EventType.ERROR
+
+    def link_meta(self, peer):
+        return self._last_meta.get(peer, {})
+
     def _dedupe(self, peer, text):
         """LoRa flood-retry can deliver the same message twice in short
         order. True = already seen, drop it."""
@@ -661,6 +695,7 @@ class MeshSide:
         if not prefix or not text:
             return
         peer = ("dm", prefix)
+        self._note_link(peer, payload)
         if self._dedupe(peer, text):
             log.debug("dup DM from %s suppressed", prefix)
             return
@@ -683,10 +718,22 @@ class MeshSide:
                          idx, CHANNEL_IDX, idx)
             return
         peer = ("chan", idx)
+        self._note_link(peer, payload)
         if self._dedupe(peer, text):
             log.debug("dup channel message suppressed")
             return
         asyncio.create_task(self.on_message(peer, text))
+
+    def _note_link(self, peer, payload):
+        """Remember radio-link quality from the last packet, so /snr can
+        answer without extra airtime. Only the V3 sync frames carry SNR, so
+        keep whatever we last saw rather than overwriting it with None."""
+        meta = self._last_meta.setdefault(peer, {})
+        if isinstance(payload.get("SNR"), (int, float)):
+            meta["snr"] = payload["SNR"]
+        if isinstance(payload.get("path_len"), int):
+            meta["path_len"] = payload["path_len"]
+        meta["at"] = time.time()
 
     async def send_text(self, peer, text):
         """One paced message (single chunk) to a DM contact or a channel.
@@ -741,9 +788,12 @@ class Bridge:
     def __init__(self, gateway, mesh):
         self.gateway = gateway
         self.mesh = mesh
-        self.session_gen = {}    # peer → int, bumped by /new
+        self.session_gen = {}    # session id → int, bumped by /new
         self.more_buf = {}       # peer → (remaining chunks, total)
-        self.locks = {}          # peer → Lock (serialize turns per peer)
+        self.last_reply = {}     # peer → full chunk list, for /last
+        self.locks = {}          # session id → Lock (serialize per conversation)
+        self.inflight = {}       # session id → (session_key, run_id) for /stop
+        self.started_at = time.monotonic()
 
     @staticmethod
     def _session_id(peer):
@@ -828,6 +878,12 @@ class Bridge:
         else:
             sid = self._session_id(peer)
             log.info("DM from %s (session %s): %r", dest, sid, text[:120])
+        # /stop must bypass the lock below: the turn it cancels is holding it,
+        # so queueing behind it would deadlock until that turn finished — the
+        # exact thing the user is trying to avoid.
+        if text.split()[0].lower() == "/stop":
+            await self._stop(peer)
+            return
         # Lock on the CONVERSATION, not the device: grouped radios share one
         # session, and two concurrent runs against one sessionKey would race
         # in the gateway.
@@ -844,12 +900,13 @@ class Bridge:
             await self.mesh.send_text(peer, "pong — bridge up, gateway "
                                       + ("up" if self.gateway.connected.is_set()
                                          else "DOWN"))
-        elif cmd == "/new":
+        elif cmd in ("/new", "/reset"):
             # Bumps the CONVERSATION's generation, so /new from any radio in a
             # session group resets that shared rail (and only it).
             sid = self._session_id(peer)
             self.session_gen[sid] = self.session_gen.get(sid, 0) + 1
             self.more_buf.pop(peer, None)
+            self.last_reply.pop(peer, None)
             await self.mesh.send_text(peer, "🆕 new session")
         elif cmd == "/more":
             remaining, total = self.more_buf.get(peer, ([], 0))
@@ -859,12 +916,86 @@ class Bridge:
             batch, rest = remaining[:AUTO_CHUNKS], remaining[AUTO_CHUNKS:]
             self.more_buf[peer] = (rest, total)
             await self._send_batch(peer, batch, rest, total)
+        elif cmd == "/last":
+            # Radio links drop packets; resending the last answer from part 1
+            # is cheaper than making the agent generate it again.
+            chunks = self.last_reply.get(peer)
+            if not chunks:
+                await self.mesh.send_text(peer, "(nothing to resend)")
+                return
+            total = len(chunks)
+            batch, rest = chunks[:AUTO_CHUNKS], chunks[AUTO_CHUNKS:]
+            self.more_buf[peer] = (rest, total) if rest else ([], 0)
+            await self._send_batch(peer, batch, rest, total)
+        elif cmd == "/status":
+            await self.mesh.send_text(peer, await self._status(peer))
+        elif cmd == "/whoami":
+            sid = self._session_id(peer)
+            kind = "channel" if peer[0] == "chan" else "private DM"
+            await self.mesh.send_text(
+                peer, f"{kind}; agent {self._agent_id(peer)}; session {sid}"
+                      f"-g{self.session_gen.get(sid, 0)}")
+        elif cmd == "/snr":
+            meta = self.mesh.link_meta(peer)
+            snr = meta.get("snr")
+            hops = meta.get("path_len")
+            bat = await self.mesh.battery()
+            parts = [f"SNR {snr:+.1f}dB" if isinstance(snr, (int, float))
+                     else "SNR n/a"]
+            if isinstance(hops, int):
+                parts.append("direct" if hops in (0, 255) else f"{hops} hop(s)")
+            if bat:
+                parts.append(f"node bat {bat}mV")
+            await self.mesh.send_text(peer, ", ".join(parts))
+        elif cmd == "/advert":
+            flood = "flood" in text.lower()
+            ok = await self.mesh.send_advert(flood)
+            await self.mesh.send_text(
+                peer, ("advert sent" + (" (flood)" if flood else ""))
+                if ok else "advert failed")
         elif cmd == "/help":
             await self.mesh.send_text(
-                peer, "cmds: /ping /new /more /help — anything else goes "
-                        "to the agent")
+                peer, "cmds: /status /whoami /snr /new(=/reset) /more /last "
+                      "/stop /advert /ping /help — anything else goes to the "
+                      "agent")
         else:
             await self.mesh.send_text(peer, f"unknown cmd {cmd} — /help")
+
+    async def _status(self, peer):
+        """One packet, the things you can't see from a handheld off-grid."""
+        gw = "up" if self.gateway.connected.is_set() else "DOWN"
+        sid = self._session_id(peer)
+        busy = "busy" if sid in self.inflight else "idle"
+        meta = self.mesh.link_meta(peer)
+        snr = meta.get("snr")
+        snr_txt = f"{snr:+.1f}dB" if isinstance(snr, (int, float)) else "n/a"
+        up = int(time.monotonic() - self.started_at)
+        up_txt = f"{up // 3600}h{(up % 3600) // 60:02d}m" if up >= 3600 \
+            else f"{up // 60}m{up % 60:02d}s"
+        pending = len(self.more_buf.get(peer, ([], 0))[0])
+        return (f"gw {gw}, agent {self._agent_id(peer)} {busy}, SNR {snr_txt}, "
+                f"up {up_txt}, {pending} part(s) queued")
+
+    async def _stop(self, peer):
+        """Abort the in-flight turn for this conversation. Runs OUTSIDE the
+        per-conversation lock — the turn being cancelled is holding it."""
+        sid = self._session_id(peer)
+        run = self.inflight.get(sid)
+        if not run:
+            await self.mesh.send_text(peer, "(nothing running)")
+            return
+        session_key, run_id = run
+        params = {"sessionKey": session_key, "agentId": self._agent_id(peer)}
+        if run_id:
+            params["runId"] = run_id
+        try:
+            res = await self.gateway.request("chat.abort", params, timeout=20)
+            ok = bool(res.get("ok"))
+        except Exception as e:  # noqa: BLE001 — always answer the radio
+            log.warning("chat.abort failed: %s", e)
+            ok = False
+        await self.mesh.send_text(peer, "🛑 stopped" if ok
+                                  else "abort failed — it may still finish")
 
     async def _send_batch(self, peer, batch, rest, total):
         # `batch` is either the head of a fresh reply or a /more continuation,
@@ -882,13 +1013,20 @@ class Bridge:
 
     async def _agent_turn(self, peer, text):
         self.more_buf.pop(peer, None)
+        sid = self._session_id(peer)
+        session_key = self._session_key(peer)
+        # Registered before the call and cleared in `finally` so /stop and
+        # /status can see the run — /stop dispatches outside the lock this
+        # turn holds, so it can actually reach the running turn.
+        self.inflight[sid] = (session_key, None)
         ack_task = None
         if ACK_AFTER_S > 0:
             ack_task = asyncio.create_task(self._late_ack(peer))
         try:
             reply = await self.gateway.agent_turn(
-                text, self._session_key(peer), self._extra_prompt(peer),
-                self._agent_id(peer))
+                text, session_key, self._extra_prompt(peer),
+                self._agent_id(peer),
+                lambda rid: self.inflight.__setitem__(sid, (session_key, rid)))
         except ConnectionError:
             reply = None
             await self.mesh.send_text(peer, "📡 gateway offline — try later")
@@ -902,6 +1040,7 @@ class Bridge:
             log.exception("agent turn failed")
             await self.mesh.send_text(peer, f"⚠ agent error: {str(e)[:90]}")
         finally:
+            self.inflight.pop(sid, None)
             if ack_task:
                 ack_task.cancel()
         if reply is None:
@@ -911,6 +1050,7 @@ class Bridge:
             reply = reply[:MAX_REPLY_CHARS].rstrip() + "…"
         chunks = chunkify(reply, CHUNK_CHARS)
         total = len(chunks)
+        self.last_reply[peer] = chunks   # /last resends from part 1
         batch, rest = chunks[:AUTO_CHUNKS], chunks[AUTO_CHUNKS:]
         if rest:
             self.more_buf[peer] = (rest, total)

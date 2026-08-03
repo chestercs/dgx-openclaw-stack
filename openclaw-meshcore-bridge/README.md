@@ -60,14 +60,24 @@ Corollary: when you recreate the gateway, recreate this container too
 
 ## In-band commands
 
+None of these touch the LLM — one packet each, and they work even when the
+gateway is down.
+
 | Command | Effect |
 |---|---|
-| `/ping` | Link test — replies without touching the LLM |
-| `/new` | Fresh conversation session |
+| `/status` | Gateway up/down, agent, busy/idle, last SNR, uptime, queued parts |
+| `/whoami` | Which surface / agent / session you're on |
+| `/snr` | Last packet's SNR, hop count, node battery |
+| `/last` | Resend the last reply from part 1 (dropped-packet recovery) |
 | `/more` | Next chunks of a long reply held back by the auto-send cap |
+| `/new`, `/reset` | Fresh conversation session |
+| `/stop` | Abort the in-flight agent turn |
+| `/advert` | Re-announce the node so neighbours refresh routes (`/advert flood`) |
+| `/ping` | Link test |
 | `/help` | Command list |
 
-Anything else goes to the agent on the sender's own session.
+Anything else goes to the agent on the sender's own session. On a channel the
+trigger prefix comes first, so it's `?/status` there.
 
 ## Env knobs
 

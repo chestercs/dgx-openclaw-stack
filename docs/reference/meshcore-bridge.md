@@ -291,12 +291,25 @@ readable by every member) — they're off by default and documented above.
 
 ### In-band commands
 
+None of these touch the LLM, so they cost one packet each and work even when
+the gateway is down. They exist because a handheld user off-grid can't see the
+server.
+
 | Command | Effect |
 |---|---|
-| `/ping` | Bridge + gateway liveness, no LLM |
-| `/new` | Fresh session (new sessionKey generation) |
-| `/more` | Next `AUTO_CHUNKS` parts of a buffered long reply |
+| `/status` | One packet of everything invisible from the handheld: gateway up/down, which agent, busy/idle, last SNR, bridge uptime, queued parts |
+| `/whoami` | Which surface, agent and session generation you're talking to — matters once DM and channel run different agents |
+| `/snr` | Radio link quality of the last received packet: SNR, hop count, node battery. Handy for antenna aiming and range tests |
+| `/last` | Resend the last reply from part 1. Radio links drop packets; resending beats making the agent regenerate the answer |
+| `/more` | Next `AUTO_CHUNKS` parts of a long reply |
+| `/new`, `/reset` | Fresh session (bumps the generation); clears the paging and resend buffers |
+| `/stop` | Abort the in-flight turn (`chat.abort`). Dispatched **outside** the per-conversation lock — the turn being cancelled holds it, so queueing behind it would deadlock on exactly what the user is trying to escape |
+| `/advert` | Make the radio re-announce itself so neighbours refresh routes — the fix when a stale stored path stops messages landing. `/advert flood` for a flood advert |
+| `/ping` | Bridge + gateway liveness |
 | `/help` | Command list |
+
+Anything not starting with `/` goes to the agent. On a channel the trigger
+prefix applies first, so it's `?/status` there.
 
 ### Debug recipes
 
