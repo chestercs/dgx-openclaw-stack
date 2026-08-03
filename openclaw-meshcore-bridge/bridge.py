@@ -484,6 +484,7 @@ class MeshSide:
         self.on_message = on_message  # async callback(peer, text)
         self._send_lock = asyncio.Lock()
         self._last_rx = {}  # peer → (text, monotonic) dup guard
+        self._unwatched_seen = set()  # channel slots already reported once
 
     async def connect(self):
         self.mc = await MeshCore.create_serial(SERIAL_DEVICE, SERIAL_BAUD)
@@ -614,8 +615,14 @@ class MeshSide:
         if idx is None or not text:
             return
         if idx != CHANNEL_IDX:
-            log.debug("channel %s message ignored (watching %s)",
-                      idx, CHANNEL_IDX)
+            # Actionable misconfiguration, not routine noise — but the radio
+            # may sit on busy channels (slot 0 is usually Public), so say it
+            # once per slot at INFO instead of flooding or hiding it at DEBUG.
+            if idx not in self._unwatched_seen:
+                self._unwatched_seen.add(idx)
+                log.info("traffic on channel slot %s, watching slot %s — set "
+                         "MESHCORE_CHANNEL_IDX=%s if that's the agent channel",
+                         idx, CHANNEL_IDX, idx)
             return
         peer = ("chan", idx)
         if self._dedupe(peer, text):
@@ -652,12 +659,14 @@ class MeshSide:
                 await asyncio.sleep(5)
         return False
 
-    async def send_chunks(self, peer, chunks, total=None):
+    async def send_chunks(self, peer, chunks, total=None, start=1):
+        """Send `chunks` as `k/total`-numbered parts, `k` counting from
+        `start` (1-based). The caller owns `start` because a batch can be the
+        head of a reply or a /more continuation."""
         total = total if total is not None else len(chunks)
         numbered = total > 1
-        base = 1 + (total - len(chunks))  # continuation offset for /more
         for i, chunk in enumerate(chunks):
-            body = f"{base + i}/{total} {chunk}" if numbered else chunk
+            body = f"{start + i}/{total} {chunk}" if numbered else chunk
             if not await self.send_text(peer, body):
                 break
 
@@ -770,10 +779,18 @@ class Bridge:
             await self.mesh.send_text(peer, f"unknown cmd {cmd} — /help")
 
     async def _send_batch(self, peer, batch, rest, total):
-        await self.mesh.send_chunks(peer, batch, total=total)
+        # `batch` is either the head of a fresh reply or a /more continuation,
+        # so derive its first part number from what is neither in `batch` nor
+        # in `rest` — that's what already went out. (The previous
+        # `1 + (total - len(batch))` only held for a tail slice and numbered
+        # the FIRST batch of a 4-part reply "2/4, 3/4, 4/4", then repeated
+        # "4/4" after /more — reported from the T-Deck, 2026-08-03.)
+        start = total - len(batch) - len(rest) + 1
+        await self.mesh.send_chunks(peer, batch, total=total, start=start)
         if rest:
+            noun = "part" if len(rest) == 1 else "parts"
             await self.mesh.send_text(
-                peer, f"…(+{len(rest)} parts — /more)")
+                peer, f"…(+{len(rest)} {noun} — /more)")
 
     async def _agent_turn(self, peer, text):
         self.more_buf.pop(peer, None)
@@ -821,10 +838,15 @@ class Bridge:
 # ─── main ────────────────────────────────────────────────────────────────────
 
 async def main():
+    # force=True is load-bearing: importing `meshcore` installs a root
+    # handler, and basicConfig() is a silent no-op once the root logger has
+    # one — MESHCORE_LOG_LEVEL=DEBUG then has no effect whatsoever, which
+    # cost a debugging round on 2026-08-03.
     logging.basicConfig(
         level=getattr(logging, _env("MESHCORE_LOG_LEVEL", "INFO").upper(),
                       logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True)
     log.info("meshcore-bridge %s starting (agent=%s, device=%s)",
              BRIDGE_VERSION, AGENT_ID, SERIAL_DEVICE)
     if not ALLOW_ALL and not ALLOWED_PUBKEYS:
