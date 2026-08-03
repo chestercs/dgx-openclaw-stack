@@ -260,6 +260,12 @@ services:
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      # Air-gapped / no-internet deploys: set HF_HUB_OFFLINE=1 (+
+      # TRANSFORMERS_OFFLINE=1) in .env once the model is cached — the HF
+      # client then never dials home (faster boots, no hangs when the
+      # uplink is down). Default 0 = normal online behavior.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
@@ -352,6 +358,12 @@ services:
       # via the LLM_ENFORCE_EAGER env knob — only the dense is forced eager.
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      # Air-gapped / no-internet deploys: set HF_HUB_OFFLINE=1 (+
+      # TRANSFORMERS_OFFLINE=1) in .env once the model is cached — the HF
+      # client then never dials home (faster boots, no hangs when the
+      # uplink is down). Default 0 = normal online behavior.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
@@ -427,6 +439,12 @@ services:
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      # Air-gapped / no-internet deploys: set HF_HUB_OFFLINE=1 (+
+      # TRANSFORMERS_OFFLINE=1) in .env once the model is cached — the HF
+      # client then never dials home (faster boots, no hangs when the
+      # uplink is down). Default 0 = normal online behavior.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
@@ -1369,6 +1387,16 @@ services:
       # routes. Set `off` only if you configured an OpenAI key and want Sora
       # back (patcher self-heals the entry). Empty skips the step.
       OPENCLAW_DENY_OPENAI_VIDEO_TOOL: ${OPENCLAW_DENY_OPENAI_VIDEO_TOOL:-on}
+      # MeshCore agent registration (patcher step 42). MESHCORE_ENABLED=on
+      # registers the `meshcore` agents.list entry + seeds its workspace
+      # AGENTS.md; the other knobs tune the agent's id / tool surface /
+      # thinking default. Pair with the openclaw-meshcore-bridge service
+      # (profile: meshcore) — see openclaw-meshcore-bridge/README.md.
+      MESHCORE_ENABLED: ${MESHCORE_ENABLED:-}
+      MESHCORE_AGENT_ID: ${MESHCORE_AGENT_ID:-meshcore}
+      MESHCORE_AGENT_TOOLS_PROFILE: ${MESHCORE_AGENT_TOOLS_PROFILE:-minimal}
+      MESHCORE_AGENT_ALSO_ALLOW: ${MESHCORE_AGENT_ALSO_ALLOW:-web_search}
+      MESHCORE_AGENT_THINKING: ${MESHCORE_AGENT_THINKING:-off}
       # Discord-routed agent tools.alsoAllow additions (patcher step 22).
       # Comma-separated list ADDED on top of the profile. Default
       # `group:messaging,browser,tts,canvas,cron` — `group:messaging` is
