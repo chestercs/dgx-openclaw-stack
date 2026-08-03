@@ -119,6 +119,49 @@ A MeshCore DM carries ~130–180 payload bytes. The bridge:
 The AGENTS.md contract asks the model for < 300 chars; the bridge-side caps
 are the hard layer for when it disobeys.
 
+### Channels: a deliberately weaker second surface
+
+DMs are the primary surface. A channel (group chat) can also reach the agent
+— `MESHCORE_CHANNEL_IDX` + `_NAME` + `_PASSWORD`/`_SECRET` — but understand
+what changes before enabling it:
+
+- **No sender identity.** A channel message's payload is `channel_idx` /
+  `SNR` / `path_*` / `txt_type` / `sender_timestamp` / `text` — there is **no
+  `pubkey_prefix`**. So `MESHCORE_ALLOWED_PUBKEYS` cannot gate channel
+  traffic. The only gate is knowledge of the shared 16-byte channel secret.
+- **Replies are public to the group.** Every member decrypts the agent's
+  answers, so anything the agent says on a channel is said to all of them.
+- **Sender names are self-declared.** Channel clients prepend `Name: ` to the
+  text. The bridge parses it for logs and for locating the trigger — never
+  for authorization, because it's unauthenticated text.
+
+Two mitigations ship on by default:
+
+- **Trigger prefix** (`MESHCORE_CHANNEL_TRIGGER`, default `?`). Only messages
+  starting with it (optionally after the `Name: ` prefix) reach the agent, so
+  the bridge stays out of human-to-human chatter — otherwise it would answer
+  every line, burning airtime and risking a chatter loop. Set empty only on a
+  channel dedicated to the agent.
+- **One slot only.** The bridge watches and provisions exactly the configured
+  index; every other slot (the `Public` channel, the operator's own channels)
+  is untouched. Provisioning is idempotent — it compares name + secret and
+  writes only on drift, the same desired-state posture `patch-config.mjs`
+  uses for `openclaw.json`, so a replaced radio self-heals on next boot.
+
+**Joining other devices — the gotcha.** MeshCore shares raw 16-byte channel
+keys, not passphrases; the protocol has no standard password→key KDF. When
+`MESHCORE_CHANNEL_PASSWORD` is used the bridge derives
+`sha256(password)[:16]` (matching how MeshCore derives name-based channel
+keys), but a handheld cannot re-derive that from the password on its own —
+**enter the derived key** on the other devices. The bridge logs a 4-byte key
+fingerprint at boot so both ends can be verified without putting the secret
+in container logs.
+
+The channel gets its own session rail
+(`agent:meshcore:meshcore-chan<idx>-g<n>`), shared by all members — it's a
+group conversation, so that's intended. `/ping`, `/new`, `/more`, `/help`
+work there too (after the trigger).
+
 ## Threat model
 
 The mesh is a **public radio**: anyone in RF range with the firmware can DM
@@ -135,9 +178,13 @@ the companion node. Gates, outermost first:
 3. **AGENTS.md soft policy** — style contract, not a security boundary.
 
 MeshCore DMs are E2E encrypted contact↔node; the plaintext exists on the
-companion node, the USB link, and the bridge container. Room-server
-broadcast mode was deliberately NOT used — rooms are shared-key, every
-member would read the agent's replies.
+companion node, the USB link, and the bridge container. A stranger whose
+public key isn't in the radio's contact list cannot produce a DM the node can
+decrypt at all, so gate #1 above effectively guards against the *known*
+contacts, not the whole RF neighbourhood.
+
+Channels invert that property (shared key, no sender identity, replies
+readable by every member) — they're off by default and documented above.
 
 ## Operator runbook
 

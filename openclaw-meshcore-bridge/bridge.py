@@ -5,7 +5,7 @@ Listens for direct messages arriving at a MeshCore companion radio (USB
 serial, e.g. a LilyGO T-Echo flashed with the "Companion Radio USB"
 firmware), forwards them to a dedicated OpenClaw agent over the gateway's
 WebSocket RPC, and radios the agent's reply back to the sender as one or
-more LoRa DMs.
+more LoRa DMs. Optionally does the same on ONE shared channel.
 
 Design notes (the "why" behind the shape of this file):
 
@@ -14,22 +14,29 @@ Design notes (the "why" behind the shape of this file):
   docs/reference/openclaw-internals.md "CLI overhead"). Holding the
   connection open pays that cost once at boot; per-turn latency then
   approaches the raw vLLM decode time.
-- **Per-contact sessions.** sessionKey `meshcore-<pubkey_prefix>-g<n>`
-  gives every mesh contact their own conversational rail with continuity
-  across messages; `/new` bumps `<n>` to start fresh.
+- **Per-peer sessions.** sessionKey `agent:<id>:meshcore-<peer>-g<n>` gives
+  every mesh contact — and the watched channel — its own conversational rail
+  with continuity across messages; `/new` bumps `<n>` to start fresh.
 - **LoRa is an SMS-sized pipe.** Replies are markdown-stripped, chunked
   to MESHCORE_CHUNK_CHARS, and only the first MESHCORE_AUTO_CHUNKS parts
   are sent unsolicited; the rest waits behind `/more`. An inter-chunk gap
   keeps the duty cycle polite.
-- **The mesh is a public radio.** Only pubkey-prefix-allowlisted contacts
-  reach the agent; everyone else is logged and ignored (no reply — don't
-  beacon to strangers).
+- **The mesh is a public radio.** For DMs, only pubkey-prefix-allowlisted
+  contacts reach the agent; everyone else is logged and ignored (no reply —
+  don't beacon to strangers).
+- **Channels are weaker than DMs, by protocol.** A channel message carries
+  NO sender public key, so the allowlist cannot gate it: the only gate is
+  knowledge of the shared 16-byte channel secret, and every member reads the
+  agent's replies. Channel support is therefore off unless
+  MESHCORE_CHANNEL_IDX is set, and a trigger prefix keeps the agent out of
+  human-to-human chatter.
 
 Env contract is documented in .env.example ("MeshCore bridge" block) and
 docs/reference/meshcore-bridge.md.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -93,6 +100,46 @@ ALLOWED_PUBKEYS = [p.strip().lower()
                    for p in _env("MESHCORE_ALLOWED_PUBKEYS").split(",")
                    if p.strip()]
 ALLOW_ALL = _env_on("MESHCORE_ALLOW_ALL")
+
+# ─── channel (group) support ─────────────────────────────────────────────────
+# Off unless MESHCORE_CHANNEL_IDX is set. SECURITY POSTURE DIFFERS FROM DMs:
+# a channel message carries NO sender public key (payload is channel_idx /
+# SNR / sender_timestamp / text — verified against meshcore_py's reader), so
+# the pubkey allowlist CANNOT gate it. The only gate is knowledge of the
+# 16-byte channel secret, shared by every member, who also all read the
+# agent's replies. Use a channel only where that's acceptable.
+CHANNEL_IDX_RAW = _env("MESHCORE_CHANNEL_IDX")
+CHANNEL_IDX = int(CHANNEL_IDX_RAW) if CHANNEL_IDX_RAW.isdigit() else None
+CHANNEL_NAME = _env("MESHCORE_CHANNEL_NAME")
+CHANNEL_SECRET_HEX = _env("MESHCORE_CHANNEL_SECRET")
+CHANNEL_PASSWORD = _env("MESHCORE_CHANNEL_PASSWORD")
+# Only answer channel messages addressed to the agent. Without a trigger the
+# bridge would reply to every human-to-human line on the channel — airtime
+# abuse and a self-sustaining chatter loop risk. Empty = answer everything.
+CHANNEL_TRIGGER = _env("MESHCORE_CHANNEL_TRIGGER", "?")
+
+
+def resolve_channel_secret():
+    """Explicit hex wins; otherwise derive from the password the same way
+    MeshCore derives name-based channel keys — sha256(x)[:16]. There is no
+    standardized password->key KDF in MeshCore (the shared item is the raw
+    16-byte key), so other devices must be joined with the resulting key,
+    not by typing the password."""
+    if CHANNEL_SECRET_HEX:
+        raw = CHANNEL_SECRET_HEX.replace(" ", "")
+        try:
+            secret = bytes.fromhex(raw)
+        except ValueError:
+            log.error("MESHCORE_CHANNEL_SECRET is not valid hex — ignoring")
+            return None
+        if len(secret) != 16:
+            log.error("MESHCORE_CHANNEL_SECRET must be 16 bytes (32 hex "
+                      "chars), got %d — ignoring", len(secret))
+            return None
+        return secret
+    if CHANNEL_PASSWORD:
+        return hashlib.sha256(CHANNEL_PASSWORD.encode()).digest()[:16]
+    return None
 
 CHUNK_CHARS = max(40, _env_i("MESHCORE_CHUNK_CHARS", 130))
 AUTO_CHUNKS = max(1, _env_i("MESHCORE_AUTO_CHUNKS", 3))
@@ -413,18 +460,21 @@ class GatewayClient:
 # ─── MeshCore side ───────────────────────────────────────────────────────────
 
 class MeshSide:
-    """Owns the companion-radio serial link: inbound DM subscription,
-    contact resolution by pubkey prefix, paced chunked sends."""
+    """Owns the companion-radio serial link: inbound DM + channel
+    subscriptions, contact resolution by pubkey prefix, channel slot
+    provisioning, paced chunked sends."""
 
     def __init__(self, on_message):
         self.mc = None
-        self.on_message = on_message  # async callback(pubkey_prefix, text)
+        self.on_message = on_message  # async callback(peer, text)
         self._send_lock = asyncio.Lock()
-        self._last_rx = {}  # pubkey_prefix → (text, monotonic) dup guard
+        self._last_rx = {}  # peer → (text, monotonic) dup guard
 
     async def connect(self):
         self.mc = await MeshCore.create_serial(SERIAL_DEVICE, SERIAL_BAUD)
         self.mc.subscribe(EventType.CONTACT_MSG_RECV, self._handle_rx)
+        if CHANNEL_IDX is not None:
+            self.mc.subscribe(EventType.CHANNEL_MSG_RECV, self._handle_chan_rx)
         # Companion firmware queues messages until the host fetches them;
         # newer meshcore_py drains automatically, older builds need a manual
         # pump on the MESSAGES_WAITING advert.
@@ -443,6 +493,53 @@ class MeshSide:
         log.info("companion radio up on %s @ %d baud%s",
                  SERIAL_DEVICE, SERIAL_BAUD,
                  f" (node: {node_name})" if node_name else "")
+        await self._ensure_channel()
+
+    async def _ensure_channel(self):
+        """Idempotently provision the configured channel slot — the same
+        desired-state posture patch-config.mjs uses for openclaw.json, so a
+        replaced radio self-heals on the next boot instead of needing manual
+        setup. Only ever writes the ONE configured slot; other slots (the
+        Public channel, the operator's own channels) are never touched."""
+        if CHANNEL_IDX is None:
+            return
+        secret = resolve_channel_secret()
+        if not CHANNEL_NAME or not secret:
+            log.error("MESHCORE_CHANNEL_IDX=%s but name/secret missing — "
+                      "channel disabled (set MESHCORE_CHANNEL_NAME plus "
+                      "MESHCORE_CHANNEL_PASSWORD or _SECRET)", CHANNEL_IDX)
+            return
+        result = await self.mc.commands.get_channel(CHANNEL_IDX)
+        cur_name, cur_secret = None, None
+        if result.type != EventType.ERROR:
+            p = result.payload or {}
+            cur_name = p.get("channel_name", p.get("name"))
+            cur_secret = p.get("channel_secret", p.get("secret"))
+            if isinstance(cur_secret, str):
+                try:
+                    cur_secret = bytes.fromhex(cur_secret)
+                except ValueError:
+                    cur_secret = None
+        fp = secret[:4].hex()
+        if cur_name == CHANNEL_NAME and cur_secret == secret:
+            log.info("channel %d already set: %r (key fp %s)",
+                     CHANNEL_IDX, CHANNEL_NAME, fp)
+            return
+        if cur_name and cur_name != CHANNEL_NAME:
+            log.warning("channel %d currently holds %r — overwriting with %r "
+                        "(MESHCORE_CHANNEL_IDX points here)",
+                        CHANNEL_IDX, cur_name, CHANNEL_NAME)
+        set_result = await self.mc.commands.set_channel(
+            CHANNEL_IDX, CHANNEL_NAME, secret)
+        if set_result.type == EventType.ERROR:
+            log.error("set_channel %d failed: %s",
+                      CHANNEL_IDX, set_result.payload)
+            return
+        # Key fingerprint only — the full secret is a shared group key and
+        # container logs are a poor place to keep it. Join other devices with
+        # the value from .env / the operator handoff, not from the log.
+        log.info("channel %d provisioned: %r (key fp %s), trigger %r",
+                 CHANNEL_IDX, CHANNEL_NAME, fp, CHANNEL_TRIGGER or "<none>")
 
     async def _drain_pending(self, _event):
         get_msg = getattr(self.mc.commands, "get_msg", None)
@@ -474,143 +571,216 @@ class MeshSide:
                 await self._refresh_contacts()
         return None
 
+    def _dedupe(self, peer, text):
+        """LoRa flood-retry can deliver the same message twice in short
+        order. True = already seen, drop it."""
+        last = self._last_rx.get(peer)
+        now = time.monotonic()
+        if last and last[0] == text and now - last[1] < 30:
+            return True
+        self._last_rx[peer] = (text, now)
+        return False
+
     async def _handle_rx(self, event):
         payload = event.payload or {}
         prefix = str(payload.get("pubkey_prefix") or "").lower()
         text = (payload.get("text") or "").strip()
         if not prefix or not text:
             return
-        # LoRa flood-retry can deliver the same DM twice in short order.
-        last = self._last_rx.get(prefix)
-        now = time.monotonic()
-        if last and last[0] == text and now - last[1] < 30:
+        peer = ("dm", prefix)
+        if self._dedupe(peer, text):
             log.debug("dup DM from %s suppressed", prefix)
             return
-        self._last_rx[prefix] = (text, now)
-        asyncio.create_task(self.on_message(prefix, text))
+        asyncio.create_task(self.on_message(peer, text))
 
-    async def send_text(self, pubkey_prefix, text):
-        """One paced DM (single chunk). Serialized bridge-wide so replies to
-        different contacts can't interleave into a duty-cycle burst."""
-        contact = await self.find_contact(pubkey_prefix)
-        if contact is None:
-            log.warning("no contact for prefix %s — reply dropped "
-                        "(radio hasn't seen their advert yet?)", pubkey_prefix)
-            return False
+    async def _handle_chan_rx(self, event):
+        payload = event.payload or {}
+        idx = payload.get("channel_idx")
+        text = (payload.get("text") or "").strip()
+        if idx is None or not text:
+            return
+        if idx != CHANNEL_IDX:
+            log.debug("channel %s message ignored (watching %s)",
+                      idx, CHANNEL_IDX)
+            return
+        peer = ("chan", idx)
+        if self._dedupe(peer, text):
+            log.debug("dup channel message suppressed")
+            return
+        asyncio.create_task(self.on_message(peer, text))
+
+    async def send_text(self, peer, text):
+        """One paced message (single chunk) to a DM contact or a channel.
+        Serialized bridge-wide so replies to different peers can't interleave
+        into a duty-cycle burst."""
+        kind, dest = peer
         async with self._send_lock:
             for attempt in range(2):
-                result = await self.mc.commands.send_msg(contact, text)
+                if kind == "chan":
+                    result = await self.mc.commands.send_chan_msg(dest, text)
+                else:
+                    contact = await self.find_contact(dest)
+                    if contact is None:
+                        log.warning("no contact for prefix %s — reply dropped "
+                                    "(radio hasn't seen their advert yet?)",
+                                    dest)
+                        return False
+                    result = await self.mc.commands.send_msg(contact, text)
                 if result.type != EventType.ERROR:
                     # Log every TX: on a radio link an operator needs to see
                     # what actually left the node, not just what came in.
-                    log.info("TX to %s (%d B): %r",
-                             pubkey_prefix, len(text.encode()), text[:120])
+                    log.info("TX to %s:%s (%d B): %r", kind, dest,
+                             len(text.encode()), text[:120])
                     await asyncio.sleep(SEND_GAP_S)
                     return True
-                log.warning("send_msg to %s failed (%s), attempt %d",
-                            pubkey_prefix, result.payload, attempt + 1)
+                log.warning("send to %s:%s failed (%s), attempt %d",
+                            kind, dest, result.payload, attempt + 1)
                 await asyncio.sleep(5)
         return False
 
-    async def send_chunks(self, pubkey_prefix, chunks, total=None):
+    async def send_chunks(self, peer, chunks, total=None):
         total = total if total is not None else len(chunks)
         numbered = total > 1
         base = 1 + (total - len(chunks))  # continuation offset for /more
         for i, chunk in enumerate(chunks):
             body = f"{base + i}/{total} {chunk}" if numbered else chunk
-            if not await self.send_text(pubkey_prefix, body):
+            if not await self.send_text(peer, body):
                 break
 
 
 # ─── bridge glue ─────────────────────────────────────────────────────────────
 
+# Channel clients prepend the sender's display name to the text ("Name: msg")
+# because channel messages carry no cryptographic sender identity. Used only
+# for logging and to find the trigger after the name — never for authz.
+_CHAN_SENDER_RE = re.compile(r"^([^:\n]{1,32}):\s*(.*)$", re.DOTALL)
+
+
 class Bridge:
     def __init__(self, gateway, mesh):
         self.gateway = gateway
         self.mesh = mesh
-        self.session_gen = {}    # prefix → int, bumped by /new
-        self.more_buf = {}       # prefix → (remaining chunks, total)
-        self.locks = {}          # prefix → Lock (serialize turns per contact)
+        self.session_gen = {}    # peer → int, bumped by /new
+        self.more_buf = {}       # peer → (remaining chunks, total)
+        self.locks = {}          # peer → Lock (serialize turns per peer)
 
-    def _session_key(self, prefix):
+    def _session_key(self, peer):
         # MUST be the canonical agent-scoped form. A bare key is resolved by
         # resolveAgentIdFromSessionKey(), which defaults to agent "main", and
         # the gateway then rejects the run with `invalid agent params: agent
         # "meshcore" does not match session key agent "main"` (verified live
         # 2026-08-03). `-g<n>` is the generation counter that /new bumps.
-        gen = self.session_gen.get(prefix, 0)
-        return f"agent:{AGENT_ID}:meshcore-{prefix}-g{gen}"
+        kind, dest = peer
+        gen = self.session_gen.get(peer, 0)
+        who = f"chan{dest}" if kind == "chan" else dest
+        return f"agent:{AGENT_ID}:meshcore-{who}-g{gen}"
 
-    def _allowed(self, prefix):
+    def _allowed(self, peer):
+        kind, dest = peer
+        if kind == "chan":
+            # Channel membership IS the gate — see the CHANNEL_IDX comment.
+            return dest == CHANNEL_IDX
         if ALLOW_ALL:
             return True
-        return any(prefix.startswith(p) for p in ALLOWED_PUBKEYS)
+        return any(dest.startswith(p) for p in ALLOWED_PUBKEYS)
 
-    async def on_mesh_message(self, prefix, text):
-        if not self._allowed(prefix):
-            log.warning("DM from non-allowlisted %s ignored (%r) — add the "
+    @staticmethod
+    def _channel_body(text):
+        """Extract the message meant for the agent from a channel line.
+        Returns (sender_or_None, body) or (sender_or_None, None) when the
+        message isn't addressed to the agent. Without a trigger the bridge
+        would answer every line humans exchange on the channel."""
+        t = text.strip()
+        if not CHANNEL_TRIGGER:
+            m = _CHAN_SENDER_RE.match(t)
+            return (m.group(1).strip(), m.group(2).strip()) if m else (None, t)
+        if t.startswith(CHANNEL_TRIGGER):
+            return None, t[len(CHANNEL_TRIGGER):].strip()
+        # Trigger may sit after the "Name: " prefix the sender's client added.
+        m = _CHAN_SENDER_RE.match(t)
+        if m:
+            rest = m.group(2).strip()
+            if rest.startswith(CHANNEL_TRIGGER):
+                return m.group(1).strip(), rest[len(CHANNEL_TRIGGER):].strip()
+        return None, None
+
+    async def on_mesh_message(self, peer, text):
+        kind, dest = peer
+        if not self._allowed(peer):
+            log.warning("%s from non-allowlisted %s ignored (%r) — add the "
                         "prefix to MESHCORE_ALLOWED_PUBKEYS to admit them",
-                        prefix, text[:80])
+                        kind.upper(), dest, text[:80])
             return
-        log.info("DM from %s: %r", prefix, text[:120])
-        lock = self.locks.setdefault(prefix, asyncio.Lock())
+        if kind == "chan":
+            sender, body = self._channel_body(text)
+            if body is None:
+                log.debug("channel line not addressed to the agent: %r",
+                          text[:80])
+                return
+            if not body:
+                return
+            log.info("CHAN %s from %s: %r", dest, sender or "?", body[:120])
+            text = body
+        else:
+            log.info("DM from %s: %r", dest, text[:120])
+        lock = self.locks.setdefault(peer, asyncio.Lock())
         async with lock:
             if text.startswith("/"):
-                await self._command(prefix, text)
+                await self._command(peer, text)
             else:
-                await self._agent_turn(prefix, text)
+                await self._agent_turn(peer, text)
 
-    async def _command(self, prefix, text):
+    async def _command(self, peer, text):
         cmd = text.split()[0].lower()
         if cmd == "/ping":
-            await self.mesh.send_text(prefix, "pong — bridge up, gateway "
+            await self.mesh.send_text(peer, "pong — bridge up, gateway "
                                       + ("up" if self.gateway.connected.is_set()
                                          else "DOWN"))
         elif cmd == "/new":
-            self.session_gen[prefix] = self.session_gen.get(prefix, 0) + 1
-            self.more_buf.pop(prefix, None)
-            await self.mesh.send_text(prefix, "🆕 new session")
+            self.session_gen[peer] = self.session_gen.get(peer, 0) + 1
+            self.more_buf.pop(peer, None)
+            await self.mesh.send_text(peer, "🆕 new session")
         elif cmd == "/more":
-            remaining, total = self.more_buf.get(prefix, ([], 0))
+            remaining, total = self.more_buf.get(peer, ([], 0))
             if not remaining:
-                await self.mesh.send_text(prefix, "(no more buffered text)")
+                await self.mesh.send_text(peer, "(no more buffered text)")
                 return
             batch, rest = remaining[:AUTO_CHUNKS], remaining[AUTO_CHUNKS:]
-            self.more_buf[prefix] = (rest, total)
-            await self._send_batch(prefix, batch, rest, total)
+            self.more_buf[peer] = (rest, total)
+            await self._send_batch(peer, batch, rest, total)
         elif cmd == "/help":
             await self.mesh.send_text(
-                prefix, "cmds: /ping /new /more /help — anything else goes "
+                peer, "cmds: /ping /new /more /help — anything else goes "
                         "to the agent")
         else:
-            await self.mesh.send_text(prefix, f"unknown cmd {cmd} — /help")
+            await self.mesh.send_text(peer, f"unknown cmd {cmd} — /help")
 
-    async def _send_batch(self, prefix, batch, rest, total):
-        await self.mesh.send_chunks(prefix, batch, total=total)
+    async def _send_batch(self, peer, batch, rest, total):
+        await self.mesh.send_chunks(peer, batch, total=total)
         if rest:
             await self.mesh.send_text(
-                prefix, f"…(+{len(rest)} parts — /more)")
+                peer, f"…(+{len(rest)} parts — /more)")
 
-    async def _agent_turn(self, prefix, text):
-        self.more_buf.pop(prefix, None)
+    async def _agent_turn(self, peer, text):
+        self.more_buf.pop(peer, None)
         ack_task = None
         if ACK_AFTER_S > 0:
-            ack_task = asyncio.create_task(self._late_ack(prefix))
+            ack_task = asyncio.create_task(self._late_ack(peer))
         try:
             reply = await self.gateway.agent_turn(text,
-                                                  self._session_key(prefix))
+                                                  self._session_key(peer))
         except ConnectionError:
             reply = None
-            await self.mesh.send_text(prefix, "📡 gateway offline — try later")
+            await self.mesh.send_text(peer, "📡 gateway offline — try later")
         except asyncio.TimeoutError:
             reply = None
             await self.mesh.send_text(
-                prefix, f"⌛ no answer in {int(AGENT_TIMEOUT_S)}s — try /new "
+                peer, f"⌛ no answer in {int(AGENT_TIMEOUT_S)}s — try /new "
                         "or a simpler question")
         except Exception as e:  # noqa: BLE001 — always answer the radio
             reply = None
             log.exception("agent turn failed")
-            await self.mesh.send_text(prefix, f"⚠ agent error: {str(e)[:90]}")
+            await self.mesh.send_text(peer, f"⚠ agent error: {str(e)[:90]}")
         finally:
             if ack_task:
                 ack_task.cancel()
@@ -623,13 +793,13 @@ class Bridge:
         total = len(chunks)
         batch, rest = chunks[:AUTO_CHUNKS], chunks[AUTO_CHUNKS:]
         if rest:
-            self.more_buf[prefix] = (rest, total)
-        await self._send_batch(prefix, batch, rest, total)
+            self.more_buf[peer] = (rest, total)
+        await self._send_batch(peer, batch, rest, total)
 
-    async def _late_ack(self, prefix):
+    async def _late_ack(self, peer):
         try:
             await asyncio.sleep(ACK_AFTER_S)
-            await self.mesh.send_text(prefix, ACK_TEXT)
+            await self.mesh.send_text(peer, ACK_TEXT)
         except asyncio.CancelledError:
             pass
 
@@ -654,8 +824,8 @@ async def main():
 
     bridge_ref = {}
 
-    async def on_message(prefix, text):
-        await bridge_ref["b"].on_mesh_message(prefix, text)
+    async def on_message(peer, text):
+        await bridge_ref["b"].on_mesh_message(peer, text)
 
     # Serial link with its own reconnect loop — nRF52840 CDC-ACM re-enumerates
     # on radio reboot and the fd goes stale; recreate rather than resurrect.

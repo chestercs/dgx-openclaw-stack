@@ -2095,6 +2095,20 @@ services:
       # with the sender prefix so admitting someone is a copy-paste).
       MESHCORE_ALLOWED_PUBKEYS: ${MESHCORE_ALLOWED_PUBKEYS:-}
       MESHCORE_ALLOW_ALL: ${MESHCORE_ALLOW_ALL:-off}
+      # Optional shared-channel surface, OFF unless MESHCORE_CHANNEL_IDX is
+      # set. WEAKER THAN DMs BY PROTOCOL: channel messages carry no sender
+      # public key, so the allowlist above cannot gate them — the only gate
+      # is the 16-byte channel secret, and every member reads the agent's
+      # replies too. The bridge provisions the ONE configured slot on boot
+      # (idempotent, never touches other slots) and only answers messages
+      # starting with MESHCORE_CHANNEL_TRIGGER, so it stays out of
+      # human-to-human chatter. Join other devices with the derived key, not
+      # the password (MeshCore shares raw 16-byte keys, not passphrases).
+      MESHCORE_CHANNEL_IDX: ${MESHCORE_CHANNEL_IDX:-}
+      MESHCORE_CHANNEL_NAME: ${MESHCORE_CHANNEL_NAME:-}
+      MESHCORE_CHANNEL_PASSWORD: ${MESHCORE_CHANNEL_PASSWORD:-}
+      MESHCORE_CHANNEL_SECRET: ${MESHCORE_CHANNEL_SECRET:-}
+      MESHCORE_CHANNEL_TRIGGER: ${MESHCORE_CHANNEL_TRIGGER:-?}
       # Reply budget: chunk size × auto-sent chunks; the tail waits for /more.
       MESHCORE_CHUNK_CHARS: ${MESHCORE_CHUNK_CHARS:-130}
       MESHCORE_AUTO_CHUNKS: ${MESHCORE_AUTO_CHUNKS:-3}
