@@ -11,7 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bridge.py .
 
-# Runs as root: the passed-through /dev/meshcore node keeps its host
-# ownership (root:dialout 660) inside the container and this image drops
-# all capabilities at the compose level anyway (cap_drop: [ALL]).
+# Runtime identity comes from the compose file (user: "1000:1000" +
+# group_add: dialout): uid 1000 owns the ro-mounted OpenClaw config volume
+# (openclaw.json is 600 and cap_drop: [ALL] removes CAP_DAC_OVERRIDE, so
+# even root couldn't read it), and dialout covers /dev/meshcore.
 CMD ["python", "-u", "bridge.py"]

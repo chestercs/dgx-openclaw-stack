@@ -2065,6 +2065,15 @@ services:
     # (see patterns.md → "openclaw-cli network-namespace dependency").
     network_mode: "service:openclaw-gateway"
     restart: unless-stopped
+    # uid 1000 = the OpenClaw image's `node` user, which owns the ro-mounted
+    # config volume — openclaw.json is chmod 600, and with cap_drop: [ALL]
+    # even root can't bypass that (no CAP_DAC_OVERRIDE; verified on first
+    # deploy: Errno 13 → empty token → the gateway demanded device pairing).
+    # group_add dialout covers the passed-through serial node (root:dialout
+    # 660 on the host, gid 20 in both debian-slim and Ubuntu hosts).
+    user: "1000:1000"
+    group_add:
+      - dialout
     # The companion radio, passed through as a stable node. ALWAYS point
     # MESHCORE_SERIAL_DEVICE at the /dev/serial/by-id/… path — raw ttyACMn
     # numbering migrates across replugs/reboots (nRF52840 CDC-ACM).
