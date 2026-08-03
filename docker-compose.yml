@@ -2136,6 +2136,14 @@ services:
       MESHCORE_SEND_GAP_S: ${MESHCORE_SEND_GAP_S:-3}
       MESHCORE_ACK_AFTER_S: ${MESHCORE_ACK_AFTER_S:-25}
       MESHCORE_AGENT_TIMEOUT_S: ${MESHCORE_AGENT_TIMEOUT_S:-180}
+      # DM delivery: wait for the recipient ACK, retry, and reset a stale
+      # route to flood after MESHCORE_FLOOD_AFTER attempts — that reset is
+      # what heals a multi-hop path through a repeater. Plain sends only
+      # confirm queueing, not arrival.
+      MESHCORE_DM_DELIVERY_ACK: ${MESHCORE_DM_DELIVERY_ACK:-on}
+      MESHCORE_DM_MAX_ATTEMPTS: ${MESHCORE_DM_MAX_ATTEMPTS:-3}
+      MESHCORE_FLOOD_AFTER: ${MESHCORE_FLOOD_AFTER:-2}
+      MESHCORE_DM_ACK_MIN_TIMEOUT_S: ${MESHCORE_DM_ACK_MIN_TIMEOUT_S:-12}
       MESHCORE_LOG_LEVEL: ${MESHCORE_LOG_LEVEL:-INFO}
       TZ: ${TZ:-UTC}
     volumes:

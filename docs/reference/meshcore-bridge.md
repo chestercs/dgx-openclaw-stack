@@ -239,6 +239,37 @@ The channel gets its own session rail
 group conversation, so that's intended. `/ping`, `/new`, `/more`, `/help`
 work there too (after the trigger).
 
+### Repeaters and range: there is nothing to "connect to"
+
+A MeshCore repeater is not an access point. You don't attach the companion
+radio to it — it hears transmissions and rebroadcasts them, and routing is a
+protocol concern, not a configuration one. A repeater extends range as long as
+it shares the radio preset (frequency / bandwidth / SF / CR) and sits within
+range of both endpoints. It doesn't even need to be a contact; contacts only
+tell you the radio has *heard* its advert (`/path` lists them — advert type 2
+is a repeater, 3 a room server).
+
+What the bridge does about range is make delivery honest:
+
+- **Plain `send_msg` only confirms the packet was queued** for transmission
+  (`MSG_SENT`), not that it arrived. A stale stored route — a repeater that
+  moved, rebooted, or lost power — therefore looks like a successful send while
+  nothing lands. That is the single most confusing failure mode on a multi-hop
+  mesh.
+- With `MESHCORE_DM_DELIVERY_ACK=on` (default) DMs go through
+  `send_msg_with_retry`: it waits for the recipient's ACK, retries up to
+  `MESHCORE_DM_MAX_ATTEMPTS`, and after `MESHCORE_FLOOD_AFTER` attempts
+  **resets the stored route to flood**. That reset is the mechanism by which a
+  path through repeaters heals itself — the mesh rediscovers a working route
+  instead of retrying a dead one. When even that fails, the bridge logs
+  `no delivery ACK` instead of silently claiming success.
+- Channel messages are broadcast and have no per-recipient ACK, so they always
+  flood; nothing to confirm or heal there.
+
+Range troubleshooting from the handheld: `/path` (is a relay in the route?),
+`/snr` (link margin and hop count), `/advert` (re-announce so neighbours drop
+a stale path for this node).
+
 ## Threat model
 
 The mesh is a **public radio**: anyone in RF range with the firmware can DM
@@ -304,6 +335,7 @@ server.
 | `/more` | Next `AUTO_CHUNKS` parts of a long reply |
 | `/new`, `/reset` | Fresh session (bumps the generation); clears the paging and resend buffers |
 | `/stop` | Abort the in-flight turn (`chat.abort`). Dispatched **outside** the per-conversation lock — the turn being cancelled holds it, so queueing behind it would deadlock on exactly what the user is trying to escape |
+| `/path` | Is the repeater actually in the path? Shows the outbound route (flood vs direct + relay hop count), the inbound hop count, and which relay nodes the radio hears |
 | `/advert` | Make the radio re-announce itself so neighbours refresh routes — the fix when a stale stored path stops messages landing. `/advert flood` for a flood advert |
 | `/ping` | Bridge + gateway liveness |
 | `/help` | Command list |

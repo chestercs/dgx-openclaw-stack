@@ -217,6 +217,20 @@ SEND_GAP_S = _env_f("MESHCORE_SEND_GAP_S", 3.0)
 ACK_AFTER_S = _env_f("MESHCORE_ACK_AFTER_S", 25)  # 0 disables the ack ping
 ACK_TEXT = _env("MESHCORE_ACK_TEXT", "⏳ working on it…")
 
+# DM delivery. Plain send_msg only confirms the packet was QUEUED for
+# transmission (MSG_SENT) — it says nothing about arrival, so a stale stored
+# route (e.g. through a repeater that moved or rebooted) looks like success
+# while nothing lands. send_msg_with_retry waits for the recipient's ACK,
+# retries, and after MESHCORE_FLOOD_AFTER attempts resets the path to FLOOD
+# routing, which is how a multi-hop route through repeaters heals itself.
+# Set MESHCORE_DM_DELIVERY_ACK=off to go back to fire-and-forget.
+DM_DELIVERY_ACK = _env_on("MESHCORE_DM_DELIVERY_ACK", "on")
+DM_MAX_ATTEMPTS = max(1, _env_i("MESHCORE_DM_MAX_ATTEMPTS", 3))
+DM_FLOOD_AFTER = max(1, _env_i("MESHCORE_FLOOD_AFTER", 2))
+# Floor for the ACK wait. The firmware suggests a timeout per send; on a
+# multi-hop path at SF11 that suggestion can be optimistic.
+DM_ACK_MIN_TIMEOUT_S = _env_f("MESHCORE_DM_ACK_MIN_TIMEOUT_S", 12)
+
 
 def resolve_gateway_token():
     """MESHCORE_GATEWAY_TOKEN env wins; otherwise read the token remote WS
@@ -743,6 +757,8 @@ class MeshSide:
         async with self._send_lock:
             for attempt in range(2):
                 if kind == "chan":
+                    # Channel sends are broadcast — no per-recipient ACK
+                    # exists to wait for.
                     result = await self.mc.commands.send_chan_msg(dest, text)
                 else:
                     contact = await self.find_contact(dest)
@@ -751,7 +767,11 @@ class MeshSide:
                                     "(radio hasn't seen their advert yet?)",
                                     dest)
                         return False
-                    result = await self.mc.commands.send_msg(contact, text)
+                    result = await self._send_dm(contact, text)
+                    if result is None:
+                        log.warning("no delivery ACK from %s (route may be "
+                                    "stale even after a flood retry)", dest)
+                        return False
                 if result.type != EventType.ERROR:
                     # Log every TX: on a radio link an operator needs to see
                     # what actually left the node, not just what came in.
@@ -763,6 +783,50 @@ class MeshSide:
                             kind, dest, result.payload, attempt + 1)
                 await asyncio.sleep(5)
         return False
+
+    async def _send_dm(self, contact, text):
+        """Deliver a DM, confirmed where possible.
+
+        Returns the send Event, or None when delivery was never acknowledged.
+        `send_msg_with_retry` is preferred because it waits for the
+        recipient's ACK and — after DM_FLOOD_AFTER attempts — resets the
+        stored route to flood, which is what lets a path through repeaters
+        recover on its own. Falls back to fire-and-forget send_msg when the
+        installed lib predates it or the operator turned ACKs off."""
+        retry = getattr(self.mc.commands, "send_msg_with_retry", None)
+        if not DM_DELIVERY_ACK or retry is None:
+            return await self.mc.commands.send_msg(contact, text)
+        return await retry(
+            contact, text,
+            max_attempts=DM_MAX_ATTEMPTS,
+            flood_after=DM_FLOOD_AFTER,
+            min_timeout=DM_ACK_MIN_TIMEOUT_S,
+        )
+
+    def route_info(self, pubkey_prefix):
+        """(hops, mode) for a contact's stored outbound route. MeshCore keeps
+        `out_path_len` = -1 when there's no stored path, meaning traffic
+        floods; otherwise it's the number of relay hops (repeaters) in the
+        source route."""
+        prefix = pubkey_prefix.lower()
+        for key, contact in self._contacts().items():
+            if not str(key).lower().startswith(prefix):
+                continue
+            raw = contact.get("out_path_len")
+            if not isinstance(raw, int) or raw < 0 or raw == 255:
+                return None, "flood"
+            return raw, "direct"
+        return None, "unknown"
+
+    def repeaters(self):
+        """Known relay nodes — MeshCore advert type 2 is a repeater, 3 a room
+        server. They don't need to be contacts to relay (the mesh forwards
+        regardless), but seeing them confirms the radio hears them."""
+        found = []
+        for contact in self._contacts().values():
+            if contact.get("type") in (2, 3):
+                found.append(contact.get("adv_name") or "?")
+        return found
 
     async def send_chunks(self, peer, chunks, total=None, start=1):
         """Send `chunks` as `k/total`-numbered parts, `k` counting from
@@ -947,6 +1011,28 @@ class Bridge:
             if bat:
                 parts.append(f"node bat {bat}mV")
             await self.mesh.send_text(peer, ", ".join(parts))
+        elif cmd == "/path":
+            # Answers "is my repeater actually in the path?" — the thing you
+            # cannot see from the handheld.
+            if peer[0] == "chan":
+                reps = self.mesh.repeaters()
+                await self.mesh.send_text(
+                    peer, "channel msgs always flood; relays heard: "
+                          + (", ".join(reps) if reps else "none"))
+                return
+            hops, mode = self.mesh.route_info(peer[1])
+            meta = self.mesh.link_meta(peer)
+            rx = meta.get("path_len")
+            reps = self.mesh.repeaters()
+            out = ("out: flood (no stored route)" if mode == "flood"
+                   else f"out: direct, {hops} relay hop(s)" if hops is not None
+                   else "out: unknown")
+            if isinstance(rx, int):
+                out += ("; in: direct" if rx in (0, 255)
+                        else f"; in: {rx} hop(s)")
+            if reps:
+                out += "; relays: " + ", ".join(reps[:3])
+            await self.mesh.send_text(peer, out)
         elif cmd == "/advert":
             flood = "flood" in text.lower()
             ok = await self.mesh.send_advert(flood)
@@ -955,9 +1041,9 @@ class Bridge:
                 if ok else "advert failed")
         elif cmd == "/help":
             await self.mesh.send_text(
-                peer, "cmds: /status /whoami /snr /new(=/reset) /more /last "
-                      "/stop /advert /ping /help — anything else goes to the "
-                      "agent")
+                peer, "cmds: /status /whoami /snr /path /new(=/reset) /more "
+                      "/last /stop /advert /ping /help — anything else goes "
+                      "to the agent")
         else:
             await self.mesh.send_text(peer, f"unknown cmd {cmd} — /help")
 
