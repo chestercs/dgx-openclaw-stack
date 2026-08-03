@@ -2095,6 +2095,18 @@ services:
       # with the sender prefix so admitting someone is a copy-paste).
       MESHCORE_ALLOWED_PUBKEYS: ${MESHCORE_ALLOWED_PUBKEYS:-}
       MESHCORE_ALLOW_ALL: ${MESHCORE_ALLOW_ALL:-off}
+      # Map several radios onto ONE conversation, so the same person can write
+      # from a handheld and continue from another node:
+      #   label:prefix,prefix;label2:prefix
+      # Ungrouped contacts keep their own rail. The channel always has its own.
+      MESHCORE_DM_SESSION_GROUPS: ${MESHCORE_DM_SESSION_GROUPS:-}
+      # Per-surface system-prompt add-ons (passed as the agent RPC's
+      # extraSystemPrompt). The channel default also nudges the agent away
+      # from repeating private details into a room several people read —
+      # sessions are separate, but agent MEMORY is shared; see
+      # docs/reference/meshcore-bridge.md for hard isolation.
+      MESHCORE_DM_EXTRA_PROMPT: ${MESHCORE_DM_EXTRA_PROMPT:-}
+      MESHCORE_CHANNEL_EXTRA_PROMPT: ${MESHCORE_CHANNEL_EXTRA_PROMPT:-}
       # Optional shared-channel surface, OFF unless MESHCORE_CHANNEL_IDX is
       # set. WEAKER THAN DMs BY PROTOCOL: channel messages carry no sender
       # public key, so the allowlist above cannot gate them — the only gate

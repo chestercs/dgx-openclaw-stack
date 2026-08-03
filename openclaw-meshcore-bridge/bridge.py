@@ -101,6 +101,48 @@ ALLOWED_PUBKEYS = [p.strip().lower()
                    if p.strip()]
 ALLOW_ALL = _env_on("MESHCORE_ALLOW_ALL")
 
+
+def parse_dm_session_groups(raw):
+    """`label:prefix,prefix;label2:prefix` → {prefix: label}.
+
+    Lets several radios owned by the same person share ONE conversation
+    instead of each pubkey getting its own rail — write from the handheld,
+    continue from a second node. Groups are separated by `;`, members within
+    a group by `,`."""
+    groups = {}
+    for entry in raw.split(";"):
+        entry = entry.strip()
+        if not entry or ":" not in entry:
+            if entry:
+                log.warning("ignoring malformed session group %r "
+                            "(want label:prefix,prefix)", entry)
+            continue
+        label, members = entry.split(":", 1)
+        label = label.strip()
+        if not label:
+            continue
+        for prefix in members.split(","):
+            prefix = prefix.strip().lower()
+            if prefix:
+                groups[prefix] = label
+    return groups
+
+
+DM_SESSION_GROUPS = parse_dm_session_groups(_env("MESHCORE_DM_SESSION_GROUPS"))
+
+# Per-surface system-prompt add-ons. The DM rail and the channel rail hold
+# different kinds of conversation (private 1:1 vs shared group), and the
+# channel one is also a soft guard against the agent repeating private
+# details into a room several people read. NOTE: sessions are separate but
+# the agent's MEMORY is not — for hard isolation run a second agent with its
+# own workspace (see docs/reference/meshcore-bridge.md).
+DM_EXTRA_PROMPT = _env("MESHCORE_DM_EXTRA_PROMPT")
+CHANNEL_EXTRA_PROMPT = _env(
+    "MESHCORE_CHANNEL_EXTRA_PROMPT",
+    "This is a shared group channel: several people receive every reply. "
+    "Keep it light and sociable. Never repeat private or personal details "
+    "from other conversations here.")
+
 # ─── channel (group) support ─────────────────────────────────────────────────
 # Off unless MESHCORE_CHANNEL_IDX is set. SECURITY POSTURE DIFFERS FROM DMs:
 # a channel message carries NO sender public key (payload is channel_idx /
@@ -433,7 +475,7 @@ class GatewayClient:
         finally:
             self._pending.pop(req_id, None)
 
-    async def agent_turn(self, message, session_key):
+    async def agent_turn(self, message, session_key, extra_prompt=None):
         """One agent run; returns plain reply text.
 
         Contract (verified against the live gateway's AgentParamsSchema +
@@ -443,14 +485,18 @@ class GatewayClient:
         immediately with {runId, status: accepted|in_flight|...}. The reply
         text then streams as `agent` events for that runId; lifecycle
         phase end/error terminates the run."""
-        res = await self.request("agent", {
+        params = {
             "message": message,
             "sessionKey": session_key,
             "agentId": AGENT_ID,
             "deliver": False,
             "timeout": int(AGENT_TIMEOUT_S),
             "idempotencyKey": str(uuid.uuid4()),
-        }, timeout=min(60.0, AGENT_TIMEOUT_S))
+        }
+        if extra_prompt:
+            params["extraSystemPrompt"] = extra_prompt
+        res = await self.request("agent", params,
+                                 timeout=min(60.0, AGENT_TIMEOUT_S))
         if not res.get("ok"):
             err = (res.get("error") or {})
             raise RuntimeError(err.get("message") or str(err))
@@ -687,16 +733,34 @@ class Bridge:
         self.more_buf = {}       # peer → (remaining chunks, total)
         self.locks = {}          # peer → Lock (serialize turns per peer)
 
+    @staticmethod
+    def _session_id(peer):
+        """Conversation identity, which is NOT the same as transport identity:
+        the channel is one rail, and several DM radios can map to one shared
+        rail via MESHCORE_DM_SESSION_GROUPS. Paging buffers stay keyed by the
+        actual peer (they belong to the device that's reading), while sessions
+        and locks key off this."""
+        kind, dest = peer
+        if kind == "chan":
+            return f"chan{dest}"
+        for prefix, label in DM_SESSION_GROUPS.items():
+            if dest.startswith(prefix):
+                return f"grp-{label}"   # `grp-` avoids colliding with chanN
+        return dest
+
     def _session_key(self, peer):
         # MUST be the canonical agent-scoped form. A bare key is resolved by
         # resolveAgentIdFromSessionKey(), which defaults to agent "main", and
         # the gateway then rejects the run with `invalid agent params: agent
         # "meshcore" does not match session key agent "main"` (verified live
         # 2026-08-03). `-g<n>` is the generation counter that /new bumps.
-        kind, dest = peer
-        gen = self.session_gen.get(peer, 0)
-        who = f"chan{dest}" if kind == "chan" else dest
-        return f"agent:{AGENT_ID}:meshcore-{who}-g{gen}"
+        sid = self._session_id(peer)
+        gen = self.session_gen.get(sid, 0)
+        return f"agent:{AGENT_ID}:meshcore-{sid}-g{gen}"
+
+    @staticmethod
+    def _extra_prompt(peer):
+        return CHANNEL_EXTRA_PROMPT if peer[0] == "chan" else DM_EXTRA_PROMPT
 
     def _allowed(self, peer):
         kind, dest = peer
@@ -745,8 +809,12 @@ class Bridge:
             log.info("CHAN %s from %s: %r", dest, sender or "?", body[:120])
             text = body
         else:
-            log.info("DM from %s: %r", dest, text[:120])
-        lock = self.locks.setdefault(peer, asyncio.Lock())
+            sid = self._session_id(peer)
+            log.info("DM from %s (session %s): %r", dest, sid, text[:120])
+        # Lock on the CONVERSATION, not the device: grouped radios share one
+        # session, and two concurrent runs against one sessionKey would race
+        # in the gateway.
+        lock = self.locks.setdefault(self._session_id(peer), asyncio.Lock())
         async with lock:
             if text.startswith("/"):
                 await self._command(peer, text)
@@ -760,7 +828,10 @@ class Bridge:
                                       + ("up" if self.gateway.connected.is_set()
                                          else "DOWN"))
         elif cmd == "/new":
-            self.session_gen[peer] = self.session_gen.get(peer, 0) + 1
+            # Bumps the CONVERSATION's generation, so /new from any radio in a
+            # session group resets that shared rail (and only it).
+            sid = self._session_id(peer)
+            self.session_gen[sid] = self.session_gen.get(sid, 0) + 1
             self.more_buf.pop(peer, None)
             await self.mesh.send_text(peer, "🆕 new session")
         elif cmd == "/more":
@@ -798,8 +869,8 @@ class Bridge:
         if ACK_AFTER_S > 0:
             ack_task = asyncio.create_task(self._late_ack(peer))
         try:
-            reply = await self.gateway.agent_turn(text,
-                                                  self._session_key(peer))
+            reply = await self.gateway.agent_turn(
+                text, self._session_key(peer), self._extra_prompt(peer))
         except ConnectionError:
             reply = None
             await self.mesh.send_text(peer, "📡 gateway offline — try later")

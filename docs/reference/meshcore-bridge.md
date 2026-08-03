@@ -94,13 +94,50 @@ there's no channel-onboarding CLI for MeshCore, so unlike Discord the
 `thinkingDefault: off` is deliberate: reasoning tokens multiply decode time
 and the mesh user is staring at an e-ink screen.
 
-### Per-contact sessions
+### Sessions: conversation identity ≠ transport identity
 
-sessionKey = `agent:meshcore:meshcore-<pubkey_prefix>-g<n>` — each mesh
-contact gets their own conversational rail (memory continuity across DMs),
-`/new` bumps `<n>`. Sessions live gateway-side; a bridge restart keeps the
-same keys. The `agent:<id>:` prefix is mandatory — see the protocol facts
-below.
+sessionKey = `agent:meshcore:meshcore-<session-id>-g<n>`, where `<session-id>`
+is:
+
+| Peer | session-id | Notes |
+|---|---|---|
+| DM, ungrouped | `<pubkey_prefix>` | own private rail per contact |
+| DM, in a session group | `grp-<label>` | several radios share one rail |
+| Channel | `chan<idx>` | always separate from every DM rail |
+
+`MESHCORE_DM_SESSION_GROUPS` (`label:prefix,prefix;label2:prefix`) exists
+because one person often carries several radios — start a thread on the
+handheld, continue it from another node, same conversation. The `grp-` prefix
+keeps group labels from colliding with `chan<idx>`.
+
+What keys off which is deliberate:
+
+- **session + `/new` generation + turn lock** → the *conversation*
+  (`_session_id`). Grouped radios share history, and the lock stops two of
+  them racing two concurrent runs against one sessionKey in the gateway.
+- **`/more` paging buffer** → the *device* (`peer`). Paging belongs to
+  whoever is reading the reply, not to the conversation.
+
+`/new` from any member resets that group's rail and nothing else. Sessions
+live gateway-side, so a bridge restart keeps them. The `agent:<id>:` prefix is
+mandatory — see the protocol facts below.
+
+### Per-surface prompts, and the memory caveat
+
+`MESHCORE_DM_EXTRA_PROMPT` / `MESHCORE_CHANNEL_EXTRA_PROMPT` ride along as the
+agent RPC's `extraSystemPrompt`, so a private DM rail and a shared channel can
+have different manners. The channel default keeps replies sociable and tells
+the agent not to repeat private details into a room several people read.
+
+**Separate sessions are not separate memory.** Session keys isolate
+conversation *history*, but the agent's memory store (`memorySearch`) and its
+workspace are agent-wide, so something recorded while chatting privately over
+DM can legitimately surface in a channel answer. The per-surface prompt is a
+soft guard, not a boundary. If you need a hard one, give the channel its **own
+agent** with its own workspace — the same isolation the Discord agent gets —
+and point the bridge at it. Today the bridge dispatches every surface to one
+`MESHCORE_AGENT_ID`; a second agent means either a second bridge instance
+(second radio) or a per-surface agent-id knob.
 
 ### The pipe is SMS-sized
 
