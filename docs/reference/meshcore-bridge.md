@@ -148,14 +148,28 @@ Two mitigations ship on by default:
   writes only on drift, the same desired-state posture `patch-config.mjs`
   uses for `openclaw.json`, so a replaced radio self-heals on next boot.
 
-**Joining other devices — the gotcha.** MeshCore shares raw 16-byte channel
-keys, not passphrases; the protocol has no standard password→key KDF. When
-`MESHCORE_CHANNEL_PASSWORD` is used the bridge derives
-`sha256(password)[:16]` (matching how MeshCore derives name-based channel
-keys), but a handheld cannot re-derive that from the password on its own —
-**enter the derived key** on the other devices. The bridge logs a 4-byte key
-fingerprint at boot so both ends can be verified without putting the secret
-in container logs.
+**Joining other devices — read this before choosing a key.** MeshCore shares
+raw 16-byte channel keys, not passphrases; there is no standard password→key
+KDF in the protocol. The bridge resolves the key in this order:
+
+1. `MESHCORE_CHANNEL_SECRET` — explicit 32 hex chars.
+2. `MESHCORE_CHANNEL_PASSWORD` — `sha256(password)[:16]`.
+3. the channel **name** — `sha256(name)[:16]` — **the default**.
+
+Prefer (3). It is MeshCore's own convention for named channels, and it is the
+only scheme many handheld firmwares support: their "edit channel" screen
+offers a name field and nothing else, so they derive the key from the name.
+**On such a mesh the channel name IS the shared secret** — a separate
+password cannot be expressed, so put the secret in the name (e.g.
+`ai-4f2a9c`) if you want one. Verified against a T-Deck build on 2026-08-03:
+setting a password-derived key on the radio while the handheld derived from
+the name produced two different keys and **total silence** — packets arrive,
+fail to decrypt, get dropped, and the channel looks empty. Options (1)/(2)
+are for meshes where every device can import a raw key.
+
+The bridge logs a 4-byte key fingerprint at boot (never the full secret — a
+container log is a poor place for a group key), so both ends can be compared
+when a channel looks dead.
 
 The channel gets its own session rail
 (`agent:meshcore:meshcore-chan<idx>-g<n>`), shared by all members — it's a

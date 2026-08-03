@@ -120,11 +120,20 @@ CHANNEL_TRIGGER = _env("MESHCORE_CHANNEL_TRIGGER", "?")
 
 
 def resolve_channel_secret():
-    """Explicit hex wins; otherwise derive from the password the same way
-    MeshCore derives name-based channel keys — sha256(x)[:16]. There is no
-    standardized password->key KDF in MeshCore (the shared item is the raw
-    16-byte key), so other devices must be joined with the resulting key,
-    not by typing the password."""
+    """Resolve the 16-byte channel key, in precedence order:
+
+      1. MESHCORE_CHANNEL_SECRET — explicit 32-hex-char key.
+      2. MESHCORE_CHANNEL_PASSWORD — sha256(password)[:16].
+      3. the channel NAME — sha256(name)[:16].
+
+    (3) is the default because it's MeshCore's own convention for named
+    channels, and it's the ONLY thing many handheld firmwares can do: their
+    "edit channel" UI offers a name field and nothing else, so they derive
+    the key from the name. On such a mesh the channel name IS the shared
+    secret, and a separate password is not expressible — put the secret in
+    the name if you want one (verified against a T-Deck build, 2026-08-03).
+
+    Use (2)/(1) only when every participating device can import a raw key."""
     if CHANNEL_SECRET_HEX:
         raw = CHANNEL_SECRET_HEX.replace(" ", "")
         try:
@@ -138,7 +147,13 @@ def resolve_channel_secret():
             return None
         return secret
     if CHANNEL_PASSWORD:
+        log.warning("channel key derived from MESHCORE_CHANNEL_PASSWORD — "
+                    "other devices must import the raw key (they cannot "
+                    "re-derive it from the password); a name-only handheld "
+                    "UI will NOT be able to join this channel")
         return hashlib.sha256(CHANNEL_PASSWORD.encode()).digest()[:16]
+    if CHANNEL_NAME:
+        return hashlib.sha256(CHANNEL_NAME.encode()).digest()[:16]
     return None
 
 CHUNK_CHARS = max(40, _env_i("MESHCORE_CHUNK_CHARS", 130))
@@ -505,9 +520,8 @@ class MeshSide:
             return
         secret = resolve_channel_secret()
         if not CHANNEL_NAME or not secret:
-            log.error("MESHCORE_CHANNEL_IDX=%s but name/secret missing — "
-                      "channel disabled (set MESHCORE_CHANNEL_NAME plus "
-                      "MESHCORE_CHANNEL_PASSWORD or _SECRET)", CHANNEL_IDX)
+            log.error("MESHCORE_CHANNEL_IDX=%s but MESHCORE_CHANNEL_NAME is "
+                      "missing — channel disabled", CHANNEL_IDX)
             return
         result = await self.mc.commands.get_channel(CHANNEL_IDX)
         cur_name, cur_secret = None, None
