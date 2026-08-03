@@ -529,7 +529,13 @@ class Bridge:
         self.locks = {}          # prefix → Lock (serialize turns per contact)
 
     def _session_key(self, prefix):
-        return f"meshcore-{prefix}-g{self.session_gen.get(prefix, 0)}"
+        # MUST be the canonical agent-scoped form. A bare key is resolved by
+        # resolveAgentIdFromSessionKey(), which defaults to agent "main", and
+        # the gateway then rejects the run with `invalid agent params: agent
+        # "meshcore" does not match session key agent "main"` (verified live
+        # 2026-08-03). `-g<n>` is the generation counter that /new bumps.
+        gen = self.session_gen.get(prefix, 0)
+        return f"agent:{AGENT_ID}:meshcore-{prefix}-g{gen}"
 
     def _allowed(self, prefix):
         if ALLOW_ALL:

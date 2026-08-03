@@ -74,9 +74,12 @@ Protocol facts the bridge relies on (extracted from the gateway bundle's
   `data.delta` = increment) and `stream: "lifecycle"` `phase: end|error`
   terminates the run. The bridge buffers events by runId BEFORE the res
   arrives (they can race) and waits on the lifecycle terminal.
-- A plain sessionKey like `meshcore-<prefix>-g0` classifies as
-  `legacy_or_alias` and is auto-scoped to the target agent
-  (`agent:meshcore:<key>`) — no manual canonicalization needed.
+- `sessionKey` MUST be the canonical agent-scoped form
+  `agent:<agentId>:<rest>`. A bare key is NOT auto-scoped to the requested
+  agent: `resolveAgentIdFromSessionKey()` defaults it to `main`, and the run
+  is then rejected with `invalid agent params: agent "meshcore" does not
+  match session key agent "main"` (hit live on first end-to-end test,
+  2026-08-03).
 
 ### Dedicated agent, not main
 
@@ -93,9 +96,11 @@ and the mesh user is staring at an e-ink screen.
 
 ### Per-contact sessions
 
-sessionKey = `meshcore-<pubkey_prefix>-g<n>` — each mesh contact gets their
-own conversational rail (memory continuity across DMs), `/new` bumps `<n>`.
-Sessions live gateway-side; a bridge restart keeps the same keys.
+sessionKey = `agent:meshcore:meshcore-<pubkey_prefix>-g<n>` — each mesh
+contact gets their own conversational rail (memory continuity across DMs),
+`/new` bumps `<n>`. Sessions live gateway-side; a bridge restart keeps the
+same keys. The `agent:<id>:` prefix is mandatory — see the protocol facts
+below.
 
 ### The pipe is SMS-sized
 
