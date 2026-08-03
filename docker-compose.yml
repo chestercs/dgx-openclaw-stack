@@ -1358,6 +1358,17 @@ services:
       # directives. Set empty to skip the step (preserves whatever's in
       # openclaw.json). Enum: minimal | coding | messaging | full.
       OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE: ${OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE:-full}
+      # Deny the broken built-in `video_generate` tool (patcher step 25b).
+      # The coding/full profiles ship OpenClaw's built-in `video_generate`,
+      # which calls an OpenAI Sora endpoint — with no OPENAI_API_KEY it 401s
+      # every time and makes zero video. The Gemma MoE keeps calling it over
+      # the local `comfyui_image__generate_video` (LTX) despite the cheatsheet
+      # (verified 2026-07-04: 16 built-in calls → 16× 401 in one turn).
+      # Default `on` writes `video_generate` into global `tools.deny` (+ the
+      # wildcard-guild policy) so the runtime strips it from the catalog on all
+      # routes. Set `off` only if you configured an OpenAI key and want Sora
+      # back (patcher self-heals the entry). Empty skips the step.
+      OPENCLAW_DENY_OPENAI_VIDEO_TOOL: ${OPENCLAW_DENY_OPENAI_VIDEO_TOOL:-on}
       # Discord-routed agent tools.alsoAllow additions (patcher step 22).
       # Comma-separated list ADDED on top of the profile. Default
       # `group:messaging,browser,tts,canvas,cron` — `group:messaging` is
@@ -1593,6 +1604,16 @@ services:
       # opts out — patcher removes the entry from openclaw.json.
       IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
       IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
+      # MCP client request timeout the patcher writes into
+      # mcp.servers.comfyui_image.requestTimeoutMs (step 19). This is how long
+      # the gateway waits for one tool call (e.g. generate_video) before
+      # `-32001 Request timed out`. MUST be >= the bridge's own per-call budget
+      # (IMAGE_GEN_TIMEOUT_S in the bridge compose, default 900s) or the client
+      # gives up mid-render and the user sees a phantom timeout (verified
+      # 2026-07-04: both were 600s and a slow FullHD render tripped them in
+      # lockstep). Default 960000 (16 min) sits just above the 900s bridge
+      # budget so the bridge's own timeout wins and returns a clean error.
+      IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS: ${IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS:-960000}
       # ── Workspace docs mode (skills vs AGENTS.md blocks) ───────────────────
       # `skills` (default): tool recipes live in on-demand workspace skill
       # files; AGENTS.md keeps only policy/persona + a short router. Cuts the

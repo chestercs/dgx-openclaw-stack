@@ -140,6 +140,16 @@
 //      OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE
 //      (minimal | coding | messaging | full); empty string disables
 //      the step.
+//  25b. Deny the broken built-in `video_generate` tool. The coding/full
+//      profiles ship OpenClaw's built-in `video_generate`, which calls an
+//      OpenAI Sora endpoint and 401s without a key (verified 2026-07-04: the
+//      Gemma MoE called it 16× in one turn, ignoring the cheatsheet, while
+//      the local comfyui_image__generate_video sat unused). Writes
+//      `video_generate` into global `tools.deny` (+ wildcard-guild policy as
+//      belt-and-braces) so the runtime strips it from the catalog on all
+//      routes. Env override: OPENCLAW_DENY_OPENAI_VIDEO_TOOL (default `on`;
+//      `off` self-heals the entry to restore the built-in; empty string
+//      disables the step).
 //  26. Workspace-discord AGENTS.md patcher-managed blocks. Appends two
 //      idempotent blocks to
 //      /home/node/.openclaw/workspace-discord/AGENTS.md (the
@@ -2040,6 +2050,17 @@ if (PYTHON_SANDBOX_TOKEN) {
 // connectionTimeoutMs, headers); cleanup branch on unset mirrors step 18 too.
 const IMAGE_GEN_TOKEN = process.env.IMAGE_GEN_API_TOKEN || '';
 const IMAGE_GEN_URL = process.env.IMAGE_GEN_URL || 'http://openclaw-image-comfyui:9095/mcp';
+// MCP client request timeout for the bridge. This is the wall-clock the
+// gateway waits for a single tool call (e.g. generate_video) before giving
+// up with `-32001 Request timed out`. It MUST be >= the bridge's own
+// per-call budget (IMAGE_GEN_TIMEOUT_S, default 900s) or the client abandons
+// the call while the bridge is still rendering — the user then sees a
+// phantom timeout and the bot promises a video it can't deliver (verified
+// 2026-07-04: both timeouts sat at 600s and a slow render tripped them in
+// lockstep). 960000 (16 min) sits just above the 900s bridge budget so the
+// bridge's own timeout+cancel wins and returns a clean error instead.
+const IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS = parseInt(
+  process.env.IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS || '960000', 10);
 
 if (IMAGE_GEN_TOKEN) {
   config.mcp ??= {};
@@ -2050,6 +2071,7 @@ if (IMAGE_GEN_TOKEN) {
     transport: 'streamable-http',
     url: IMAGE_GEN_URL,
     connectionTimeoutMs: 10000,
+    requestTimeoutMs: IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS,
     headers: { Authorization: `Bearer ${IMAGE_GEN_TOKEN}` },
   };
   for (const [k, v] of Object.entries(desired)) {
@@ -2582,6 +2604,102 @@ if (profileEntry !== '') {
           `agent inherits "coding" which excludes browser/tts/canvas; set ` +
           `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE="" to disable this step)`,
         );
+      }
+    }
+  }
+}
+
+// ─── 25b. Deny the broken built-in `video_generate` tool ─────────────────────
+// The `coding` (step 8) and `full` (step 25) tool profiles both ship
+// OpenClaw's BUILT-IN `video_generate` tool in the catalog. That tool calls
+// an OpenAI Sora endpoint — this stack has no OPENAI_API_KEY, so every call
+// returns `OpenAI video generation failed (HTTP 401): Incorrect API key
+// provided` and produces zero video. The working video path is the ComfyUI
+// bridge's `comfyui_image__generate_video` (LTX-Video 2.3, no key needed).
+//
+// The AGENTS.md cheatsheet (step 27b) already tells the model to use the
+// ComfyUI tool and NEVER the built-in. But cheatsheet steering is only a
+// hint, and the small Gemma MoE ignores it under a name collision: the
+// shorter, "more intuitive" `video_generate` wins over the double-underscore
+// `comfyui_image__generate_video`. Verified 2026-07-04 (smopen-ai guild
+// channel, discord-friend session 4f3663f3): a single "make a video" turn
+// called the built-in `video_generate` 16 times → 16× HTTP 401, while the
+// correct tool sat unused in the catalog. This is exactly the escalation the
+// 2026-06-16 post-mortem predicted for a stubborn model.
+//
+// The robust fix is to remove the built-in from the catalog via `tools.deny`.
+// Verified against the live tool-policy resolver: `pickSandboxToolPolicy`
+// reads a `deny[]` at global / agent / guild / provider level; the matcher
+// (`makeToolPolicyMatcher`) checks deny FIRST and short-circuits; and the
+// pipeline (`applyToolPolicyPipeline`) applies every layer as a monotonic
+// filter — so a deny in ANY layer removes the tool on ALL routes. We write it
+// GLOBALLY (the global step runs on every route, guild included) and — as
+// belt-and-braces for the guild-route policy that bit us on step 24c — into
+// the wildcard-guild policy as well. Deny short-circuits, so the redundancy
+// is harmless. The local `comfyui_image__generate_video` is untouched.
+//
+// Env knob: OPENCLAW_DENY_OPENAI_VIDEO_TOOL (default `on`). Set to `off` to
+// restore the built-in — self-heals our managed deny entry — for operators
+// who DO have an OpenAI key and want Sora. Empty string skips the step.
+const denyVideoRaw = process.env.OPENCLAW_DENY_OPENAI_VIDEO_TOOL;
+const denyVideoVal = (denyVideoRaw === undefined ? 'on' : denyVideoRaw.trim().toLowerCase());
+const DENY_VIDEO_TOOL_NAME = 'video_generate';
+if (denyVideoVal !== '') {
+  const wantVideoDeny = ['on', 'true', '1', 'yes'].includes(denyVideoVal);
+  const wantVideoRestore = ['off', 'false', '0', 'no'].includes(denyVideoVal);
+  if (!wantVideoDeny && !wantVideoRestore) {
+    console.warn(
+      `[patch-config] OPENCLAW_DENY_OPENAI_VIDEO_TOOL=${JSON.stringify(denyVideoRaw)} ` +
+      `not in {on, off} — skipping step 25b.`,
+    );
+  } else {
+    // Union / self-heal `video_generate` into a {allow?, alsoAllow?, deny?}
+    // policy object at some layer. Returns true if it mutated `toolsObj`.
+    const applyVideoDeny = (toolsObj, where) => {
+      const existing = Array.isArray(toolsObj.deny) ? toolsObj.deny : [];
+      const has = existing.includes(DENY_VIDEO_TOOL_NAME);
+      if (wantVideoDeny && !has) {
+        toolsObj.deny = [...existing, DENY_VIDEO_TOOL_NAME];
+        console.log(
+          `[patch-config] ${where}.deny += ${JSON.stringify(DENY_VIDEO_TOOL_NAME)} ` +
+          `(built-in OpenAI video tool 401s without a key — routes video to the ` +
+          `local comfyui_image__generate_video; set OPENCLAW_DENY_OPENAI_VIDEO_TOOL=off ` +
+          `to keep the built-in)`,
+        );
+        return true;
+      }
+      if (wantVideoRestore && has) {
+        const next = existing.filter(t => t !== DENY_VIDEO_TOOL_NAME);
+        if (next.length > 0) toolsObj.deny = next; else delete toolsObj.deny;
+        console.log(
+          `[patch-config] ${where}.deny -= ${JSON.stringify(DENY_VIDEO_TOOL_NAME)} ` +
+          `(OPENCLAW_DENY_OPENAI_VIDEO_TOOL=off — restored the built-in video_generate)`,
+        );
+        return true;
+      }
+      return false;
+    };
+
+    // (1) Global tools.deny — the global policy step runs on every route.
+    if (wantVideoDeny) {
+      config.tools ??= {};
+      if (applyVideoDeny(config.tools, 'tools')) changed = true;
+    } else if (wantVideoRestore && config.tools) {
+      if (applyVideoDeny(config.tools, 'tools')) changed = true;
+    }
+
+    // (2) Wildcard-guild policy — defensive layer for Discord guild routes,
+    //     which resolve their own tools policy (step 24c). Only create the
+    //     path when adding; on restore, only touch it if it already exists.
+    if (config.channels?.discord?.enabled === true) {
+      if (wantVideoDeny) {
+        config.channels.discord.guilds ??= {};
+        config.channels.discord.guilds['*'] ??= {};
+        config.channels.discord.guilds['*'].tools ??= {};
+        if (applyVideoDeny(config.channels.discord.guilds['*'].tools, 'channels.discord.guilds["*"].tools')) changed = true;
+      } else if (wantVideoRestore) {
+        const gt = config.channels?.discord?.guilds?.['*']?.tools;
+        if (gt && applyVideoDeny(gt, 'channels.discord.guilds["*"].tools')) changed = true;
       }
     }
   }
@@ -3829,9 +3947,21 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '**Precedencia:** (1) explicit `width`+`height` pair nyer — MINDIG párban\n' +
   '(külön küldve a hiányzó dim 768 default marad → torz kép); (2) `resolution`\n' +
   'arg alias-táblából; (3) prompt-szövegbeli AxB/keyword safety-net; (4) default\n' +
-  '1024×576. Step-32 kerekítés (720→704, 1080→1088). Render (6s clip): default\n' +
-  '1024×576 ~55s, square 1024×1024 ~105s, HD 1280×704 ~90s, FullHD 1920×1088\n' +
-  '~270s; VRAM ~konstans 115 GB. Hosszú render esetén jelezd a várakozást, ne tagadd meg.\n\n' +
+  '1024×576. Step-32 kerekítés (720→704, 1080→1088).\n\n' +
+  '🚨 **Felbontás-plafon (hardver-korlát):** ez a GB10 megosztott GPU-poolon\n' +
+  'fut (a vLLM is bent van a memóriában), ezért a videó felbontása kb.\n' +
+  '**1024×576-ig (~SD/MiniHD)** renderel megbízhatóan, pár perc alatt. A ennél\n' +
+  'nagyobb kérést (720p / 1080p / fullhd / 4K) a bridge AUTOMATIKUSAN\n' +
+  'lekicsinyíti ebbe a pixel-budgetbe (a képarányt megtartva, pl. 1920×1088 →\n' +
+  '~992×576) — NEM utasítja el, mindig kapsz videót. Ezért NYUGODTAN fogadd el\n' +
+  'az „1080p" kérést és indítsd el; a `resolution` argot ettől is add meg\n' +
+  'pontosan. A válaszban a metaadat a TÉNYLEGES (lekicsinyített) felbontást\n' +
+  'tartalmazza — ha a user nagyobbat kért, említsd meg kedvesen, hogy a gyors\n' +
+  'kézbesítés érdekében a hardver-barát változat készült el. SOHA ne mondd,\n' +
+  'hogy „nem megy" vagy „technikai hiba" — a lekicsinyítés a NORMÁL működés.\n\n' +
+  'A render a megosztott poolon pár perc (a memória-nyomás miatt változó); a\n' +
+  'nagyobb kérések ide (≤~1024×576) kicsinyülnek. Hosszú render esetén jelezd\n' +
+  'a várakozást, ne tagadd meg.\n\n' +
   'Egyéb paraméterek:\n' +
   '- `length`: frame-szám, default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' (' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps → ' +
   (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + 's). **MUST** `8k+1` (1, 9, 17, ..., 201).\n' +

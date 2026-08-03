@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — video generation clamps to a deliverable resolution (bridge 0.12.5)
+
+A "make me a 1080p video" request on the GB10 shared GPU pool never delivered:
+the render ran past the timeout and was killed mid-sample with no output, and
+the bot then promised a clip it couldn't produce. Two independent causes:
+
+- **Resolution.** Render time scales with pixel count, and on the shared
+  unified-memory pool (vLLM stays resident, LTX's VAE decode thrashes against a
+  full swap) even 720p does not finish inside the timeout. The bridge's former
+  per-dimension guard *rejected* only above FullHD, so a 1920×1088 request
+  slipped through and hung. Replaced the reject with a **total-pixel-budget
+  clamp** (`LTX_VIDEO_MAX_PIXELS`, default 589,824 = 1024×576, LTX's native
+  16:9 MiniHD): over-budget requests scale DOWN preserving aspect ratio,
+  snapped to ÷32 (e.g. 1920×1088 → ~992×576), and always deliver. The default
+  is the reliable-delivery value under memory pressure, not the checkpoint's
+  max — operators on a quieter box / dedicated GPU can raise it (921600 = 720p,
+  2088960 = FullHD). A budget models the real constraint better than a per-dim
+  cap and treats portrait/square fairly. Replaces `LTX_VIDEO_MAX_WIDTH` /
+  `LTX_VIDEO_MAX_HEIGHT`.
+- **Timeout lockstep.** The bridge's per-call budget and the gateway's MCP
+  client timeout both sat at 600s, so a slow render tripped the client at the
+  same instant the bridge gave up — a phantom timeout. Bumped the bridge budget
+  to 900s (`IMAGE_GEN_TIMEOUT_S`) and the MCP client to 960s
+  (`IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS`, patcher step 19 now writes
+  `requestTimeoutMs`) so the client always outlives the bridge.
+
+The discord-friend LTX cheatsheet now states the ~720p hardware ceiling,
+explains that higher asks auto-downscale, and corrects the stale FullHD render
+benchmark. The tool's response metadata carries the actual (clamped)
+resolution, so the bot can tell the user what it delivered.
+
+### Fixed — deny the broken built-in `video_generate` tool (patcher step 25b)
+
+The `coding`/`full` tool profiles ship OpenClaw's built-in `video_generate`,
+which calls an OpenAI Sora endpoint and returns HTTP 401 with no key configured.
+The Gemma MoE repeatedly picked it over the local `comfyui_image__generate_video`
+despite cheatsheet steering (16 calls → 16× 401 in one turn). The patcher now
+writes `video_generate` into `tools.deny` (global + wildcard-guild), stripping
+it from the catalog on all routes. Env: `OPENCLAW_DENY_OPENAI_VIDEO_TOOL`
+(default `on`; `off` restores the built-in for operators with an OpenAI key).
+
 ### Added — `/claw-help` cheatsheet
 
 A no-argument `/claw-help` that replies with an ephemeral, formatted embed

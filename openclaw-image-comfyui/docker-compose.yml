@@ -32,7 +32,7 @@ services:
   openclaw-image-comfyui:
     build:
       context: ./server
-    image: openclaw-image-comfyui:0.12.4
+    image: openclaw-image-comfyui:0.12.5
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
     hostname: openclaw-image-comfyui
     # `image-gen` profile gates this service so an absent --profile flag
@@ -73,7 +73,13 @@ services:
       # cross-origin <img> tags (Basic auth headers don't survive cross-origin
       # image fetches). See bridge README for the exact NGINX recipe.
       COMFYUI_VIEW_TOKEN: ${COMFYUI_VIEW_TOKEN:-}
-      IMAGE_GEN_TIMEOUT_S: ${IMAGE_GEN_TIMEOUT_S:-600}
+      # Default per-call wall-clock budget when the agent omits `timeout_s`.
+      # Images finish in <1 min; video is the driver. A 720p LTX clip (see
+      # LTX_VIDEO_MAX_PIXELS) renders in ~7-8 min, and the first render after
+      # an image→video family switch reloads models (+1-2 min), so 900s covers
+      # the cold path. Keep the gateway MCP client requestTimeoutMs >= this
+      # (patcher step 19 writes 960000) or the client abandons the call early.
+      IMAGE_GEN_TIMEOUT_S: ${IMAGE_GEN_TIMEOUT_S:-900}
       IMAGE_GEN_MAX_CONCURRENCY: ${IMAGE_GEN_MAX_CONCURRENCY:-1}
       IMAGE_GEN_MAX_OUTPUT_BYTES: ${IMAGE_GEN_MAX_OUTPUT_BYTES:-52428800}
       IMAGE_GEN_POLL_INTERVAL_S: ${IMAGE_GEN_POLL_INTERVAL_S:-0.5}
@@ -100,6 +106,17 @@ services:
       LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
       LTX_VIDEO_DEFAULT_AUDIO: ${LTX_VIDEO_DEFAULT_AUDIO:-on}
       LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}
+      # Video resolution ceiling as a TOTAL PIXEL budget (render time scales
+      # with pixels, not per-dim). Above this, dims are scaled DOWN preserving
+      # aspect (never rejected) so the bot always delivers. Default 589824 =
+      # 1024×576 (LTX native 16:9 MiniHD) — the reliable-delivery value on the
+      # GB10 shared pool, where vLLM stays resident and LTX's VAE decode
+      # thrashes against a full swap. 720p (921600) and FullHD (2.09M px) do
+      # NOT finish inside the timeout on this memory-pressured box (verified
+      # 2026-07-07: a clamped 1280×720 render was killed at 900s mid-decode).
+      # Raise on a quieter box / dedicated GPU (921600 = 720p, 2088960 =
+      # FullHD); requests above the budget clamp down and still deliver.
+      LTX_VIDEO_MAX_PIXELS: ${LTX_VIDEO_MAX_PIXELS:-589824}
       # ACE-Step v1.5 turbo music generation (generate_music tool). Model
       # filenames default to the Comfy-Org split-file names; override only
       # if you installed different quants. ACE_MUSIC_MAX_SECONDS is the hard

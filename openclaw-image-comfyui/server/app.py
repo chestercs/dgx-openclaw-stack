@@ -86,7 +86,15 @@ COMFYUI_EXTERNAL_URL = os.environ.get("COMFYUI_EXTERNAL_URL", COMFYUI_URL).rstri
 # See the bridge README "Token-protected proxy (alternative to Basic auth)"
 # section for the exact NGINX config.
 COMFYUI_VIEW_TOKEN = os.environ.get("COMFYUI_VIEW_TOKEN", "").strip()
-DEFAULT_TIMEOUT_S = float(os.environ.get("IMAGE_GEN_TIMEOUT_S", "600"))
+# Default wall-clock budget when the caller omits `timeout_s`. Image gen
+# finishes in ~30-60s so this is only a ceiling for them; video is the real
+# consumer. A 720p LTX clip (see LTX_VIDEO_MAX_PIXELS) renders in ~7-8 min on
+# the GB10 shared pool, and the first render after an image→video family
+# switch reloads models from disk (+1-2 min). 900s gives that cold path
+# comfortable headroom. NOTE: the gateway's MCP client requestTimeoutMs MUST
+# be >= this value (patcher step 19 writes 960000) or the client abandons the
+# call before the bridge finishes and the user sees a phantom timeout.
+DEFAULT_TIMEOUT_S = float(os.environ.get("IMAGE_GEN_TIMEOUT_S", "900"))
 MAX_OUTPUT_BYTES = int(os.environ.get("IMAGE_GEN_MAX_OUTPUT_BYTES", str(50 * 1024 * 1024)))
 MAX_CONCURRENCY = int(os.environ.get("IMAGE_GEN_MAX_CONCURRENCY", "1"))
 POLL_INTERVAL_S = float(os.environ.get("IMAGE_GEN_POLL_INTERVAL_S", "0.5"))
@@ -168,16 +176,33 @@ LTX_VIDEO_DEFAULT_AUDIO = os.environ.get("LTX_VIDEO_DEFAULT_AUDIO", "on").strip(
 # 60-second clips that take 30+ minutes and blow past Discord's
 # auto-embed size cap. Bridge enforces seconds = length / fps <= cap.
 LTX_VIDEO_MAX_DURATION_S = float(os.environ.get("LTX_VIDEO_MAX_DURATION_S", "10"))
-# Hard ceiling on video resolution. The LTX-Video 2.3 22B distilled
-# checkpoint is trained around 1280×720 / 1216×704; pushing past FullHD
-# (1920×1088) the sampler does not converge and the job runs indefinitely
-# at 96% GPU until manually killed — verified in production 2026-06-06,
-# where a `4k`/`uhd` keyword in the prompt resolved to 3840×2176 via
-# RESOLUTION_ALIASES and locked the discord-friend session queue. The
-# default cap matches LTX's documented native ceiling. Operators on
-# fine-tuned higher-res checkpoints can raise it via env.
-LTX_VIDEO_MAX_WIDTH = int(os.environ.get("LTX_VIDEO_MAX_WIDTH", "1920"))
-LTX_VIDEO_MAX_HEIGHT = int(os.environ.get("LTX_VIDEO_MAX_HEIGHT", "1088"))
+# Ceiling on video resolution, expressed as a TOTAL PIXEL budget rather than
+# a per-dimension cap. Render time scales with pixel count, not with width or
+# height individually, so a single budget treats landscape, portrait, and
+# square fairly (a per-dim cap over-penalises tall clips).
+#
+# The binding constraint on the GB10 is NOT compute but the shared unified
+# memory pool: vLLM stays resident while ComfyUI renders, and LTX's VAE
+# decode (145 frames × W×H) then thrashes against a full swap, spilling to
+# CPU ("dynamic VRAM loading … Staged"). That makes render time depend as
+# much on memory pressure as on pixels. Data points:
+#   - 768×1024 (786K px) → ~6.3 min   (2026-06-16, lighter pool)
+#   - 1280×720 (921K px) → DID NOT FINISH inside 900s (2026-07-07, swap full,
+#     killed mid-VAE-decode → phantom timeout, zero output)
+# So the ceiling is deliberately conservative: default 1024×576 (589,824 px,
+# LTX's native 16:9 "MiniHD") renders inside the timeout even with vLLM
+# resident and the pool under pressure. This is the reliable-delivery value,
+# NOT the max the checkpoint can produce — on a quieter box or a dedicated
+# GPU an operator can raise LTX_VIDEO_MAX_PIXELS (e.g. 921600 for 720p,
+# 2088960 for FullHD) and get higher-res clips.
+#
+# Requests above the budget are scaled DOWN preserving aspect ratio (see
+# _clamp_video_pixels) — never rejected. The whole point is that the bot
+# always delivers something at a hardware-friendly resolution instead of
+# hanging or erroring. (The earlier per-dim reject let 1920×1088 through
+# because the request EQUALLED the old 1920×1088 cap, so it never tripped;
+# verified 2026-07-04, a "1080p" ask ran >10 min with zero output.)
+LTX_VIDEO_MAX_PIXELS = int(os.environ.get("LTX_VIDEO_MAX_PIXELS", str(1024 * 576)))
 
 
 # ── Proxy-side resolution resolver ────────────────────────────────────
@@ -262,6 +287,31 @@ def _resolve_dims_from_prompt(prompt: str) -> Optional[tuple[int, int]]:
         if re.search(pattern, p, re.IGNORECASE):
             return dims
     return None
+
+
+def _clamp_video_pixels(w: int, h: int, max_px: int) -> tuple[int, int]:
+    """Scale (w, h) down so the total pixel count fits within `max_px`,
+    preserving aspect ratio, then snap each dimension DOWN to a multiple of
+    32 (LTX-Video requires dims divisible by 32). Dims already within budget
+    are only snapped, not scaled. No-op for non-positive dims (the caller
+    handles the "no resolution signal" fallback separately).
+
+    Worked examples (max_px = 1280×720 = 921,600):
+      1920×1088 (1080p, 2.09M) → scale 0.664 → 1248×704  (aspect preserved)
+      3840×2176 (4K,   8.36M) → scale 0.332 → 1248×704
+      1024×1024 (square, 1.05M) → scale 0.938 → 960×960
+      768×1024  (portrait, 786K) → within budget → 768×1024 unchanged
+      1024×576  (minihd, 590K)   → within budget → 1024×576 unchanged
+    """
+    if w <= 0 or h <= 0:
+        return w, h
+    if w * h > max_px:
+        scale = (max_px / (w * h)) ** 0.5
+        w = int(w * scale)
+        h = int(h * scale)
+    w = max(32, (w // 32) * 32)
+    h = max(32, (h // 32) * 32)
+    return w, h
 
 
 TOOLS = [
@@ -1499,19 +1549,27 @@ async def _tool_generate_video(args: dict) -> dict:
             )
             args = {**args, "width": None, "height": None}
 
-    # Hard reject >FullHD before workflow bind. See LTX_VIDEO_MAX_WIDTH /
-    # _HEIGHT for the why; the agent receives an actionable error and
-    # can self-correct in a follow-up call instead of locking the queue.
-    final_w = args.get("width") or 0
-    final_h = args.get("height") or 0
-    if final_w > LTX_VIDEO_MAX_WIDTH or final_h > LTX_VIDEO_MAX_HEIGHT:
-        raise ValueError(
-            f"requested resolution {final_w}x{final_h} exceeds the LTX-Video cap "
-            f"{LTX_VIDEO_MAX_WIDTH}x{LTX_VIDEO_MAX_HEIGHT}. The 22B distilled checkpoint "
-            f"is not trained for >FullHD and will not converge on 4K/UHD. "
-            f"Use resolution=fullhd or lower (or raise LTX_VIDEO_MAX_WIDTH/_HEIGHT env if "
-            f"you've swapped in a higher-res checkpoint)."
-        )
+    # Clamp to the pixel budget before workflow bind (see LTX_VIDEO_MAX_PIXELS
+    # for the why). We CLAMP rather than reject: a "1080p"/"4K" request scales
+    # down to a hardware-friendly resolution and still delivers a clip. The
+    # earlier hard-reject let 1920×1088 through (it equalled the old per-dim
+    # cap) and then the render hung past the timeout with no output; scaling
+    # is strictly safer and never leaves the user empty-handed. The clamped
+    # dims flow into bind_args and back out in the response metadata, so the
+    # agent reports the resolution it actually got and can tell the user.
+    req_w = args.get("width") or 0
+    req_h = args.get("height") or 0
+    if req_w > 0 and req_h > 0:
+        clamp_w, clamp_h = _clamp_video_pixels(req_w, req_h, LTX_VIDEO_MAX_PIXELS)
+        if (clamp_w, clamp_h) != (req_w, req_h):
+            log.info(
+                "generate_video: clamped %dx%d (%d px) -> %dx%d (%d px) to fit "
+                "LTX_VIDEO_MAX_PIXELS=%d — keeps render inside the timeout on the "
+                "shared GPU pool",
+                req_w, req_h, req_w * req_h, clamp_w, clamp_h,
+                clamp_w * clamp_h, LTX_VIDEO_MAX_PIXELS,
+            )
+            args = {**args, "width": clamp_w, "height": clamp_h}
 
     bind_args = {
         "prompt":       args.get("prompt"),
