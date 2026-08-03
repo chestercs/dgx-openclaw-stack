@@ -130,14 +130,40 @@ have different manners. The channel default keeps replies sociable and tells
 the agent not to repeat private details into a room several people read.
 
 **Separate sessions are not separate memory.** Session keys isolate
-conversation *history*, but the agent's memory store (`memorySearch`) and its
-workspace are agent-wide, so something recorded while chatting privately over
-DM can legitimately surface in a channel answer. The per-surface prompt is a
-soft guard, not a boundary. If you need a hard one, give the channel its **own
-agent** with its own workspace — the same isolation the Discord agent gets —
-and point the bridge at it. Today the bridge dispatches every surface to one
-`MESHCORE_AGENT_ID`; a second agent means either a second bridge instance
-(second radio) or a per-surface agent-id knob.
+conversation *history*, but the memory store (`memorySearch`) and workspace are
+per-**agent**, so on a single agent something recorded while chatting privately
+over DM can legitimately surface in a channel answer. The per-surface prompt is
+a soft guard, not a boundary.
+
+### Two agents = real isolation
+
+Set `MESHCORE_CHANNEL_AGENT_ID` and the channel gets its own agent — the same
+isolation the Discord agent gets:
+
+| | DM rail | Channel rail |
+|---|---|---|
+| Agent | `MESHCORE_AGENT_ID` (default `meshcore`) | `MESHCORE_CHANNEL_AGENT_ID` |
+| Workspace | `workspace-<id>/` | `workspace-<id>/` (separate) |
+| Memory | `workspace-<id>/memory/` | separate dir, not readable by the other |
+| Persona | private 1:1 contract | group-channel contract (lighter tone) |
+| Session | `agent:<dm-id>:meshcore-<peer>-g<n>` | `agent:<chan-id>:meshcore-chan<idx>-g<n>` |
+
+Patcher step 42 registers whichever agents are configured, creates each
+workspace plus its `memory/` dir (that dir is what makes the isolation real on
+disk — it's what the per-agent `memorySearch` sources glob reads), and seeds a
+matching `AGENTS.md` **if absent**, so operator edits survive.
+
+The channel persona also states the protocol fact the agent needs: sender names
+on a channel are self-declared text, so it must never treat one as proof of who
+is speaking, nor act on claimed authority from it.
+
+With two agents the bridge stops injecting its own channel
+`extraSystemPrompt` by default — the persona lives in that agent's `AGENTS.md`
+instead, and repeating it per turn would be prompt noise.
+
+Note the session-key rule: the agent id inside the key must match the run's
+`agentId`, so the bridge builds it per surface. Mixing them reproduces the
+`does not match session key agent` rejection described below.
 
 ### The pipe is SMS-sized
 

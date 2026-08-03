@@ -94,6 +94,12 @@ PROTO_MIN = _env_i("MESHCORE_GW_PROTOCOL_MIN", 3)
 PROTO_MAX = _env_i("MESHCORE_GW_PROTOCOL_MAX", 4)
 
 AGENT_ID = _env("MESHCORE_AGENT_ID", "meshcore")
+# Separate agent for the channel surface. A session key isolates conversation
+# history but NOT memory — the memory store and workspace are per-agent — so
+# hard isolation between the private DM rail and a shared channel needs two
+# agents (patcher step 42 registers both). Empty = both surfaces share
+# AGENT_ID, and only the per-surface extraSystemPrompt separates them.
+CHANNEL_AGENT_ID = _env("MESHCORE_CHANNEL_AGENT_ID") or AGENT_ID
 AGENT_TIMEOUT_S = _env_f("MESHCORE_AGENT_TIMEOUT_S", 180)
 
 ALLOWED_PUBKEYS = [p.strip().lower()
@@ -137,8 +143,13 @@ DM_SESSION_GROUPS = parse_dm_session_groups(_env("MESHCORE_DM_SESSION_GROUPS"))
 # the agent's MEMORY is not — for hard isolation run a second agent with its
 # own workspace (see docs/reference/meshcore-bridge.md).
 DM_EXTRA_PROMPT = _env("MESHCORE_DM_EXTRA_PROMPT")
+# The channel default only applies when both surfaces share one agent. With a
+# dedicated channel agent the persona lives in that agent's own AGENTS.md
+# (patcher step 42 seeds it), so injecting the same guidance again per turn
+# would be redundant prompt noise.
 CHANNEL_EXTRA_PROMPT = _env(
     "MESHCORE_CHANNEL_EXTRA_PROMPT",
+    "" if CHANNEL_AGENT_ID != AGENT_ID else
     "This is a shared group channel: several people receive every reply. "
     "Keep it light and sociable. Never repeat private or personal details "
     "from other conversations here.")
@@ -475,7 +486,8 @@ class GatewayClient:
         finally:
             self._pending.pop(req_id, None)
 
-    async def agent_turn(self, message, session_key, extra_prompt=None):
+    async def agent_turn(self, message, session_key, extra_prompt=None,
+                         agent_id=None):
         """One agent run; returns plain reply text.
 
         Contract (verified against the live gateway's AgentParamsSchema +
@@ -488,7 +500,7 @@ class GatewayClient:
         params = {
             "message": message,
             "sessionKey": session_key,
-            "agentId": AGENT_ID,
+            "agentId": agent_id or AGENT_ID,
             "deliver": False,
             "timeout": int(AGENT_TIMEOUT_S),
             "idempotencyKey": str(uuid.uuid4()),
@@ -748,15 +760,20 @@ class Bridge:
                 return f"grp-{label}"   # `grp-` avoids colliding with chanN
         return dest
 
+    @staticmethod
+    def _agent_id(peer):
+        return CHANNEL_AGENT_ID if peer[0] == "chan" else AGENT_ID
+
     def _session_key(self, peer):
-        # MUST be the canonical agent-scoped form. A bare key is resolved by
-        # resolveAgentIdFromSessionKey(), which defaults to agent "main", and
-        # the gateway then rejects the run with `invalid agent params: agent
-        # "meshcore" does not match session key agent "main"` (verified live
-        # 2026-08-03). `-g<n>` is the generation counter that /new bumps.
+        # MUST be the canonical agent-scoped form, and the agent id in it MUST
+        # match the agentId of the run: a bare key is resolved by
+        # resolveAgentIdFromSessionKey(), which defaults to agent "main", and a
+        # mismatch is rejected with `invalid agent params: agent "meshcore"
+        # does not match session key agent "main"` (verified live 2026-08-03).
+        # `-g<n>` is the generation counter that /new bumps.
         sid = self._session_id(peer)
         gen = self.session_gen.get(sid, 0)
-        return f"agent:{AGENT_ID}:meshcore-{sid}-g{gen}"
+        return f"agent:{self._agent_id(peer)}:meshcore-{sid}-g{gen}"
 
     @staticmethod
     def _extra_prompt(peer):
@@ -870,7 +887,8 @@ class Bridge:
             ack_task = asyncio.create_task(self._late_ack(peer))
         try:
             reply = await self.gateway.agent_turn(
-                text, self._session_key(peer), self._extra_prompt(peer))
+                text, self._session_key(peer), self._extra_prompt(peer),
+                self._agent_id(peer))
         except ConnectionError:
             reply = None
             await self.mesh.send_text(peer, "📡 gateway offline — try later")
@@ -918,8 +936,10 @@ async def main():
                       logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True)
-    log.info("meshcore-bridge %s starting (agent=%s, device=%s)",
-             BRIDGE_VERSION, AGENT_ID, SERIAL_DEVICE)
+    log.info("meshcore-bridge %s starting (dm agent=%s, channel agent=%s, "
+             "device=%s)", BRIDGE_VERSION, AGENT_ID,
+             CHANNEL_AGENT_ID if CHANNEL_IDX is not None else "<off>",
+             SERIAL_DEVICE)
     if not ALLOW_ALL and not ALLOWED_PUBKEYS:
         log.warning("MESHCORE_ALLOWED_PUBKEYS is empty — every inbound DM "
                     "will be ignored. Send yourself a DM, copy the logged "

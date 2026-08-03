@@ -1394,6 +1394,9 @@ services:
       # (profile: meshcore) — see openclaw-meshcore-bridge/README.md.
       MESHCORE_ENABLED: ${MESHCORE_ENABLED:-}
       MESHCORE_AGENT_ID: ${MESHCORE_AGENT_ID:-meshcore}
+      # Set to register a SECOND agent for the shared-channel surface, with
+      # its own workspace and therefore its own memory (see step 42).
+      MESHCORE_CHANNEL_AGENT_ID: ${MESHCORE_CHANNEL_AGENT_ID:-}
       MESHCORE_AGENT_TOOLS_PROFILE: ${MESHCORE_AGENT_TOOLS_PROFILE:-minimal}
       MESHCORE_AGENT_ALSO_ALLOW: ${MESHCORE_AGENT_ALSO_ALLOW:-web_search}
       MESHCORE_AGENT_THINKING: ${MESHCORE_AGENT_THINKING:-off}
@@ -2089,6 +2092,11 @@ services:
       MESHCORE_GATEWAY_WS_URL: ${MESHCORE_GATEWAY_WS_URL:-ws://127.0.0.1:18789}
       MESHCORE_GATEWAY_TOKEN: ${MESHCORE_GATEWAY_TOKEN:-}
       MESHCORE_AGENT_ID: ${MESHCORE_AGENT_ID:-meshcore}
+      # Dedicated agent for the channel surface. A session key isolates
+      # conversation history but NOT memory (memory store + workspace are
+      # per-agent), so two agents is what actually keeps private DM material
+      # out of a shared room. Patcher step 42 registers whichever are set.
+      MESHCORE_CHANNEL_AGENT_ID: ${MESHCORE_CHANNEL_AGENT_ID:-}
       MESHCORE_SERIAL_BAUD: ${MESHCORE_SERIAL_BAUD:-115200}
       # Pubkey-prefix allowlist — the mesh is a PUBLIC radio and this agent
       # has tools; empty default means every inbound DM is ignored (logged
