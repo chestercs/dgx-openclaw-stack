@@ -501,6 +501,10 @@ class MeshSide:
             for attempt in range(2):
                 result = await self.mc.commands.send_msg(contact, text)
                 if result.type != EventType.ERROR:
+                    # Log every TX: on a radio link an operator needs to see
+                    # what actually left the node, not just what came in.
+                    log.info("TX to %s (%d B): %r",
+                             pubkey_prefix, len(text.encode()), text[:120])
                     await asyncio.sleep(SEND_GAP_S)
                     return True
                 log.warning("send_msg to %s failed (%s), attempt %d",
