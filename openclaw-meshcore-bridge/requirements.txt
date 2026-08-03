@@ -1,0 +1,5 @@
+# meshcore — official Python client for the MeshCore Companion Radio
+# serial/BLE protocol (pulls in pyserial + pyserial-asyncio itself).
+meshcore>=1.0
+# websockets — the OpenClaw gateway WS RPC client side.
+websockets>=12

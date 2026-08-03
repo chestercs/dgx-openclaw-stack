@@ -41,6 +41,7 @@ research rationale behind the chosen LLM / TTS stack, this is where to look.
 | [`video-comfyui-bridge.md`](./video-comfyui-bridge.md) | Video-generation extension on the same bridge (LTX-Video 2.3, v0.12.0+): model bundle ~71 GB, native audio in a single pass, T2V + I2V tool, Discord auto-embed as the primary surface |
 | [`img-bash-command.md`](./img-bash-command.md) | `!~/.openclaw/bin/img` Discord bash bypass for image-gen — why it exists, how it's wired |
 | [`media-bridge-checklist.md`](./media-bridge-checklist.md) | End-to-end TTS / STT / image-gen pipeline verification checklist for new deploys |
+| [`meshcore-bridge.md`](./meshcore-bridge.md) | MeshCore LoRa bridge: off-grid agent access from a mesh handheld via a USB companion radio — persistent gateway WS, per-contact sessions, SMS-sized reply budget, allowlist threat model |
 | [`chat-surface-capability-matrix.md`](./chat-surface-capability-matrix.md) | What renders where: Discord text vs Discord voice vs OpenClaw web chat vs CLI (markdown / images / TTS / shortcodes) |
 
 ## Related docs

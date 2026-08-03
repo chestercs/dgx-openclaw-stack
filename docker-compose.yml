@@ -1999,3 +1999,89 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  ######################
+  ## MeshCore LoRa bridge — talk to the agent over an off-grid mesh (opt-in)
+  #
+  #  A pure-Python bridge between a MeshCore companion radio (USB serial —
+  #  e.g. a LilyGO T-Echo flashed with the "Companion Radio USB" firmware)
+  #  and a dedicated `meshcore` OpenClaw agent. Inbound LoRa DMs from
+  #  allowlisted contacts run one agent turn each; replies are markdown-
+  #  stripped, chunked to LoRa-sized parts, and radioed back.
+  #
+  #  Holds ONE persistent operator-role WS connection to the gateway — the
+  #  per-call `openclaw agent` path pays ~25-45s of WS session setup every
+  #  time (openclaw-internals.md "CLI overhead"); the persistent connection
+  #  pays it once at boot, so a mesh turn costs ~LLM decode + LoRa airtime.
+  #
+  #  Opt-in (two gates, same posture as the browser/python profiles):
+  #    1. MESHCORE_ENABLED=on in .env → patcher step 42 registers the
+  #       `meshcore` agent + seeds its workspace AGENTS.md.
+  #    2. docker compose --profile meshcore up -d --build openclaw-meshcore-bridge
+  #  See openclaw-meshcore-bridge/README.md + docs/reference/meshcore-bridge.md.
+  ######################
+  openclaw-meshcore-bridge:
+    profiles: ["meshcore"]
+    build:
+      context: ./openclaw-meshcore-bridge
+    image: openclaw-meshcore-bridge:${MESHCORE_BRIDGE_VERSION:-0.1.0}
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-meshcore-bridge
+    # Shares the gateway's network namespace (same pattern as openclaw-cli)
+    # so the WS connect originates from 127.0.0.1. This is AUTH-CRITICAL,
+    # not cosmetic: the gateway grants a shared-token client its declared
+    # operator scopes only on local-direct (loopback) connections — from a
+    # bridge-network or LAN address the granted scope set is empty (remote
+    # clients are expected to device-pair) and every `agent` call dies with
+    # "missing scope: operator.write". Verified against the live 2026.4.15
+    # gateway. Corollary: recreate this container together with the gateway
+    # (see patterns.md → "openclaw-cli network-namespace dependency").
+    network_mode: "service:openclaw-gateway"
+    restart: unless-stopped
+    # The companion radio, passed through as a stable node. ALWAYS point
+    # MESHCORE_SERIAL_DEVICE at the /dev/serial/by-id/… path — raw ttyACMn
+    # numbering migrates across replugs/reboots (nRF52840 CDC-ACM).
+    devices:
+      - "${MESHCORE_SERIAL_DEVICE:-/dev/ttyACM0}:/dev/meshcore"
+    environment:
+      # Gateway WS on loopback (shared netns — see network_mode above). The
+      # auth token is auto-read from the ro-mounted openclaw.json
+      # (gateway.remote.token — the one WS clients actually need; the .env
+      # OPENCLAW_GATEWAY_TOKEN is NOT it, see openclaw-internals.md
+      # credential store #2). MESHCORE_GATEWAY_TOKEN overrides for a split
+      # deploy — but note the loopback scope-grant constraint above.
+      MESHCORE_GATEWAY_WS_URL: ${MESHCORE_GATEWAY_WS_URL:-ws://127.0.0.1:18789}
+      MESHCORE_GATEWAY_TOKEN: ${MESHCORE_GATEWAY_TOKEN:-}
+      MESHCORE_AGENT_ID: ${MESHCORE_AGENT_ID:-meshcore}
+      MESHCORE_SERIAL_BAUD: ${MESHCORE_SERIAL_BAUD:-115200}
+      # Pubkey-prefix allowlist — the mesh is a PUBLIC radio and this agent
+      # has tools; empty default means every inbound DM is ignored (logged
+      # with the sender prefix so admitting someone is a copy-paste).
+      MESHCORE_ALLOWED_PUBKEYS: ${MESHCORE_ALLOWED_PUBKEYS:-}
+      MESHCORE_ALLOW_ALL: ${MESHCORE_ALLOW_ALL:-off}
+      # Reply budget: chunk size × auto-sent chunks; the tail waits for /more.
+      MESHCORE_CHUNK_CHARS: ${MESHCORE_CHUNK_CHARS:-130}
+      MESHCORE_AUTO_CHUNKS: ${MESHCORE_AUTO_CHUNKS:-3}
+      MESHCORE_MAX_REPLY_CHARS: ${MESHCORE_MAX_REPLY_CHARS:-3900}
+      MESHCORE_SEND_GAP_S: ${MESHCORE_SEND_GAP_S:-3}
+      MESHCORE_ACK_AFTER_S: ${MESHCORE_ACK_AFTER_S:-25}
+      MESHCORE_AGENT_TIMEOUT_S: ${MESHCORE_AGENT_TIMEOUT_S:-180}
+      MESHCORE_LOG_LEVEL: ${MESHCORE_LOG_LEVEL:-INFO}
+      TZ: ${TZ:-UTC}
+    volumes:
+      # ro token read — nothing in the bridge writes OpenClaw state.
+      - ${OPENCLAW_CONFIG_DIR}:/openclaw-config:ro
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt:
+      - "no-new-privileges:true"
+    # Tiny footprint: asyncio + pyserial + one WS connection, no models.
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -226,6 +226,10 @@
 //      in-memory only and empties on every gateway restart).
 //  41. channels.discord.allowBots — opt-in bot-to-bot conversations
 //      ("mentions" recommended); upstream botLoopProtection auto-enables.
+//  42. MeshCore agent — agents.list entry (id `meshcore`, own workspace,
+//      narrow tool surface, thinkingDefault off) + workspace-meshcore
+//      AGENTS.md seed for the openclaw-meshcore-bridge LoRa service.
+//      Env-gated by MESHCORE_ENABLED (default off).
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -5120,6 +5124,112 @@ async function uploadFile(url, headers, bytes, filename, caption) {
     } catch (e) { /* already absent */ }
   } else if (imgBashOn && !IMAGE_GEN_TOKEN) {
     console.warn('[patch-config] OPENCLAW_COMMANDS_BASH=on but IMAGE_GEN_API_TOKEN unset — not writing ~/.openclaw/bin/img (bridge unreachable).');
+  }
+}
+
+// ─── 42. MeshCore agent — agents.list entry + workspace AGENTS.md seed ──────
+// The openclaw-meshcore-bridge service (profile: meshcore) dispatches LoRa
+// DMs to a DEDICATED agent so the radio persona (SMS-length answers, plain
+// text, no tool marathons) never leaks into main / discord-friend — same
+// isolation pattern as the discord workspace. Unlike the Discord agent
+// (created by the channel onboarding CLI), no channel plugin exists for
+// MeshCore, so the patcher owns the agent registration:
+//
+//   (a) agents.list[] entry `meshcore` (id via MESHCORE_AGENT_ID) with its
+//       own workspace, a deliberately narrow tool surface (default profile
+//       `minimal` + alsoAllow `web_search` — the mesh is a PUBLIC radio and
+//       the bridge-side allowlist is the only inbound gate, so don't hand
+//       the radio persona browser/exec/sandbox tools), and
+//       thinkingDefault=off (LoRa users wait on ~130-byte packets; decode
+//       latency is the whole UX).
+//   (b) workspace-meshcore/ + AGENTS.md seeded IF MISSING (operator edits
+//       survive — write-if-absent, same posture as the discord template).
+//
+// User-managed protection: an existing agents.list entry only gets fields
+// filled in when they're undefined; hand-tuned values survive re-runs.
+// Env: MESHCORE_ENABLED=on gates the step (default off — mirrors the
+// compose profile gate); MESHCORE_AGENT_TOOLS_PROFILE /
+// MESHCORE_AGENT_ALSO_ALLOW / MESHCORE_AGENT_THINKING tune the defaults.
+{
+  const meshRaw = (process.env.MESHCORE_ENABLED || '').trim().toLowerCase();
+  if (['on', 'true', '1', 'yes'].includes(meshRaw)) {
+    const MESH_AGENT_ID = (process.env.MESHCORE_AGENT_ID || 'meshcore').trim();
+    const MESH_WORKSPACE = '/home/node/.openclaw/workspace-meshcore';
+    const MESH_PROFILE =
+      (process.env.MESHCORE_AGENT_TOOLS_PROFILE || 'minimal').trim();
+    const MESH_ALSO_ALLOW =
+      (process.env.MESHCORE_AGENT_ALSO_ALLOW ?? 'web_search')
+        .split(',').map((s) => s.trim()).filter(Boolean);
+    const VALID_THINKING =
+      new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    const meshThinkingRaw =
+      (process.env.MESHCORE_AGENT_THINKING || 'off').trim();
+    const MESH_THINKING =
+      VALID_THINKING.has(meshThinkingRaw) ? meshThinkingRaw : 'off';
+
+    config.agents = config.agents ?? {};
+    config.agents.list = config.agents.list ?? [];
+    let meshAgent = config.agents.list.find((a) => a?.id === MESH_AGENT_ID);
+    if (!meshAgent) {
+      meshAgent = {
+        id: MESH_AGENT_ID,
+        name: MESH_AGENT_ID,
+        workspace: MESH_WORKSPACE,
+        tools: { profile: MESH_PROFILE, alsoAllow: MESH_ALSO_ALLOW },
+        thinkingDefault: MESH_THINKING,
+      };
+      config.agents.list.push(meshAgent);
+      changed = true;
+      console.log(
+        `[patch-config] agents.list += ${JSON.stringify(MESH_AGENT_ID)} ` +
+        `(workspace ${MESH_WORKSPACE}, profile ${MESH_PROFILE}, ` +
+        `thinking ${MESH_THINKING})`,
+      );
+    } else {
+      // Fill only what's missing — the operator's hand-tuning wins.
+      if (meshAgent.workspace === undefined) {
+        meshAgent.workspace = MESH_WORKSPACE;
+        changed = true;
+        console.log(`[patch-config] agents.list[${MESH_AGENT_ID}].workspace = ${MESH_WORKSPACE}`);
+      }
+      if (meshAgent.tools === undefined) {
+        meshAgent.tools = { profile: MESH_PROFILE, alsoAllow: MESH_ALSO_ALLOW };
+        changed = true;
+        console.log(`[patch-config] agents.list[${MESH_AGENT_ID}].tools = profile ${MESH_PROFILE}`);
+      }
+      if (meshAgent.thinkingDefault === undefined) {
+        meshAgent.thinkingDefault = MESH_THINKING;
+        changed = true;
+        console.log(`[patch-config] agents.list[${MESH_AGENT_ID}].thinkingDefault = ${MESH_THINKING}`);
+      }
+    }
+
+    // Workspace + AGENTS.md seed. Filesystem prep like step 23 — mkdir and
+    // a write-if-absent don't flip `changed` (not an openclaw.json mutation).
+    const MESH_AGENTS_MD = `${MESH_WORKSPACE}/AGENTS.md`;
+    const MESH_AGENTS_BODY =
+      '# MeshCore agent — LoRa DM contract\n' +
+      '\n' +
+      'You are reachable over a LoRa mesh radio. Replies travel as ~130-\n' +
+      'character packets on a link with severe airtime limits — every\n' +
+      'character costs transmission time.\n' +
+      '\n' +
+      'HARD RULES:\n' +
+      '\n' +
+      '- Answer in at most 2 short sentences (target under 300 characters).\n' +
+      '- Plain text only: no markdown, no bullet lists, no headings, no\n' +
+      '  emoji unless the user used them first.\n' +
+      '- No greetings, no sign-offs, no restating the question — answer\n' +
+      '  directly with the key fact FIRST. Long replies get truncated and\n' +
+      '  paged behind a /more command, so front-load what matters.\n' +
+      '- Reply in the language the user wrote in.\n' +
+      '- Tools: at most one web_search when facts are needed; never run\n' +
+      '  long multi-step tool chains — the user is waiting on a radio link.\n';
+    fs.mkdirSync(MESH_WORKSPACE, { recursive: true, mode: 0o755 });
+    if (!fs.existsSync(MESH_AGENTS_MD)) {
+      fs.writeFileSync(MESH_AGENTS_MD, MESH_AGENTS_BODY);
+      console.log(`[patch-config] seeded ${MESH_AGENTS_MD} (${MESH_AGENTS_BODY.length} B)`);
+    }
   }
 }
 

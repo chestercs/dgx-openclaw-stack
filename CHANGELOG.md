@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — MeshCore LoRa bridge: off-grid agent access (profile: meshcore)
+
+Talk to a dedicated OpenClaw agent from a MeshCore mesh handheld (LilyGO
+T-Deck etc.) through a companion radio (e.g. LilyGO T-Echo, "Companion Radio
+USB" firmware) plugged into the stack host — fully off-grid on the handheld
+side, useful anywhere without cell coverage. New `openclaw-meshcore-bridge`
+service (pure Python, `meshcore` + `websockets`, no host installs — the
+radio is a `devices:` passthrough):
+
+- **Persistent gateway WS.** The per-call `openclaw agent` path pays
+  ~25–45 s of WS session setup per message (openclaw-internals.md "CLI
+  overhead"); the bridge holds one operator-role connection open, so a mesh
+  turn costs ≈ LLM decode + LoRa airtime. Auth token auto-read from the
+  ro-mounted config (`gateway.remote.token` — NOT the .env token).
+- **Dedicated `meshcore` agent** (patcher step 42, env-gated by
+  `MESHCORE_ENABLED`): own `workspace-meshcore/` with a seeded radio
+  contract AGENTS.md (≤2 sentences, plain text, front-load the answer),
+  `tools.profile: minimal` + `web_search` only, `thinkingDefault: off`.
+- **SMS-sized reply pipeline**: markdown strip → 130-char word-boundary
+  chunks with `k/n` numbering → 3 chunks auto-sent, tail behind `/more` →
+  3 s inter-chunk pacing; late-ack ping at 25 s so silence never provokes
+  a resend storm. Per-contact gateway sessions (`/new` resets).
+- **Public-radio threat model**: pubkey-prefix allowlist
+  (`MESHCORE_ALLOWED_PUBKEYS`, deny-all default, denied senders logged but
+  never answered), narrow tool surface, in-band `/ping` link test.
+
+Docs: `openclaw-meshcore-bridge/README.md`,
+`docs/reference/meshcore-bridge.md`; env block in `.env.example`.
+
 ### Fixed — video generation clamps to a deliverable resolution (bridge 0.12.5)
 
 A "make me a 1080p video" request on the GB10 shared GPU pool never delivered:
