@@ -48,7 +48,7 @@ import websockets
 
 from meshcore import MeshCore, EventType
 
-BRIDGE_VERSION = "0.1.0"
+BRIDGE_VERSION = "0.1.1"
 
 log = logging.getLogger("meshcore-bridge")
 
@@ -92,6 +92,8 @@ OPENCLAW_CONFIG_JSON = _env("MESHCORE_OPENCLAW_CONFIG_JSON",
                             "/openclaw-config/openclaw.json")
 PROTO_MIN = _env_i("MESHCORE_GW_PROTOCOL_MIN", 3)
 PROTO_MAX = _env_i("MESHCORE_GW_PROTOCOL_MAX", 4)
+GW_CONNECT_TIMEOUT_S = _env_f("MESHCORE_GW_CONNECT_TIMEOUT_S", 60)
+GW_PING_TIMEOUT_S = _env_f("MESHCORE_GW_PING_TIMEOUT_S", 60)
 
 AGENT_ID = _env("MESHCORE_AGENT_ID", "meshcore")
 # Separate agent for the channel surface. A session key isolates conversation
@@ -358,7 +360,8 @@ class GatewayClient:
             try:
                 async with websockets.connect(
                         self.url, max_size=32 * 1024 * 1024,
-                        ping_interval=20, ping_timeout=20) as ws:
+                        open_timeout=GW_CONNECT_TIMEOUT_S,
+                        ping_interval=20, ping_timeout=GW_PING_TIMEOUT_S) as ws:
                     self.ws = ws
                     await self._handshake(ws)
                     self.connected.set()
@@ -421,9 +424,12 @@ class GatewayClient:
         await ws.send(json.dumps(
             {"type": "req", "id": req_id, "method": "connect",
              "params": params}))
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + GW_CONNECT_TIMEOUT_S
         while time.monotonic() < deadline:
-            frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
             if frame.get("type") == "res" and frame.get("id") == req_id:
                 if not frame.get("ok"):
                     # Stale device token from a gateway restart? Retry the
@@ -443,7 +449,7 @@ class GatewayClient:
                 log.info("handshake ok (protocol %s)", proto)
                 return
             self._dispatch_obj(frame)
-        raise ConnectionError("gateway connect: no response in 10s")
+        raise ConnectionError(f"gateway connect: no response in {GW_CONNECT_TIMEOUT_S:g}s")
 
     def _dispatch(self, raw):
         try:
@@ -563,6 +569,15 @@ class MeshSide:
 
     async def connect(self):
         self.mc = await MeshCore.create_serial(SERIAL_DEVICE, SERIAL_BAUD)
+        # meshcore_py disconnects and returns None when the port opens but the
+        # companion firmware never replies. Report the actual failure instead
+        # of hiding it behind an AttributeError from subscribe().
+        if self.mc is None:
+            raise ConnectionError(
+                f"no companion protocol response on {SERIAL_DEVICE} at {SERIAL_BAUD} baud; "
+                "check the radio, USB connection, Companion Radio USB firmware, "
+                "and recreate the container if the USB device was re-enumerated"
+            )
         self.mc.subscribe(EventType.CONTACT_MSG_RECV, self._handle_rx)
         if CHANNEL_IDX is not None:
             self.mc.subscribe(EventType.CHANNEL_MSG_RECV, self._handle_chan_rx)

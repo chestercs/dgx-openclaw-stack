@@ -20,6 +20,9 @@ T-Deck (standalone MeshCore)          stack host
 
 Full operator guide: [`docs/reference/meshcore-bridge.md`](../docs/reference/meshcore-bridge.md).
 
+Gateway image updates and serial-link recovery:
+[`docs/OPENCLAW_UPGRADE.md`](../docs/OPENCLAW_UPGRADE.md).
+
 ## Why a persistent WS connection
 
 `openclaw agent --message ...` pays ~25–45 s of gateway WS session setup on
@@ -88,3 +91,16 @@ essentials: `MESHCORE_SERIAL_DEVICE` (use the `/dev/serial/by-id/…` path),
 `MESHCORE_ACK_AFTER_S` (late-ack ping). The gateway token is auto-read from
 the read-only-mounted OpenClaw config (`gateway.remote.token`) — no manual
 token copying.
+
+`MESHCORE_GW_CONNECT_TIMEOUT_S` and `MESHCORE_GW_PING_TIMEOUT_S` default to 60
+seconds. They tolerate temporary Gateway stalls without constant reconnects.
+A missing serial-companion response is a separate radio/USB problem.
+
+## Tests
+
+```bash
+docker build -t openclaw-meshcore-bridge:0.1.1 openclaw-meshcore-bridge
+docker run --rm -v "$PWD/openclaw-meshcore-bridge/tests:/tests:ro" \
+  --entrypoint python openclaw-meshcore-bridge:0.1.1 \
+  -m unittest discover -s /tests -v
+```
