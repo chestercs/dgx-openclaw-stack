@@ -1,22 +1,32 @@
-# HEARTBEAT — autonóm folyamatos haladás (discord-friend)
+# HEARTBEAT — opt-in autonóm haladás (discord-friend)
 
-Ez a fájl a discord-friend agent workspace-ében (`workspace-discord/HEARTBEAT.md`) él.
-A heartbeat (0-24, 30 percenként, izolált friss session) beolvassa és követi.
+A heartbeat 30 percenként, izolált friss sessionben fut. **Alapállapot: nincs teendő.**
+Autonóm munka CSAK akkor van, ha a user kifejezetten kérte, és ez a `memory/active-project.md`
+fájlban rögzítve van.
 
-tasks:
+1. Hívj EGY `read`-et: `/home/node/.openclaw/workspace-discord/memory/active-project.md`.
+   - Ha a fájl nem létezik, üres, vagy nincs benne `status: active` sor → válaszolj pontosan
+     `HEARTBEAT_OK`, és SEMMILYEN más toolt ne hívj. Ne keress, ne listázz mappákat, ne találj ki projektet.
+2. Ha `status: active`: a fájl megadja a projekt mappáját (`path:`) és a TODO fájl pontos útvonalát
+   (`todo:`). CSAK ezen a kettőn belül dolgozz.
+   - Csináld meg a TODO KÖVETKEZŐ EGY kicsi, ellenőrizhető lépését; jelöld késznek a TODO-ban.
+   - Kódprojektnél commitold a `python_sandbox__git_push`-sal, ha a fájl `repo:` sort is tartalmaz.
+   - Fűzz egy sort a `memory/heartbeat-progress.md`-hez: dátum + mit csináltál + mi a következő lépés.
+3. Hibakezelés: `edit` „Could not find the exact text” → `read`-eld be a fájlt, és EGYSZER próbáld újra.
+   Ha megint elbukik, vagy hiányzik egy fájl, vagy user-döntés kell: írd az `active-project.md`-be
+   `status: blocked` + egy sor indoklás, és válaszolj `HEARTBEAT_OK`. Ugyanazt a hívást SOHA ne ismételd.
+4. Ha a TODO-ban nincs több nyitott lépés: `status: done`, és `HEARTBEAT_OK`.
 
-- name: advance-active-project
-  interval: 30m
-  prompt: |
-    Van-e AKTÍV fejlesztési projekt befejezetlen TODO-val? Forrás: a legutóbbi canvas-beli
-    projekt (`/home/node/.openclaw/canvas/<projekt>/`) docs/spec/TODO fájljai + `memory/roadmap.md`.
-    HA van befejezetlen lépés:
-      1. Csináld meg a KÖVETKEZŐ EGY, kicsi, ellenőrizhető lépést (kód / doc / asset).
-      2. Kódprojektnél: buildeld / ellenőrizd a lépést; commitold a `python_sandbox__git_push`-sal
-         (`force=true` ha a remote divergál, vagy új repo-név).
-      3. Jelöld a lépést késznek a projekt saját TODO-jában.
-      4. Fűzz EGY rövid sort a `memory/heartbeat-progress.md`-hez: a mai dátum + mit csináltál + mi a következő lépés.
-    SZABÁLYOK: EGY lépés / heartbeat (ne csinálj többet egy ciklusban). SOHA ne találj ki munkát —
-    csak valódi, dokumentált TODO-n haladj. Kis, visszafordítható lépések (a git a védőháló).
-    HA nincs befejezetlen task, VAGY blokkolva vagy, VAGY user-döntés kell:
-    válaszolj `HEARTBEAT_OK` (ne spamelj, ne ígérj jövőbeli/háttér-munkát a következő heartbeaten túl).
+Egy heartbeat = legfeljebb egy lépés. Ne ígérj háttérmunkát, ne küldj üzenetet a usernek, hacsak
+az `active-project.md` `notify:` sora kifejezetten kéri.
+
+Bekapcsolás (user kérésére, Discordon): „dolgozz ezen magadtól” → hozd létre a
+`memory/active-project.md`-t így:
+
+```
+status: active
+path: /home/node/.openclaw/canvas/<projekt>/
+todo: /home/node/.openclaw/canvas/<projekt>/TODO.md
+repo: <github-repo-név, opcionális>
+notify: <channel:<id>, opcionális>
+```

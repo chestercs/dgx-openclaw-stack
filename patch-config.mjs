@@ -232,6 +232,10 @@
 //      agent (MESHCORE_AGENT_ID) and an optional shared-channel agent
 //      (MESHCORE_CHANNEL_AGENT_ID) whose separate workspace gives it
 //      separate memory. Env-gated by MESHCORE_ENABLED (default off).
+//  43. 2026.10 tool-surface and routing defaults (see the step body):
+//      43a tools.toolSearch off, 43b Discord-agent tools.deny trim,
+//      43c systemAgent → main, 43d channels.discord.defaultTo.
+//      Also: LLM_DENSE_ENABLED=off unregisters the parked dense provider (3a/3b).
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -249,6 +253,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 const CONFIG_PATH = '/home/node/.openclaw/openclaw.json';
 
@@ -333,7 +338,16 @@ if (
 // Dense-side: just the one hard-coded entry. (If a future community quant of
 // the dense 31B needs catalog registration, add another env-knob mirroring
 // the MoE pattern; not worth the complexity until that's a real use case.)
-const LLM_DENSE_ENTRIES = [LLM_MODEL_ENTRY_DENSE];
+//
+// LLM_DENSE_ENABLED=off unregisters the dense provider entirely. The dense
+// service is profile-gated (`--profile dense`) and does not fit next to the
+// MoE on GB10, so a registered-but-absent `vllm-dense` provider only produced
+// ENOTFOUND model probes and a model picker entry that could never answer
+// (seen 2026-10-16 on 2026.10.3). Default `on` keeps older deploys unchanged.
+const LLM_DENSE_ON = !['off', 'false', '0', 'no'].includes(
+  String(process.env.LLM_DENSE_ENABLED ?? 'on').trim().toLowerCase(),
+);
+const LLM_DENSE_ENTRIES = LLM_DENSE_ON ? [LLM_MODEL_ENTRY_DENSE] : [];
 
 if (!fs.existsSync(CONFIG_PATH)) {
   console.log(`[patch-config] ${CONFIG_PATH} does not exist yet — onboarding has not run. Skipping patch.`);
@@ -350,6 +364,39 @@ try {
 }
 
 let changed = false;
+
+// OpenClaw 2026.10 uses keyed agents.entries after Doctor migrates the old
+// agents.list roster. Keep the existing patch steps operating on a temporary
+// list, then restore the canonical representation before writing. Otherwise
+// each init run would reintroduce a retired key or lose newly added agents
+// when Doctor prefers an already-existing agents.entries object.
+const usesKeyedAgents = config.agents?.entries !== undefined;
+if (usesKeyedAgents) {
+  const entries = config.agents.entries;
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries) || config.agents.list !== undefined) {
+    throw new Error('Invalid or conflicting agent roster; run openclaw doctor --fix before the config patcher.');
+  }
+  config.agents.list = Object.entries(entries).map(([id, entry]) => ({ ...entry, id }));
+  delete config.agents.entries;
+  // Project migrated settings into the older patch steps without discarding
+  // user-managed canonical values. The final projection below writes only
+  // the current schema. The live 2026.6.1 deployment keeps its original shape.
+  config.agents.defaults ??= {};
+  config.agents.defaults.memorySearch = structuredClone(config.memory?.search ?? {});
+  config.messages ??= {};
+  if (config.tts) {
+    config.messages.tts = structuredClone(config.tts);
+    const openai = config.messages.tts.providers?.openai;
+    if (openai?.speakerVoiceId !== undefined) openai.voiceId = openai.speakerVoiceId;
+  }
+  const media = config.tools?.media;
+  if (Array.isArray(media?.models)) {
+    media.audio ??= {};
+    media.audio.models = media.models
+      .filter((model) => model.capabilities?.includes('audio'))
+      .map((model) => structuredClone(model));
+  }
+}
 
 // (1) Remove legacy capabilities key (old schema).
 if (config?.models?.providers?.vllm?.capabilities !== undefined) {
@@ -437,44 +484,51 @@ if (vllm) {
 //      the URL — the catalog stays sane.
 config.models ??= {};
 config.models.providers ??= {};
-config.models.providers['vllm-dense'] ??= {};
-const vllmDense = config.models.providers['vllm-dense'];
-const desiredDenseCore = {
-  baseUrl: LLM_DENSE_BASE_URL,
-  api: LLM_API,
-  // Same 1800s ceiling as the MoE provider (step 2) — the dense 31B prefill on
-  // a 41 KB+ AGENTS.md context can exceed 120s on its own (measured ~2 min,
-  // 2026-06-08), and the old 300s default still tripped on cold multi-step runs.
-  timeoutSeconds: parseInt(process.env.LLM_REQUEST_TIMEOUT_SECONDS || '1800', 10),
-};
-if (VLLM_API_KEY) desiredDenseCore.apiKey = VLLM_API_KEY;
-for (const [k, v] of Object.entries(desiredDenseCore)) {
-  if (vllmDense[k] !== v) {
-    const prev = vllmDense[k];
-    vllmDense[k] = v;
-    changed = true;
-    const shown = k === 'apiKey' ? `${String(v).slice(0, 4)}...(len=${String(v).length})` : v;
-    const prevShown = k === 'apiKey' && typeof prev === 'string' ? `(len=${prev.length})` : prev;
-    console.log(`[patch-config] models.providers.vllm-dense.${k}: ${prevShown ?? '(unset)'} -> ${shown}`);
-  }
+if (!LLM_DENSE_ON && config.models.providers['vllm-dense']) {
+  delete config.models.providers['vllm-dense'];
+  changed = true;
+  console.log('[patch-config] models.providers.vllm-dense removed (LLM_DENSE_ENABLED=off).');
 }
-vllmDense.models ??= [];
-for (const entry of LLM_DENSE_ENTRIES) {
-  const existing = vllmDense.models.find((m) => m?.id === entry.id);
-  if (!existing) {
-    vllmDense.models.push(entry);
-    changed = true;
-    console.log(`[patch-config] vllm-dense.models[] += ${entry.id}.`);
-  } else {
-    const before = JSON.stringify(existing);
-    for (const [k, v] of Object.entries(entry)) {
-      if (JSON.stringify(existing[k]) !== JSON.stringify(v)) {
-        existing[k] = v;
-      }
-    }
-    if (JSON.stringify(existing) !== before) {
+if (LLM_DENSE_ON) {
+  config.models.providers['vllm-dense'] ??= {};
+  const vllmDense = config.models.providers['vllm-dense'];
+  const desiredDenseCore = {
+    baseUrl: LLM_DENSE_BASE_URL,
+    api: LLM_API,
+    // Same 1800s ceiling as the MoE provider (step 2) — the dense 31B prefill on
+    // a 41 KB+ AGENTS.md context can exceed 120s on its own (measured ~2 min,
+    // 2026-06-08), and the old 300s default still tripped on cold multi-step runs.
+    timeoutSeconds: parseInt(process.env.LLM_REQUEST_TIMEOUT_SECONDS || '1800', 10),
+  };
+  if (VLLM_API_KEY) desiredDenseCore.apiKey = VLLM_API_KEY;
+  for (const [k, v] of Object.entries(desiredDenseCore)) {
+    if (vllmDense[k] !== v) {
+      const prev = vllmDense[k];
+      vllmDense[k] = v;
       changed = true;
-      console.log(`[patch-config] vllm-dense.models[] updated ${entry.id}.`);
+      const shown = k === 'apiKey' ? `${String(v).slice(0, 4)}...(len=${String(v).length})` : v;
+      const prevShown = k === 'apiKey' && typeof prev === 'string' ? `(len=${prev.length})` : prev;
+      console.log(`[patch-config] models.providers.vllm-dense.${k}: ${prevShown ?? '(unset)'} -> ${shown}`);
+    }
+  }
+  vllmDense.models ??= [];
+  for (const entry of LLM_DENSE_ENTRIES) {
+    const existing = vllmDense.models.find((m) => m?.id === entry.id);
+    if (!existing) {
+      vllmDense.models.push(entry);
+      changed = true;
+      console.log(`[patch-config] vllm-dense.models[] += ${entry.id}.`);
+    } else {
+      const before = JSON.stringify(existing);
+      for (const [k, v] of Object.entries(entry)) {
+        if (JSON.stringify(existing[k]) !== JSON.stringify(v)) {
+          existing[k] = v;
+        }
+      }
+      if (JSON.stringify(existing) !== before) {
+        changed = true;
+        console.log(`[patch-config] vllm-dense.models[] updated ${entry.id}.`);
+      }
     }
   }
 }
@@ -488,6 +542,17 @@ config.agents ??= {};
 config.agents.defaults ??= {};
 config.agents.defaults.models ??= {};
 config.agents.defaults.model ??= {};
+// 2026.10 Doctor stores the default model as a bare string; older schemas
+// used { primary, fallbacks }. Read and write in whichever shape is present
+// (writing `.primary` onto the string crashed config-init after the upgrade).
+const readPrimary = () => {
+  const m = config.agents.defaults.model;
+  return typeof m === 'string' ? m : m?.primary;
+};
+const writePrimary = (id) => {
+  if (typeof config.agents.defaults.model === 'string') config.agents.defaults.model = id;
+  else config.agents.defaults.model.primary = id;
+};
 
 // Known keys after migration: MoE-side under vllm/, dense under vllm-dense/.
 const knownModelKeys = [
@@ -511,18 +576,39 @@ for (const k of knownModelKeys) {
     console.log(`[patch-config] agents.defaults.models["${k}"] = {} (added).`);
   }
 }
-const currentPrimary = config.agents.defaults.model.primary;
+// Drop local-provider keys that no longer name a served model (e.g. the
+// pre-NVFP4 `vllm/google/gemma-4-31B-it`, or `vllm-dense/*` once
+// LLM_DENSE_ENABLED=off). Stale keys surface as dead picker entries and in
+// modelPolicy.allow. Other providers' keys (openai/*, …) are user-managed.
+const isLocalModelKey = (k) => typeof k === 'string' && /^vllm(-dense)?\//.test(k);
+for (const k of Object.keys(config.agents.defaults.models)) {
+  if (isLocalModelKey(k) && !knownModelKeys.includes(k)) {
+    delete config.agents.defaults.models[k];
+    changed = true;
+    console.log(`[patch-config] agents.defaults.models: removed stale "${k}".`);
+  }
+}
+const modelPolicyAllow = config.agents.defaults.modelPolicy?.allow;
+if (Array.isArray(modelPolicyAllow)) {
+  const kept = modelPolicyAllow.filter((k) => !isLocalModelKey(k) || knownModelKeys.includes(k));
+  if (kept.length !== modelPolicyAllow.length) {
+    console.log(`[patch-config] agents.defaults.modelPolicy.allow: removed ${modelPolicyAllow.filter((k) => !kept.includes(k)).join(', ')}.`);
+    config.agents.defaults.modelPolicy.allow = kept;
+    changed = true;
+  }
+}
+const currentPrimary = readPrimary();
 if (currentPrimary !== desiredPrimary) {
   // Migrate stale `vllm/<dense>` primary to `vllm-dense/<dense>` if the
   // operator had picked dense in the old single-provider layout.
   if (currentPrimary === staleDenseKey) {
-    config.agents.defaults.model.primary = correctDenseKey;
+    writePrimary(correctDenseKey);
     changed = true;
     console.log(`[patch-config] agents.defaults.model.primary migrated: ${staleDenseKey} -> ${correctDenseKey}`);
   } else if (currentPrimary && knownModelKeys.includes(currentPrimary)) {
     console.log(`[patch-config] agents.defaults.model.primary preserved at user-set ${currentPrimary} (registered in catalog).`);
   } else {
-    config.agents.defaults.model.primary = desiredPrimary;
+    writePrimary(desiredPrimary);
     changed = true;
     console.log(`[patch-config] agents.defaults.model.primary: ${currentPrimary ?? '(unset)'} -> ${desiredPrimary}`);
   }
@@ -1323,11 +1409,30 @@ if (agentTimeoutRaw && agentTimeoutRaw !== 'off' && agentTimeoutRaw !== 'skip') 
 //
 //      Same schema-gated posture as 8i (agents.defaults family): empty env =
 //      no-op, value = write, "off" = remove.
-const agentCtxTokensRaw = process.env.OPENCLAW_AGENT_CONTEXT_TOKENS?.trim();
+const legacyContextTokens = config.agents?.defaults?.contextTokens;
+const agentCtxTokensRaw = process.env.OPENCLAW_AGENT_CONTEXT_TOKENS?.trim()
+  || (usesKeyedAgents && legacyContextTokens !== undefined ? String(legacyContextTokens) : undefined);
+if (usesKeyedAgents && legacyContextTokens !== undefined) {
+  delete config.agents.defaults.contextTokens;
+  changed = true;
+}
 if (agentCtxTokensRaw && agentCtxTokensRaw !== 'off' && agentCtxTokensRaw !== 'skip') {
   const n = parseInt(agentCtxTokensRaw, 10);
   if (!Number.isFinite(n) || n <= 0) {
     console.warn(`[patch-config] OPENCLAW_AGENT_CONTEXT_TOKENS=${JSON.stringify(agentCtxTokensRaw)} not a positive integer — skipping.`);
+  } else if (usesKeyedAgents) {
+    // Current OpenClaw budgets context per model. Preserve native window
+    // metadata, and retain the operator's global budget as a runtime cap.
+    for (const provider of Object.values(config.models?.providers ?? {})) {
+      for (const model of provider.models ?? []) {
+        const cap = Math.min(n, model.contextWindow ?? n);
+        if (model.contextTokens !== cap) {
+          model.contextTokens = cap;
+          changed = true;
+          console.log(`[patch-config] model ${model.id}.contextTokens = ${cap}`);
+        }
+      }
+    }
   } else {
     config.agents ??= {};
     config.agents.defaults ??= {};
@@ -1338,10 +1443,21 @@ if (agentCtxTokensRaw && agentCtxTokensRaw !== 'off' && agentCtxTokensRaw !== 's
       console.log(`[patch-config] agents.defaults.contextTokens: ${prev ?? '(unset)'} -> ${n}`);
     }
   }
-} else if ((agentCtxTokensRaw === 'off' || agentCtxTokensRaw === 'skip') && config.agents?.defaults?.contextTokens !== undefined) {
-  delete config.agents.defaults.contextTokens;
-  changed = true;
-  console.log('[patch-config] removed agents.defaults.contextTokens (env off — self-heal)');
+} else if (agentCtxTokensRaw === 'off' || agentCtxTokensRaw === 'skip') {
+  if (usesKeyedAgents) {
+    for (const provider of Object.values(config.models?.providers ?? {})) {
+      for (const model of provider.models ?? []) {
+        if (model.contextTokens !== undefined) {
+          delete model.contextTokens;
+          changed = true;
+        }
+      }
+    }
+  } else if (config.agents?.defaults?.contextTokens !== undefined) {
+    delete config.agents.defaults.contextTokens;
+    changed = true;
+    console.log('[patch-config] removed agents.defaults.contextTokens (env off — self-heal)');
+  }
 }
 const ctxPruneModeRaw = (process.env.OPENCLAW_AGENT_CONTEXT_PRUNING_MODE || '').trim().toLowerCase();
 if (ctxPruneModeRaw === 'cache-ttl') {
@@ -2331,8 +2447,13 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
   const currentMode = typeof config.channels.discord.streaming === 'string'
     ? config.channels.discord.streaming
     : config.channels.discord.streaming?.mode;
+  if (typeof config.channels.discord.streaming === 'string') {
+    config.channels.discord.streaming = { mode: currentMode };
+    changed = true;
+    console.log('[patch-config] migrated channels.discord.streaming to { mode } (required by 2026.6.1+).');
+  }
   if (config.channels.discord.streaming === undefined) {
-    config.channels.discord.streaming = streamingMode;
+    config.channels.discord.streaming = { mode: streamingMode };
     changed = true;
     console.log(
       `[patch-config] channels.discord.streaming = ${JSON.stringify(streamingMode)} ` +
@@ -2342,11 +2463,7 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
   } else if (envExplicit && currentMode !== streamingMode) {
     // Preserve the nested object form if the operator already toggled
     // streaming.preview.toolProgress; only swap the `mode` field.
-    if (typeof config.channels.discord.streaming === 'string') {
-      config.channels.discord.streaming = streamingMode;
-    } else {
-      config.channels.discord.streaming.mode = streamingMode;
-    }
+    config.channels.discord.streaming.mode = streamingMode;
     changed = true;
     console.log(
       `[patch-config] channels.discord.streaming overridden to ${JSON.stringify(streamingMode)} ` +
@@ -3403,7 +3520,10 @@ if (toolsExecOn) {
 const execApprovalsSeedOn = !['off', '0', 'false', 'no'].includes(
   (process.env.OPENCLAW_EXEC_APPROVALS_SEED || 'on').trim().toLowerCase(),
 );
-if (execApprovalsSeedOn && toolsExecOn) {
+// Current releases store approval policy in SQLite. Doctor imports the old
+// file and preserves manual grants; recreating it here creates a conflicting
+// legacy source that blocks the next Gateway startup.
+if (execApprovalsSeedOn && toolsExecOn && !usesKeyedAgents) {
   const apPath = path.join(path.dirname(CONFIG_PATH), 'exec-approvals.json');
   let ap = null;
   if (fs.existsSync(apPath)) {
@@ -3859,26 +3979,27 @@ const WORKSPACE_DISCORD_AGENTS_PATH = '/home/node/.openclaw/workspace-discord/AG
 const CRON_CHEATSHEET_START = '<!-- patch-config:cron-tools:start -->';
 const CRON_CHEATSHEET_END = '<!-- patch-config:cron-tools:end -->';
 const CRON_CHEATSHEET_BODY =
-  '\n## Időzített akciók — `cron` tool\n\n' +
+  '\n## Időzített akciók — `automations` tool (régi neve `cron`, az is működik)\n\n' +
   '🚨 **CSAK akkor használj cron-t, ha a user EXPLICIT ismétlődő vagy jövőbeli ELKÜLDÉST / EMLÉKEZTETŐT kér** ("emlékeztess", "minden reggel küldj", "5 perc múlva szólj", "naponta"). 🚫 **NEM cron — egy jövőbeli INFÓ kérdése:** "csütörtökön milyen idő lesz", "mi lesz a meccs eredménye", "milyen hírek jönnek" — ezek a célnap ADATÁT kérik MOST (pl. az open-meteo 7-16 napot ad ELŐRE), tehát AZONNAL nézd meg (python_exec / web_search) és válaszolj. A "csütörtökön" a kért adat NAPJÁT jelöli, NEM a művelet ütemezését. Ha bizonytalan vagy: alapból nézd meg MOST, ne ütemezz cron-t.\n\n' +
-  'Ha a user időzített akciót kér ("X múlva csinálj Y-t", "holnap reggel\n' +
-  'küldj…", "emlékeztess 5 perc múlva"), ne hajtsd végre most — `cron add`\n' +
-  'a végrehajtandó message-dzsel, és a wake-up turn-ben te magad fogod azt\n' +
-  'a message-et user-promptként megkapni és akkor végrehajtani.\n\n' +
+  'Ha a user időzített akciót kér ("X múlva szólj", "holnap reggel küldj…", "minden hétfőn"), NE most hajtsd végre — ' +
+  'hozz létre egy automationt, és a futáskor te kapod meg a `message`-et feladatként.\n\n' +
+  '🚨 Az `automations` tool argumentuma `action` + `job` OBJEKTUM (a régi lapos `at`/`to`/`deleteAfterRun` forma NEM működik). ' +
+  'SOHA ne próbáld `exec`-ből (`crontab`, `curl`, `sleep`) — azok nem léteznek / nem futnak tovább. ' +
+  'Csak akkor mondd hogy "beállítottam", ha a tool-result `ok`/`jobId`-t adott.\n\n' +
+  'Egyszeri (ugyanebbe a beszélgetésbe jön vissza):\n' +
   '```json\n' +
-  '{"tool":"cron","action":"add","at":"+1m","agent":"discord-friend",\n' +
-  ' "message":"<akció szövege>","channel":"discord",\n' +
-  ' "to":"<chat_id from inbound metadata>","deleteAfterRun":true}\n' +
+  '{"action":"add","job":{"name":"szemet-emlekezteto",\n' +
+  ' "schedule":{"kind":"at","at":"2026-10-17T08:00:00+02:00"},\n' +
+  ' "sessionTarget":"current",\n' +
+  ' "payload":{"kind":"agentTurn","message":"Emlékeztesd a usert: vigye le a szemetet."}}}\n' +
   '```\n\n' +
-  '- `at`: `+Nm` / `+Nh` / `+Ns` relatív, vagy ISO timestamp tz-offsettel.\n' +
-  '- Recurring: `at` helyett `"cron":"0 9 * * 1","tz":"Europe/Budapest"`.\n' +
-  '- List + cancel: `{"action":"list"}` → id, majd `{"action":"rm","id":…}`.\n\n' +
-  'Gotcha — `to` mező:\n' +
-  '- Guild-csatornán (`is_group_chat: true` az inbound metadatában): másold\n' +
-  '  az inbound `chat_id` értékét (`channel:<NUMBER>`).\n' +
-  '- DM-ben (`chat_id` `user:<id>` formátumban): a delivery resolver a\n' +
-  '  `user:<id>` formára `Tool cron not found`-ot ad. Helyette a\n' +
-  '  `USER.md` "Admin DM channel ID" mezőjéből vett `channel:<dm-id>` kell.\n';
+  '- `at`: ISO-8601 idő IDŐZÓNA-ELTOLÁSSAL (tz nélkül UTC!). Relatív kérésnél előbb számold ki: ' +
+  '`exec` `TZ=Europe/Budapest date -d "+5 minutes" -Iseconds` (vagy `"tomorrow 08:00"`).\n' +
+  '- Ismétlődő: `"schedule":{"kind":"cron","expr":"0 9 * * 1","tz":"Europe/Budapest"}` (falióra-idő, NE számold át UTC-re).\n' +
+  '- `sessionTarget:"current"` = az eredmény ebbe a csatornába/DM-be érkezik — `to`/`channel` NEM kell. ' +
+  'Másik csatornára: `"delivery":{"mode":"announce","channel":"discord","to":"channel:<SZÁM>"}` — a számot az inbound metadatából másold, SOHA ne találd ki.\n' +
+  '- Listázás / törlés: `{"action":"list"}` → `jobId`, majd `{"action":"remove","jobId":"…"}`.\n' +
+  '- A futó automation-ban NE küldj külön `message`-et: a futás végső válasza maga a kézbesítés.\n';
 
 // Step 27 cheatsheet — image-gen workflow picker. Body interpolates the
 // configured IMAGE_GEN_DEFAULT_WORKFLOW so the cheatsheet stays accurate
@@ -4328,11 +4449,13 @@ const SKILL_ROUTER_BODY =
   '2. Kövesd a beolvasott receptet a VALÓDI tool-okkal (python_exec, browser, web_search, …).\n' +
   '3. Ha a read nem megy, a fenti tools-listából improvizálj — de SOHA ne mondd hogy "nincs ilyen tool-om", és ne add fel.\n\n' +
   'Mikor melyik skillt olvasd (trigger → skill):\n\n' +
-  '- "emlékeztess / X múlva szólj / minden reggel" → `cron-reminders`\n' +
+  '- "emlékeztess / X múlva szólj / minden reggel" → `cron-reminders`. Mag: az `automations` tool, ' +
+  '`{"action":"add","job":{"schedule":{"kind":"at","at":"<ISO+02:00>"},"sessionTarget":"current","payload":{"kind":"agentTurn","message":"…"}}}`; ' +
+  'SOHA nem exec/crontab, és "beállítottam" csak `jobId` után.\n' +
   '- weboldal megnyitás / screenshot / kattintás / űrlap → `browser-automation` (browser.act param-formák!). ' +
   '**Screenshot CSATOLÁSA (inline mag):** a screenshot tool-result csak szöveges leírás, magától SEMMI nem csatolódik — ' +
-  'a PNG path-ja a result `[saved: …]` sorában van; a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor legyen, ' +
-  'a path-t a `[saved:]`-ből SZÓ SZERINT másolva (SOHA fejből — kitalált path = Media failed; fallback: exec `ls -t …/media/browser/*.png | head -1`). ' +
+  'a megosztható PNG path-ja a result `[Screenshot saved to "…"]` sorában van (az idézőjelek közti rész); a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor legyen, ' +
+  'a path-t onnan SZÓ SZERINT másolva (SOHA fejből — kitalált path = Media failed; fallback: exec `ls -t …/media/browser/*.png | head -1`). ' +
   '**"Csak ezt a dobozt/részt"** → snapshot-ref + `screenshot{targetId,ref:"eNN"}` (elem-screenshot, NE utólagos crop). ' +
   '🚨 Kép-crop az `exec`-ben TILOS (`python3 -c "from PIL…"` = ModuleNotFoundError, a gateway-ben nincs Pillow) — ' +
   'PIL CSAK a python_sandboxban; a media→canvas másolás receptje a skillben.\n' +
@@ -4387,35 +4510,32 @@ const THREAD_TASKS_BODY =
 // from the orchestration block) + the param-shape cheatsheet that already
 // exists as TOOLS_CHEATSHEET_BODY (defined above, reused verbatim).
 //
-// Screenshot-attach recipe (2026-06-11): the screenshot action does NOT
-// auto-attach anything. The gateway saves the PNG to
-// ~/.openclaw/media/browser/<uuid>.png, vision-describes it, and hands the
-// model ONLY the text description — the file path travels in the tool
-// result's `details`, which the model never sees (verified in the live
-// trajectory + dist: plugin-service describeBrowserScreenshot). The working
-// chain is exec-ls for the newest PNG + a trailing `MEDIA:<path>` reply line
-// (payloads MEDIA_TOKEN_RE → channel attachment; <stateDir>/media is in
-// buildMediaLocalRoots, so the path passes the local-roots check).
+// Screenshot-attach recipe: the screenshot action does NOT auto-attach
+// anything; the model must end its reply with a `MEDIA:<path>` line
+// (payloads MEDIA_TOKEN_RE → channel attachment). Since 2026.10 the tool
+// result itself carries `[Screenshot saved to "<path>". A sanitized outbound
+// copy is ready …]` (browser-request bundle, stageBrowserScreenshotForSharing),
+// which replaced the base-ext `[saved: <path>]` runtime patch. exec-ls for the
+// newest PNG stays as the fallback.
 const BROWSER_SKILL_BODY =
   '## Browser tool — action API és láncok\n\n' +
   'Egyetlen `browser` tool van, `action` paraméterrel (a régi `browser__navigate/screenshot` neveket nyugdíjazták). ' +
   'Action-ök: `open`{url,label} → stabil `targetId`-t ad; `snapshot`{targetId,refs:"aria"} → DOM+elem-refs klikkhez; ' +
-  '`screenshot`{targetId} → a tool-result CSAK szöveges vision-leírás a képről; maga a PNG a gateway-en a ' +
-  '`/home/node/.openclaw/media/browser/<uuid>.png` alá mentődik, de a pontos path NEM látszik a resultban — csatoláshoz lásd a screenshot-láncot lent; ' +
+  '`screenshot`{targetId} → a tool-result szöveges vision-leírás a képről + egy `[Screenshot saved to "<path>"…]` sor a megosztható PNG path-jával — csatoláshoz lásd a screenshot-láncot lent; ' +
   '`screenshot`{targetId,ref:"eNN"} → CSAK az adott elem (snapshot-ref) képe, NEM a teljes oldal — "csak ezt a dobozt/részt fotózd" kéréshez EZT használd, ne utólagos crop-ot; ' +
   '`act`{targetId,ref,…} klikk/gépelés; ' +
   '`tabs` / `close`{targetId}. A default profile `self-hosted` (openclaw-browser sidecar) — NE adj `target="sandbox/host"`-ot ' +
   '(a gateway containerben nincs browser binary).\n\n' +
   '**Láncok:**\n' +
   '- **"csinálj screenshotot X-ről" (a user CSATOLT képet vár):** (1) `browser({action:"open", url:"X", label:"shot"})`; ' +
-  '(2) `browser({action:"screenshot", targetId:"shot"})` → a tool-result fejlécében ott a `[saved: /home/node/.openclaw/media/browser/<uuid>.png]` sor; ' +
-  '(3) a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor, a path a CSATOLNI KÍVÁNT screenshot `[saved: …]` sorából SZÓ SZERINT másolva — ezt a sort a Discord valódi kép-attachmentté alakítja. ' +
-  '🚨 A MEDIA-path-ot SOHA ne írd fejből/emlékezetből: ha nincs meg a `[saved:]` sor, kérd el `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1`-gyel — kitalált/régi path = "Media failed" + rossz kép. ' +
+  '(2) `browser({action:"screenshot", targetId:"shot"})` → a tool-result végén ott a `[Screenshot saved to "<path>". …]` sor; ' +
+  '(3) a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor, a path a CSATOLNI KÍVÁNT screenshot `[Screenshot saved to "…"]` sorából (az idézőjelek közül) SZÓ SZERINT másolva — ezt a sort a Discord valódi kép-attachmentté alakítja. ' +
+  '🚨 A MEDIA-path-ot SOHA ne írd fejből/emlékezetből: ha nincs meg a `[Screenshot saved to …]` sor, kérd el `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1`-gyel — kitalált/régi path = "Media failed" + rossz kép. ' +
   '🚨 A screenshot magától SEMMIT nem csatol — MEDIA-sor nélkül a user nem kap képet; SOHA ne írj "nézd meg a csatolt fájlt"-ot MEDIA-sor nélkül. ' +
   'A MEDIA-sorban nyers abszolút path legyen (backtick és szóköz nélkül), utána semmi más szöveg; turn-önként EGY képet csatolj (a legjobbat), ne többet.\n' +
   '- **"csak ezt a dobozt/szekciót fotózd" (részlet-screenshot):** (1) `open`; (2) `snapshot`{targetId,refs:"aria"} → a hierarchiából válaszd ki a kért szekció KONTÉNER-refjét ' +
   '(parent-doboz kérésnél a kért elemet TARTALMAZÓ ref-et, NE próbálgasd sorban a refeket); ' +
-  '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → a mentett PNG MÁR a kivágott elem, a path a result `[saved: …]` sorában; ' +
+  '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → a mentett PNG MÁR a kivágott elem, a path a result `[Screenshot saved to "…"]` sorában; ' +
   '(4) ellenőrizd a vision-leírásból hogy a jó kivágás-e — ha igen, ÁLLJ LE és csatold a `MEDIA:` sorral; max 2-3 ref-próba, utána a teljes oldalt add. ' +
   'Ez az ELSŐDLEGES út — gyorsabb és pontosabb, mint utólag croppolni. ' +
   '🚨 A `screenshot` TOP-LEVEL action — HELYES: `{action:"screenshot", targetId, ref}`; HIBÁS: `{action:"act", kind:"screenshot", ref}` ' +
@@ -4468,10 +4588,11 @@ const CODING_PROJECTS_SKILL_BODY =
 // long-task-workboard skill — card-based tracking for multi-hour work.
 const LONG_TASK_WORKBOARD_SKILL_BODY =
   '## Hosszú munka workboard-kártyával\n\n' +
-  'Többórás / több-lépéses, trackelhető munkához (a user kérheti is: "kövessük kártyán"):\n' +
-  '- `/workboard create <cím> --notes <leírás>` — kártya; `--agent <id>`-vel agenthez köthető.\n' +
-  '- `/workboard dispatch` — a ready kártyák subagent worker-runokba indulnak; a kártya tárolja a runId-t, a session-kulcsot és a worker-logot.\n' +
-  '- `/workboard list` / `/workboard show <id>` — állapot-lekérdezés.\n' +
+  'Többórás / több-lépéses, trackelhető munkához (a user kérheti is: "kövessük kártyán") a workboard TOOLOKAT hívd ' +
+  '(a `/workboard …` szöveg a chatben NEM fut le — az csak a user slash-parancsa):\n' +
+  '- `workboard_create` — kártya címmel + leírással; agenthez köthető.\n' +
+  '- `workboard_dispatch` — a ready kártyák subagent worker-runokba indulnak; a kártya tárolja a runId-t, a session-kulcsot és a worker-logot.\n' +
+  '- `workboard_list` / `workboard_read` — állapot-lekérdezés; `workboard_complete` — kész-jelölés.\n' +
   '- A befejezés-értesítés push-alapú (announce / heartbeat-wake) — NE pollozz loopban.\n' +
   '- "1 napos" munkánál: kártya + dispatch + a kártya-ID-t add vissza a usernek — azzal bármikor lekérdezhető a státusz, és a munka a turn vége után is fut (worker-run, nem a te sessionöd).\n';
 
@@ -4510,7 +4631,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
     true,
     CRON_CHEATSHEET_START, CRON_CHEATSHEET_END, CRON_CHEATSHEET_BODY, 'cron-tools cheatsheet',
     'cron-reminders',
-    'Emlékeztető / időzített üzenet a cron toollal — ha a user "emlékeztess", "X múlva szólj", "minden reggel küldj" jellegű kérést ad. NEM való jövőbeli infó (időjárás, eredmény) lekérdezésére.',
+    'Emlékeztető / időzített üzenet az automations toollal (régi neve cron) — ha a user "emlékeztess", "X múlva szólj", "minden reggel küldj" jellegű kérést ad. NEM való jövőbeli infó (időjárás, eredmény) lekérdezésére.',
     CRON_CHEATSHEET_BODY,
   );
   placeRecipe(
@@ -5289,7 +5410,206 @@ async function uploadFile(url, headers, bytes, filename, caption) {
   }
 }
 
-if (!changed) {
+// ─── 43. 2026.10 tool-surface and routing defaults ───────────────────────────
+// Findings from the 2026-10-16 audit of the live 2026.10.3 gateway, each one a
+// measured cause of the Discord bot's unreliable tool calls.
+//
+// 43a. tools.toolSearch. Unset means "on" since 2026.10: the model sees a
+//      search/describe/call meta-tool instead of real schemas, and every MCP
+//      call goes through the nested `tool_call` wrapper. That wrapper returns
+//      the MCP result as JSON *text* — with the image bridge's
+//      attach_image_content it carried the PNG base64 (cut at 8000 chars) into
+//      the context, ~13.5k tokens of noise per generated image, while the
+//      image itself never reached the vision input (#smopen-ai: 22k→116k
+//      tokens in eight images). With the catalog trimmed by 43b, real schemas
+//      are cheaper and far easier for Gemma. OPENCLAW_TOOL_SEARCH:
+//      off (default) | on | directory | unset (remove our key) | "" (skip).
+const toolSearchRaw = process.env.OPENCLAW_TOOL_SEARCH;
+const toolSearchVal = (toolSearchRaw === undefined ? 'off' : toolSearchRaw.trim().toLowerCase());
+if (toolSearchVal !== '') {
+  const desiredToolSearch = {
+    off: false,
+    on: true,
+    directory: { enabled: true, mode: 'directory' },
+  }[toolSearchVal];
+  config.tools ??= {};
+  if (toolSearchVal === 'unset') {
+    if (config.tools.toolSearch !== undefined) {
+      delete config.tools.toolSearch;
+      changed = true;
+      console.log('[patch-config] tools.toolSearch removed (upstream default applies).');
+    }
+  } else if (desiredToolSearch === undefined) {
+    console.warn(`[patch-config] OPENCLAW_TOOL_SEARCH=${JSON.stringify(toolSearchRaw)} not in {off, on, directory, unset} — skipping step 43a.`);
+  } else if (!isDeepStrictEqual(config.tools.toolSearch, desiredToolSearch)) {
+    console.log(`[patch-config] tools.toolSearch: ${JSON.stringify(config.tools.toolSearch)} -> ${JSON.stringify(desiredToolSearch)}`);
+    config.tools.toolSearch = desiredToolSearch;
+    changed = true;
+  }
+}
+
+// 43b. Discord-routed agent tools.deny. The `full` profile (step 25) plus the
+//      bundled plugins gave the bot 113 tools on 2026.10.3: 42 workboard
+//      tools, node/desktop control (computer, mobile_ui, file_*), gateway and
+//      plugin admin, secrets, wiki, goals… A 26B MoE picks badly from a
+//      catalog that size, and it is why Tool Search engaged by default. The
+//      denylist removes operator/desktop surfaces a Discord persona never
+//      needs; browser, exec, memory, media MCP tools, sessions/subagents,
+//      automations and a five-tool workboard core stay. `image_generate` is
+//      denied for the same reason as step 25b's video_generate: it collides
+//      with the local comfyui_image__generate under a shorter name.
+//      Additive union (user entries survive). OPENCLAW_DISCORD_AGENT_TOOLS_DENY
+//      replaces the default list (comma-separated); unset/empty = default
+//      list (compose always passes the variable), `off` skips the step.
+const DEFAULT_DISCORD_AGENT_DENY = [
+  'computer', 'mobile_ui', 'nodes', 'node_inference', 'gateway', 'plugins', 'openclaw',
+  'secrets', 'terminal', 'portal', 'theme', 'dashboard', 'presence', 'progress_card',
+  'talk_voice', 'file_fetch', 'file_write', 'dir_list', 'dir_fetch',
+  'wiki_status', 'wiki_lint', 'wiki_apply', 'wiki_search', 'wiki_get',
+  'conversations_list', 'conversations_send', 'conversations_turn',
+  'create_goal', 'get_goal', 'update_goal', 'ask_user', 'skill_workshop', 'image_generate',
+  'workboard_link', 'workboard_claim', 'workboard_heartbeat', 'workboard_release',
+  'workboard_comment', 'workboard_proof', 'workboard_attachment_add',
+  'workboard_attachment_read', 'workboard_attachment_delete', 'workboard_block',
+  'workboard_unblock', 'workboard_move', 'workboard_boards', 'workboard_board_create',
+  'workboard_board_archive', 'workboard_board_delete', 'workboard_stats', 'workboard_runs',
+  'workboard_specify', 'workboard_decompose', 'workboard_notify_subscribe',
+  'workboard_notify_list', 'workboard_notify_events', 'workboard_notify_advance',
+  'workboard_notify_unsubscribe', 'workboard_promote', 'workboard_reassign',
+  'workboard_reclaim', 'workboard_worker_log', 'workboard_protocol_violation',
+  'workboard_sessions_board_read', 'workboard_sessions_board_update',
+  'workboard_sessions_board_move',
+];
+const discordDenyRaw = (process.env.OPENCLAW_DISCORD_AGENT_TOOLS_DENY ?? '').trim();
+const discordDeny = discordDenyRaw === ''
+  ? DEFAULT_DISCORD_AGENT_DENY
+  : discordDenyRaw.split(',').map((s) => s.trim()).filter(Boolean);
+if (discordDenyRaw.toLowerCase() !== 'off') {
+  const discordAgentIds43 = new Set(
+    (config.bindings ?? [])
+      .filter((b) => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
+      .map((b) => b.agentId),
+  );
+  for (const agent of config.agents?.list ?? []) {
+    if (!discordAgentIds43.has(agent?.id)) continue;
+    agent.tools ??= {};
+    const existing = Array.isArray(agent.tools.deny) ? agent.tools.deny : [];
+    const added = discordDeny.filter((t) => !existing.includes(t));
+    if (added.length) {
+      agent.tools.deny = [...existing, ...added];
+      changed = true;
+      console.log(`[patch-config] agents.list[id=${JSON.stringify(agent.id)}].tools.deny += ${added.length} tools (${added.slice(0, 6).join(', ')}…)`);
+    }
+  }
+}
+
+// 43c. agents.defaults.systemAgent.agentId — owner of Custodian / ambient
+//      system-agent consults. The 2026.10.3 migration pointed it at the
+//      Discord persona, which then answered "approve node …" with "noted"
+//      and did nothing. The operator agent (`main`) has the gateway tools.
+//      OPENCLAW_SYSTEM_AGENT (default `main`; "" skips). Only written when
+//      that agent exists.
+const systemAgentRaw = process.env.OPENCLAW_SYSTEM_AGENT;
+const systemAgentId = (systemAgentRaw === undefined ? 'main' : systemAgentRaw.trim());
+if (systemAgentId !== '') {
+  if (!(config.agents?.list ?? []).some((a) => a?.id === systemAgentId)) {
+    console.warn(`[patch-config] OPENCLAW_SYSTEM_AGENT=${JSON.stringify(systemAgentId)} is not a configured agent — skipping step 43c.`);
+  } else if (config.agents.defaults?.systemAgent?.agentId !== systemAgentId) {
+    console.log(`[patch-config] agents.defaults.systemAgent.agentId: ${config.agents.defaults?.systemAgent?.agentId ?? '(unset)'} -> ${systemAgentId}`);
+    config.agents.defaults ??= {};
+    config.agents.defaults.systemAgent = { ...(config.agents.defaults.systemAgent ?? {}), agentId: systemAgentId };
+    changed = true;
+  }
+}
+
+// 43d. channels.discord.defaultTo — target for outbound sends that name none.
+//      Without it, cron/heartbeat turns that skipped the target invented one:
+//      the live session list held channel:bot-channel, channel:server,
+//      channel:123456789012345678 and channel:discord-bot-channel-id-placeholder.
+//      OPENCLAW_DISCORD_DEFAULT_TO (e.g. `channel:<id>`; empty skips; `off`
+//      removes the key). Only written when channels.discord is configured.
+const discordDefaultToRaw = (process.env.OPENCLAW_DISCORD_DEFAULT_TO ?? '').trim();
+if (discordDefaultToRaw !== '' && config.channels?.discord) {
+  if (discordDefaultToRaw.toLowerCase() === 'off') {
+    if (config.channels.discord.defaultTo !== undefined) {
+      delete config.channels.discord.defaultTo;
+      changed = true;
+      console.log('[patch-config] channels.discord.defaultTo removed.');
+    }
+  } else if (!/^(channel|user):\d{5,}$/.test(discordDefaultToRaw)) {
+    console.warn(`[patch-config] OPENCLAW_DISCORD_DEFAULT_TO=${JSON.stringify(discordDefaultToRaw)} is not channel:<id> or user:<id> — skipping step 43d.`);
+  } else if (config.channels.discord.defaultTo !== discordDefaultToRaw) {
+    console.log(`[patch-config] channels.discord.defaultTo: ${config.channels.discord.defaultTo ?? '(unset)'} -> ${discordDefaultToRaw}`);
+    config.channels.discord.defaultTo = discordDefaultToRaw;
+    changed = true;
+  }
+}
+
+if (usesKeyedAgents) {
+  config.memory ??= {};
+  config.memory.search = config.agents.defaults.memorySearch;
+  delete config.agents.defaults.memorySearch;
+  // Upstream retired the hybrid tuning block; its built-in defaults apply.
+  const query = config.memory.search?.query;
+  if (query) {
+    delete query.hybrid;
+    if (!Object.keys(query).length) delete config.memory.search.query;
+  }
+  delete config.agents.defaults.heartbeat?.includeReasoning;
+  if (config.diagnostics) {
+    delete config.diagnostics.stuckSessionAbortMs;
+    if (!Object.keys(config.diagnostics).length) delete config.diagnostics;
+  }
+  delete config.commitments;
+  for (const profile of Object.values(config.browser?.profiles ?? {})) delete profile.color;
+
+  if (config.tools?.experimental?.planTool !== undefined) {
+    config.tools.updatePlan = config.tools.experimental.planTool;
+    delete config.tools.experimental.planTool;
+    if (!Object.keys(config.tools.experimental).length) delete config.tools.experimental;
+  }
+  const exec = config.tools?.exec;
+  if (exec) {
+    if (exec.security === 'deny') exec.mode = 'deny';
+    else if (exec.security === 'full' && exec.ask === 'off') exec.mode = 'full';
+    else if (exec.security === 'allowlist' && exec.ask === 'off') exec.mode = 'allowlist';
+    else if (exec.security === 'allowlist' && exec.ask === 'on-miss') exec.mode = 'ask';
+    else if (exec.security !== undefined || exec.ask !== undefined) {
+      throw new Error('This exec security/ask combination has no exact current-schema mode; review OPENCLAW_EXEC_SECURITY and OPENCLAW_EXEC_ASK.');
+    }
+    delete exec.security;
+    delete exec.ask;
+    if (exec.timeoutSec !== undefined) exec.timeoutSeconds = exec.timeoutSec;
+    delete exec.timeoutSec;
+  }
+  const media = config.tools?.media;
+  if (Array.isArray(media?.audio?.models)) {
+    const identity = (model) => JSON.stringify([model.provider, model.model, model.baseUrl?.replace(/\/$/, '')]);
+    const audio = media.audio.models.map((model) => ({
+      ...model, capabilities: [...new Set([...(model.capabilities ?? []), 'audio'])],
+    }));
+    const updated = new Set(audio.map(identity));
+    media.models = [...audio, ...(media.models ?? []).filter((model) => !updated.has(identity(model)))];
+    delete media.audio.models;
+  }
+  if (config.messages?.tts) {
+    config.tts = config.messages.tts;
+    delete config.messages.tts;
+    if (config.tts.enabled === false) config.tts.auto = 'off';
+    delete config.tts.enabled;
+    const openai = config.tts.providers?.openai;
+    if (openai?.voiceId !== undefined) {
+      openai.speakerVoiceId = openai.voiceId;
+      delete openai.voiceId;
+    }
+  }
+  config.agents.entries = Object.fromEntries(
+    config.agents.list.map(({ id, ...entry }) => [id, entry]),
+  );
+  delete config.agents.list;
+}
+
+if (!changed || isDeepStrictEqual(config, JSON.parse(original))) {
   console.log('[patch-config] no-op (openclaw.json already in the desired state).');
   process.exit(0);
 }

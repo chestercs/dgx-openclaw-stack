@@ -127,8 +127,8 @@ RUN chmod +x /opt/patch-mcp-timeout.sh
 
 # Wrap the upstream image's entrypoint via a JSON-form ENTRYPOINT so any
 # `command:` from compose services is passed through verbatim. The
-# upstream openclaw image declares no ENTRYPOINT (just CMD), so this
-# overrides cleanly without losing default behaviour.
+# wrapper delegates to /app/docker-entrypoint.mjs when present so newer
+# images retain their automatic state migration before gateway startup.
 ENTRYPOINT ["/opt/patch-mcp-timeout.sh"]
 
 USER node

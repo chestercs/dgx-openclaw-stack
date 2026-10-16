@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Runtime dist patches for the upstream openclaw image. Runs at every
 # container start as the entrypoint wrapper. See
-# openclaw-base-ext/Dockerfile for the full rationale. Two patches:
+# openclaw-base-ext/Dockerfile for the full rationale. Two active patches:
 #
 #   1. MCP SDK hardcoded 60s default request timeout -> env-driven.
-#   2. Browser screenshot tool result: append a `[saved: <path>]` header
-#      line so the model learns WHERE each screenshot landed.
 #   3. Discord inbound mention prettify: keep the user ID visible
 #      (`@Name (<@ID>)`) so the model can tag users back.
+#
+# (Patch 2, the browser screenshot `[saved: <path>]` header, was retired
+# with 2026.10: upstream now appends `[Screenshot saved to "<path>". …]`
+# to the screenshot tool result itself.)
+#
+# Since 2026.10 every bundle is ESM (`.mjs`); a `--include='*.js'` grep
+# silently matches nothing there, which is how patch 3 went dead after the
+# 2026.10.3 upgrade. Keep every grep on JS_INCLUDES.
 #
 # Two-phase strategy:
 #
@@ -23,12 +29,14 @@
 #     misses these, so we re-check periodically for ~30s and exit
 #     early once everything's quiet.
 #
-# Idempotent — a re-running script finds no `= 60000` to replace.
+# Idempotent — a re-running script finds no `= 60000` / `= 6e4` to replace.
 set -u
 
 NEW_EXPR='(parseInt(process.env.MCP_REQUEST_TIMEOUT_MS,10)||1800000)'
-OLD_LITERAL='DEFAULT_REQUEST_TIMEOUT_MSEC = 60000'
 NEW_LITERAL="DEFAULT_REQUEST_TIMEOUT_MSEC = ${NEW_EXPR}"
+# The legacy SDK spells the default `60000`; the minified
+# @modelcontextprotocol/client 2.x bundles (2026.10+) spell it `6e4`.
+OLD_LITERALS='DEFAULT_REQUEST_TIMEOUT_MSEC = 60000|DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4'
 
 # Where patchable dist bundles live. /app/dist is the image's own code;
 # the two config-volume roots hold INSTALLED PLUGINS, which bundle their
@@ -41,18 +49,19 @@ NEW_LITERAL="DEFAULT_REQUEST_TIMEOUT_MSEC = ${NEW_EXPR}"
 # a plugin upgrade lands in a fresh dir and gets re-patched at the next
 # container start. Missing dirs are fine (grep skips them).
 PATCH_ROOTS="/app/dist /home/node/.openclaw/npm/projects /home/node/.openclaw/extensions"
+JS_INCLUDES="--include=*.js --include=*.mjs --include=*.cjs"
 
 # sed delimiter: `#` rather than `|`, because the replacement contains
 # `||` (JS logical-or) which would be misparsed as the end of an `s|`
 # command's replacement followed by invalid trailing flags.
 patch_pass() {
     local matches found_anything=0
-    matches=$(grep -rl --include='*.js' "${OLD_LITERAL}" /app 2>/dev/null || true)
+    matches=$(grep -rlE ${JS_INCLUDES} "${OLD_LITERALS}" /app 2>/dev/null || true)
     if [ -z "${matches}" ]; then
         return 1
     fi
     for f in ${matches}; do
-        sed -i "s#${OLD_LITERAL}#${NEW_LITERAL}#" "${f}"
+        sed -i -E "s#(${OLD_LITERALS})#${NEW_LITERAL}#" "${f}"
         echo "[mcp-patch] ${f}" >&2
         found_anything=1
     done
@@ -61,53 +70,6 @@ patch_pass() {
 
 # Phase 1 — synchronous pass.
 patch_pass || echo "[mcp-patch] phase 1: nothing to patch (already done or pristine image)" >&2
-
-# ── Patch 2: surface the browser screenshot's saved file path to the model ──
-#
-# The gateway saves every `browser screenshot` PNG under
-# ~/.openclaw/media/browser/<uuid>.png, vision-describes it, and returns
-# ONLY the text description to the model — the path travels in the tool
-# result's `details`, which the model never sees. The agent therefore
-# cannot attach the screenshot (`MEDIA:<path>` reply line) without an
-# exec-ls side channel, and live runs (2026-06-11 03:21) showed Gemma
-# skipping that step and HALLUCINATING paths (it copied the 16-hex id of
-# the SECURITY-NOTICE wrapper as a filename -> "Media failed" on Discord).
-#
-# This patch appends `[saved: <path>]` to the vision header lines of the
-# screenshot tool result, so every screenshot's real path is in the
-# model-visible text. Anchored on the unique `[analyzed by ...]`
-# headerLines template in the bundled plugin-service; the inject is
-# guarded with `typeof screenshotPath` so a file that matches the anchor
-# but lacks the variable degrades to a no-op instead of a ReferenceError.
-# Idempotent (includes-check); loud warning when the anchor vanishes
-# after an upstream bump — the skill's exec-ls fallback keeps working,
-# this patch just removes the failure mode.
-shot_path_patch() {
-    local files f
-    files=$(grep -rl --include='*.js' 'media image understanding' ${PATCH_ROOTS} 2>/dev/null || true)
-    if [ -z "${files}" ]; then
-        echo "[shot-path-patch] no candidate file found under ${PATCH_ROOTS} — upstream layout changed?" >&2
-        return 0
-    fi
-    for f in ${files}; do
-        node -e '
-const fs = require("fs");
-const f = process.argv[1];
-let s = fs.readFileSync(f, "utf8");
-const anchor = "\"media image understanding\"}]`];";
-const inject = " if (typeof screenshotPath === \"string\" && screenshotPath && typeof headerLines !== \"undefined\") headerLines.push(\"[saved: \" + screenshotPath + \"]\");";
-if (s.includes(inject)) { process.exit(0); }
-const i = s.indexOf(anchor);
-if (i < 0) { console.error("[shot-path-patch] anchor not found in " + f + " — skipped (upstream changed?)"); process.exit(0); }
-s = s.slice(0, i + anchor.length) + inject + s.slice(i + anchor.length);
-const tmp = f + ".patch-tmp-" + process.pid;
-fs.writeFileSync(tmp, s);
-fs.renameSync(tmp, f);
-console.error("[shot-path-patch] patched " + f);
-' "${f}"
-    done
-}
-shot_path_patch
 
 # ── Patch 3: keep Discord user IDs visible in inbound mention prettify ──────
 #
@@ -125,27 +87,44 @@ shot_path_patch
 # the format-rules cheatsheet teaches the bot to reuse the `<@ID>` form.
 mention_id_patch() {
     local files f
-    files=$(grep -rl --include='*.js' 'mentionedUsers' ${PATCH_ROOTS} 2>/dev/null || true)
+    files=$(grep -rl ${JS_INCLUDES} "mentionedUsers" ${PATCH_ROOTS} 2>/dev/null || true)
     if [ -z "${files}" ]; then
         echo "[mention-id-patch] no candidate file found under ${PATCH_ROOTS} — upstream layout changed?" >&2
         return 0
     fi
+    # One anchor per upstream spelling: 2026.6.x passed a template string,
+    # the 2026.10 @openclaw/discord plugin passes an arrow replacer.
+    # The node helper exits 0 when a file carries (or now carries) the
+    # patch, so we can warn loudly if no file matched any spelling.
+    local anchored=0
     for f in ${files}; do
-        node -e '
+        if node -e '
 const fs = require("fs");
 const f = process.argv[1];
 let s = fs.readFileSync(f, "utf8");
-const anchor = "new RegExp(`<@!?${user.id}>`, \"g\"), `@${label}`)";
-const patched = "new RegExp(`<@!?${user.id}>`, \"g\"), `@${label} (<@${user.id}>)`)";
-if (s.includes(patched)) { process.exit(0); }
-if (!s.includes(anchor)) { process.exit(0); }
-s = s.split(anchor).join(patched);
-const tmp = f + ".patch-tmp-" + process.pid;
-fs.writeFileSync(tmp, s);
-fs.renameSync(tmp, f);
-console.error("[mention-id-patch] patched " + f);
-' "${f}"
+const pairs = [
+  ["new RegExp(`<@!?${user.id}>`, \"g\"), `@${label}`)", "new RegExp(`<@!?${user.id}>`, \"g\"), `@${label} (<@${user.id}>)`)"],
+  ["new RegExp(`<@!?${user.id}>`, \"g\"), () => `@${label}`)", "new RegExp(`<@!?${user.id}>`, \"g\"), () => `@${label} (<@${user.id}>)`)"],
+];
+let hit = false, changed = false;
+for (const [anchor, patched] of pairs) {
+  if (s.includes(patched)) { hit = true; continue; }
+  if (s.includes(anchor)) { s = s.split(anchor).join(patched); hit = changed = true; }
+}
+if (changed) {
+  const tmp = f + ".patch-tmp-" + process.pid;
+  fs.writeFileSync(tmp, s);
+  fs.renameSync(tmp, f);
+  console.error("[mention-id-patch] patched " + f);
+}
+process.exit(hit ? 0 : 1);
+' "${f}"; then
+            anchored=1
+        fi
     done
+    if [ "${anchored}" = 0 ]; then
+        echo "[mention-id-patch] WARNING: mentionedUsers found but no known replacer spelling — upstream changed, patch inactive" >&2
+    fi
 }
 mention_id_patch
 
@@ -181,7 +160,13 @@ mention_id_patch
 # can never shadow a system binary. Harmless in config-init / cli too.
 export PATH="${PATH}:/home/node/.openclaw/bin"
 
-# Hand off to whatever the container was supposed to run. The compose
-# service either sets `command:` (gateway, config-init) or `entrypoint:`
-# (cli) — in either case the original args land here as "$@".
+# Current upstream images migrate retained state under exclusive maintenance
+# ownership in this adapter. Replacing their ENTRYPOINT must not bypass that
+# activation step. Older images (including the deployed 2026.6.1) have no
+# adapter, so keep their direct execution path.
+if [ -f /app/docker-entrypoint.mjs ]; then
+    exec node /app/docker-entrypoint.mjs "$@"
+fi
+
+# The compose service's original command lands here unchanged.
 exec "$@"

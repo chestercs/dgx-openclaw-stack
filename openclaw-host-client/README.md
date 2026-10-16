@@ -6,7 +6,7 @@ history stay on the DGX. It needs Docker Desktop with Linux containers; it does
 not start the GPU stack in the repository's root Compose file.
 
 The image is pinned by tag and digest to the same upstream release the DGX
-Gateway runs (currently `2026.10.3`). Keep the two in lockstep: when the Gateway
+Gateway runs (currently `2026.10.4`). Keep the two in lockstep: when the Gateway
 is upgraded, update the default in `compose.yml` (or set `OPENCLAW_CLIENT_IMAGE`)
 and recreate the client:
 

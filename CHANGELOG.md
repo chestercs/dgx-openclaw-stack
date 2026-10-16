@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Discord tool reliability on OpenClaw 2026.10 (audit 2026-10-16)
+
+An audit of the live 2026.10.3 gateway (Control UI, config schema, usage,
+session transcripts, vLLM metrics) traced the Discord bot's unreliable tool
+calls to several upgrade regressions. Gateway now on **2026.10.4**.
+
+- **Tool Search off by default** (patcher step 43a, `OPENCLAW_TOOL_SEARCH`).
+  The 2026.10 default routes MCP calls through a nested wrapper that returned
+  image-bridge results as JSON text, PNG base64 included: ~13.5k tokens of
+  noise per generated image while the model never saw the picture.
+- **Discord agent catalog trimmed from 113 tools** (step 43b,
+  `OPENCLAW_DISCORD_AGENT_TOOLS_DENY`): desktop/node control, gateway and
+  plugin admin, secrets, wiki, goals and 37 of 42 workboard tools are denied;
+  `image_generate` joins `video_generate` as a colliding built-in.
+- **Custodian runs on `main`** (step 43c, `OPENCLAW_SYSTEM_AGENT`) instead of
+  the Discord persona, which acknowledged admin requests without acting.
+- **`channels.discord.defaultTo`** (step 43d, `OPENCLAW_DISCORD_DEFAULT_TO`)
+  stops cron and heartbeat turns from inventing send targets.
+- **Patcher no longer crashes on the 2026.10 string form of
+  `agents.defaults.model`**; config-init would have failed on the next
+  `compose up` after the 2026.10.3 upgrade.
+- **`LLM_DENSE_ENABLED=off`** unregisters the profile-gated dense provider and
+  prunes stale local model keys (no more ENOTFOUND probes, dead picker entries).
+- **base-ext runtime patches**: the Discord mention-ID patch matched nothing
+  on 2026.10 (`.mjs` bundles, arrow replacer); both spellings are handled now.
+  The screenshot `[saved:]` patch is retired — upstream appends
+  `[Screenshot saved to "<path>"]` itself; skills teach the new line. The MCP
+  timeout patch also covers the minified `@modelcontextprotocol/client` 2.x.
+- **Skills**: workboard recipe uses the workboard tools (the `/workboard`
+  slash text the model wrote never executed); cron recipe names the renamed
+  `automations` tool.
+- **vLLM image budget** default 2 → 4 (`LLM_LIMIT_MM_IMAGES`); the limit
+  covers the whole prompt, so a 3-image Discord post was rejected.
+- **Upgrade script** runs the patcher on the live deployment before the
+  workspace baseline, so patcher-owned files no longer abort activation.
+- **Discord heartbeat** reference (`openclaw-base-ext/HEARTBEAT.discord-friend.md`)
+  is opt-in: no `tasks:` block (2026.10 Doctor turned it into a second 30-min
+  cron), autonomous work only when `memory/active-project.md` says
+  `status: active`. Background runs had used ~95% of all model tokens.
+
 ### Added — MeshCore LoRa bridge: off-grid agent access (profile: meshcore)
 
 Talk to a dedicated OpenClaw agent from a MeshCore mesh handheld (LilyGO

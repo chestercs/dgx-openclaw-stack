@@ -225,6 +225,11 @@ file before changing the area.
   fixed when the first chunk is indexed.
 - The patcher writes baseUrls with trailing slashes (`v1/`); `OPENAI_BASE_URL` does
   NOT take a trailing slash.
+- 2026.10 gotchas: bundles are `.mjs` (a `--include='*.js'` grep in a runtime
+  patch silently matches nothing); unset `tools.toolSearch` means "on" (patcher
+  43a turns it off); the `cron` tool is now `automations` (`cron` stays an
+  alias); `agents.defaults.model` may be a bare string. Measure the Discord
+  agent's real catalog with `gateway call tools.effective` before adding tools.
 - `openclaw-base-ext` is the local image extension layer (adds `ffmpeg`); rebuild
   with `docker compose build --no-cache openclaw-config-init` when bumping
   `OPENCLAW_IMAGE_REF`.

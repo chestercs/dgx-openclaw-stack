@@ -7,7 +7,7 @@ services:
     # pairing protocol or configuration schema unexpectedly. The digest is the
     # same upstream image the DGX gateway's openclaw-base-ext is built on, so
     # bump both together (see docs/OPENCLAW_UPGRADE.md).
-    image: ${OPENCLAW_CLIENT_IMAGE:-ghcr.io/openclaw/openclaw:2026.10.3@sha256:70b8dbd23f8d27a206f43f9828fdebc87289e50d56dc55177354c9270d764026}
+    image: ${OPENCLAW_CLIENT_IMAGE:-ghcr.io/openclaw/openclaw:2026.10.4@sha256:614004ec2cf2e6095124ea544dc8d950c49306aef445a1fc300b88717e24261a}
     container_name: openclaw-host-client
     hostname: openclaw-host-client
     user: node

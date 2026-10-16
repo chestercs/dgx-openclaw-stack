@@ -1046,91 +1046,17 @@ If the token leaks (anyone with it can impersonate your bot in any guild it's in
 
 ## Upgrading the OpenClaw gateway
 
-All three OpenClaw containers (`openclaw-config-init`, `openclaw-gateway`, `openclaw-cli`) resolve their image via `ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}`. The env value carries its own ref qualifier — a tag pin (`:2026.4.22`) or an immutable digest (`@sha256:…`). Default `:latest` moves on every OpenClaw release, so `docker compose pull` can silently bring in a new gateway with schema changes, renamed CLI subcommands, or new channel features. The runbook below makes upgrades deliberate and reversible.
-
-### Before upgrading
-
-1. **Record the current digest** so you can roll back:
-
-    ```bash
-    docker image inspect ghcr.io/openclaw/openclaw:latest --format '{{index .RepoDigests 0}}'
-    # e.g.  ghcr.io/openclaw/openclaw@sha256:9d5f1dfbd5deedc37706c78f745b958ffbe9b4f20840cfb4d49c617a50326902
-    ```
-
-    Save the digest — it's the rollback target if the new version misbehaves.
-
-2. **Back up the config + state**:
-
-    ```bash
-    BACKUP=~/openclaw-backup-$(date +%Y%m%d-%H%M%S).tar.gz
-    tar -czf "$BACKUP" -C "$(grep ^OPENCLAW_CONFIG_DIR .env | cut -d= -f2)" .
-    ls -la "$BACKUP"
-    ```
-
-    The tarball includes `openclaw.json`, the memory SQLite vector store under `workspace/`, per-agent `auth-profiles.json`, and the heartbeat journal. If anything goes wrong, `tar -xzf "$BACKUP" -C <dir>` restores it.
-
-### The upgrade
-
-1. **Pull the new image**:
-
-    ```bash
-    docker compose pull openclaw-config-init openclaw-gateway openclaw-cli
-    ```
-
-2. **Force-recreate the trio** — the `openclaw-config-init` runs the patcher against the new schema, and the gateway + CLI share a network namespace, so they must recreate together:
-
-    ```bash
-    docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
-    ```
-
-3. **Watch the patcher log** — every `[patch-config]` line should either land a known step or report no-op. If the patcher crashes (schema conflict), stop and roll back:
-
-    ```bash
-    docker logs openclaw-config-init 2>&1 | grep -E '\[patch-config\]|Error'
-    ```
-
-4. **Smoke test**:
-
-    ```bash
-    # Gateway healthz
-    curl -sS http://127.0.0.1:18789/healthz
-
-    # Memory status
-    docker exec openclaw-cli openclaw memory status --deep
-
-    # Agent turn
-    docker exec openclaw-cli openclaw agent --agent main \
-      --message "Reply with UPGRADE_OK if you can see this." --thinking off --timeout 60
-
-    # STT round-trip (voice-note pipeline smoke)
-    docker exec openclaw-cli openclaw channels list    # ensure channels still registered
-    ```
-
-    If all four return the expected output, the upgrade is good.
-
-### Rolling back
-
-If the patcher crashes, the agent turn fails, or any live test regresses, pin the previous digest:
+The three OpenClaw services use the local `openclaw-base-ext` image, built on `ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}`. Upstream changes require a rebuild of that extension; pulling the service image alone does not update the Gateway. Use the [Docker upgrade guide](OPENCLAW_UPGRADE.md) and `scripts/upgrade-openclaw.sh` for the tested 2026.6.1 → 2026.10.3 transition, copied-state migration, validation, and rollback.
 
 ```bash
-echo "OPENCLAW_IMAGE_REF=@sha256:<your-recorded-digest>" >> .env
-docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+bash scripts/upgrade-openclaw.sh --prepare 2026.10.3
+bash scripts/upgrade-openclaw.sh --apply 2026.10.3
 ```
 
-Note the `@sha256:…` prefix — Docker's tag grammar forbids colons inside a tag, so a bare `sha256:…` value produces `invalid reference format`. Always pin digests with the `@` prefix.
-
-If the rollback itself struggles (rare, when the config-init has already mutated `openclaw.json` to a new-schema shape), restore from the pre-upgrade tarball:
-
-```bash
-docker compose stop openclaw-gateway openclaw-cli openclaw-config-init
-rm -rf "$(grep ^OPENCLAW_CONFIG_DIR .env | cut -d= -f2)"/*
-tar -xzf "$BACKUP" -C "$(grep ^OPENCLAW_CONFIG_DIR .env | cut -d= -f2)"
-docker compose up -d openclaw-config-init openclaw-gateway openclaw-cli
-```
-
-### Cadence
-
-OpenClaw ships a new gateway tag roughly every 1-2 weeks. A sensible rhythm: pull + test on your dev machine first (or a short-lived sibling compose project with a different `CONTAINER_NAME_PREFIX`), then on GB10 once you've verified. Don't upgrade mid-project when a significant workload is running — the cold start while the config-init re-patches can take 30-60 s.
+Run these on the Docker host. The apply phase includes a maintenance interruption;
+keep the printed upgrade directory because it contains the new active state.
+Close terminal clients before applying. The guide explains verification, radio
+recovery, and rollback without deleting the original state.
 
 ## Rotating secrets
 
