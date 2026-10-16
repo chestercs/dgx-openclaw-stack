@@ -1,0 +1,53 @@
+# Independent operator client; does not start any of the DGX services.
+name: openclaw-host-client
+
+services:
+  client:
+    # Match the Gateway release. Upgrading only the client can change the
+    # pairing protocol or configuration schema unexpectedly. The digest is the
+    # same upstream image the DGX gateway's openclaw-base-ext is built on, so
+    # bump both together (see docs/OPENCLAW_UPGRADE.md).
+    image: ${OPENCLAW_CLIENT_IMAGE:-ghcr.io/openclaw/openclaw:2026.10.3@sha256:70b8dbd23f8d27a206f43f9828fdebc87289e50d56dc55177354c9270d764026}
+    container_name: openclaw-host-client
+    hostname: openclaw-host-client
+    user: node
+    init: true
+    restart: unless-stopped
+    entrypoint: ["sleep", "infinity"]
+    working_dir: /home/node/.openclaw/workspace
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      TZ: ${OPENCLAW_CLIENT_TZ:-UTC}
+      OPENCLAW_NO_RESPAWN: "1"
+      NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
+      # Older releases require this opt-in when using a trusted LAN WS URL.
+      OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1"
+    volumes:
+      - client-state:/home/node/.openclaw
+      - client-workspace:/home/node/.openclaw/workspace
+      - ./initialize-state.mjs:/opt/host-client/initialize-state.mjs:ro
+    stdin_open: true
+    tty: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Wait for the first successful CLI/TUI login before background checks.
+      # Otherwise the read-only probe can replace the TUI's pending pairing
+      # request while the operator is approving it in the Gateway UI.
+      test: ["CMD-SHELL", "test -s /home/node/.openclaw/identity/device-auth.json && openclaw health --timeout 10000"]
+      interval: 60s
+      timeout: 20s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  client-state:
+  client-workspace:
