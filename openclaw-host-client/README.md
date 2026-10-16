@@ -15,6 +15,8 @@ docker compose --file compose.yml up -d
 ```
 
 Recreating keeps both named volumes, so the device identity and pairing survive.
+After a release bump, run `openclaw doctor --fix --non-interactive` in the client
+once so local state migrations (identity, device tokens) are applied.
 This is the only supported OpenClaw client on the operator's Windows machine;
 do not install the npm `openclaw` package alongside it.
 
@@ -51,13 +53,22 @@ expire; opening the TUI again creates a fresh request if necessary.
 
 `openclaw health` succeeds with any accepted credential, so a healthy container
 does not prove that chat works. Chat and agent runs need `operator.write`;
-session listing needs at least `operator.read`. If commands fail with
-`missing scope: operator.write` (or `operator.read`), the client's device
-record on the Gateway was approved with a narrower scope set. A connection that
-arrives through the reverse proxy is not local, so the Gateway does not fill in
-scopes for the shared token; the approved device record decides.
+session listing needs at least `operator.read`. A connection that arrives
+through the reverse proxy is not local, so the Gateway does not fill in scopes
+for the shared token; the paired device token decides.
 
-Fix it on the Gateway side. Open the TUI once so the client retries with the
+If commands fail with `missing scope: operator.write` (or `operator.read`),
+first check for a leftover pre-2026.10 identity. The TUI then prints
+`Legacy device identity exists at …/identity/device.json`, and until it is
+migrated the CLI does not present the paired device token. Migrate it inside
+the client (back up the `identity` directory first):
+
+```powershell
+docker exec openclaw-host-client openclaw doctor --fix --non-interactive
+```
+
+If the errors persist, the device record on the Gateway really was approved
+with a narrower scope set. Open the TUI once so the client retries with the
 scopes it needs, then review and approve the pending request from a trusted
 Gateway CLI or the Control UI's limited-access request:
 
@@ -66,10 +77,12 @@ openclaw devices list --timeout 60000
 openclaw devices approve <request-id> --timeout 60000
 ```
 
-Compare the requested and approved access before approving. Verify afterwards:
+Compare the requested and approved access before approving. Verify read and
+write access afterwards:
 
 ```powershell
 docker exec openclaw-host-client openclaw gateway call sessions.list --json
+docker exec openclaw-host-client openclaw agent --agent main --session-id host-client-smoke --message "Reply with exactly: PONG" --thinking off --json --timeout 300
 ```
 
 ## Use

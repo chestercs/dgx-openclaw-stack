@@ -37,7 +37,15 @@ services:
       # Wait for the first successful CLI/TUI login before background checks.
       # Otherwise the read-only probe can replace the TUI's pending pairing
       # request while the operator is approving it in the Gateway UI.
-      test: ["CMD-SHELL", "test -s /home/node/.openclaw/identity/device-auth.json && openclaw health --timeout 10000"]
+      # Since 2026.10 the device token lives in the shared state SQLite
+      # (device_auth_tokens), not identity/device-auth.json. A leftover legacy
+      # identity/*.json makes the CLI refuse to use the paired token (scope
+      # errors) until `openclaw doctor --fix --non-interactive` migrates it.
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "const{DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('/home/node/.openclaw/state/openclaw.sqlite',{readOnly:true});process.exit(db.prepare('select count(*) n from device_auth_tokens').get().n>0?0:1)" 2>/dev/null
+          && openclaw health --timeout 10000
       interval: 60s
       timeout: 20s
       start_period: 30s
