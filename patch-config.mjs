@@ -3865,6 +3865,30 @@ if (queueMode !== '') {
   }
 }
 
+// 39b. Discord-only queue override. A guild channel is one shared session,
+// so `steer` folds a second request — often another user's — into the run
+// that is still working on the first. Measured 2026-10-16 on 2026.10.4: an
+// image request and a screenshot request 6 s apart became one turn whose
+// final reply carried only the screenshot; the generated image was never
+// posted. `followup` gives every message its own run, in order; `/stop`
+// still aborts. OPENCLAW_DISCORD_QUEUE_MODE (default `followup`; empty skips).
+const discordQueueRaw = process.env.OPENCLAW_DISCORD_QUEUE_MODE;
+const discordQueueMode = (discordQueueRaw === undefined ? 'followup' : discordQueueRaw.trim());
+if (discordQueueMode !== '' && config.channels?.discord) {
+  if (!QUEUE_MODE_ENUM.has(discordQueueMode)) {
+    console.warn(`[patch-config] OPENCLAW_DISCORD_QUEUE_MODE=${JSON.stringify(discordQueueMode)} not in {steer, followup, collect, interrupt} — skipping step 39b.`);
+  } else {
+    config.messages ??= {};
+    config.messages.queue ??= {};
+    config.messages.queue.byChannel ??= {};
+    if (config.messages.queue.byChannel.discord !== discordQueueMode) {
+      console.log(`[patch-config] messages.queue.byChannel.discord: ${config.messages.queue.byChannel.discord ?? '(unset)'} -> ${JSON.stringify(discordQueueMode)}`);
+      config.messages.queue.byChannel.discord = discordQueueMode;
+      changed = true;
+    }
+  }
+}
+
 // ─── 40. channels.discord.mentionAliases — restart-proof real @mentions ──────
 // The Discord plugin rewrites plain `@handle` text in outbound replies into a
 // real pinging mention (`<@id>`) when it can resolve the handle — from the
@@ -3996,7 +4020,8 @@ const CRON_CHEATSHEET_BODY =
   '- `at`: ISO-8601 idő IDŐZÓNA-ELTOLÁSSAL (tz nélkül UTC!). Relatív kérésnél előbb számold ki: ' +
   '`exec` `TZ=Europe/Budapest date -d "+5 minutes" -Iseconds` (vagy `"tomorrow 08:00"`).\n' +
   '- Ismétlődő: `"schedule":{"kind":"cron","expr":"0 9 * * 1","tz":"Europe/Budapest"}` (falióra-idő, NE számold át UTC-re).\n' +
-  '- `sessionTarget:"current"` = az eredmény ebbe a csatornába/DM-be érkezik — `to`/`channel` NEM kell. ' +
+  '- `sessionTarget` a `job` KÖZVETLEN mezője (NEM a `delivery`-n belül); `"current"` = az eredmény ebbe a csatornába/DM-be érkezik — ' +
+  'ilyenkor `delivery`-t EGYÁLTALÁN NE adj meg (a fenti példa pontosan így helyes). ' +
   'Másik csatornára: `"delivery":{"mode":"announce","channel":"discord","to":"channel:<SZÁM>"}` — a számot az inbound metadatából másold, SOHA ne találd ki.\n' +
   '- Listázás / törlés: `{"action":"list"}` → `jobId`, majd `{"action":"remove","jobId":"…"}`.\n' +
   '- A futó automation-ban NE küldj külön `message`-et: a futás végső válasza maga a kézbesítés.\n';

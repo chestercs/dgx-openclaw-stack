@@ -1397,6 +1397,9 @@ services:
       # LLM_DENSE_ENABLED=off unregisters the profile-gated dense provider.
       # `${VAR-default}` (no colon) keeps an explicit empty value = skip step.
       OPENCLAW_TOOL_SEARCH: ${OPENCLAW_TOOL_SEARCH-off}
+      # Step 39b: shared guild sessions must not fold one request into
+      # another's run (an image reply was lost that way); see .env.example.
+      OPENCLAW_DISCORD_QUEUE_MODE: ${OPENCLAW_DISCORD_QUEUE_MODE-followup}
       OPENCLAW_DISCORD_AGENT_TOOLS_DENY: ${OPENCLAW_DISCORD_AGENT_TOOLS_DENY-}
       OPENCLAW_SYSTEM_AGENT: ${OPENCLAW_SYSTEM_AGENT-main}
       OPENCLAW_DISCORD_DEFAULT_TO: ${OPENCLAW_DISCORD_DEFAULT_TO:-}
