@@ -125,6 +125,11 @@ ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 COPY patch-mcp-timeout.sh /opt/patch-mcp-timeout.sh
 RUN chmod +x /opt/patch-mcp-timeout.sh
 
+# Digest + guarded writer for the Discord agent's nightly people-memory job
+# (patch-config.mjs step 44b). Lives in the image, not the config volume, so
+# the gate that protects people/MEMORY.md cannot be edited by the agent.
+COPY people-digest.mjs /opt/people-digest.mjs
+
 # Wrap the upstream image's entrypoint via a JSON-form ENTRYPOINT so any
 # `command:` from compose services is passed through verbatim. The
 # wrapper delegates to /app/docker-entrypoint.mjs when present so newer

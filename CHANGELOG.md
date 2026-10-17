@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — long-term memory for the Discord bot in guild channels
+
+OpenClaw omits the root `MEMORY.md` from group and channel sessions, so the
+guild bot effectively had no long-term memory where it is used most.
+
+- **`people/MEMORY.md`** (patcher step 44, `OPENCLAW_DISCORD_PEOPLE_MEMORY`):
+  an always-loaded file of durable facts about guild members, injected into
+  every Discord session by the bundled `bootstrap-extra-files` hook. The skill
+  router tells the bot to record "remember this" facts there.
+- **Nightly people-memory job**: `/opt/people-digest.mjs` (openclaw-base-ext)
+  pre-digests the guild's channel traffic per author for an isolated cron turn
+  (`people-memory` skill). Its `apply` gate rejects proposals that drop a
+  person, lose a permanent rule or shrink the file below 70 %. Setup:
+  `docs/reference/discord-config.md` → "Long-term memory in guild channels".
+- **Active Memory in `escalate` mode**: the recall sub-agent runs only for
+  messages about the past. openclaw-base-ext patch 4 adds the Hungarian
+  recall-intent pattern that upstream lacks.
+- **Dreaming storage `separate`**: inline `## Light Sleep` blocks no longer
+  pollute the daily notes that `memory_search` ranks.
+
 ### Fixed — Discord tool reliability on OpenClaw 2026.10 (audit 2026-10-16)
 
 An audit of the live 2026.10.3 gateway (Control UI, config schema, usage,

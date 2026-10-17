@@ -236,6 +236,10 @@
 //      43a tools.toolSearch off, 43b Discord-agent tools.deny trim,
 //      43c systemAgent → main, 43d channels.discord.defaultTo.
 //      Also: LLM_DENSE_ENABLED=off unregisters the parked dense provider (3a/3b).
+//  44. Discord people memory — seeds the bot-owned `people/MEMORY.md` and
+//      injects it into every Discord session via the bootstrap-extra-files
+//      hook (channel sessions never see the root MEMORY.md). Env-gated by
+//      OPENCLAW_DISCORD_PEOPLE_MEMORY (default on).
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -800,11 +804,17 @@ if (dreamingEnabled) {
     }
   }
 
+  // `separate`, not `inline`/`both`: inline storage writes managed
+  // `## Light Sleep` / `## REM Sleep` blocks INTO the daily memory notes, and
+  // on a group-chat bot those blocks were mostly session-metadata noise
+  // ("Session Key: …", "Source: discord") that then ranked in memory_search
+  // next to real notes. Separate storage keeps the phase output in its own
+  // report files.
   dreaming.storage ??= {};
-  if (dreaming.storage.mode !== 'both') {
-    dreaming.storage.mode = 'both';
+  if (dreaming.storage.mode !== 'separate') {
+    dreaming.storage.mode = 'separate';
     changed = true;
-    console.log('[patch-config] dreaming.storage.mode = both');
+    console.log('[patch-config] dreaming.storage.mode = separate');
   }
 
   dreaming.phases ??= {};
@@ -896,8 +906,15 @@ if (dreamingEnabled) {
 // Env gate: OPENCLAW_ACTIVE_MEMORY=on (default off; additive feature). When
 // enabled, defaults are tuned for the homelab Discord deploy: agents=
 // discord-friend, all chat-types, queryMode=recent (recent context + memory),
-// promptStyle=recall-heavy (favor recall over precision), thinking=minimal
-// (fast sub-agent), 8s timeout (won't hold up the main turn for long).
+// promptStyle=recall-heavy (favor recall over precision), thinking=off.
+//
+// mode=escalate (2026.9+): the blocking sub-agent runs ONLY when the message
+// shows recall intent ("do you remember", "last time", …). The 2026-06
+// rollout ran it on every turn and every turn timed out; escalate keeps
+// ordinary replies at zero extra cost. Upstream's intent detector has no
+// Hungarian patterns — openclaw-base-ext patch 4 adds them, without it a
+// Hungarian guild never escalates. Everyday person facts do not depend on
+// this lane: they live in people/MEMORY.md (step 44), always in context.
 const ACTIVE_MEMORY_ENV = (process.env.OPENCLAW_ACTIVE_MEMORY || '').trim().toLowerCase();
 // Inline on-check (isEnvOn helper is declared later in this file; can't
 // reference it from this early step due to JS temporal dead zone).
@@ -914,6 +931,7 @@ if (['on', '1', 'true', 'yes'].includes(ACTIVE_MEMORY_ENV)) {
   am.config ??= {};
   const desiredAmCfg = {
     enabled: true,
+    mode: 'escalate',
     agents: ['discord-friend'],
     allowedChatTypes: ['direct', 'channel', 'group'],
     queryMode: 'recent',
@@ -4263,7 +4281,7 @@ const SENDER_IDENTITY_CHEATSHEET_BODY =
   '- **User-specifikus dolog (becenév, köszöntés, ígéret, preferencia, egyedi szabály) CSAK az adott `sender_id`-re érvényes.** Két különböző `sender_id` = két különböző ember, akkor is ha ugyanabban a csatornában írnak. Amit az egyik user kért magának, azt SOHA ne alkalmazd a másikra.\n' +
   '- **Megszólításkor mindig az aktuális `sender` nevet használd**, ne egy korábbi üzenet feladójáét. Ha nem vagy biztos, inkább név nélkül válaszolj, mint rossz névvel.\n' +
   '- 🚨 **A FELADÓ (`sender_id`/`sender`) ≠ az üzenetben EMLÍTETT személy.** Ha a feladó a szövegben mást említ — pl. ChesTeR (sender) ezt írja: *"miért nem válaszolsz kerajoenak"* — akkor a BESZÉLŐ ChesTeR, és Kerajoe egy HARMADIK ember akiről ChesTeR beszél. NE hidd hogy Kerajoe szólt hozzád csak mert a nevét említették. A beszélő MINDIG a `sender` mező, az üzenet szövegében szereplő egyéb nevek más emberek.\n' +
-  '- Per-user tényt a `memory/users/<sender_id>.md` fájlba írj (a feladó snowflake-jével kulcsolva), NE egy közös napi memóriába — különben minden userre rákeveredik.\n\n' +
+  '- Személyes tényt a `people/MEMORY.md`-be írj, annak az embernek a `## Név (<@ID>)` szekciójába, akiről SZÓL (nem feltétlenül a feladóé!) — NE egy közös napi memóriába, különben minden userre rákeveredik.\n\n' +
   '**Anti-példa:** Yagi-nak (`sender:"Yagi"`) NE add Nilatah köszöntését/szabályát csak mert a history/memória-recall felhozta — az AKTUÁLIS `sender_id` dönt, a más userre vonatkozó szabályt ne alkalmazd rá.\n';
 
 const I2I_CHEATSHEET_START = '<!-- patch-config:discord-i2i:start -->';
@@ -4499,7 +4517,11 @@ const SKILL_ROUTER_BODY =
   '`sessions_spawn` `{"thread":true,"taskName":"<rovid-kebab-nev>","cleanup":"keep","context":"isolated","task":"<önálló, TELJES feladat-leírás>"}`. ' +
   '🚨 A "kijövök egy threadbe / megyek dolgozni" mondat spawn-hívás NÉLKÜL = hazugság: a turn a szöveged után VÉGET ÉR, semmi nem fut tovább. ' +
   'A bejelentő szöveg és a `sessions_spawn` hívás UGYANABBAN a turn-ben kötelező. Részletek: thread-tasks blokk.\n' +
-  '- többórás munka kártyával → `long-task-workboard`\n';
+  '- többórás munka kártyával → `long-task-workboard`\n' +
+  '- **memória ÍRÁS — "jegyezd meg / emlékezz rá / mostantól hívj X-nek" vagy tartós tény/preferencia egy emberről → MÉG EBBEN A TURN-BEN `edit`/`write` a `people/MEMORY.md`-be**, ' +
+  'annak az embernek a `## Név (<@ID>)` szekciójába (nincs ilyen → új szekció a fájl végére). Egy tény = egy rövid sor; elavultat cserélj. ' +
+  'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tartós tény → `memory/<téma>.md`. "Megjegyeztem" CSAK sikeres írás után. ' +
+  '**memória OLVASÁS — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → előbb `memory_search`** (név + téma a query-ben), ne fejből.\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
 // DECISION-TIME policies stay always-injected; the per-domain recipes move
@@ -5567,6 +5589,91 @@ if (discordDefaultToRaw !== '' && config.channels?.discord) {
     console.log(`[patch-config] channels.discord.defaultTo: ${config.channels.discord.defaultTo ?? '(unset)'} -> ${discordDefaultToRaw}`);
     config.channels.discord.defaultTo = discordDefaultToRaw;
     changed = true;
+  }
+}
+
+// 44. Discord people memory — an always-loaded file of durable facts about
+//     guild members. Why a separate file: OpenClaw drops the ROOT MEMORY.md
+//     from group/channel sessions (privacy filter in workspace bootstrap) and
+//     trigger recall only reads that curated tier, so in a guild channel the
+//     bot had no automatic long-term memory at all — per-user notes under
+//     memory/users/ were reachable only if Gemma chose to call memory_search,
+//     which it rarely did. The bundled `bootstrap-extra-files` hook injects
+//     extra files after that filter, and the filter only matches the root
+//     path, so `people/MEMORY.md` reaches channel, group and DM sessions alike
+//     (cron and sub-agent sessions still drop it: their allowlists are
+//     name-based). The file is bot-owned: seeded once, never overwritten. Its
+//     size counts against every prompt, so the seed header asks the bot to
+//     keep it compact. OPENCLAW_DISCORD_PEOPLE_MEMORY: on (default) | off
+//     (removes only our hook path; the file stays on disk).
+const PEOPLE_MEMORY_REL = 'people/MEMORY.md';
+const PEOPLE_MEMORY_SEED =
+  '# Emberek — tartós tények a guild tagjairól\n\n' +
+  '<!-- Ez a fájl MINDEN Discord-beszélgetésbe betöltődik. Te (a bot) írod és gondozod.\n' +
+  '     Ide: tartós személyes tény, kérés, becenév, preferencia — tagonként egy `## Név (<@ID>)` szekcióban.\n' +
+  '     Tömören: tagonként max ~8 sor, az egész fájl max ~6000 karakter. Elavult sort CSERÉLJ, ne halmozz.\n' +
+  '     Nem ide: napi események, beszélgetés-összefoglalók (azok a memory/ alá mennek). -->\n';
+const PEOPLE_MEMORY_SKILL_BODY =
+  '# people-memory — éjszakai persona-frissítés\n\n' +
+  'A `people-memory-nightly` job futtatja; a job üzenete megadja a guild ID-t. Lépések PONTOSAN ebben a sorrendben:\n\n' +
+  '1. `exec`: `node /opt/people-digest.mjs collect --guild <GUILD_ID>` — a guild elmúlt napi üzenetei szerzőnként (2-6 perc, várd meg).\n' +
+  '2. `read`: `people/MEMORY.md` — a jelenlegi fájl.\n' +
+  '3. Szerzőnként döntsd el, mondott-e ÚJ, TARTÓS tényt MAGÁRÓL. Ide való: foglalkozás/tanulmány, hobbi, játékok amikkel játszik, ' +
+  'háziállat, város, családi szerep (pl. van gyereke), saját projekt, kedvenc dolgok, becenév amit elfogad, visszatérő poén.\n' +
+  '   🚨 NEM ide: politika, vallás, egészség, szexualitás, pénzügy, konfliktus/sértés, egyszeri hangulat, ironikus túlzás, ' +
+  'más állítása valakiről, pontos cím/telefon/munkahely-név. Bizonytalan → hagyd ki. Személyenként max 3 új sor éjszakánként.\n' +
+  '4. `write`: a TELJES új fájl a `people/MEMORY.next.md`-be (NEM a MEMORY.md-be):\n' +
+  '   - minden meglévő szekció és sor MARAD; csak elavult vagy ellentmondó sort cserélhetsz; "végleges szabály" sort SOHA ne módosíts;\n' +
+  '   - új ember → új `## Név (<@ID>)` szekció a fájl végére, az ID a digest fejlécéből; meglévő fejlécbe pótold a hiányzó `(<@ID>)`-t;\n' +
+  '   - egy tény = egy rövid sor; az egész fájl maradjon 6000 karakter alatt.\n' +
+  '5. `exec`: `node /opt/people-digest.mjs apply` → `APPLIED` = kész. `REJECTED: <ok>` → javítsd a javaslatot az ok szerint, írd újra, ' +
+  'futtasd újra (max 2 próba). Ha nincs semmi új: `node /opt/people-digest.mjs apply --no-change`.\n' +
+  '6. A válaszod egyetlen sor: hány emberhez írtál újat. Üzenetet SENKINEK ne küldj.\n';
+const peopleMemoryEnv = (process.env.OPENCLAW_DISCORD_PEOPLE_MEMORY ?? 'on').trim().toLowerCase() || 'on';
+const extraFilesHook = config.hooks?.internal?.entries?.['bootstrap-extra-files'];
+if (isEnvOff(peopleMemoryEnv)) {
+  if (Array.isArray(extraFilesHook?.paths) && extraFilesHook.paths.includes(PEOPLE_MEMORY_REL)) {
+    extraFilesHook.paths = extraFilesHook.paths.filter((p) => p !== PEOPLE_MEMORY_REL);
+    changed = true;
+    console.log(`[patch-config] hooks bootstrap-extra-files: removed ${PEOPLE_MEMORY_REL} (OPENCLAW_DISCORD_PEOPLE_MEMORY=off)`);
+  }
+  removeSkillFile(WORKSPACE_DISCORD_ROOT, 'people-memory');
+} else if (config.channels?.discord) {
+  const peopleFile = path.join(WORKSPACE_DISCORD_ROOT, PEOPLE_MEMORY_REL);
+  if (fs.existsSync(WORKSPACE_DISCORD_ROOT) && !fs.existsSync(peopleFile)) {
+    fs.mkdirSync(path.dirname(peopleFile), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(peopleFile, PEOPLE_MEMORY_SEED);
+    console.log(`[patch-config] seeded ${peopleFile}`);
+  }
+  config.hooks ??= {};
+  config.hooks.internal ??= {};
+  config.hooks.internal.entries ??= {};
+  const hook = (config.hooks.internal.entries['bootstrap-extra-files'] ??= {});
+  if (hook.enabled !== true) {
+    hook.enabled = true;
+    changed = true;
+    console.log('[patch-config] hooks.internal.entries.bootstrap-extra-files.enabled = true');
+  }
+  // `paths` wins over `patterns`/`files` in the hook; append to an operator
+  // list instead of replacing it.
+  if (!Array.isArray(hook.paths)) hook.paths = [];
+  if (!hook.paths.includes(PEOPLE_MEMORY_REL)) {
+    hook.paths.push(PEOPLE_MEMORY_REL);
+    changed = true;
+    console.log(`[patch-config] hooks bootstrap-extra-files.paths += ${PEOPLE_MEMORY_REL}`);
+  }
+  // 44b. Recipe for the nightly people-memory job: learn person facts from
+  //      ordinary channel traffic, not only from "remember this" requests.
+  //      The job itself is an `openclaw cron` entry created once per install
+  //      (see docs/reference/discord-config.md); its message only points at
+  //      this skill, so the procedure stays versioned here. The heavy lifting
+  //      is /opt/people-digest.mjs (openclaw-base-ext): `collect` pre-digests
+  //      the guild's messages, `apply` refuses proposals that drop a person
+  //      or a permanent rule — the model never overwrites the live file.
+  if (fs.existsSync(WORKSPACE_DISCORD_ROOT)) {
+    upsertSkillFile(WORKSPACE_DISCORD_ROOT, 'people-memory',
+      'Éjszakai persona-frissítés: a guild üzeneteiből tartós személyes tények a people/MEMORY.md-be (a people-memory-nightly job futtatja).',
+      PEOPLE_MEMORY_SKILL_BODY);
   }
 }
 

@@ -52,6 +52,8 @@ replicates upstream defaults without disabling the step.
 | 37 | `channels.discord.replyToMode = "first"` — first message of a run is a native reply to the triggering message. | `OPENCLAW_DISCORD_REPLY_TO_MODE` | `first` | `off` restores flat delivery (also the upstream default). `all` / `batched` for heavier threading. Empty skips. |
 | 38 | `commitments = {enabled:true, maxPerDay:3}` — the bot notices promised work / check-in opportunities and resurfaces them via heartbeat. | `OPENCLAW_COMMITMENTS` (+ `_MAX_PER_DAY`) | `on` | `off` removes the block (upstream default: disabled). |
 | 39 | `messages.queue.mode = "steer"` — mid-run follow-ups inject at the next model boundary instead of queueing until the run ends. | `OPENCLAW_MESSAGES_QUEUE_MODE` | `steer` | Set `followup` / `collect` / `interrupt`, or empty to skip (upstream docs are self-contradictory on the default, hence the pin). |
+| 44 | Always-loaded `workspace-discord/people/MEMORY.md` (durable facts about guild members) via the `bootstrap-extra-files` hook, plus the `people-memory` skill for the nightly job. See "Long-term memory in guild channels" below. | `OPENCLAW_DISCORD_PEOPLE_MEMORY` | `on` | `off` removes the hook path and the skill; the file stays on disk. |
+| X | `plugins.entries.active-memory` — deep recall sub-agent in `escalate` mode (runs only when the message asks about the past). | `OPENCLAW_ACTIVE_MEMORY` | unset (no-op) | `on` writes, `off` removes the entry, empty leaves config alone. |
 | docs | `OPENCLAW_AGENT_DOCS_MODE` — recipe placement: on-demand workspace **skills** (default, ~20 KB lighter bootstrap) vs legacy always-injected AGENTS.md blocks. | `OPENCLAW_AGENT_DOCS_MODE` | `skills` | `agentsmd` restores the legacy layout and removes the skill files (rollback path). |
 | docs | `<!-- patch-config:discord-thread-tasks:* -->` policy block — coding / long tasks spawn into their own Discord thread. | `OPENCLAW_DISCORD_AGENT_THREAD_TASKS` | `on` | `off` removes the block. |
 
@@ -345,6 +347,54 @@ Don't try to "fix" this by patching the bundled plugin to make the slash
 flip the gate — that fork would break on every image upgrade, and the
 upstream design intentionally separates operator config from in-session
 behavior hints.
+
+## Long-term memory in guild channels
+
+OpenClaw keeps the root `MEMORY.md` out of group and channel sessions
+(privacy filter in the workspace bootstrap), and deterministic trigger recall
+only reads that curated tier. A guild bot therefore has no automatic
+long-term memory where it is used most; notes under `memory/` are reachable
+only when the model decides to call `memory_search`, which Gemma rarely does.
+The stack closes the gap in three layers:
+
+1. **People file (step 44).** `workspace-discord/people/MEMORY.md` is
+   injected into every Discord session by the bundled `bootstrap-extra-files`
+   hook. That filter only matches the root path, so the extra file reaches
+   channels, groups and DMs; cron and sub-agent sessions still drop it.
+   The skill router tells the bot to record "remember this" facts there,
+   one `## Name (<@ID>)` section per person. The file costs prompt tokens on
+   every turn, so its header asks the bot to stay under ~6000 characters.
+2. **Nightly people-memory job.** It learns from ordinary channel traffic,
+   not only from direct requests. `/opt/people-digest.mjs` (baked into
+   `openclaw-base-ext`) pre-digests the guild's new messages per author:
+   it skips bots, NSFW channels and `*log` channels and uses per-channel
+   cursors. The agent proposes a new file as `people/MEMORY.next.md`.
+   `people-digest.mjs apply` swaps it in only when no person section vanished,
+   no "végleges szabály" (permanent rule) line was lost and the file did not
+   shrink below 70 %. Backups land in `~/.openclaw/people-digest/history/`.
+   The skill excludes sensitive categories (politics, religion, health,
+   sexuality, finances). Create the job once per install:
+
+   ```bash
+   docker exec ${PROJ}openclaw-gateway openclaw cron add \
+     --name people-memory-nightly --declaration-key people-memory-nightly \
+     --agent discord-friend --cron '30 4 * * *' --tz Europe/Budapest --exact \
+     --session isolated --light-context --tools exec,read,write --no-deliver \
+     --timeout-seconds 3600 \
+     --message 'Run the people-memory recipe: read skills/people-memory/SKILL.md and follow it step by step. GUILD_ID = <your guild id>. Do not message anyone.'
+   ```
+
+   `--tools exec,read,write` keeps the job from posting anywhere. Collecting
+   ~30 channels takes about 4-5 minutes, because each `openclaw message read`
+   call costs a CLI round trip.
+3. **Active Memory escalation.** With `OPENCLAW_ACTIVE_MEMORY=on`, a blocking
+   recall sub-agent searches memory before the reply, but only when the
+   message asks about the past. Upstream's intent detector has no Hungarian
+   patterns; `openclaw-base-ext` patch 4 adds them.
+
+Dreaming storage is `separate` (step 6). The inline mode wrote
+`## Light Sleep` blocks into the daily notes, and on a group bot those blocks
+were session-metadata noise that outranked real notes in `memory_search`.
 
 ## Related docs
 

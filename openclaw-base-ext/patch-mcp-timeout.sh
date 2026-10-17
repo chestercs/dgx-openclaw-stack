@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Runtime dist patches for the upstream openclaw image. Runs at every
 # container start as the entrypoint wrapper. See
-# openclaw-base-ext/Dockerfile for the full rationale. Two active patches:
+# openclaw-base-ext/Dockerfile for the full rationale. Three active patches:
 #
 #   1. MCP SDK hardcoded 60s default request timeout -> env-driven.
 #   3. Discord inbound mention prettify: keep the user ID visible
 #      (`@Name (<@ID>)`) so the model can tag users back.
+#   4. Active Memory recall-intent detection: add a Hungarian pattern.
 #
 # (Patch 2, the browser screenshot `[saved: <path>]` header, was retired
 # with 2026.10: upstream now appends `[Screenshot saved to "<path>". …]`
@@ -127,6 +128,47 @@ process.exit(hit ? 0 : 1);
     fi
 }
 mention_id_patch
+
+# ── Patch 4: Hungarian recall intent for Active Memory escalation ──────────
+#
+# Active Memory's default `escalate` mode only starts its deep-recall
+# sub-agent when hasRecallIntent() matches the message. Upstream ships
+# English, Spanish, Chinese, Japanese, Korean, Russian and Portuguese
+# patterns — a Hungarian guild ("emlékszel?", "múltkor", "mit beszéltünk")
+# never escalates, so the feature is silently inert. This prepends one
+# Hungarian pattern to RECALL_INTENT_PATTERNS. Pure past-reference words
+# only: future phrasing ("emlékeztess holnap") must not match.
+hu_recall_intent_patch() {
+    local files f anchored=0
+    files=$(grep -rl ${JS_INCLUDES} "const RECALL_INTENT_PATTERNS = \[" /app/dist 2>/dev/null || true)
+    if [ -z "${files}" ]; then
+        echo "[hu-recall-patch] WARNING: RECALL_INTENT_PATTERNS not found under /app/dist — upstream changed, patch inactive" >&2
+        return 0
+    fi
+    for f in ${files}; do
+        if node -e '
+const fs = require("fs");
+const f = process.argv[1];
+let s = fs.readFileSync(f, "utf8");
+const marker = "/*openclaw-base-ext:hu-recall*/";
+if (s.includes(marker)) process.exit(0);
+const anchor = "const RECALL_INTENT_PATTERNS = [";
+if (!s.includes(anchor)) process.exit(1);
+const hu = String.raw`/(?<![\p{L}\p{N}_])(?:eml[ée]k(?:szel|szik|sz[üu]nk|eztek|szetek)|m[úu]ltkor|legut[óo]bb|kor[áa]bban|r[ée]gebben|tegnap(?:el[őo]tt)?|a\s+minap|tavaly|m[úu]lt\s+(?:h[ée]t|h[óo]nap|alkalom)\p{L}*|(?:\d+|egy|k[ée]t|h[áa]rom|p[áa]r|n[ée]h[áa]ny)\s+(?:napja|hete|h[óo]napja|[ée]ve)|megbesz[ée]lt[üu]k|besz[ée]lt[üu]nk|mondtad|eml[ií]tetted|d[öo]nt[öo]tt[üu]nk|megjegyezted|tudod\s+m[ée]g)(?![\p{L}\p{N}_])/iu`;
+s = s.replace(anchor, anchor + "\n\t" + marker + " " + hu + ",");
+const tmp = f + ".patch-tmp-" + process.pid;
+fs.writeFileSync(tmp, s);
+fs.renameSync(tmp, f);
+console.error("[hu-recall-patch] patched " + f);
+' "${f}"; then
+            anchored=1
+        fi
+    done
+    if [ "${anchored}" = 0 ]; then
+        echo "[hu-recall-patch] WARNING: anchor found by grep but not patched — check the node helper" >&2
+    fi
+}
+hu_recall_intent_patch
 
 # Phase 2 — background sweep. Detach so exec below replaces this
 # process while the loop continues as an orphan (re-parented to PID 1).

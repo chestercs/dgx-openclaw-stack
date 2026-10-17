@@ -230,6 +230,12 @@ file before changing the area.
   43a turns it off); the `cron` tool is now `automations` (`cron` stays an
   alias); `agents.defaults.model` may be a bare string. Measure the Discord
   agent's real catalog with `gateway call tools.effective` before adding tools.
+- Root `MEMORY.md` is never injected into group/channel sessions (privacy
+  filter), so guild-channel long-term memory lives in
+  `workspace-discord/people/MEMORY.md`, loaded via the `bootstrap-extra-files`
+  hook (step 44) and fed by the nightly people-memory job. Verify what a
+  session really loads with `systemPromptReport.injectedWorkspaceFiles` in
+  `openclaw agent --json` output.
 - `openclaw-base-ext` is the local image extension layer (adds `ffmpeg`); rebuild
   with `docker compose build --no-cache openclaw-config-init` when bumping
   `OPENCLAW_IMAGE_REF`.
