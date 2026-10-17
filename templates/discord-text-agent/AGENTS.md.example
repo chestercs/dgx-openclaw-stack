@@ -74,8 +74,8 @@ A `[[tts:text]]...[[/tts:text]]` blokk tartalma kerül a TTS-be, a blokkon kív�
 ## Memory pattern
 
 - **Emberek:** `people/MEMORY.md` — tagonként egy `## Név (<@ID>)` szekció, minden csatornán betöltve
-  - Írás `edit`-tel (a fejléc-sor az `oldText`), soha `write`-tal — az a többiek sorát is törölné
-  - Ideiglenes állapot dátummal: `- (ideiglenes, ÉÉÉÉ-HH-NN) …`
+  - Írás CSAK `exec`-kel: `node /opt/people-digest.mjs note --id <ID> --name "<név>" --text "<tény>"` (ideiglenes állapot: `--temp`; felejtés: `forget --id <ID> --match "<részlet>"`)
+  - Soha ne `edit`-eld vagy `write`-old közvetlenül — a `write` a többiek sorát is törölné
   - SOHA ne írj ide credentials-t, jelszót, API kulcsot, szenzitív személyes adatot
 - **Vicces idézetek:** `memory/quotes.md`
   - Időrendben, `[YYYY-MM-DD HH:MM] @display_name: "idézet"` formában

@@ -362,8 +362,15 @@ The stack closes the gap in three layers:
    hook. That filter only matches the root path, so the extra file reaches
    channels, groups and DMs; cron and sub-agent sessions still drop it.
    The skill router tells the bot to record "remember this" facts there,
-   one `## Name (<@ID>)` section per person. The file costs prompt tokens on
-   every turn, so its header asks the bot to stay under ~6000 characters.
+   one `## Name (<@ID>)` section per person, through
+   `node /opt/people-digest.mjs note --id <ID> --name <name> --text <fact> [--temp]`
+   (and `forget --id <ID> --match <part>`), not by editing the file. When
+   Gemma edited the file itself, an `edit` aimed at a section that did not
+   exist yet failed, and the fallback `write` replaced every section. Each
+   command first heals the file from `~/.openclaw/people-digest/last-good.md`
+   if something dropped a section or a permanent rule. The file costs prompt
+   tokens on every turn, so its header asks the bot to stay under ~6000
+   characters.
 2. **Nightly people-memory job.** It learns from ordinary channel traffic,
    not only from direct requests. `/opt/people-digest.mjs` (baked into
    `openclaw-base-ext`) pre-digests the guild's new messages per author:

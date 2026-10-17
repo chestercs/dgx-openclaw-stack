@@ -15,11 +15,14 @@ guild bot effectively had no long-term memory where it is used most.
 - **`people/MEMORY.md`** (patcher step 44, `OPENCLAW_DISCORD_PEOPLE_MEMORY`):
   an always-loaded file of durable facts about guild members, injected into
   every Discord session by the bundled `bootstrap-extra-files` hook. The skill
-  router tells the bot to record "remember this" facts there. It must use
-  `edit` anchored on the person's `## Name (<@ID>)` header, never `write`,
-  which would replace everyone's section. Short-lived states ("out for drinks,
-  back tonight") go there too as `(ideiglenes, <date>)` lines, and the nightly
-  job drops them after two days. The `AGENTS.md` template no longer points at
+  router tells the bot to record "remember this" facts there through
+  `people-digest.mjs note` / `forget` (exec), never by editing the file.
+  Gemma's own `edit` anchored on a section that did not exist yet, and its
+  fallback `write` replaced everyone's sections. The script finds or creates
+  the person's section and heals the file from `last-good.md` if a stray write
+  dropped a section or a permanent rule. Short-lived states ("out for drinks,
+  back tonight", `--temp`) become dated `(ideiglenes, <date>)` lines, and the
+  nightly job drops them after two days. The `AGENTS.md` template no longer points at
   the old `memory/users/<id>.md` files. The bot kept writing there, and other
   channels never saw those notes.
 - **Nightly people-memory job**: `/opt/people-digest.mjs` (openclaw-base-ext)

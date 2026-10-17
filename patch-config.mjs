@@ -4281,7 +4281,7 @@ const SENDER_IDENTITY_CHEATSHEET_BODY =
   '- **User-specifikus dolog (becenév, köszöntés, ígéret, preferencia, egyedi szabály) CSAK az adott `sender_id`-re érvényes.** Két különböző `sender_id` = két különböző ember, akkor is ha ugyanabban a csatornában írnak. Amit az egyik user kért magának, azt SOHA ne alkalmazd a másikra.\n' +
   '- **Megszólításkor mindig az aktuális `sender` nevet használd**, ne egy korábbi üzenet feladójáét. Ha nem vagy biztos, inkább név nélkül válaszolj, mint rossz névvel.\n' +
   '- 🚨 **A FELADÓ (`sender_id`/`sender`) ≠ az üzenetben EMLÍTETT személy.** Ha a feladó a szövegben mást említ — pl. ChesTeR (sender) ezt írja: *"miért nem válaszolsz kerajoenak"* — akkor a BESZÉLŐ ChesTeR, és Kerajoe egy HARMADIK ember akiről ChesTeR beszél. NE hidd hogy Kerajoe szólt hozzád csak mert a nevét említették. A beszélő MINDIG a `sender` mező, az üzenet szövegében szereplő egyéb nevek más emberek.\n' +
-  '- Személyes tényt a `people/MEMORY.md`-be írj, annak az embernek a `## Név (<@ID>)` szekciójába, akiről SZÓL (nem feltétlenül a feladóé!) — NE egy közös napi memóriába, különben minden userre rákeveredik.\n\n' +
+  '- Személyes tényt a `people-digest.mjs note` paranccsal ments (lásd router), annak az embernek az ID-jával, akiről SZÓL (nem feltétlenül a feladóé!) — NE egy közös napi memóriába, különben minden userre rákeveredik.\n\n' +
   '**Anti-példa:** Yagi-nak (`sender:"Yagi"`) NE add Nilatah köszöntését/szabályát csak mert a history/memória-recall felhozta — az AKTUÁLIS `sender_id` dönt, a más userre vonatkozó szabályt ne alkalmazd rá.\n';
 
 const I2I_CHEATSHEET_START = '<!-- patch-config:discord-i2i:start -->';
@@ -4519,11 +4519,12 @@ const SKILL_ROUTER_BODY =
   '🚨 A "kijövök egy threadbe / megyek dolgozni" mondat spawn-hívás NÉLKÜL = hazugság: a turn a szöveged után VÉGET ÉR, semmi nem fut tovább. ' +
   'A bejelentő szöveg és a `sessions_spawn` hívás UGYANABBAN a turn-ben kötelező. Részletek: thread-tasks blokk.\n' +
   '- többórás munka kártyával → `long-task-workboard`\n' +
-  '- **memória ÍRÁS — "jegyezd meg / emlékezz rá / mostantól hívj X-nek" vagy tény/preferencia/állapot egy emberről → MÉG EBBEN A TURN-BEN `edit` a `people/MEMORY.md`-n**: ' +
-  '`oldText` = az ember `## Név (<@ID>)` fejléc-sora, `newText` = ugyanaz a fejléc + új sor alatta (nincs szekció → `oldText` a fájl utolsó sora, `newText` = az a sor + új szekció). ' +
-  '`write` erre a fájlra TILOS (mindenki más sorát törölné); `memory/users/` elavult, oda ne írj. Egy tény = egy rövid sor; elavultat cserélj. ' +
-  'Ideiglenes állapot ("épp iszogatok, este jövök", "jövő héten nyaralok") is ide megy, dátummal: `- (ideiglenes, ÉÉÉÉ-HH-NN) …` — az éjszakai job takarítja. ' +
-  'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tény → `memory/<téma>.md`. "Megjegyeztem" CSAK sikeres írás után. ' +
+  '- **memória ÍRÁS — "jegyezd meg / emlékezz rá / mostantól hívj X-nek" vagy tény/preferencia/állapot egy emberről → MÉG EBBEN A TURN-BEN `exec`:** ' +
+  '`node /opt/people-digest.mjs note --id <az ember Discord ID-ja> --name "<név>" --text "<egy rövid mondat>"`. ' +
+  'Ideiglenes állapot ("épp iszogatok, este jövök", "jövő héten nyaralok") → tedd hozzá: `--temp` (a dátumot a script írja, az éjszakai job takarítja). ' +
+  'Régi tény javítása → `--replace "<régi részlet>"`. Felejtés ("felejtsd el, hogy…") → `node /opt/people-digest.mjs forget --id <ID> --match "<részlet>"`. ' +
+  'A `people/MEMORY.md`-t SOHA ne `edit`-eld és ne `write`-old magad; `memory/users/` elavult. ' +
+  'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tény → `memory/<téma>.md`. "Megjegyeztem" CSAK `OK:` kimenet után. ' +
   '**memória OLVASÁS — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → előbb `memory_search`** (név + téma a query-ben), ne fejből.\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
@@ -5616,7 +5617,8 @@ const PEOPLE_MEMORY_SEED =
   '     Ide: tartós személyes tény, kérés, becenév, preferencia — tagonként egy `## Név (<@ID>)` szekcióban.\n' +
   '     Tömören: tagonként max ~8 sor, az egész fájl max ~6000 karakter. Elavult sort CSERÉLJ, ne halmozz.\n' +
   '     Ideiglenes állapot (pl. „épp iszogat, este jön”) dátummal: `- (ideiglenes, ÉÉÉÉ-HH-NN) …` — az éjszakai job törli, ha lejárt.\n' +
-  '     Nem ide: beszélgetés-összefoglalók (azok a memory/ alá mennek). Írás: `edit`, soha `write`. -->\n';
+  '     Nem ide: beszélgetés-összefoglalók (azok a memory/ alá mennek).\n' +
+  '     Írás CSAK így (exec): `node /opt/people-digest.mjs note --id <ID> --name "<név>" --text "<tény>" [--temp]` — kézzel soha. -->\n';
 const PEOPLE_MEMORY_SKILL_BODY =
   '# people-memory — éjszakai persona-frissítés\n\n' +
   'A `people-memory-nightly` job futtatja; a job üzenete megadja a guild ID-t. Lépések PONTOSAN ebben a sorrendben:\n\n' +
