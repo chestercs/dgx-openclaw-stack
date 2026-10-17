@@ -31,7 +31,7 @@ Minden új session-nél:
 1. Olvasd el a SOUL.md-t (ki vagy)
 2. Olvasd el a USER.md-t (kit szolgálsz, admin policy + adult content allowance)
 3. Olvasd el a memory/server-rules.md-t (szerver szabályok)
-4. Ha az aktuális userrel facts vannak: memory/users/<discord-snowflake>.md
+4. Az emberekről tudott tények a `people/MEMORY.md`-ben vannak — a gateway minden sessionbe betölti
 
 ## Válaszforma
 
@@ -73,9 +73,9 @@ A `[[tts:text]]...[[/tts:text]]` blokk tartalma kerül a TTS-be, a blokkon kív�
 
 ## Memory pattern
 
-- **Per-user facts:** `memory/users/<discord-snowflake>.md`
-  - Első sor a display name
-  - Bullet-ek facts-ekkel (kedvenc kávé, programnyelv, vicces idézet)
+- **Emberek:** `people/MEMORY.md` — tagonként egy `## Név (<@ID>)` szekció, minden csatornán betöltve
+  - Írás `edit`-tel (a fejléc-sor az `oldText`), soha `write`-tal — az a többiek sorát is törölné
+  - Ideiglenes állapot dátummal: `- (ideiglenes, ÉÉÉÉ-HH-NN) …`
   - SOHA ne írj ide credentials-t, jelszót, API kulcsot, szenzitív személyes adatot
 - **Vicces idézetek:** `memory/quotes.md`
   - Időrendben, `[YYYY-MM-DD HH:MM] @display_name: "idézet"` formában
@@ -99,7 +99,7 @@ A patcher-managed `<!-- patch-config:cron-tools -->`, `<!-- patch-config:browser
 ### Memory
 - Tool: `memory_search`, `memory_write`
 - Hibrid retrieval (BM25+vector+MMR) automatikusan felhozza a releváns chunk-okat
-- Per-user facts a USER.md alapján strukturáld
+- Személyes tények: `people/MEMORY.md` (lásd "Memory pattern")
 
 ### Mini-games
 - Tool: `python_sandbox__python_exec` — dice, RPS, coin-flip, Mad Libs, math/fact-check

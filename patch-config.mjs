@@ -4519,9 +4519,11 @@ const SKILL_ROUTER_BODY =
   '🚨 A "kijövök egy threadbe / megyek dolgozni" mondat spawn-hívás NÉLKÜL = hazugság: a turn a szöveged után VÉGET ÉR, semmi nem fut tovább. ' +
   'A bejelentő szöveg és a `sessions_spawn` hívás UGYANABBAN a turn-ben kötelező. Részletek: thread-tasks blokk.\n' +
   '- többórás munka kártyával → `long-task-workboard`\n' +
-  '- **memória ÍRÁS — "jegyezd meg / emlékezz rá / mostantól hívj X-nek" vagy tartós tény/preferencia egy emberről → MÉG EBBEN A TURN-BEN `edit`/`write` a `people/MEMORY.md`-be**, ' +
-  'annak az embernek a `## Név (<@ID>)` szekciójába (nincs ilyen → új szekció a fájl végére). Egy tény = egy rövid sor; elavultat cserélj. ' +
-  'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tartós tény → `memory/<téma>.md`. "Megjegyeztem" CSAK sikeres írás után. ' +
+  '- **memória ÍRÁS — "jegyezd meg / emlékezz rá / mostantól hívj X-nek" vagy tény/preferencia/állapot egy emberről → MÉG EBBEN A TURN-BEN `edit` a `people/MEMORY.md`-n**: ' +
+  '`oldText` = az ember `## Név (<@ID>)` fejléc-sora, `newText` = ugyanaz a fejléc + új sor alatta (nincs szekció → `oldText` a fájl utolsó sora, `newText` = az a sor + új szekció). ' +
+  '`write` erre a fájlra TILOS (mindenki más sorát törölné); `memory/users/` elavult, oda ne írj. Egy tény = egy rövid sor; elavultat cserélj. ' +
+  'Ideiglenes állapot ("épp iszogatok, este jövök", "jövő héten nyaralok") is ide megy, dátummal: `- (ideiglenes, ÉÉÉÉ-HH-NN) …` — az éjszakai job takarítja. ' +
+  'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tény → `memory/<téma>.md`. "Megjegyeztem" CSAK sikeres írás után. ' +
   '**memória OLVASÁS — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → előbb `memory_search`** (név + téma a query-ben), ne fejből.\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
@@ -5613,7 +5615,8 @@ const PEOPLE_MEMORY_SEED =
   '<!-- Ez a fájl MINDEN Discord-beszélgetésbe betöltődik. Te (a bot) írod és gondozod.\n' +
   '     Ide: tartós személyes tény, kérés, becenév, preferencia — tagonként egy `## Név (<@ID>)` szekcióban.\n' +
   '     Tömören: tagonként max ~8 sor, az egész fájl max ~6000 karakter. Elavult sort CSERÉLJ, ne halmozz.\n' +
-  '     Nem ide: napi események, beszélgetés-összefoglalók (azok a memory/ alá mennek). -->\n';
+  '     Ideiglenes állapot (pl. „épp iszogat, este jön”) dátummal: `- (ideiglenes, ÉÉÉÉ-HH-NN) …` — az éjszakai job törli, ha lejárt.\n' +
+  '     Nem ide: beszélgetés-összefoglalók (azok a memory/ alá mennek). Írás: `edit`, soha `write`. -->\n';
 const PEOPLE_MEMORY_SKILL_BODY =
   '# people-memory — éjszakai persona-frissítés\n\n' +
   'A `people-memory-nightly` job futtatja; a job üzenete megadja a guild ID-t. Lépések PONTOSAN ebben a sorrendben:\n\n' +
@@ -5625,6 +5628,8 @@ const PEOPLE_MEMORY_SKILL_BODY =
   'más állítása valakiről, pontos cím/telefon/munkahely-név. Bizonytalan → hagyd ki. Személyenként max 3 új sor éjszakánként.\n' +
   '4. `write`: a TELJES új fájl a `people/MEMORY.next.md`-be (NEM a MEMORY.md-be):\n' +
   '   - minden meglévő szekció és sor MARAD; csak elavult vagy ellentmondó sort cserélhetsz; "végleges szabály" sort SOHA ne módosíts;\n' +
+  '   - `(ideiglenes, <dátum>)` sor: ha a dátum 2 napnál régebbi, vagy az ember azóta mást mondott, TÖRÖLD; egyébként marad;\n' +
+  '   - üres, ismétlődő `##` fejléc (ugyanaz a név/ID kétszer) → vond össze egybe;\n' +
   '   - új ember → új `## Név (<@ID>)` szekció a fájl végére, az ID a digest fejlécéből; meglévő fejlécbe pótold a hiányzó `(<@ID>)`-t;\n' +
   '   - egy tény = egy rövid sor; az egész fájl maradjon 6000 karakter alatt.\n' +
   '5. `exec`: `node /opt/people-digest.mjs apply` → `APPLIED` = kész. `REJECTED: <ok>` → javítsd a javaslatot az ok szerint, írd újra, ' +
