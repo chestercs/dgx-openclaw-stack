@@ -27,6 +27,15 @@ guild bot effectively had no long-term memory where it is used most.
 - **Dreaming storage `separate`**: inline `## Light Sleep` blocks no longer
   pollute the daily notes that `memory_search` ranks.
 
+### Changed — generated images arrive on Discord as attachments
+
+- Image bridge **0.12.6**: `generate` / `generate_i2i` results carry
+  `discord_media`, which holds `MEDIA:<gateway canvas path>` lines
+  (`IMAGE_GEN_CANVAS_GATEWAY_DIR`). The Discord skills, router and tool-policy
+  block end the reply with them, so the PNG is a real file attachment instead
+  of a token-bearing `/view` URL that Discord could only link-preview. Web chat
+  keeps `display_markdown`.
+
 ### Fixed — Discord tool reliability on OpenClaw 2026.10 (audit 2026-10-16)
 
 An audit of the live 2026.10.3 gateway (Control UI, config schema, usage,

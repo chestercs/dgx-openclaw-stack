@@ -32,7 +32,7 @@ services:
   openclaw-image-comfyui:
     build:
       context: ./server
-    image: openclaw-image-comfyui:0.12.5
+    image: openclaw-image-comfyui:0.12.6
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-image-comfyui
     hostname: openclaw-image-comfyui
     # `image-gen` profile gates this service so an absent --profile flag
@@ -91,6 +91,12 @@ services:
       # the operator should run before opting in. Default empty =
       # legacy display_markdown emission (cross-origin URL only).
       IMAGE_GEN_CANVAS_DIR: ${IMAGE_GEN_CANVAS_DIR:-}
+      # The same canvas dir as mounted in the GATEWAY. With Path A on, image
+      # results carry `discord_media` (`MEDIA:<this dir>/<file>` lines) so the
+      # Discord bot attaches the PNG as a real file instead of pasting the
+      # token-bearing /view URL. Change only if your gateway mounts the
+      # canvas somewhere other than the upstream default.
+      IMAGE_GEN_CANVAS_GATEWAY_DIR: ${IMAGE_GEN_CANVAS_GATEWAY_DIR:-/home/node/.openclaw/canvas}
       # Sensible-defaults — let conversational requests like
       # "@ImbulClaw generálj egy zsiráfot" succeed without specifying
       # workflow/checkpoint. When set, the bridge fills missing args.

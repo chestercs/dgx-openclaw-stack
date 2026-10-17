@@ -147,6 +147,24 @@ WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 # navigation with cached Basic auth, but not inline in webchat).
 IMAGE_GEN_CANVAS_DIR = os.environ.get("IMAGE_GEN_CANVAS_DIR", "").strip().rstrip("/")
 
+# The same canvas dir as the GATEWAY sees it. Discord attachments come from a
+# `MEDIA:<path>` line in the agent's reply, which the gateway resolves on its
+# own filesystem — so the bridge must hand out the gateway path, not its own
+# `/canvas` mount. A real attachment replaces the old token-bearing
+# vision.<domain>/view URL that Discord could only link-preview.
+IMAGE_GEN_CANVAS_GATEWAY_DIR = os.environ.get(
+    "IMAGE_GEN_CANVAS_GATEWAY_DIR", "/home/node/.openclaw/canvas"
+).strip().rstrip("/")
+
+
+def _discord_media_lines(items: list) -> str:
+    """One `MEDIA:<gateway path>` line per mirrored file (empty if none)."""
+    return "\n".join(
+        f"MEDIA:{IMAGE_GEN_CANVAS_GATEWAY_DIR}/{item['canvas_file']}"
+        for item in items
+        if item.get("canvas_file")
+    )
+
 # Sensible-defaults env knobs (v0.10.5) — let the agent succeed with just
 # `comfyui_image__generate(prompt="...")` instead of having to remember
 # the workflow + checkpoint name on every call. When the caller omits one
@@ -326,20 +344,18 @@ TOOLS = [
         "description": (
             "Generate one or more images via the operator's ComfyUI install. "
             "Returns metadata (prompt_id, workflow, seed, elapsed_s, per-image "
-            "filename + size + width/height) PLUS a `display_markdown` field "
-            "containing the chat-renderable image markup.\n\n"
-            "MANDATORY OUTPUT CONTRACT — your reply MUST start with the EXACT "
-            "verbatim contents of the `display_markdown` field, INCLUDING ALL "
-            "LINES of it (it usually contains a public image URL line AND a "
-            "[embed] shortcode line — paste BOTH, separated by the blank line "
-            "as in the field value). Copy character-for-character: do not "
-            "edit, do not rewrap, do not wrap in code fences, do not translate, "
-            "do not summarize, do not skip lines. Add your Hungarian or English "
-            "commentary AFTER the entire paste on a new line. If you skip any "
-            "part of the paste the user will see ZERO image on at least one "
-            "surface (Discord needs the URL line, web-chat needs the [embed] "
-            "line). Describing the image in your own words is NOT a "
-            "substitute for the paste; the user already asked for an IMAGE."
+            "filename + size + width/height) PLUS `discord_media` (one "
+            "`MEDIA:<path>` line per image) and `display_markdown` "
+            "(chat-renderable image markup).\n\n"
+            "MANDATORY OUTPUT CONTRACT — on DISCORD, end your reply with the "
+            "EXACT `discord_media` value, every `MEDIA:` line on its own line, "
+            "copied character-for-character: that attaches the image file. Do "
+            "NOT paste the URL there. In WEB CHAT (or when `discord_media` is "
+            "empty), start your reply with the EXACT verbatim contents of "
+            "`display_markdown`, all lines (public URL line + [embed] "
+            "shortcode line). Never wrap either in code fences. Describing "
+            "the image in your own words is NOT a substitute; the user "
+            "already asked for an IMAGE."
             "\n\n"
             "The PNG bytes themselves are NOT in the response by default — "
             "embedding ~200 KB of base64 per image would balloon the agent's "
@@ -490,11 +506,11 @@ TOOLS = [
             "Default workflow `flux-krea-2k-i2i` (FLUX.1-Krea + VAEEncode init). "
             "For explicit / NSFW content pass `workflow=\"flux-krea-2k-i2i-adult\"` "
             "(adds the flux-uncensored-v2 LoRA at strength 1.5).\n\n"
-            "MANDATORY OUTPUT CONTRACT — your reply MUST start with the EXACT "
-            "verbatim contents of the `display_markdown` field. Discord needs "
-            "the URL line for auto-embed; web-chat needs the [embed] shortcode "
-            "for inline iframe. Paste both lines verbatim, separated by the "
-            "blank line. Add commentary AFTER the paste."
+            "MANDATORY OUTPUT CONTRACT — on DISCORD, end your reply with the "
+            "EXACT `discord_media` value (each `MEDIA:` line on its own line; "
+            "it attaches the image file), not the URL. In WEB CHAT (or when "
+            "`discord_media` is empty), start your reply with the verbatim "
+            "`display_markdown` (URL line + [embed] shortcode line)."
         ),
         "inputSchema": {
             "type": "object",
@@ -977,6 +993,7 @@ async def _tool_generate(args: dict) -> dict:
             # to the legacy URL path (the entry's canvas_url_path stays
             # None and display_markdown emits the cross-origin form).
             canvas_url_path: Optional[str] = None
+            canvas_file: Optional[str] = None
             if IMAGE_GEN_CANVAS_DIR:
                 # Prefix avoids collision with canvas-documents.ts files
                 # that the agent's canvas SKILL may emit. Short prompt-id
@@ -1010,6 +1027,7 @@ async def _tool_generate(args: dict) -> dict:
                     with open(html_target, "w", encoding="utf-8") as f:
                         f.write(wrapper_html)
                     canvas_url_path = f"/__openclaw__/canvas/{html_basename}"
+                    canvas_file = base_name
                 except OSError as e:
                     log.warning(
                         "[path-a] canvas dir write failed (png=%s html=%s): %s — "
@@ -1027,6 +1045,7 @@ async def _tool_generate(args: dict) -> dict:
                 "byte_size": len(data),
                 "fetch_url_path": f"/view?{view_qs}",
                 "canvas_url_path": canvas_url_path,
+                "canvas_file": canvas_file,
             }
             if include_base64:
                 entry["base64"] = b64
@@ -1113,18 +1132,15 @@ async def _tool_generate(args: dict) -> dict:
             "comfyui_base_url": COMFYUI_URL,
             "comfyui_external_url": COMFYUI_EXTERNAL_URL,
             "display_markdown": display_markdown,
+            "discord_media": _discord_media_lines(images),
             "agent_hint": (
-                "MANDATORY: include the EXACT `display_markdown` value at "
-                "the START of your reply. It contains a public image URL line "
-                "(Discord auto-embeds it as inline image preview; web-chat "
-                "autolinks it) AND optionally a `[embed url=...]` shortcode "
-                "line (web-chat extracts as inline iframe; Discord renders "
-                "as text noise so AGENTS.md may instruct you to skip it). "
-                "Default: paste both lines verbatim, separated by the blank "
-                "line. Per-agent override: your workspace AGENTS.md may say "
-                "skip the [embed] on Discord — follow that. Add your own "
-                "commentary AFTER the paste. Describing the image in prose "
-                "is NOT a substitute."
+                "DISCORD: end your reply with the EXACT `discord_media` "
+                "value, each `MEDIA:` line on its own line — that attaches "
+                "the image file itself; do NOT paste the URL. WEB CHAT (or "
+                "when `discord_media` is empty): include the EXACT "
+                "`display_markdown` value at the START of your reply "
+                "(public URL line + optional `[embed url=...]` shortcode). "
+                "Describing the image in prose is NOT a substitute."
             ),
             "images": images,
             "_attachments": attachments,
@@ -1277,6 +1293,7 @@ async def _tool_generate_i2i(args: dict) -> dict:
             if COMFYUI_VIEW_TOKEN:
                 view_qs += f"&token={quote(COMFYUI_VIEW_TOKEN, safe='')}"
             canvas_url_path: Optional[str] = None
+            canvas_file: Optional[str] = None
             if IMAGE_GEN_CANVAS_DIR:
                 base_name = f"comfyui-{prompt_id[:8]}-{out['filename']}"
                 png_target = os.path.join(IMAGE_GEN_CANVAS_DIR, base_name)
@@ -1301,6 +1318,7 @@ async def _tool_generate_i2i(args: dict) -> dict:
                     with open(html_target, "w", encoding="utf-8") as f:
                         f.write(wrapper_html)
                     canvas_url_path = f"/__openclaw__/canvas/{html_basename}"
+                    canvas_file = base_name
                 except OSError as e:
                     log.warning(
                         "[path-a] canvas dir write failed (i2i, png=%s html=%s): %s",
@@ -1317,6 +1335,7 @@ async def _tool_generate_i2i(args: dict) -> dict:
                 "byte_size": len(data),
                 "fetch_url_path": f"/view?{view_qs}",
                 "canvas_url_path": canvas_url_path,
+                "canvas_file": canvas_file,
             }
             if include_base64:
                 entry["base64"] = b64
@@ -1374,14 +1393,14 @@ async def _tool_generate_i2i(args: dict) -> dict:
             "comfyui_base_url": COMFYUI_URL,
             "comfyui_external_url": COMFYUI_EXTERNAL_URL,
             "display_markdown": display_markdown,
+            "discord_media": _discord_media_lines(images),
             "agent_hint": (
-                "MANDATORY: include the EXACT `display_markdown` value at "
-                "the START of your reply. It contains the modified-image URL "
-                "(Discord auto-embeds; web-chat autolinks) and optionally an "
-                "`[embed url=...]` shortcode line. Paste verbatim. Add your "
-                "own commentary AFTER. Describing the image in prose is NOT "
-                "a substitute. Per-agent AGENTS.md may instruct you to skip "
-                "the [embed] on Discord — follow that."
+                "DISCORD: end your reply with the EXACT `discord_media` "
+                "value, each `MEDIA:` line on its own line — that attaches "
+                "the modified image itself; do NOT paste the URL. WEB CHAT "
+                "(or when `discord_media` is empty): include the EXACT "
+                "`display_markdown` value at the START of your reply. "
+                "Describing the image in prose is NOT a substitute."
             ),
             "images": images,
             "_attachments": attachments,
@@ -1661,6 +1680,7 @@ async def _tool_generate_video(args: dict) -> dict:
             # end-to-end (see docs/reference/video-comfyui-bridge.md
             # "web chat (degraded)" section).
             canvas_url_path: Optional[str] = None
+            canvas_file: Optional[str] = None
             if IMAGE_GEN_CANVAS_DIR:
                 base_name = f"ltxvideo-{prompt_id[:8]}-{out['filename']}"
                 mp4_target = os.path.join(IMAGE_GEN_CANVAS_DIR, base_name)
@@ -1685,6 +1705,7 @@ async def _tool_generate_video(args: dict) -> dict:
                     with open(html_target, "w", encoding="utf-8") as f:
                         f.write(wrapper_html)
                     canvas_url_path = f"/__openclaw__/canvas/{html_basename}"
+                    canvas_file = base_name
                 except OSError as e:
                     log.warning(
                         "[path-a] canvas dir write failed for video (mp4=%s html=%s): %s — "
@@ -1707,6 +1728,7 @@ async def _tool_generate_video(args: dict) -> dict:
                 "byte_size": len(data),
                 "fetch_url_path": f"/view?{view_qs}",
                 "canvas_url_path": canvas_url_path,
+                "canvas_file": canvas_file,
             }
             if include_base64:
                 entry_out["base64"] = b64

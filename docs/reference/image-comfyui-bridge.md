@@ -255,6 +255,24 @@ Recommended priority for new POC sprints: Path A (verified viable, blocked
 only on a single SSH probe to confirm `.png` MIME acceptance + canvas dir
 location). Path B as fallback if `[embed]` rejects non-HTML.
 
+### Discord: real attachments via `discord_media` (v0.12.6)
+
+With Path A on, every image result (`generate`, `generate_i2i`) also carries
+`discord_media`: one `MEDIA:<gateway path>` line per mirrored PNG, e.g.
+`MEDIA:/home/node/.openclaw/canvas/comfyui-2cd70db0-flux-krea-2k_00360_.png`.
+OpenClaw turns a `MEDIA:` line at the end of a reply into a file attachment
+(the gateway resolves the path on its own filesystem, and the canvas dir is a
+trusted media root). The Discord agent's skills tell it to end the reply with
+these lines instead of pasting the `/view` URL, so the image arrives as a file:
+no link preview, no token in the message text, and it still shows after the
+view token rotates. `IMAGE_GEN_CANVAS_GATEWAY_DIR` (default
+`/home/node/.openclaw/canvas`) is the gateway-side mount of the same dir.
+Video keeps the URL path, because Discord's upload limit is easy to hit with an mp4.
+
+Verify: `openclaw agent --agent discord-friend --json` with an image request.
+The reply payload should hold `mediaUrl: /home/node/.openclaw/canvas/…png`
+and no `vision.<domain>/view` URL in `text`.
+
 ### Canvas dir housekeeping
 
 The bridge writes one PNG + one HTML wrapper per generation into
