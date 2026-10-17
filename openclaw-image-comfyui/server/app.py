@@ -157,6 +157,11 @@ IMAGE_GEN_CANVAS_GATEWAY_DIR = os.environ.get(
 ).strip().rstrip("/")
 
 
+# Discord's upload limit for bots on an unboosted guild is 10 MiB; stay under
+# it so an oversized clip falls back to the URL form instead of a failed send.
+DISCORD_ATTACH_MAX_BYTES = int(os.environ.get("DISCORD_ATTACH_MAX_BYTES", str(9_500_000)))
+
+
 def _discord_media_lines(items: list) -> str:
     """One `MEDIA:<gateway path>` line per mirrored file (empty if none)."""
     return "\n".join(
@@ -1121,6 +1126,13 @@ async def _tool_generate(args: dict) -> dict:
             if img.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
         display_markdown = "\n\n".join(display_lines)
+        # With a mirrored canvas file, the attachment line is the only output
+        # that works everywhere: OpenClaw 2026.10 redacts the /view token in
+        # the transcript the agent reads (it pasted `token=WbBtx0…ZHBC`, a
+        # dead link), and the [embed] line renders as noise on Discord. Make
+        # whatever the agent pastes an attachment.
+        if _discord_media_lines(images):
+            display_markdown = _discord_media_lines(images)
 
         return {
             "prompt_id": prompt_id,
@@ -1380,6 +1392,13 @@ async def _tool_generate_i2i(args: dict) -> dict:
             if img.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{img["canvas_url_path"]}" /]')
         display_markdown = "\n\n".join(display_lines)
+        # With a mirrored canvas file, the attachment line is the only output
+        # that works everywhere: OpenClaw 2026.10 redacts the /view token in
+        # the transcript the agent reads (it pasted `token=WbBtx0…ZHBC`, a
+        # dead link), and the [embed] line renders as noise on Discord. Make
+        # whatever the agent pastes an attachment.
+        if _discord_media_lines(images):
+            display_markdown = _discord_media_lines(images)
 
         return {
             "prompt_id": prompt_id,
@@ -1778,6 +1797,16 @@ async def _tool_generate_video(args: dict) -> dict:
             if v.get("canvas_url_path"):
                 display_lines.append(f'[embed url="{v["canvas_url_path"]}" /]')
         display_markdown = "\n\n".join(display_lines)
+        # Same reasoning as the image path: the agent only ever sees a
+        # redacted /view token. LTX clips are ~2-4 MB, well under Discord's
+        # bot upload limit; anything larger keeps the (dead-on-Discord but
+        # web-usable) URL form rather than failing the upload.
+        attachable = [
+            v for v in videos
+            if v.get("byte_size", 0) <= DISCORD_ATTACH_MAX_BYTES
+        ]
+        if attachable and len(attachable) == len(videos) and _discord_media_lines(attachable):
+            display_markdown = _discord_media_lines(attachable)
 
         return {
             "prompt_id": prompt_id,

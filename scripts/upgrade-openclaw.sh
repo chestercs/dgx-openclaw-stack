@@ -197,6 +197,17 @@ if shared:
     files = labels['com.docker.compose.project.config_files'].split(',') + [filename]
     with open(os.path.join(directory, 'compose-file-list'), 'w') as output:
         output.write(':'.join(files))
+    # Separate compose projects (the image bridge) never see this override;
+    # they mount ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}. Pin
+    # those variables to the preserved directories, or the bridge's next
+    # recreate follows OPENCLAW_CONFIG_DIR into the new state copy and writes
+    # images the Gateway cannot see.
+    pinned = {'OPENCLAW_CANVAS_DIR': '/home/node/.openclaw/canvas',
+              'OPENCLAW_MEDIA_INBOUND_DIR': '/home/node/.openclaw/media/inbound'}
+    shared_env = {key: shared[target]['source'] for key, target in pinned.items() if target in shared}
+    if shared_env:
+        with open(os.path.join(directory, 'shared-env.json'), 'w') as output:
+            json.dump(shared_env, output, indent=2)
     print('Preserving shared tool directories:', ', '.join(sorted(shared)))
 PY
 printf '%s\n' "$rollback_tag" > "$upgrade_dir/rollback-image-tag"
@@ -301,6 +312,11 @@ set_env OPENCLAW_IMAGE_REF "${upstream_digest#ghcr.io/openclaw/openclaw}" \
     MESHCORE_BRIDGE_VERSION 0.1.1
 if [[ -f "$upgrade_dir/compose-file-list" ]]; then
     set_env COMPOSE_FILE "$(<"$upgrade_dir/compose-file-list")"
+fi
+if [[ -f "$upgrade_dir/shared-env.json" ]]; then
+    mapfile -t shared_pairs < <(python3 -c 'import json,sys
+for k, v in json.load(open(sys.argv[1])).items(): print(k); print(v)' "$upgrade_dir/shared-env.json")
+    set_env "${shared_pairs[@]}"
 fi
 "${compose[@]}" config --quiet
 "${compose[@]}" up -d --no-deps --force-recreate openclaw-config-init

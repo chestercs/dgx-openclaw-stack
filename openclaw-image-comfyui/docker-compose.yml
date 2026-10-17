@@ -156,7 +156,15 @@ services:
       # bytes. Verified live 2026-05-14: agent emits paths like
       # `/home/node/.openclaw/media/inbound/3bb29588-accf-4f20-9218-
       # 931d84d512c7.png`; this mount makes them resolvable bridge-side.
-      - ${OPENCLAW_CONFIG_DIR}/media/inbound:/home/node/.openclaw/media/inbound:ro
+      #
+      # OPENCLAW_MEDIA_INBOUND_DIR / OPENCLAW_CANVAS_DIR: this is a separate
+      # compose project, so the upgrade script's shared-tools override never
+      # reaches it. After an upgrade moves OPENCLAW_CONFIG_DIR to a state
+      # copy, the script pins these two variables to the directories the
+      # Gateway still mounts. Without that, the next bridge recreate wrote
+      # images into the copy and every Discord attachment failed with
+      # "File not found" (2026-10-17).
+      - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound:ro
       # Path A bind-mount — uncomment to activate inline chat rendering.
       # The host path must be the gateway's canvas dir (typically
       # ${OPENCLAW_CONFIG_DIR}/canvas). The bridge runs as 1000:1000
@@ -171,7 +179,7 @@ services:
       # generated MUSIC by writing the MP3 here and Discord-upload-file'ing
       # the gateway-side path — the /view proxy URL is Basic-auth walled
       # (401, not Discord-fetchable). Also unblocks the image [embed] path.
-      - ${OPENCLAW_CONFIG_DIR}/canvas:/canvas:rw
+      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/canvas:rw
     cap_drop: [ALL]
     security_opt:
       - "no-new-privileges:true"

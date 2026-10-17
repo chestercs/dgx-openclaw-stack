@@ -4140,10 +4140,10 @@ const LTX_VIDEO_CHEATSHEET_BODY =
   '- `timeout_s`: ≥600 (cold-cache első hívás 3-10 perc). Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + 's (`LTX_VIDEO_MAX_DURATION_S`, Discord ~50 MB embed cap).\n\n' +
   '**Prompt→args:** "videót [X]-ről" → `{prompt:"[X]"}`; "animáld ezt a képet" +\n' +
   'attachment → I2V `init_image_url=<path>`; "8s" → hosszabb `length=`; "néma" → `audio_enabled=false`.\n\n' +
-  '**KÖTELEZŐ válasz:** a `display_markdown` első sora a NYERS mp4 URL — VERBATIM\n' +
-  'az első sor a válaszodban (Discord inline beágyazza, lejátszható a chatben).\n' +
-  'Blank-line után a kommentárod magyarul. SOHA ne hagyd ki — anélkül a user 0\n' +
-  'videót lát, csak szöveget.\n';
+  '**KÖTELEZŐ válasz:** a `display_markdown` tartalmát tedd a válaszodba SZÓ SZERINT,\n' +
+  'minden sort külön sorba. Normál esetben ez egy `MEDIA:/home/node/.openclaw/canvas/…mp4`\n' +
+  'sor: ettől lesz a videó csatolmány, ami a chatben lejátszható. A kommentárod mehet elé,\n' +
+  'magyarul. SOHA ne hagyd ki, mert anélkül a user nem lát videót, csak szöveget.\n';
 
 // Music-generation skill (ACE-Step 1.5). The bridge generate_music tool is
 // MCP-discovered; this recipe teaches the agent WHEN to call it and — the
