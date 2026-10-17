@@ -23,14 +23,14 @@
 //     file is backed up first. Read cursors are committed here, so a run
 //     that never reaches `apply` re-reads the same window next night.
 //
-//   note --id <discord id> --name <name> --text <fact> [--temp] [--replace <part>]
+//   note --id <discord id> --name <name> --text <fact> [--temp|--durable] [--replace <part>]
 //   forget --id <discord id> (--match <part> | --all)
 //     The bot's "remember this" path. Gemma editing the shared file itself
 //     failed twice: an `edit` anchored on a section that did not exist yet,
 //     then a fallback `write` that replaced the whole file. These commands
-//     find or create the person's section and change one line. --temp stamps
-//     a dated `(ideiglenes, YYYY-MM-DD)` line and replaces the person's older
-//     temporary line.
+//     find or create the person's section and change one line. A temporary
+//     state (--temp, or present-state wording, see TEMP_RE) becomes a dated
+//     `(ideiglenes, YYYY-MM-DD)` line that replaces the person's older one.
 //
 // Every command first heals the live file against last-good.md, the copy
 // saved after the last change made through this script. If a stray `write`
@@ -227,6 +227,24 @@ function heal() {
   return live;
 }
 
+// Present-state wording ("épp vonaton ülök", "már otthon van", "egy óra múlva
+// ér haza"). Gemma rarely passed --temp, so a newer status sat next to the
+// stale one; matching the wording here makes the replacement deterministic.
+// --durable overrides a false positive.
+const TEMP_RE = /(?<!\p{L})(?:épp(?:en)?|most|jelenleg|pillanatnyilag|ma|ma\s+este|holnap|úton|vonaton|buszon|autóban|otthon|hazaért|hazaér|megjött|megjöttem|megérkezett|nyaral\p{L}*|szabadságon|visszajö\p{L}*|jö\p{L}*\s+vissza|este\s+jö\p{L}*|(?:\d+|egy|két|pár|fél)\s+(?:órá?|perc)\p{L}*\s+múlva)(?!\p{L})/iu;
+
+// Gemma folds two facts into one line ("Szegeden lakik és Rustban
+// programozik") despite the one-fact-per-call rule. A correction or forget
+// that matches one clause must not take the other with it, so these drop
+// only the matching clause and return null when nothing is left.
+function dropClause(line, part) {
+  const m = line.match(/^(- (?:\(ideiglenes,[^)]*\)\s*)?)(.*)$/);
+  const clauses = m[2].split(/,\s*|\s+és\s+|;\s*/).filter(Boolean);
+  const keep = clauses.filter((c) => !c.toLowerCase().includes(part));
+  if (keep.length === clauses.length) return line;
+  return keep.length ? `${m[1]}${keep.join(', ').replace(/\.?$/, '.')}` : null;
+}
+
 const budapestDate = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Budapest' }).format(new Date());
 
 // [start, end) line range of the person's section, by <@id> first, then by name.
@@ -251,6 +269,8 @@ function note(opt) {
   let text = typeof opt.text === 'string' ? opt.text.replace(/\s+/g, ' ').trim().replace(/^[-*]\s*/, '') : '';
   if (!text) throw new Error('adj meg --text "<tény>"-t');
   if (text.length > 200) text = text.slice(0, 197) + '…';
+  text = text.replace(/^\(ideiglenes,[^)]*\)\s*/, '');
+  const temp = opt.temp === true || (opt.durable !== true && TEMP_RE.test(text));
   const lines = heal().replace(/\n*$/, '\n').split('\n');
   lines.pop();
   let sec = findSection(lines, id, name);
@@ -263,13 +283,14 @@ function note(opt) {
   }
   let [start, end] = sec;
   const body = lines.slice(start + 1, end);
-  const keep = body.filter((l) => {
-    if (/végleges szabály/i.test(l)) return true;
-    if (opt.temp && /^- \(ideiglenes,/.test(l)) return false;
-    if (typeof opt.replace === 'string' && opt.replace && l.toLowerCase().includes(opt.replace.toLowerCase())) return false;
-    return true;
+  const replace = typeof opt.replace === 'string' ? opt.replace.trim().toLowerCase() : '';
+  const keep = body.flatMap((l) => {
+    if (/végleges szabály/i.test(l)) return [l];
+    if (temp && /^- \(ideiglenes,/.test(l)) return [];
+    if (replace && l.startsWith('- ')) { const r = dropClause(l, replace); return r ? [r] : []; }
+    return [l];
   });
-  const line = opt.temp ? `- (ideiglenes, ${budapestDate()}) ${text}` : `- ${text}`;
+  const line = temp ? `- (ideiglenes, ${budapestDate()}) ${text}` : `- ${text}`;
   if (keep.some((l) => l.trim() === line)) { console.log('OK: már benne volt, nincs változás'); return; }
   while (keep.length && keep[keep.length - 1] === '') keep.pop();
   keep.push(line);
@@ -293,12 +314,17 @@ function forget(opt) {
     const match = typeof opt.match === 'string' ? opt.match.toLowerCase() : '';
     if (!match) throw new Error('adj meg --match "<részlet>"-et vagy --all-t');
     const body = lines.slice(start + 1, end);
-    const keep = body.filter((l) => /végleges szabály/i.test(l) || !l.toLowerCase().includes(match));
-    removed = body.length - keep.length;
+    removed = 0;
+    const keep = body.flatMap((l) => {
+      if (/végleges szabály/i.test(l) || !l.startsWith('- ')) return [l];
+      const r = dropClause(l, match);
+      if (r !== l) removed++;
+      return r ? [r] : [];
+    });
     out = [...lines.slice(0, start + 1), ...keep, ...lines.slice(end)];
   }
   if (!removed) { console.log('OK: nem találtam ilyen sort, nincs változás'); return; }
-  saveLive(out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n*$/, '\n'), `OK: ${removed} sor törölve`);
+  saveLive(out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n*$/, '\n'), `OK: ${removed} sor törölve/rövidítve`);
 }
 
 function apply(opt) {
@@ -365,7 +391,7 @@ try {
   else if (cmd === 'forget') forget(opt);
   else {
     console.error('usage: people-digest.mjs collect --guild <id> [--hours 24] [--exclude a,b] [--max-chars 60000] | apply [--no-change]\n' +
-      '       | note --id <id> --name <name> --text <fact> [--temp] [--replace <part>] | forget --id <id> (--match <part> | --all)');
+      '       | note --id <id> --name <name> --text <fact> [--temp|--durable] [--replace <part>] | forget --id <id> (--match <part> | --all)');
     process.exitCode = 2;
   }
 } catch (err) {

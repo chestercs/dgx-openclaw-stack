@@ -4522,9 +4522,11 @@ const SKILL_ROUTER_BODY =
   '- többórás munka kártyával → `long-task-workboard`\n' +
   '- **memória ÍRÁS — "jegyezd meg / emlékezz rá / mostantól hívj X-nek" vagy tény/preferencia/állapot egy emberről → MÉG EBBEN A TURN-BEN `exec`:** ' +
   '`node /opt/people-digest.mjs note --id <az ember Discord ID-ja> --name "<név>" --text "<egy rövid mondat>"`. ' +
-  'Ideiglenes állapot ("épp iszogatok, este jövök", "jövő héten nyaralok") → tedd hozzá: `--temp` (a dátumot a script írja, az éjszakai job takarítja). ' +
+  'EGY hívás = EGY tény: "Szegeden lakom és Rustban programozok" → két külön `note` hívás (különben a javítás mindkettőt viszi). ' +
+  'Ideiglenes állapot ("épp iszogatok", "vonaton ülök", "megjöttem") → `--temp` (a script a "most/épp/úton/otthon/óra múlva" szavakat magától is felismeri; dátumot ír, a régi állapotsort cseréli). ' +
   'Régi tény javítása → `--replace "<régi részlet>"`. Felejtés ("felejtsd el, hogy…") → `node /opt/people-digest.mjs forget --id <ID> --match "<részlet>"`. ' +
   'A `people/MEMORY.md`-t SOHA ne `edit`-eld és ne `write`-old magad; `memory/users/` elavult. ' +
+  'KÉRDÉSRE ("mit tudsz rólam?", "emlékszel?", "mit csinálok?") NE ments semmit — az olvasás, nem írás. ' +
   'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tény → `memory/<téma>.md`. "Megjegyeztem" CSAK `OK:` kimenet után. ' +
   '**memória OLVASÁS — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → előbb `memory_search`** (név + téma a query-ben), ne fejből. ' +
   '**Ha valaki MAGÁRÓL kérdez ("mit csinálok most", "hol vagyok", "mit tudsz rólam") → a válasz a `people/MEMORY.md`-ben, a feladó ID-jához tartozó szekcióban van**: ' +

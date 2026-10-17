@@ -7,9 +7,9 @@
 // answered about the task instead. A before_prompt_build hook knows the
 // sender ID (ctx.senderId) and can hand the model exactly the lines that
 // matter, right next to the question. It also adds the sections of people
-// tagged in the current message. Only prompt hooks are used here: reply hooks
-// (`reply_payload_sending`, `message_sending`) would turn off Discord preview
-// streaming for every turn.
+// tagged in the current message. A before_tool_call hook refuses direct
+// edits of the file (see below). No reply hooks: `reply_payload_sending` /
+// `message_sending` would turn off Discord preview streaming for every turn.
 import fs from 'node:fs';
 import path from 'node:path';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
@@ -67,5 +67,23 @@ export default definePluginEntry({
       for (const id of tagged) parts.push(`Megemlítve: ${sections.get(id).head}`, ...sections.get(id).lines);
       return { prependContext: parts.join('\n') };
     });
+
+    // Gemma's own edit/write on the shared file once replaced every section,
+    // and it still reached for `edit` with the router saying otherwise. The
+    // guarded writer is /opt/people-digest.mjs note|forget (exec), so direct
+    // file tools on people/MEMORY.md are refused with the right command.
+    // The nightly job writes people/MEMORY.next.md, which stays allowed.
+    api.on('before_tool_call', (event, ctx) => {
+      if (ctx?.agentId !== AGENT_ID) return;
+      const p = event?.params ?? {};
+      const targets = [p.path, p.file_path, p.filePath, ...(Array.isArray(event?.derivedPaths) ? event.derivedPaths : [])];
+      if (event?.toolName === 'apply_patch' && typeof p.input === 'string' && p.input.includes(PEOPLE_FILE)) targets.push(PEOPLE_FILE);
+      if (!targets.some((t) => typeof t === 'string' && t.replace(/\\/g, '/').endsWith(PEOPLE_FILE))) return;
+      return {
+        block: true,
+        blockReason: 'A people/MEMORY.md-t nem szerkesztheted közvetlenül. Mentés: exec `node /opt/people-digest.mjs note --id <ID> --name "<név>" --text "<tény>"`; ' +
+          'javítás: ugyanez `--replace "<régi részlet>"`-tel; törlés: `node /opt/people-digest.mjs forget --id <ID> --match "<részlet>"`.',
+      };
+    }, { matcher: ['edit', 'write', 'apply_patch'] });
   },
 });
