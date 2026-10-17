@@ -236,6 +236,10 @@ file before changing the area.
   hook (step 44) and fed by the nightly people-memory job. Verify what a
   session really loads with `systemPromptReport.injectedWorkspaceFiles` in
   `openclaw agent --json` output.
+- Registering ANY `reply_payload_sending` / `message_sending` plugin hook
+  turns off Discord draft-preview streaming for every Discord turn (the
+  plugin checks `hasHooks(...)` globally). That is why generated-image
+  buttons were not shipped. Attachments come from `MEDIA:` reply lines instead.
 - `openclaw-base-ext` is the local image extension layer (adds `ffmpeg`); rebuild
   with `docker compose build --no-cache openclaw-config-init` when bumping
   `OPENCLAW_IMAGE_REF`.
