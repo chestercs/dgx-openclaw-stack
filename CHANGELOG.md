@@ -35,6 +35,19 @@ guild bot effectively had no long-term memory where it is used most.
   block end the reply with them, so the PNG is a real file attachment instead
   of a token-bearing `/view` URL that Discord could only link-preview. Web chat
   keeps `display_markdown`.
+- When the result has a canvas file, `display_markdown` itself is now the
+  `MEDIA:` lines (videos too, while each is under `DISCORD_ATTACH_MAX_BYTES`).
+  The MCP result the agent sees also drops every field a link could be built
+  from (`comfyui_*_url`, per-item `fetch_url_path` / `canvas_url_path`). Before
+  this, Gemma kept appending an `[embed …]` line and a `/view` link, which was
+  dead anyway because OpenClaw 2026.10 redacts the token in the transcript.
+  Calls with `include_base64` (the operator `img` script) still get the full
+  result.
+- The bridge compose mounts `OPENCLAW_CANVAS_DIR` /
+  `OPENCLAW_MEDIA_INBOUND_DIR` when they are set, and `upgrade-openclaw.sh`
+  pins them to the shared dirs. Without that, recreating the bridge after an
+  upgrade followed `OPENCLAW_CONFIG_DIR` into the state copy, and every
+  attachment failed with "File not found".
 
 ### Fixed — Discord tool reliability on OpenClaw 2026.10 (audit 2026-10-16)
 
