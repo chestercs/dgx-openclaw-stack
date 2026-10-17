@@ -4073,10 +4073,9 @@ const IMAGE_GEN_CHEATSHEET_BODY =
   '"square 2K" → 2048×2048. FLUX 1024-2048 natív res-en a legjobb; magasabb lassabb +\n' +
   'kompozíciós hibák. 4K workflow nincs (UltimateSDUpscale tile-seam műtermékek a\n' +
   'FLUX latensen, 2026-05-09).\n\n' +
-  'Kézbesítés: **Discordon** a válaszod VÉGÉRE a tool-output `discord_media` mezőjét\n' +
-  'tedd SZÓ SZERINT — minden `MEDIA:/home/node/.openclaw/canvas/…png` sor külön sorban;\n' +
-  'ettől lesz a kép valódi csatolmány. URL-t NE illessz be. **Webchatben** (vagy ha\n' +
-  'a `discord_media` üres) a `display_markdown`-t illeszd a válasz elejére verbatim.\n';
+  'Kézbesítés: egy rövid mondat, majd a válaszod VÉGÉRE a tool-output `display_markdown`\n' +
+  'mezője SZÓ SZERINT — minden `MEDIA:/home/node/.openclaw/canvas/…png` sor külön sorban;\n' +
+  'ettől lesz a kép valódi csatolmány. URL-t, linket és `[embed …]` sort SOHA ne írj.\n';
 
 // Step 27b — LTX-Video 2.3 workflow picker. Same marker-block pattern as
 // the image-gen cheatsheet, separate markers so the two blocks can coexist
@@ -4299,7 +4298,7 @@ const I2I_CHEATSHEET_BODY =
   '- User attaches photo + "kicsit változtass rajta színeken" → `denoise=0.35, prompt="<keep original subject and composition>, vibrant saturated colors, warm golden-hour lighting"`\n' +
   '- User attaches photo + "anime stílusra" → `denoise=0.75, prompt="anime art style, cel shading, detailed lineart, vivid colors, studio ghibli inspired"`\n\n' +
   '**Adult / NSFW variant:** pass `workflow="flux-krea-2k-i2i-adult"` to use the uncensored LoRA. Same call shape otherwise.\n\n' +
-  '**Output:** on Discord, end your reply with the tool\'s `discord_media` value verbatim (each `MEDIA:` line on its own line) — that attaches the modified image as a file. In web chat, paste `display_markdown` at the START instead.\n';
+  '**Output:** one short sentence, then the tool\'s `display_markdown` value verbatim at the end (each `MEDIA:` line on its own line) — that attaches the modified image as a file. Never write a URL, link or `[embed …]` line.\n';
 
 const TOOL_ORCHESTRATION_CHEATSHEET_START = '<!-- patch-config:discord-tool-orchestration:start -->';
 const TOOL_ORCHESTRATION_CHEATSHEET_END = '<!-- patch-config:discord-tool-orchestration:end -->';
@@ -4503,8 +4502,8 @@ const SKILL_ROUTER_BODY =
   '**"Csak ezt a dobozt/részt"** → snapshot-ref + `screenshot{targetId,ref:"eNN"}` (elem-screenshot, NE utólagos crop). ' +
   '🚨 Kép-crop az `exec`-ben TILOS (`python3 -c "from PIL…"` = ModuleNotFoundError, a gateway-ben nincs Pillow) — ' +
   'PIL CSAK a python_sandboxban; a media→canvas másolás receptje a skillben.\n' +
-  '- képgenerálás → `image-generation` (workflow- és felbontás-receptek). **Kézbesítés (inline mag):** a tool-result `discord_media` sorait ' +
-  '(`MEDIA:/home/node/.openclaw/canvas/…png`) SZÓ SZERINT a válaszod végére, külön sorokba — így csatolmány lesz; URL-t ne illessz be.\n' +
+  '- képgenerálás → `image-generation` (workflow- és felbontás-receptek). **Kézbesítés (inline mag):** a tool-result `display_markdown` sorait ' +
+  '(`MEDIA:/home/node/.openclaw/canvas/…png`) SZÓ SZERINT a válaszod végére, külön sorokba — így csatolmány lesz; URL-t, linket, `[embed …]` sort SOHA ne írj.\n' +
   '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
   '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n' +
   '- **zene / dal / beat generálás → `music-generation`** (ACE-Step; tags kötelező, lyrics opcionális). 🚨 KÉZBESÍTÉS: a `canvas_path`-ot `upload-file`-lal csatold, NE linket ragassz (a /view 401-es).\n' +
@@ -4534,7 +4533,7 @@ const TOOL_POLICY_CORE_END = '<!-- patch-config:discord-tool-policy-core:end -->
 const TOOL_POLICY_CORE_BODY =
   '## Tool-policy — magszabályok (mindig érvényes)\n\n' +
   '- **SOHA ne mondd hogy "nem tudom letölteni/elérni/megcsinálni" mielőtt MEGPRÓBÁLTAD** a tool-láncot (browser / python_sandbox / web_search / canvas / exec). A 60 másodpercnyi őszinte próbálkozás ami elbukik, többet ér mint az azonnali "nem megy" olyan toolok mellett, amik megvannak.\n' +
-  '- **Media output-kontrakt:** képnél a tool `discord_media` mezőjét tedd a válaszod VÉGÉRE SZÓ SZERINT (minden `MEDIA:` sor külön sorban) — ettől lesz valódi csatolmány; ilyenkor URL-t NE illessz be. Ha nincs `discord_media` (pl. videó), a `display_markdown` SZÓ SZERINTI tartalmával KEZDD a választ (nyers URL külön sorban). NE írd át a fájlnevet/path-t, NE vágd le a tokent, NE cseréld placeholder-re.\n' +
+  '- **Media output-kontrakt:** kép/videó tool után a `display_markdown` tartalmát tedd a válaszodba SZÓ SZERINT, minden sort külön sorba. Ha `MEDIA:` sor, a válasz VÉGÉRE kerüljön — ettől lesz valódi csatolmány; ilyenkor URL-t, linket, `[embed …]` sort SOHA ne írj (korábbi válaszaidat se utánozd). Ha URL (pl. túl nagy videó), azzal KEZDD a választ. NE írd át a fájlnevet/path-t, NE cseréld placeholder-re.\n' +
   '- **Tool-hiba = őszinte jelentés:** a PONTOS hibaszöveget add vissza; SOHA ne jelents sikert kapott `display_markdown` nélkül. NE hívd újra UGYANAZT a sikertelen hívást (a loop-detection blokkol) — max 2 próba, aztán válts megközelítést. `edit` "Could not find the exact text" hibánál: előbb `read`-eld be a fájl PONTOS tartalmát, vagy `write`-tal írd felül az egészet.\n' +
   '- **web_search trigger-szavak — KÖTELEZŐ hívás, tilos "túl általános"-sal megtagadni:** "keress / keresd meg / kerss", "a neten / interneten", "google / guglizd", "youtube / yt", "szövegét / lyrics / dalszöveget". Hívd a web_search-öt a best-guess query-vel; a search dönti el van-e találat (csak 0 result után mondd hogy nincs).\n' +
   '- **Magyar "szám" = (a) NUMBER vagy (b) DAL.** "ennek a számnak a szövegét" / "kerss rá a neten a számra" → DAL → web_search lyrics-re → browser → kivonat. SOHA ne értelmezd user-ID-nak/sorszámnak.\n' +

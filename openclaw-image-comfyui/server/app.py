@@ -157,6 +157,43 @@ IMAGE_GEN_CANVAS_GATEWAY_DIR = os.environ.get(
 ).strip().rstrip("/")
 
 
+# Keys an agent could assemble a link or an [embed] line from. Once a result
+# is attachment-ready (display_markdown is MEDIA: lines), the MCP view drops
+# them: with the /view token redacted in the transcript, Gemma still rebuilt
+# `https://…/view?…&token=***` and `[embed url=…]` from these fields (or
+# copied its own earlier replies) next to the working attachment
+# (2026-10-17). The REST API keeps the full result for the operator `img`
+# script.
+_LINK_KEYS = ("comfyui_base_url", "comfyui_external_url", "discord_media")
+_ITEM_LINK_KEYS = ("fetch_url_path", "canvas_url_path", "canvas_file", "subfolder", "type", "node_id")
+
+
+def _agent_view(result: dict) -> dict:
+    """Trim an attachment-ready tool result to what the agent should paste."""
+    display = result.get("display_markdown")
+    if not isinstance(display, str) or not display.startswith("MEDIA:"):
+        return result
+    # include_base64 is only requested by the operator `img` script, which
+    # uploads the bytes itself and falls back to the /view URL — keep it whole.
+    if result.get("include_base64"):
+        return result
+    view = {k: v for k, v in result.items() if k not in _LINK_KEYS}
+    for key in ("images", "videos"):
+        if isinstance(view.get(key), list):
+            view[key] = [
+                {k: v for k, v in item.items() if k not in _ITEM_LINK_KEYS}
+                if isinstance(item, dict) else item
+                for item in view[key]
+            ]
+    view["agent_hint"] = (
+        "Reply with one short sentence, then put the `display_markdown` "
+        "value VERBATIM at the end, each `MEDIA:` line on its own line — "
+        "that attaches the file. Write NO URL, NO link and NO [embed] line; "
+        "the file itself is the deliverable."
+    )
+    return view
+
+
 # Discord's upload limit for bots on an unboosted guild is 10 MiB; stay under
 # it so an oversized clip falls back to the URL form instead of a failed send.
 DISCORD_ATTACH_MAX_BYTES = int(os.environ.get("DISCORD_ATTACH_MAX_BYTES", str(9_500_000)))
@@ -349,18 +386,15 @@ TOOLS = [
         "description": (
             "Generate one or more images via the operator's ComfyUI install. "
             "Returns metadata (prompt_id, workflow, seed, elapsed_s, per-image "
-            "filename + size + width/height) PLUS `discord_media` (one "
-            "`MEDIA:<path>` line per image) and `display_markdown` "
-            "(chat-renderable image markup).\n\n"
-            "MANDATORY OUTPUT CONTRACT — on DISCORD, end your reply with the "
-            "EXACT `discord_media` value, every `MEDIA:` line on its own line, "
-            "copied character-for-character: that attaches the image file. Do "
-            "NOT paste the URL there. In WEB CHAT (or when `discord_media` is "
-            "empty), start your reply with the EXACT verbatim contents of "
-            "`display_markdown`, all lines (public URL line + [embed] "
-            "shortcode line). Never wrap either in code fences. Describing "
-            "the image in your own words is NOT a substitute; the user "
-            "already asked for an IMAGE."
+            "filename + size + width/height) PLUS `display_markdown`: "
+            "normally one `MEDIA:<path>` line per image.\n\n"
+            "MANDATORY OUTPUT CONTRACT — write one short sentence, then put "
+            "the EXACT `display_markdown` value at the END of your reply, "
+            "every `MEDIA:` line on its own line, character-for-character, "
+            "never in code fences: that attaches the image file. Write NO "
+            "URL, NO link and NO [embed] line. Describing the image in your "
+            "own words is NOT a substitute; the user already asked for an "
+            "IMAGE."
             "\n\n"
             "The PNG bytes themselves are NOT in the response by default — "
             "embedding ~200 KB of base64 per image would balloon the agent's "
@@ -438,14 +472,14 @@ TOOLS = [
             "`display_markdown` field containing the chat-renderable URL "
             "(Discord auto-embeds mp4 URLs inline; web chat surfaces the "
             "URL as a plain link).\n\n"
-            "MANDATORY OUTPUT CONTRACT — your reply MUST start with the "
-            "EXACT verbatim contents of the `display_markdown` field, "
-            "INCLUDING ALL LINES of it. Copy character-for-character: do "
-            "not rewrap, do not wrap in code fences, do not summarize. "
-            "Add your Hungarian or English commentary AFTER the entire "
-            "paste on a new line. If you skip the URL line the user "
-            "sees ZERO video — describing what you generated in prose "
-            "is NOT a substitute.\n\n"
+            "MANDATORY OUTPUT CONTRACT — put the EXACT `display_markdown` "
+            "value in your reply, every line on its own line, "
+            "character-for-character, never in code fences. Normally it is "
+            "a `MEDIA:<path>` line: place it at the END (it attaches the "
+            "mp4) and write NO URL, link or [embed] line. Only an oversized "
+            "clip returns a URL instead; then start your reply with it. "
+            "Skipping it means the user sees ZERO video; describing the "
+            "clip in prose is NOT a substitute.\n\n"
             "Modes — pick by what the caller supplied:\n"
             "  - TEXT-TO-VIDEO (T2V): pass only `prompt` (plus optional "
             "knobs). Workflow defaults to `ltx-2.3-t2v` (set via "
@@ -511,11 +545,10 @@ TOOLS = [
             "Default workflow `flux-krea-2k-i2i` (FLUX.1-Krea + VAEEncode init). "
             "For explicit / NSFW content pass `workflow=\"flux-krea-2k-i2i-adult\"` "
             "(adds the flux-uncensored-v2 LoRA at strength 1.5).\n\n"
-            "MANDATORY OUTPUT CONTRACT — on DISCORD, end your reply with the "
-            "EXACT `discord_media` value (each `MEDIA:` line on its own line; "
-            "it attaches the image file), not the URL. In WEB CHAT (or when "
-            "`discord_media` is empty), start your reply with the verbatim "
-            "`display_markdown` (URL line + [embed] shortcode line)."
+            "MANDATORY OUTPUT CONTRACT — one short sentence, then the EXACT "
+            "`display_markdown` value at the END of your reply (each `MEDIA:` "
+            "line on its own line; it attaches the image file). Write NO URL, "
+            "NO link and NO [embed] line."
         ),
         "inputSchema": {
             "type": "object",
@@ -2350,6 +2383,7 @@ async def _handle_message(msg: dict) -> Optional[dict]:
         attachments = []
         if isinstance(tool_result, dict):
             attachments = tool_result.pop("_attachments", []) or []
+            tool_result = _agent_view(tool_result)
         content: list[dict] = [
             {"type": "text", "text": json.dumps(tool_result, default=str)}
         ]
