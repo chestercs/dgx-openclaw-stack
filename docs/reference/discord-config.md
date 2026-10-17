@@ -371,6 +371,16 @@ The stack closes the gap in three layers:
    if something dropped a section or a permanent rule. The file costs prompt
    tokens on every turn, so its header asks the bot to stay under ~6000
    characters.
+   Being in the system prompt was not enough for Gemma. Asked "mit csinálok
+   most?" right after a thread task in the same channel, it answered about
+   the task. Step 44c therefore loads the `people-context` plugin
+   (`/opt/openclaw-plugins/people-context`, via `plugins.load.paths` with
+   `hooks.allowConversationAccess`). Its `before_prompt_build` hook reads
+   `ctx.senderId` and prepends that person's lines, plus those of people
+   tagged in the message, to the turn. The gateway logs a "can't verify where
+   this plugin came from" warning for any `load.paths` plugin; it still
+   loads. Check it with `openclaw plugins inspect people-context --runtime
+   --json` (`typedHooks` lists `before_prompt_build`).
 2. **Nightly people-memory job.** It learns from ordinary channel traffic,
    not only from direct requests. `/opt/people-digest.mjs` (baked into
    `openclaw-base-ext`) pre-digests the guild's new messages per author:

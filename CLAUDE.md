@@ -235,7 +235,12 @@ file before changing the area.
   `workspace-discord/people/MEMORY.md`, loaded via the `bootstrap-extra-files`
   hook (step 44) and fed by the nightly people-memory job. Verify what a
   session really loads with `systemPromptReport.injectedWorkspaceFiles` in
-  `openclaw agent --json` output.
+  `openclaw agent --json` output. The bot writes it only through
+  `/opt/people-digest.mjs note|forget` (its own `edit`/`write` clobbered the
+  file), and the `people-context` plugin (step 44c, a `before_prompt_build`
+  hook) prepends the sender's section per turn. `openclaw agent` has no
+  sender, so test that hook on a real Discord turn (`finalPromptText` in
+  the agent sqlite `trajectory_runtime_events`).
 - Registering ANY `reply_payload_sending` / `message_sending` plugin hook
   turns off Discord draft-preview streaming for every Discord turn (the
   plugin checks `hasHooks(...)` globally). That is why generated-image

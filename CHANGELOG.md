@@ -25,6 +25,14 @@ guild bot effectively had no long-term memory where it is used most.
   nightly job drops them after two days. The `AGENTS.md` template no longer points at
   the old `memory/users/<id>.md` files. The bot kept writing there, and other
   channels never saw those notes.
+- **`people-context` plugin** (openclaw-base-ext, patcher step 44c): a local
+  `before_prompt_build` hook prepends the sender's own `people/MEMORY.md`
+  section, and those of people tagged in the message, to every
+  `discord-friend` turn. Without it, Gemma answered "what am I doing now?"
+  from the channel's recent task history although the status line was in
+  the system prompt. Prompt hooks leave Discord preview streaming on.
+- Thread-task spawns end the task text with the reply language. The child
+  sees no chat history, so a Hungarian request came back as an English report.
 - **Nightly people-memory job**: `/opt/people-digest.mjs` (openclaw-base-ext)
   pre-digests the guild's channel traffic per author for an isolated cron turn
   (`people-memory` skill). Its `apply` gate rejects proposals that drop a
