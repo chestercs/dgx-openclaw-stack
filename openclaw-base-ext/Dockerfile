@@ -130,6 +130,11 @@ RUN chmod +x /opt/patch-mcp-timeout.sh
 # the gate that protects people/MEMORY.md cannot be edited by the agent.
 COPY people-digest.mjs /opt/people-digest.mjs
 
+# Local gateway plugins, loaded through plugins.load.paths (patch-config.mjs
+# step 44c). people-context hands the Discord agent the sender's own
+# people/MEMORY.md lines on every turn.
+COPY plugins/ /opt/openclaw-plugins/
+
 # Wrap the upstream image's entrypoint via a JSON-form ENTRYPOINT so any
 # `command:` from compose services is passed through verbatim. The
 # wrapper delegates to /app/docker-entrypoint.mjs when present so newer

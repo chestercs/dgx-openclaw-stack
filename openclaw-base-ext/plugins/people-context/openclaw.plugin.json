@@ -1,0 +1,8 @@
+{
+  "id": "people-context",
+  "name": "People Context",
+  "description": "Prepends the Discord sender's people/MEMORY.md section to each turn of the discord-friend agent.",
+  "categories": ["other"],
+  "activation": { "onStartup": true },
+  "configSchema": { "type": "object", "additionalProperties": false }
+}

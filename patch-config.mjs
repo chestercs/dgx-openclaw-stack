@@ -239,7 +239,8 @@
 //  44. Discord people memory — seeds the bot-owned `people/MEMORY.md` and
 //      injects it into every Discord session via the bootstrap-extra-files
 //      hook (channel sessions never see the root MEMORY.md). Env-gated by
-//      OPENCLAW_DISCORD_PEOPLE_MEMORY (default on).
+//      OPENCLAW_DISCORD_PEOPLE_MEMORY (default on). 44b nightly-job skill,
+//      44c people-context plugin (sender's own lines prepended per turn).
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -4525,7 +4526,9 @@ const SKILL_ROUTER_BODY =
   'Régi tény javítása → `--replace "<régi részlet>"`. Felejtés ("felejtsd el, hogy…") → `node /opt/people-digest.mjs forget --id <ID> --match "<részlet>"`. ' +
   'A `people/MEMORY.md`-t SOHA ne `edit`-eld és ne `write`-old magad; `memory/users/` elavult. ' +
   'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tény → `memory/<téma>.md`. "Megjegyeztem" CSAK `OK:` kimenet után. ' +
-  '**memória OLVASÁS — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → előbb `memory_search`** (név + téma a query-ben), ne fejből.\n';
+  '**memória OLVASÁS — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → előbb `memory_search`** (név + téma a query-ben), ne fejből. ' +
+  '**Ha valaki MAGÁRÓL kérdez ("mit csinálok most", "hol vagyok", "mit tudsz rólam") → a válasz a `people/MEMORY.md`-ben, a feladó ID-jához tartozó szekcióban van**: ' +
+  'azt mondd el (az `(ideiglenes, dátum)` sor a jelenlegi állapota). Ez a kérdés RÓLA szól, nem rólad, és nem a csatorna korábbi üzeneteiről vagy feladatairól.\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
 // DECISION-TIME policies stay always-injected; the per-domain recipes move
@@ -5682,6 +5685,48 @@ if (isEnvOff(peopleMemoryEnv)) {
     upsertSkillFile(WORKSPACE_DISCORD_ROOT, 'people-memory',
       'Éjszakai persona-frissítés: a guild üzeneteiből tartós személyes tények a people/MEMORY.md-be (a people-memory-nightly job futtatja).',
       PEOPLE_MEMORY_SKILL_BODY);
+  }
+}
+
+// 44c. people-context plugin (openclaw-base-ext, /opt/openclaw-plugins). The
+//      file from step 44 sits in the system prompt, yet Gemma answered "mit
+//      csinálok most?" from the channel's recent task history instead of the
+//      sender's section. The plugin's before_prompt_build hook prepends the
+//      sender's own lines (and those of people tagged in the message) to each
+//      discord-friend turn. Prompt hooks leave Discord preview streaming alone;
+//      only reply hooks turn it off. Non-bundled plugins need
+//      hooks.allowConversationAccess for prompt hooks. Follows
+//      OPENCLAW_DISCORD_PEOPLE_MEMORY; `off` removes the load path and entry.
+const PEOPLE_CONTEXT_DIR = '/opt/openclaw-plugins/people-context';
+if (isEnvOff(peopleMemoryEnv) || !fs.existsSync(PEOPLE_CONTEXT_DIR)) {
+  const paths = config.plugins?.load?.paths;
+  if (Array.isArray(paths) && paths.includes(PEOPLE_CONTEXT_DIR)) {
+    config.plugins.load.paths = paths.filter((p) => p !== PEOPLE_CONTEXT_DIR);
+    changed = true;
+    console.log(`[patch-config] plugins.load.paths: removed ${PEOPLE_CONTEXT_DIR}`);
+  }
+  if (config.plugins?.entries?.['people-context']) {
+    delete config.plugins.entries['people-context'];
+    changed = true;
+    console.log('[patch-config] plugins.entries.people-context removed');
+  }
+} else if (config.channels?.discord) {
+  config.plugins ??= {};
+  config.plugins.load ??= {};
+  if (!Array.isArray(config.plugins.load.paths)) config.plugins.load.paths = [];
+  if (!config.plugins.load.paths.includes(PEOPLE_CONTEXT_DIR)) {
+    config.plugins.load.paths.push(PEOPLE_CONTEXT_DIR);
+    changed = true;
+    console.log(`[patch-config] plugins.load.paths += ${PEOPLE_CONTEXT_DIR}`);
+  }
+  config.plugins.entries ??= {};
+  const entry = (config.plugins.entries['people-context'] ??= {});
+  if (entry.enabled !== true) { entry.enabled = true; changed = true; console.log('[patch-config] plugins.entries.people-context.enabled = true'); }
+  entry.hooks ??= {};
+  if (entry.hooks.allowConversationAccess !== true) {
+    entry.hooks.allowConversationAccess = true;
+    changed = true;
+    console.log('[patch-config] plugins.entries.people-context.hooks.allowConversationAccess = true');
   }
 }
 
