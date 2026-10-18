@@ -233,10 +233,9 @@ services:
     # `LLM_MODEL_ID` lets an operator try a different MoE checkpoint (e.g. a
     # community NVFP4 quantization that ships its own loader patch — see
     # TROUBLESHOOTING.md "MoE model load KeyError"). Default = the NVIDIA
-    # reference. The patcher auto-registers a catalog entry for any override
-    # id so the OpenClaw UI lists it; default-model selection happens in the
-    # UI / per-agent settings (the schema doesn't expose a writable
-    # agents.defaults.llm.model field for the patcher to set).
+    # reference. The patcher swaps the catalog entry and the default model
+    # to any override id. To run Mistral Small 4 here instead, add
+    # docker-compose.mistral.yml to COMPOSE_FILE (it replaces this block).
     command: >
       --model ${LLM_MODEL_ID:-nvidia/Gemma-4-26B-A4B-NVFP4}
       --host 0.0.0.0

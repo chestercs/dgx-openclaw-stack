@@ -266,6 +266,15 @@ file before changing the area.
   enable host debug access by uncommenting `127.0.0.1:8004:8004`.
 - Multi-step tool-call runs need `--timeout 600` — default 60s trips on cold cache.
   Always document tool-using examples with `--timeout 600`.
+- Mistral Small 4 119B-A6B NVFP4 is an opt-in swap of the `vllm-llm` service
+  (`docker-compose.mistral.yml` in `COMPOSE_FILE` + `LLM_MODEL_ID`). It
+  needs `TRITON_MLA` on GB10 and ~78 GiB of the pool. The EAGLE draft does
+  not load on vLLM 0.31/0.32.
+- A local model only thinks if its catalog entry has the right `compat`
+  (Gemma: `thinkingFormat: "qwen-chat-template"`, Mistral:
+  `supportsReasoningEffort`). The patcher writes it (`LLM_THINKING_COMPAT`).
+  Without it OpenClaw sends no thinking control at all. Verify with
+  `usage.reasoningTokens` on `model.completed` events in the agent sqlite.
 
 **TTS surface (Fish Audio S2 Pro + SGLang-Omni)** → [`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md)
 

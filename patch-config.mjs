@@ -295,6 +295,33 @@ const EMBED_BASE_URL = process.env.EMBED_BASE_URL || 'http://vllm-embedding:8005
 // Env knob: LLM_REASONING_ENABLED=false ha operator ki akarja kapcsolni
 // (pl. ha bumpolja vLLM-nek a `--reasoning-parser`-t off-ra).
 const LLM_REASONING_ENABLED = ((process.env.LLM_REASONING_ENABLED ?? 'true').trim().toLowerCase() !== 'false');
+// How the agent's thinking level reaches vLLM depends on the model family, and
+// a custom vllm provider sends NOTHING unless the catalog entry's `compat`
+// says how. Every Gemma Discord turn up to 2026-10-18 ran without thinking
+// despite thinkingDefault "high" (0 of 225 turns had reasoning tokens):
+//   - Gemma 4: the chat template thinks only with
+//     chat_template_kwargs.enable_thinking=true → thinkingFormat
+//     "qwen-chat-template" (OpenClaw's name for exactly that switch).
+//   - Mistral Small 4 / Magistral: `reasoning_effort` "none" | "high", and
+//     vLLM rejects other values → map every OpenClaw level onto those two.
+// LLM_THINKING_COMPAT=off leaves `compat` alone (operator-managed).
+const LLM_THINKING_COMPAT_ON = (process.env.LLM_THINKING_COMPAT ?? 'auto').trim().toLowerCase() !== 'off';
+function thinkingCompatFor(id) {
+  if (!LLM_THINKING_COMPAT_ON) return undefined;
+  if (/gemma-?4/i.test(id)) return { thinkingFormat: 'qwen-chat-template' };
+  if (/mistral|magistral|devstral|ministral/i.test(id)) {
+    return {
+      supportsReasoningEffort: true,
+      supportedReasoningEfforts: ['none', 'high'],
+      reasoningEffortMap: { off: 'none', minimal: 'none', low: 'high', medium: 'high', high: 'high', xhigh: 'high', max: 'high' },
+    };
+  }
+  return undefined;
+}
+const withThinkingCompat = (entry) => {
+  const compat = thinkingCompatFor(entry.id);
+  return compat ? { ...entry, compat } : entry;
+};
 const LLM_MODEL_ENTRY_MOE = {
   id: LLM_MODEL_ID_MOE,
   name: LLM_MODEL_ID_MOE,
@@ -324,22 +351,20 @@ const LLM_MODEL_ENTRY_DENSE = {
   name: LLM_MODEL_ID_DENSE,
 };
 
-// MoE-side optional override (LLM_MODEL_ID env). If set to something other
-// than the hard-coded MoE id, register a generic catalog entry on the
-// vllm provider — useful for community NVFP4 quants that ship loader patches.
+// MoE-side optional override (LLM_MODEL_ID env): the id vllm-llm serves when
+// it runs something other than the default Gemma MoE (a community NVFP4
+// quant, or Mistral Small 4 via docker-compose.mistral.yml). vLLM serves one
+// model id, so the override REPLACES the Gemma entry; keeping both left a
+// picker entry and default model that answered 404.
 const LLM_MODEL_ID_OVERRIDE = process.env.LLM_MODEL_ID?.trim();
-const LLM_MOE_ENTRIES = [LLM_MODEL_ENTRY_MOE];
-if (
+const LLM_MOE_OVERRIDDEN = Boolean(
   LLM_MODEL_ID_OVERRIDE &&
   LLM_MODEL_ID_OVERRIDE !== LLM_MODEL_ID_MOE &&
-  LLM_MODEL_ID_OVERRIDE !== LLM_MODEL_ID_DENSE
-) {
-  LLM_MOE_ENTRIES.push({
-    ...LLM_MODEL_ENTRY_MOE,
-    id: LLM_MODEL_ID_OVERRIDE,
-    name: LLM_MODEL_ID_OVERRIDE,
-  });
-}
+  LLM_MODEL_ID_OVERRIDE !== LLM_MODEL_ID_DENSE,
+);
+const LLM_MOE_ENTRIES = [withThinkingCompat(LLM_MOE_OVERRIDDEN
+  ? { ...LLM_MODEL_ENTRY_MOE, id: LLM_MODEL_ID_OVERRIDE, name: LLM_MODEL_ID_OVERRIDE }
+  : LLM_MODEL_ENTRY_MOE)];
 // Dense-side: just the one hard-coded entry. (If a future community quant of
 // the dense 31B needs catalog registration, add another env-knob mirroring
 // the MoE pattern; not worth the complexity until that's a real use case.)
@@ -352,7 +377,7 @@ if (
 const LLM_DENSE_ON = !['off', 'false', '0', 'no'].includes(
   String(process.env.LLM_DENSE_ENABLED ?? 'on').trim().toLowerCase(),
 );
-const LLM_DENSE_ENTRIES = LLM_DENSE_ON ? [LLM_MODEL_ENTRY_DENSE] : [];
+const LLM_DENSE_ENTRIES = LLM_DENSE_ON ? [withThinkingCompat(LLM_MODEL_ENTRY_DENSE)] : [];
 
 if (!fs.existsSync(CONFIG_PATH)) {
   console.log(`[patch-config] ${CONFIG_PATH} does not exist yet — onboarding has not run. Skipping patch.`);
@@ -481,6 +506,13 @@ if (vllm) {
     changed = true;
     console.log(`[patch-config] vllm.models[] cleanup: removed legacy ${LLM_MODEL_ID_DENSE} (now lives on vllm-dense provider).`);
   }
+  // The default Gemma entry goes once LLM_MODEL_ID names another served model.
+  const replacedMoeIdx = LLM_MOE_OVERRIDDEN ? vllm.models.findIndex((m) => m?.id === LLM_MODEL_ID_MOE) : -1;
+  if (replacedMoeIdx >= 0) {
+    vllm.models.splice(replacedMoeIdx, 1);
+    changed = true;
+    console.log(`[patch-config] vllm.models[] cleanup: removed ${LLM_MODEL_ID_MOE} (vllm-llm serves ${LLM_MODEL_ID_OVERRIDE}).`);
+  }
 }
 
 // (3a) Ensure the vllm-dense provider exists with correct core fields + dense
@@ -597,7 +629,10 @@ const modelPolicyAllow = config.agents.defaults.modelPolicy?.allow;
 if (Array.isArray(modelPolicyAllow)) {
   const kept = modelPolicyAllow.filter((k) => !isLocalModelKey(k) || knownModelKeys.includes(k));
   if (kept.length !== modelPolicyAllow.length) {
-    console.log(`[patch-config] agents.defaults.modelPolicy.allow: removed ${modelPolicyAllow.filter((k) => !kept.includes(k)).join(', ')}.`);
+    // A dropped local model is replaced by the served one, not just removed:
+    // an allow list left without it would block the default model.
+    if (!kept.includes(desiredPrimary)) kept.push(desiredPrimary);
+    console.log(`[patch-config] agents.defaults.modelPolicy.allow: ${modelPolicyAllow.join(', ')} -> ${kept.join(', ')}.`);
     config.agents.defaults.modelPolicy.allow = kept;
     changed = true;
   }
@@ -618,6 +653,22 @@ if (currentPrimary !== desiredPrimary) {
     console.log(`[patch-config] agents.defaults.model.primary: ${currentPrimary ?? '(unset)'} -> ${desiredPrimary}`);
   }
 }
+// Doctor also writes the image and utility models, and agents may pin their
+// own. After a backend swap these still named the old local model, so the
+// vision tool and utility calls went to a model vLLM no longer serves.
+// Only stale local keys move; other providers' refs are user-managed.
+const migrateModelRef = (holder, field, where) => {
+  const cur = holder?.[field];
+  const id = typeof cur === 'string' ? cur : cur?.primary;
+  if (!isLocalModelKey(id) || knownModelKeys.includes(id)) return;
+  if (typeof cur === 'string') holder[field] = desiredPrimary;
+  else cur.primary = desiredPrimary;
+  changed = true;
+  console.log(`[patch-config] ${where}: ${id} -> ${desiredPrimary} (stale local model).`);
+};
+migrateModelRef(config.agents.defaults, 'imageModel', 'agents.defaults.imageModel');
+migrateModelRef(config.agents.defaults, 'utilityModel', 'agents.defaults.utilityModel');
+for (const agent of config.agents.list ?? []) migrateModelRef(agent, 'model', `agents.${agent?.id}.model`);
 
 // (4) Ensure memorySearch points at the local bge-m3 embedding service.
 if (!VLLM_API_KEY) {

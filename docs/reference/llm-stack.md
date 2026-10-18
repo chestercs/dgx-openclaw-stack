@@ -29,6 +29,74 @@ Both reachable simultaneously; the UI picks the active model.
 
 Both are registered in the OpenClaw catalog by `patch-config.mjs` (`LLM_MODEL_ENTRIES[]` array). The active model is picked via the OpenClaw UI's model dropdown — the schema doesn't expose a writable `agents.defaults.llm.model` field, so the patcher only ensures the entries exist; it doesn't pin a default.
 
+## Mistral Small 4 backend (opt-in override, 2026-10)
+
+`docker-compose.mistral.yml` swaps the `vllm-llm` service to
+`mistralai/Mistral-Small-4-119B-2603-NVFP4` under the same service name,
+hostname and port. Enable it with both `.env` lines:
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.mistral.yml
+LLM_MODEL_ID=mistralai/Mistral-Small-4-119B-2603-NVFP4
+```
+
+The patcher then replaces the Gemma catalog entry and moves the default,
+image and utility model references (and `modelPolicy.allow`) to the Mistral id.
+After a swap, delete `agents/*/agent/models.json` (stale provider cache, see
+openclaw-internals).
+
+- Model: 119B total / ~6.5B active per token (128 experts, 4 active), MLA
+  attention, 256K context, text + image input, Apache 2.0.
+- Image: upstream `vllm/vllm-openai:v0.31.0` (multi-arch, CUDA 13.0, FlashInfer
+  kernels for sm121a). No patches.
+- Mistral-format checkpoint (no HF `config.json`):
+  `--tokenizer-mode/--config-format/--load-format mistral`.
+- `--attention-backend TRITON_MLA`: the FlashAttention / FlashInfer MLA decode
+  kernels are sm100 builds and crash on GB10.
+- Thinking is per request via `reasoning_effort` `none` | `high`. OpenClaw only
+  sends it when the catalog entry has `compat.supportsReasoningEffort`. The
+  patcher writes that for Mistral ids (see "Thinking switch" below).
+- No speculative decoding. The official EAGLE draft does not load on vLLM
+  v0.31.0 / v0.32.0, and the published GB10 EAGLE run reached the same
+  ~29.5 tok/s.
+
+Measured on GB10 (vLLM v0.31.0, 2026-10-18):
+
+| | Mistral Small 4 NVFP4 | Gemma 4 26B-A4B NVFP4 |
+|---|---|---|
+| Weights | 66 GiB | ~16.5 GiB |
+| vLLM process at the stack default | ~78 GiB (util 0.65) | ~36 GiB (util 0.30) |
+| Decode, 1 stream | 29.6 tok/s | ~25–52 tok/s (see above) |
+| Decode, 4 streams | 75 tok/s total, 19 each | — |
+| Prefill | ~1900 tok/s (99k tokens in 52 s) | — |
+| Cold start to healthy | ~9.5 min (450 s weight load from USB SSD) | ~3 min |
+| Repo eval, thinking on | 11/12 | 9.5/12 |
+| Repo eval, thinking off | 8/12 | 7/12 |
+
+The eval is 12 Discord-agent turns through `openclaw agent` (Hungarian chat,
+arithmetic, a logic puzzle, Python exec, code, strict formatting, web search,
+honesty about unknown history, memory write and read, casual chat,
+translation). Mistral wins on reasoning and tool use. Gemma writes the more
+natural Hungarian: Mistral now and then invents words.
+
+## Thinking switch (catalog `compat`)
+
+A custom `vllm` provider sends no thinking control unless the catalog entry
+says how. Before 2026-10-18 every Gemma Discord turn ran without thinking,
+despite `thinkingDefault: "high"` (0 of 225 turns had reasoning tokens).
+`patch-config.mjs` now writes `compat` per model family
+(`LLM_THINKING_COMPAT=auto`, default):
+
+- Gemma 4 → `thinkingFormat: "qwen-chat-template"`. OpenClaw then sends
+  `chat_template_kwargs.enable_thinking`, which the Gemma 4 template reads.
+  The template's default is `false`.
+- Mistral / Magistral / Devstral → `supportsReasoningEffort: true`, efforts
+  `none` / `high`, and every OpenClaw level mapped onto those two (vLLM rejects
+  other values).
+
+Check what a turn really did in the agent sqlite: a `model.completed` event
+carries `usage.reasoningTokens`.
+
 ## Standalone variants (port 8004 mutex — only one at a time)
 
 Under `llm/` there's an intentional pattern: several Gemma 4 variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.

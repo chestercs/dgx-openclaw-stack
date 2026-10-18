@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Mistral Small 4 backend
+
+- **`docker-compose.mistral.yml`**: an override that runs
+  `mistralai/Mistral-Small-4-119B-2603-NVFP4` (119B MoE, ~6.5B active) as
+  the `vllm-llm` service. It uses upstream `vllm/vllm-openai:v0.31.0`,
+  `TRITON_MLA` attention on GB10 and the Mistral tool and reasoning parsers.
+  Enable it with `COMPOSE_FILE=…:docker-compose.mistral.yml` plus
+  `LLM_MODEL_ID`. Knobs: `LLM_MISTRAL_IMAGE`, `LLM_MISTRAL_GPU_MEM_UTIL`,
+  `LLM_MISTRAL_MAX_MODEL_LEN`, `LLM_MISTRAL_MAX_NUM_SEQS`. On GB10 it decodes
+  at ~29.6 tok/s and scores 11/12 on the repo eval (Gemma MoE: 9.5/12). It
+  needs ~78 GiB of the unified pool, so ComfyUI video workflows no longer fit
+  beside it. Numbers are in `docs/reference/llm-stack.md`.
+
+### Changed
+
+- **`LLM_MODEL_ID` replaces the Gemma catalog entry** instead of adding a
+  second one. vLLM serves a single id, so the old entry was a dead picker item.
+  The patcher also moves `imageModel`, `utilityModel`, per-agent models and
+  `modelPolicy.allow` off a local model that is no longer served.
+
+### Fixed
+
+- **Local models never thought.** OpenClaw sends no thinking control to a
+  custom vLLM provider unless the catalog entry's `compat` says how. The patcher
+  now writes it per family (`LLM_THINKING_COMPAT`, default `auto`):
+  - Gemma 4 gets `chat_template_kwargs.enable_thinking`. Before this, 0 of 225
+    Discord turns had reasoning, even with `thinkingDefault: "high"`.
+  - Mistral gets `reasoning_effort` `none` / `high`.
+
 ### Added — long-term memory for the Discord bot in guild channels
 
 OpenClaw omits the root `MEMORY.md` from group and channel sessions, so the
