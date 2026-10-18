@@ -1400,6 +1400,8 @@ services:
       # another's run (an image reply was lost that way); see .env.example.
       OPENCLAW_DISCORD_QUEUE_MODE: ${OPENCLAW_DISCORD_QUEUE_MODE-followup}
       OPENCLAW_DISCORD_AGENT_TOOLS_DENY: ${OPENCLAW_DISCORD_AGENT_TOOLS_DENY-}
+      # Media tool groups to hide from the Discord agent (video, music).
+      OPENCLAW_DISCORD_MEDIA_TOOLS_OFF: ${OPENCLAW_DISCORD_MEDIA_TOOLS_OFF:-}
       OPENCLAW_SYSTEM_AGENT: ${OPENCLAW_SYSTEM_AGENT-main}
       OPENCLAW_DISCORD_DEFAULT_TO: ${OPENCLAW_DISCORD_DEFAULT_TO:-}
       # Step 44: always-loaded people/MEMORY.md for the Discord agent.

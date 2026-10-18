@@ -4526,14 +4526,32 @@ function removeSkillFile(workspaceRoot, name) {
 // constants stay untouched (agentsmd rollback path); these are the
 // skills-mode equivalents, same Hungarian operator-facing register.
 
+// Media tool groups the Discord agent can be cut off from, when ComfyUI does
+// not run them (a large LLM backend leaves no room for video renders).
+// The bridge still advertises the tools, and each schema costs prompt
+// space (generate_video alone is ~5 KB), so a dead tool is denied, its
+// skill removed and its router lines dropped. OPENCLAW_DISCORD_MEDIA_TOOLS_OFF
+// = comma list of groups (video, music). Groups left out are restored.
+const MEDIA_TOOL_GROUPS = {
+  video: ['comfyui_image__generate_video'],
+  music: ['comfyui_image__generate_music', 'comfyui_image__generate_music_repaint'],
+};
+const MEDIA_TOOLS_OFF = new Set(
+  (process.env.OPENCLAW_DISCORD_MEDIA_TOOLS_OFF ?? '').split(',')
+    .map((s) => s.trim().toLowerCase()).filter((g) => g in MEDIA_TOOL_GROUPS),
+);
+const mediaOn = (group) => !MEDIA_TOOLS_OFF.has(group);
+
 // Replaces SKILLS_CHEATSHEET_BODY in skills mode — same marker, richer body:
 // the tool list stays (catalog-discoverability) and a router section maps
 // user trigger phrases to skill names so Gemma knows to pull the recipe.
 const SKILL_ROUTER_BODY =
   '## Tools & skills — router\n\n' +
   'Tools ezen a deployon: `web_search` (SearxNG) · `comfyui_image__generate` (kép, KÉT aláhúzás!) · ' +
-  '`comfyui_image__generate_i2i` (csatolt kép átalakítása) · `comfyui_image__generate_video` (videó) · ' +
-  '`comfyui_image__generate_music` (zene, ACE-Step) · `comfyui_image__generate_music_repaint` (zene-átstílozás) · `tts` · ' +
+  '`comfyui_image__generate_i2i` (csatolt kép átalakítása) · ' +
+  (mediaOn('video') ? '`comfyui_image__generate_video` (videó) · ' : '') +
+  (mediaOn('music') ? '`comfyui_image__generate_music` (zene, ACE-Step) · `comfyui_image__generate_music_repaint` (zene-átstílozás) · ' : '') +
+  '`tts` · ' +
   '`python_sandbox__python_exec` (Python + dev-toolchain) · `python_sandbox__transcribe_audio` · ' +
   '`python_sandbox__git_push` · `browser` (action-alapú) · `canvas` · `exec` (shell, approval-gated) · ' +
   '`memory_search`+`memory_get` (olvasás; ÍRÁS = `write` egy `memory/*.md` fájlba, NINCS memory_write tool) · ' +
@@ -4557,8 +4575,12 @@ const SKILL_ROUTER_BODY =
   '- képgenerálás → `image-generation` (workflow- és felbontás-receptek). **Kézbesítés (inline mag):** a tool-result `display_markdown` sorait ' +
   '(`MEDIA:/home/node/.openclaw/canvas/…png`) SZÓ SZERINT a válaszod végére, külön sorokba — így csatolmány lesz; URL-t, linket, `[embed …]` sort SOHA ne írj.\n' +
   '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
-  '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n' +
-  '- **zene / dal / beat generálás → `music-generation`** (ACE-Step; tags kötelező, lyrics opcionális). 🚨 KÉZBESÍTÉS: a `canvas_path`-ot `upload-file`-lal csatold, NE linket ragassz (a /view 401-es).\n' +
+  (mediaOn('video')
+    ? '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n'
+    : '- videógenerálás: ezen a szerveren most KI van kapcsolva — mondd meg, ne próbálkozz más toollal.\n') +
+  (mediaOn('music')
+    ? '- **zene / dal / beat generálás → `music-generation`** (ACE-Step; tags kötelező, lyrics opcionális). 🚨 KÉZBESÍTÉS: a `canvas_path`-ot `upload-file`-lal csatold, NE linket ragassz (a /view 401-es).\n'
+    : '- zenegenerálás: ezen a szerveren most KI van kapcsolva — mondd meg, ne próbálkozz más toollal.\n') +
   '- letöltés / transzkripció / fájl-feltöltés / kép-keresés → `media-downloads`\n' +
   '- **"milyen idő / hány fok lesz" → AZONNAL `python_exec`, SOHA nem cron és SOHA nem web_search.** A teljes recept inline: ' +
   '(1) geokód: `https://geocoding-api.open-meteo.com/v1/search?name=<város>&count=1` → lat/lon; ' +
@@ -4771,7 +4793,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
   // scripts/install-ltx-video.sh and flipped the env knob. The bridge's
   // generate_video tool is always advertised, but the recipe appears
   // only on deploys that have actually completed the model download.
-  const ltxOn = Boolean(LTX_VIDEO_ENABLED_ENV && LTX_VIDEO_ENABLED_ENV !== '0' && LTX_VIDEO_ENABLED_ENV.toLowerCase() !== 'false');
+  const ltxOn = mediaOn('video') && Boolean(LTX_VIDEO_ENABLED_ENV && LTX_VIDEO_ENABLED_ENV !== '0' && LTX_VIDEO_ENABLED_ENV.toLowerCase() !== 'false');
   if (ltxOn || skillsMode) {
     placeRecipe(
       ltxOn,
@@ -4781,12 +4803,13 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       LTX_VIDEO_CHEATSHEET_BODY,
     );
   }
-  // Step 27c — Music cheatsheet (ACE-Step 1.5). Always-on in skills mode:
-  // the generate_music tool is MCP-discovered and the models are installed.
+  // Step 27c — Music cheatsheet (ACE-Step 1.5). On in skills mode unless
+  // OPENCLAW_DISCORD_MEDIA_TOOLS_OFF names `music`: the generate_music tool
+  // is MCP-discovered and the models are installed.
   // The recipe's key job is the Discord delivery (upload-file canvas_path,
   // not the auth-walled /view URL).
   placeRecipe(
-    true,
+    mediaOn('music'),
     MUSIC_CHEATSHEET_START, MUSIC_CHEATSHEET_END, MUSIC_CHEATSHEET_BODY, 'music-tools cheatsheet',
     'music-generation',
     'Zenegenerálás a comfyui_image__generate_music toollal (ACE-Step 1.5) — tags (kötelező) + opcionális lyrics, instrumentális vagy énekes; kézbesítés Discordon upload-file-lal a canvas_path-ról (NEM link, a /view auth-walled). Repaint: generate_music_repaint csatolt audióra.',
@@ -5606,6 +5629,29 @@ if (discordDenyRaw.toLowerCase() !== 'off') {
       agent.tools.deny = [...existing, ...added];
       changed = true;
       console.log(`[patch-config] agents.list[id=${JSON.stringify(agent.id)}].tools.deny += ${added.length} tools (${added.slice(0, 6).join(', ')}…)`);
+    }
+  }
+}
+// Media tool groups (OPENCLAW_DISCORD_MEDIA_TOOLS_OFF, see MEDIA_TOOL_GROUPS):
+// unlike the list above this one is managed both ways, so turning a group
+// back on removes its tools from the deny list again.
+{
+  const discordAgentIdsMedia = new Set(
+    (config.bindings ?? [])
+      .filter((b) => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
+      .map((b) => b.agentId),
+  );
+  const offTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => !mediaOn(g)).flatMap(([, t]) => t);
+  const onTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => mediaOn(g)).flatMap(([, t]) => t);
+  for (const agent of config.agents?.list ?? []) {
+    if (!discordAgentIdsMedia.has(agent?.id)) continue;
+    const before = Array.isArray(agent.tools?.deny) ? agent.tools.deny : [];
+    const next = [...before.filter((t) => !onTools.includes(t)), ...offTools.filter((t) => !before.includes(t))];
+    if (next.length !== before.length || next.some((t, i) => t !== before[i])) {
+      agent.tools ??= {};
+      agent.tools.deny = next;
+      changed = true;
+      console.log(`[patch-config] agents.list[id=${JSON.stringify(agent.id)}] media tools off: ${offTools.join(', ') || '(none)'}`);
     }
   }
 }

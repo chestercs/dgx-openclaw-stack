@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs ~78 GiB of the unified pool, so ComfyUI video workflows no longer fit
   beside it. Numbers are in `docs/reference/llm-stack.md`.
 
+- **`OPENCLAW_DISCORD_MEDIA_TOOLS_OFF`** (`video`, `music`): hides ComfyUI
+  media tool groups from the Discord agent when they cannot run. The setting
+  denies the tools, removes their skills and has the router say the feature is
+  off. Removing a group brings it back. Turning off video and music cut the
+  bot's prompt from 45.7k to 42.2k tokens.
+
 ### Changed
 
 - **`LLM_MODEL_ID` replaces the Gemma catalog entry** instead of adding a

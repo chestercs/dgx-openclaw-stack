@@ -79,6 +79,30 @@ honesty about unknown history, memory write and read, casual chat,
 translation). Mistral wins on reasoning and tool use. Gemma writes the more
 natural Hungarian: Mistral now and then invents words.
 
+### Also tried: Nemotron 3.5 Super VL 120B-A12B NVFP4 (2026-10-18)
+
+NVIDIA's DGX Spark recipe (vLLM v0.32.0, LiLiCorr `dflash` drafter with 7
+draft tokens, `--max-num-seqs 1`, `qwen3_coder` tool parser, `nemotron_v3`
+reasoning parser, thinking via `chat_template_kwargs.enable_thinking`) runs on
+the GX10. It is not the default:
+
+| | Nemotron 3.5 Super VL | Mistral Small 4 |
+|---|---|---|
+| Repo eval, thinking on | 12/12 | 10–11/12 |
+| Decode, Hungarian, 1 stream | 16.6 tok/s (drafter accepts ~2.3 tokens per step) | 29.6 tok/s |
+| Decode, English, 1 stream | 26.2 tok/s | — |
+| Decode, 4 streams | 8.8 tok/s each | 19 tok/s each |
+| Prefill | ~2560 tok/s | ~1900 tok/s |
+| vLLM process at util 0.75 / 0.65 | ~91 GiB | ~78 GiB |
+| Peak ACPI temperature, 99k-token prefill | 94 °C | 92 °C |
+
+The LiLiCorr drafter predicts Hungarian poorly: the forum's English runs
+report ~6.5 accepted tokens per step. Hungarian is not among the model card's
+listed languages either, and its Hungarian has the same invented-word slips as
+Mistral's. The GX10's ACPI trip point is 104 °C. One forum report has a DGX
+Spark powering off during 32K+ contexts with this model. Run long-prefill
+experiments with a temperature watchdog that stops the vLLM container first.
+
 ## Thinking switch (catalog `compat`)
 
 A custom `vllm` provider sends no thinking control unless the catalog entry
