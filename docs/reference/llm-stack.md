@@ -98,8 +98,24 @@ the GX10. It is not the default:
 
 The LiLiCorr drafter predicts Hungarian poorly: the forum's English runs
 report ~6.5 accepted tokens per step. Hungarian is not among the model card's
-listed languages either, and its Hungarian has the same invented-word slips as
-Mistral's. The GX10's ACPI trip point is 104 °C. One forum report has a DGX
+listed languages either.
+
+Tuning at `--gpu-memory-utilization 0.68` with ComfyUI image generation
+running beside it (both fit, ~8-16 GB left). Chars/s compares the two
+tokenizers fairly. The 12-case eval below uses the English agent prompt.
+
+| | Mistral Small 4 | Nemotron, 7 draft tokens | Nemotron, 3 draft tokens | Nemotron, no drafter |
+|---|---|---|---|---|
+| Hungarian prose, 1 stream | 98 chars/s | ~55 chars/s | 69 chars/s | 64 chars/s |
+| Hungarian prose, 4 streams, each | 61 chars/s | ~29 chars/s | 36 chars/s | 41 chars/s |
+| Thinking on (English reasoning), 1 stream | — | — | 87 chars/s (38.8 tok/s, acceptance ~3) | 47 chars/s |
+| Repo eval | 11/12, 218 s total | — | 11/12, 430 s total | 12/12, 532 s total |
+| KV cache | 441k tokens (util 0.65) | — | 633k tokens | 1.7M tokens |
+
+Nemotron is the stronger reasoner, but a Discord turn takes 2-2.5× as long.
+Its Hungarian is also worse than Mistral's: Portuguese and Chinese tokens
+showed up in the replies ("ajudarni", "只有"), along with misspellings, so
+Mistral Small 4 stayed the default. The GX10's ACPI trip point is 104 °C. One forum report has a DGX
 Spark powering off during 32K+ contexts with this model. Run long-prefill
 experiments with a temperature watchdog that stops the vLLM container first.
 
