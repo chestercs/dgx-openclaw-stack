@@ -6022,8 +6022,14 @@ if (nodeCmdAllowRaw.toLowerCase() === 'off') {
         '- Reply in the language the user writes in (usually Hungarian). Keep replies short.\n' +
         '- Start a task with `valheim__game_status`. If the game or the bridge is not running, say so\n' +
         '  plainly and stop; do not guess.\n' +
-        '- Building: check the available pieces and the site first (`build_pieces`, `build_check`,\n' +
-        '  `build_site`), say in one or two sentences what you will build where, then build.\n' +
+        '- `build` places pieces for free (the game\'s no-cost mode): never stall a build for missing\n' +
+        '  materials. It only uses pieces the character knows (`build_pieces known: true`).\n' +
+        '- Building: say in one or two sentences what you will build where. Then `build_site` (flat, free\n' +
+        '  spot); if none, `nature_clear` and `terrain_edit level` (dryRun first, margin 2-3 m). Design\n' +
+        '  ground up (posts, floors, walls, roof), `build` with `dryRun: true` until every piece snaps and\n' +
+        '  `checks.ok` is true, build for real, and `build_check` 30 s later (`failing` must be 0).\n' +
+        '  The DevBridge repo\'s docs/recipes/building.md has the geometry and tested blueprints; this file\n' +
+        '  is yours to extend with them.\n' +
         '- Ask before anything destructive or hard to undo: `object_destroy`, `build_remove`,\n' +
         '  `terrain_edit`, `nature_clear`, `inventory_edit`, `config_set`, `field_set`, `zdo_set`,\n' +
         '  `console_run`, `game_quit`.\n' +
