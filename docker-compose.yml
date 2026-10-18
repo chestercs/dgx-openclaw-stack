@@ -1810,6 +1810,16 @@ services:
       # Comma list of node commands admitted beyond the platform default
       # (patcher step 46). Empty = no-op, `off` = remove.
       OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW: ${OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW:-}
+      # Valheim builder (patcher step 47): the DevBridge MCP server on the
+      # gaming PC and the Discord channels its agent answers in. URL + token
+      # empty = no-op; VALHEIM_MCP=off removes the wiring.
+      VALHEIM_MCP: ${VALHEIM_MCP:-}
+      VALHEIM_MCP_URL: ${VALHEIM_MCP_URL:-}
+      VALHEIM_MCP_TOKEN: ${VALHEIM_MCP_TOKEN:-}
+      VALHEIM_MCP_REQUEST_TIMEOUT_MS: ${VALHEIM_MCP_REQUEST_TIMEOUT_MS:-}
+      VALHEIM_AGENT_ID: ${VALHEIM_AGENT_ID:-}
+      VALHEIM_AGENT_CHANNELS: ${VALHEIM_AGENT_CHANNELS:-}
+      VALHEIM_AGENT_TOOLS_DENY: ${VALHEIM_AGENT_TOOLS_DENY:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

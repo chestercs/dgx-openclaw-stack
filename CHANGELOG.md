@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code carried the container's bridge IP over plaintext ws://, which other
   machines cannot reach and which only grants limited access.
 
+- **Valheim builder** (patcher step 47, `VALHEIM_MCP_URL` / `VALHEIM_MCP_TOKEN`
+  / `VALHEIM_AGENT_CHANNELS`): wires a DevBridge MCP server running on the
+  gaming PC and adds a `valheim` agent bound to chosen Discord channels. Its
+  tools (`valheim__*`) are denied for every other agent, and `csharp_run` is
+  denied for the builder too.
+
+- **Changed:** the Discord persona steps (22, 25, 25c, 32, 43b and the media
+  tool groups) now target only agents behind the catch-all Discord binding.
+  Channel-scoped agents keep their own tool profile and thinking level.
+
 - **`OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW`** (patcher step 46): node commands
   admitted beyond the platform default (`gateway.nodes.commands.allow`). On
   2026.10 the Windows Companion's canvas, TTS and STT commands are withheld

@@ -245,6 +245,8 @@
 //      `openclaw qr` puts in setup codes (OPENCLAW_DEVICE_PAIR_PUBLIC_URL).
 //  46. gateway.nodes.commands.allow — node commands admitted beyond the
 //      platform default (OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW).
+//  47. Valheim builder — DevBridge MCP server, a `valheim` agent bound to
+//      VALHEIM_AGENT_CHANNELS, `valheim__*` denied for every other agent.
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -2350,6 +2352,20 @@ if (config.channels?.discord?.enabled === true) {
   }
 }
 
+// The Discord persona agent(s): routed by a catch-all Discord binding, i.e.
+// `match.channel === "discord"` with no peer / guild / team / roles scope.
+// Steps 22, 25, 25c, 32 and 43b tune THIS agent. A channel-scoped binding
+// (step 47's Valheim agent) is a different persona and must not inherit the
+// Discord bot's tool profile, deny list or thinking level.
+function discordCatchAllAgentIds() {
+  return new Set(
+    (config.bindings ?? [])
+      .filter((b) => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string' &&
+        !b.match.peer && !b.match.guildId && !b.match.teamId && !b.match.roles)
+      .map((b) => b.agentId),
+  );
+}
+
 // ─── 22. Discord-routed agent tools.alsoAllow ────────────────────────────────
 // The default `tools.profile: "coding"` (set in step 8 unless the user
 // overrides) is missing two whole categories the Discord-routed agent
@@ -2404,12 +2420,7 @@ if (alsoAllowEntries.length > 0) {
   // that path doesn't exist in the openclaw 2026.4.22 schema; verified
   // 2026-05-06 against a live config). Each binding is
   // `{type: "route", agentId: "<id>", match: {channel: "<name>"}}`.
-  const bindings = config.bindings ?? [];
-  const discordAgentIds = new Set(
-    bindings
-      .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
-      .map(b => b.agentId),
-  );
+  const discordAgentIds = discordCatchAllAgentIds();
   const list = config.agents?.list ?? [];
   for (const agent of list) {
     if (!discordAgentIds.has(agent?.id)) continue;
@@ -2803,12 +2814,7 @@ if (profileEntry !== '') {
     );
   } else {
     // Same routing source as step 22 — top-level bindings[].
-    const bindings = config.bindings ?? [];
-    const discordAgentIds = new Set(
-      bindings
-        .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
-        .map(b => b.agentId),
-    );
+    const discordAgentIds = discordCatchAllAgentIds();
     const list = config.agents?.list ?? [];
     for (const agent of list) {
       if (!discordAgentIds.has(agent?.id)) continue;
@@ -2971,12 +2977,7 @@ if (dcThinking !== '') {
       `not in {off, minimal, low, medium, high, xhigh, adaptive, max} — skipping step 25c.`,
     );
   } else {
-    const bindings25c = config.bindings ?? [];
-    const discordAgentIds25c = new Set(
-      bindings25c
-        .filter(b => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
-        .map(b => b.agentId),
-    );
+    const discordAgentIds25c = discordCatchAllAgentIds();
     const list25c = config.agents?.list ?? [];
     // Stale-value overwrite set: patcher-managed prior defaults that we
     // proactively bump on upgrade. Operator-set values (low/medium/high/
@@ -3672,10 +3673,7 @@ if (execApprovalsSeedOn && toolsExecOn && !usesKeyedAgents) {
     }
     // Resolve the Discord-routed agent id(s) from bindings[] (same source as
     // steps 22/25); pre-onboarding fallback is the conventional id.
-    const apBindings = config.bindings ?? [];
-    const apAgentIds = apBindings
-      .filter((b) => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
-      .map((b) => b.agentId);
+    const apAgentIds = [...discordCatchAllAgentIds()];
     if (apAgentIds.length === 0) apAgentIds.push('discord-friend');
     // Developer-toolchain seed. Interpreters (node / python3) are listed as
     // BARE commands — `strictInlineEval` (step 31) still forces per-call
@@ -5646,11 +5644,7 @@ const discordDeny = discordDenyRaw === ''
   ? DEFAULT_DISCORD_AGENT_DENY
   : discordDenyRaw.split(',').map((s) => s.trim()).filter(Boolean);
 if (discordDenyRaw.toLowerCase() !== 'off') {
-  const discordAgentIds43 = new Set(
-    (config.bindings ?? [])
-      .filter((b) => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
-      .map((b) => b.agentId),
-  );
+  const discordAgentIds43 = discordCatchAllAgentIds();
   for (const agent of config.agents?.list ?? []) {
     if (!discordAgentIds43.has(agent?.id)) continue;
     agent.tools ??= {};
@@ -5667,11 +5661,7 @@ if (discordDenyRaw.toLowerCase() !== 'off') {
 // unlike the list above this one is managed both ways, so turning a group
 // back on removes its tools from the deny list again.
 {
-  const discordAgentIdsMedia = new Set(
-    (config.bindings ?? [])
-      .filter((b) => b?.type === 'route' && b?.match?.channel === 'discord' && typeof b?.agentId === 'string')
-      .map((b) => b.agentId),
-  );
+  const discordAgentIdsMedia = discordCatchAllAgentIds();
   const offTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => !mediaOn(g)).flatMap(([, t]) => t);
   const onTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => mediaOn(g)).flatMap(([, t]) => t);
   for (const agent of config.agents?.list ?? []) {
@@ -5919,6 +5909,158 @@ if (nodeCmdAllowRaw.toLowerCase() === 'off') {
     config.gateway.nodes.commands.allow = desiredAllow;
     changed = true;
     console.log(`[patch-config] gateway.nodes.commands.allow = ${JSON.stringify(desiredAllow)}`);
+  }
+}
+
+// ─── 47. Valheim builder: DevBridge MCP + a channel-bound agent ─────────────
+// DevBridge (the valheim-bepinex-claude-mcp project) drives the owner's running
+// Valheim client through a BepInEx plugin. Its MCP server runs in HTTP mode on
+// the gaming PC (Docker Desktop) and the gateway calls it over the LAN. The
+// tools appear as `valheim__<tool>` (~58 of them, several with in-game
+// writes), so instead of widening the Discord bot this step adds a separate
+// `valheim` agent that only answers in the listed Discord channels:
+//   - mcp.servers.valheim (streamable-http + Bearer token);
+//   - the agent (own workspace + AGENTS.md seed, minimal profile plus the
+//     valheim tools, VALHEIM_AGENT_TOOLS_DENY denied, csharp_run by default);
+//   - one channel-scoped route binding per VALHEIM_AGENT_CHANNELS id (peer
+//     bindings win over the catch-all Discord binding);
+//   - `valheim__*` denied on every other agent, so the Discord bot's prompt does
+//     not grow by 58 schemas and nobody else can drive the game.
+// One call can wait up to 10 min for an in-game guard answer and calls queue
+// behind each other, so the MCP request timeout sits above that.
+// VALHEIM_MCP_URL + VALHEIM_MCP_TOKEN gate the step; VALHEIM_MCP=off removes
+// the server, the bindings and the deny entries (the agent entry stays).
+{
+  const vhUrl = (process.env.VALHEIM_MCP_URL || '').trim();
+  const vhToken = (process.env.VALHEIM_MCP_TOKEN || '').trim();
+  const vhOff = (process.env.VALHEIM_MCP || '').trim().toLowerCase() === 'off';
+  const vhAgentId = (process.env.VALHEIM_AGENT_ID || 'valheim').trim();
+  const vhChannels = (process.env.VALHEIM_AGENT_CHANNELS || '')
+    .split(',').map((s) => s.trim()).filter((s) => /^\d{17,20}$/.test(s));
+  // Empty = the default (compose always passes the variable); `none` = no extra denies.
+  const vhDenyRaw = (process.env.VALHEIM_AGENT_TOOLS_DENY || 'valheim__csharp_run').trim();
+  const vhDeny = vhDenyRaw.toLowerCase() === 'none'
+    ? [] : vhDenyRaw.split(',').map((s) => s.trim()).filter(Boolean);
+  const vhTimeout = parseInt(process.env.VALHEIM_MCP_REQUEST_TIMEOUT_MS || '660000', 10);
+  const VH_GLOB = 'valheim__*';
+  const isVhBinding = (b) => b?.type === 'route' && b?.agentId === vhAgentId && b?.match?.channel === 'discord' && b?.match?.peer;
+
+  if (vhOff) {
+    if (config.mcp?.servers?.valheim) {
+      delete config.mcp.servers.valheim;
+      changed = true;
+      console.log('[patch-config] VALHEIM_MCP=off — removed mcp.servers.valheim');
+    }
+    const before = (config.bindings ?? []).length;
+    config.bindings = (config.bindings ?? []).filter((b) => !isVhBinding(b));
+    if (config.bindings.length !== before) {
+      changed = true;
+      console.log(`[patch-config] VALHEIM_MCP=off — removed ${before - config.bindings.length} valheim channel binding(s)`);
+    }
+    for (const agent of config.agents?.list ?? []) {
+      if (Array.isArray(agent?.tools?.deny) && agent.tools.deny.includes(VH_GLOB)) {
+        agent.tools.deny = agent.tools.deny.filter((t) => t !== VH_GLOB);
+        changed = true;
+        console.log(`[patch-config] agents.list[id=${JSON.stringify(agent.id)}].tools.deny -= ${VH_GLOB}`);
+      }
+    }
+  } else if (vhUrl && vhToken) {
+    config.mcp ??= {};
+    config.mcp.servers ??= {};
+    const ms = (config.mcp.servers.valheim ??= {});
+    const desired = {
+      transport: 'streamable-http',
+      url: vhUrl,
+      connectionTimeoutMs: 10000,
+      requestTimeoutMs: Number.isFinite(vhTimeout) && vhTimeout > 0 ? vhTimeout : 660000,
+      headers: { Authorization: `Bearer ${vhToken}` },
+    };
+    for (const [k, v] of Object.entries(desired)) {
+      if (JSON.stringify(ms[k]) !== JSON.stringify(v)) {
+        ms[k] = v;
+        changed = true;
+        console.log(`[patch-config] mcp.servers.valheim.${k} = ${k === 'headers' ? '<set>' : JSON.stringify(v)}`);
+      }
+    }
+
+    // The agent. Fill-only like step 42: hand-tuned fields survive re-runs,
+    // except the deny list, which is kept a superset of VALHEIM_AGENT_TOOLS_DENY.
+    const workspace = `/home/node/.openclaw/workspace-${vhAgentId}`;
+    config.agents ??= {};
+    config.agents.list ??= [];
+    let agent = config.agents.list.find((a) => a?.id === vhAgentId);
+    if (!agent) {
+      agent = {
+        id: vhAgentId,
+        name: vhAgentId,
+        workspace,
+        tools: { profile: 'minimal', alsoAllow: [VH_GLOB], deny: [...vhDeny] },
+        thinkingDefault: 'high',
+      };
+      config.agents.list.push(agent);
+      changed = true;
+      console.log(`[patch-config] agents.list += ${JSON.stringify(vhAgentId)} (Valheim builder, workspace ${workspace})`);
+    } else {
+      agent.workspace ??= workspace;
+      agent.tools ??= { profile: 'minimal', alsoAllow: [VH_GLOB] };
+      const deny = Array.isArray(agent.tools.deny) ? agent.tools.deny : [];
+      const addDeny = vhDeny.filter((t) => !deny.includes(t));
+      if (addDeny.length) {
+        agent.tools.deny = [...deny, ...addDeny];
+        changed = true;
+        console.log(`[patch-config] agents.list[id=${JSON.stringify(vhAgentId)}].tools.deny += ${addDeny.join(', ')}`);
+      }
+    }
+    const agentsMd = `${workspace}/AGENTS.md`;
+    fs.mkdirSync(`${workspace}/memory`, { recursive: true, mode: 0o755 });
+    if (!fs.existsSync(agentsMd)) {
+      fs.writeFileSync(agentsMd,
+        '# Valheim builder\n\n' +
+        'You are Claw in a Discord channel set aside for Valheim. Through the `valheim__*` tools you\n' +
+        'control the server owner\'s running Valheim game client: you can look around, read the world,\n' +
+        'and build. Everything you do happens in the owner\'s own game, as their character.\n\n' +
+        '- Reply in the language the user writes in (usually Hungarian). Keep replies short.\n' +
+        '- Start a task with `valheim__game_status`. If the game or the bridge is not running, say so\n' +
+        '  plainly and stop; do not guess.\n' +
+        '- Building: check the available pieces and the site first (`build_pieces`, `build_check`,\n' +
+        '  `build_site`), say in one or two sentences what you will build where, then build.\n' +
+        '- Ask before anything destructive or hard to undo: `object_destroy`, `build_remove`,\n' +
+        '  `terrain_edit`, `nature_clear`, `inventory_edit`, `config_set`, `field_set`, `zdo_set`,\n' +
+        '  `console_run`, `game_quit`.\n' +
+        '- Tools run one at a time. A write can wait for the owner to confirm it in the game; if a\n' +
+        '  call is slow, tell the user it is waiting for that confirmation.\n' +
+        '- Report what actually happened from the tool results. Never claim a build that a tool did\n' +
+        '  not confirm.\n');
+      console.log(`[patch-config] seeded ${agentsMd} (Valheim builder)`);
+    }
+
+    // Channel-scoped bindings: add missing ones, drop ours that left the list.
+    config.bindings ??= [];
+    const keep = config.bindings.filter((b) => !isVhBinding(b) || vhChannels.includes(String(b.match.peer.id)));
+    if (keep.length !== config.bindings.length) {
+      console.log(`[patch-config] removed ${config.bindings.length - keep.length} valheim binding(s) no longer in VALHEIM_AGENT_CHANNELS`);
+      config.bindings = keep;
+      changed = true;
+    }
+    for (const id of vhChannels) {
+      if (!config.bindings.some((b) => isVhBinding(b) && String(b.match.peer.id) === id)) {
+        config.bindings.push({ type: 'route', agentId: vhAgentId, match: { channel: 'discord', peer: { kind: 'channel', id } } });
+        changed = true;
+        console.log(`[patch-config] bindings += discord channel ${id} -> ${vhAgentId}`);
+      }
+    }
+
+    // Everyone else: no valheim tools.
+    for (const other of config.agents.list) {
+      if (!other?.id || other.id === vhAgentId) continue;
+      other.tools ??= {};
+      const deny = Array.isArray(other.tools.deny) ? other.tools.deny : [];
+      if (!deny.includes(VH_GLOB)) {
+        other.tools.deny = [...deny, VH_GLOB];
+        changed = true;
+        console.log(`[patch-config] agents.list[id=${JSON.stringify(other.id)}].tools.deny += ${VH_GLOB}`);
+      }
+    }
   }
 }
 
