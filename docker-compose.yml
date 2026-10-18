@@ -1127,8 +1127,9 @@ services:
       # shared mount the file would land in /workspace/sandbox, which is
       # OUTSIDE the agent's media roots → upload-file gets access-denied.
       # Same path on both sides means one path convention for the agent.
-      # (2026-06-08 — audio/file attachment support.)
-      - ${OPENCLAW_CONFIG_DIR}/canvas:/home/node/.openclaw/canvas:rw
+      # (2026-06-08 — audio/file attachment support.) Host path: see
+      # OPENCLAW_CANVAS_DIR on the gateway service.
+      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas:rw
     # No `networks:` directive — the sandbox joins the project's default
     # bridge so the gateway can reach it via DNS at openclaw-python-sandbox.
     # PYTHON_SANDBOX_NETWORK in .env is a documented placeholder for a
@@ -1810,6 +1811,7 @@ services:
       # mounts the workspace at, so the markdown lands where the agent
       # reads it.
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
       - ./patch-config.mjs:/opt/patch-config.mjs:ro
     entrypoint: ["node", "/opt/patch-config.mjs"]
 
@@ -1895,6 +1897,13 @@ services:
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+      # Canvas = generated media (images, video, music, downloads) that the
+      # agent attaches with MEDIA: lines. OPENCLAW_CANVAS_DIR keeps it outside
+      # the config dir, so it does not sit next to tokens and auth profiles and
+      # does not move when an upgrade switches OPENCLAW_CONFIG_DIR to a state
+      # copy. Every service that touches it (config-init, gateway, cli,
+      # python-sandbox, the image bridge) must mount the same host dir.
+      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
     command: ["node", "dist/index.js", "gateway", "--bind", "${OPENCLAW_GATEWAY_BIND:-lan}", "--port", "18789"]
     init: true
     restart: unless-stopped
@@ -1971,6 +1980,7 @@ services:
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
     stdin_open: true
     tty: true
     init: true
