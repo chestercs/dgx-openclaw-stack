@@ -1804,6 +1804,9 @@ services:
       # Past this the patcher archives the diary into memory/dreams-archive/
       # (stays memory-searchable) and dreaming recreates it on the next run.
       OPENCLAW_DREAMS_ROTATE_BYTES: ${OPENCLAW_DREAMS_ROTATE_BYTES:-32768}
+      # wss:// URL that `openclaw qr` puts into Companion / mobile setup codes
+      # (patcher step 45). Empty = no-op, `off` = remove.
+      OPENCLAW_DEVICE_PAIR_PUBLIC_URL: ${OPENCLAW_DEVICE_PAIR_PUBLIC_URL:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

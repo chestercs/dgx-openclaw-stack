@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off. Removing a group brings it back. Turning off video and music cut the
   bot's prompt from 45.7k to 42.2k tokens.
 
+- **`OPENCLAW_DEVICE_PAIR_PUBLIC_URL`** (patcher step 45): the wss:// address
+  `openclaw qr` puts into Companion and mobile setup codes. Without it the
+  code carried the container's bridge IP over plaintext ws://, which other
+  machines cannot reach and which only grants limited access.
+
 - **`OPENCLAW_CANVAS_DIR` / `OPENCLAW_MEDIA_INBOUND_DIR` for the whole
   stack**: config-init, gateway, cli and python-sandbox now mount the canvas
   from this variable, the same way the image bridge already did; config-init,

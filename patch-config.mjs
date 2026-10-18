@@ -241,6 +241,8 @@
 //      hook (channel sessions never see the root MEMORY.md). Env-gated by
 //      OPENCLAW_DISCORD_PEOPLE_MEMORY (default on). 44b nightly-job skill,
 //      44c people-context plugin (sender's own lines prepended per turn).
+//  45. plugins.entries.device-pair.config.publicUrl — the wss:// address
+//      `openclaw qr` puts in setup codes (OPENCLAW_DEVICE_PAIR_PUBLIC_URL).
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -5853,6 +5855,40 @@ if (isEnvOff(peopleMemoryEnv) || !fs.existsSync(PEOPLE_CONTEXT_DIR)) {
     entry.hooks.allowConversationAccess = true;
     changed = true;
     console.log('[patch-config] plugins.entries.people-context.hooks.allowConversationAccess = true');
+  }
+}
+
+// ─── 45. Device pairing public URL (Companion / mobile apps) ────────────────
+// `openclaw qr` advertises the address the gateway resolves for itself. With
+// gateway.bind=lan inside Docker that is the container's bridge IP
+// (ws://172.x.x.x:18789), which no other machine can reach. A plaintext ws://
+// URL also downgrades the setup code to "Access: limited" (no operator.admin).
+// Only wss:// (or Tailscale Serve) gets full access, so point this at the
+// TLS reverse proxy in front of the gateway, e.g. wss://claw.example.com.
+// The proxy must forward WebSocket upgrades. Empty = leave as is; `off` removes
+// it again.
+const devicePairUrlRaw = (process.env.OPENCLAW_DEVICE_PAIR_PUBLIC_URL || '').trim();
+if (devicePairUrlRaw.toLowerCase() === 'off') {
+  const dp = config.plugins?.entries?.['device-pair'];
+  if (dp?.config?.publicUrl !== undefined) {
+    delete dp.config.publicUrl;
+    if (Object.keys(dp.config).length === 0) delete dp.config;
+    if (Object.keys(dp).length === 0) delete config.plugins.entries['device-pair'];
+    changed = true;
+    console.log('[patch-config] OPENCLAW_DEVICE_PAIR_PUBLIC_URL=off — removed plugins.entries.device-pair.config.publicUrl');
+  }
+} else if (devicePairUrlRaw !== '') {
+  if (!/^wss:\/\//i.test(devicePairUrlRaw)) {
+    console.warn(`[patch-config] OPENCLAW_DEVICE_PAIR_PUBLIC_URL=${devicePairUrlRaw} is not wss:// — setup codes stay "Access: limited".`);
+  }
+  config.plugins ??= {};
+  config.plugins.entries ??= {};
+  const dp = (config.plugins.entries['device-pair'] ??= {});
+  dp.config ??= {};
+  if (dp.config.publicUrl !== devicePairUrlRaw) {
+    dp.config.publicUrl = devicePairUrlRaw;
+    changed = true;
+    console.log(`[patch-config] plugins.entries.device-pair.config.publicUrl = ${devicePairUrlRaw}`);
   }
 }
 
