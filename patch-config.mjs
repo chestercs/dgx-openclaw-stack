@@ -243,6 +243,8 @@
 //      44c people-context plugin (sender's own lines prepended per turn).
 //  45. plugins.entries.device-pair.config.publicUrl — the wss:// address
 //      `openclaw qr` puts in setup codes (OPENCLAW_DEVICE_PAIR_PUBLIC_URL).
+//  46. gateway.nodes.commands.allow — node commands admitted beyond the
+//      platform default (OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW).
 //
 //  Workspace docs modes (OPENCLAW_AGENT_DOCS_MODE=skills|agentsmd, default
 //  `skills`): tool-usage recipes (cron, browser, image-gen, video, i2i,
@@ -5889,6 +5891,34 @@ if (devicePairUrlRaw.toLowerCase() === 'off') {
     dp.config.publicUrl = devicePairUrlRaw;
     changed = true;
     console.log(`[patch-config] plugins.entries.device-pair.config.publicUrl = ${devicePairUrlRaw}`);
+  }
+}
+
+// ─── 46. Extra node commands (gateway.nodes.commands.allow) ─────────────────
+// The gateway admits a per-platform default command set from each node and
+// withholds the rest ("node command surface withheld" in the log). On 2026.10
+// the Windows default covers system.run / notify / screen.snapshot / device.*,
+// but NOT the canvas.*, tts.* and stt.* commands the Windows Companion offers.
+// List them here to admit them. Matching is exact (no wildcards). The node
+// re-reconciles on its next connect. Empty = leave as is; `off` removes it.
+const nodeCmdAllowRaw = (process.env.OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW || '').trim();
+if (nodeCmdAllowRaw.toLowerCase() === 'off') {
+  if (config.gateway?.nodes?.commands?.allow !== undefined) {
+    delete config.gateway.nodes.commands.allow;
+    if (Object.keys(config.gateway.nodes.commands).length === 0) delete config.gateway.nodes.commands;
+    if (Object.keys(config.gateway.nodes).length === 0) delete config.gateway.nodes;
+    changed = true;
+    console.log('[patch-config] OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW=off — removed gateway.nodes.commands.allow');
+  }
+} else if (nodeCmdAllowRaw !== '') {
+  const desiredAllow = [...new Set(nodeCmdAllowRaw.split(',').map((s) => s.trim()).filter(Boolean))];
+  config.gateway ??= {};
+  config.gateway.nodes ??= {};
+  config.gateway.nodes.commands ??= {};
+  if (JSON.stringify(config.gateway.nodes.commands.allow) !== JSON.stringify(desiredAllow)) {
+    config.gateway.nodes.commands.allow = desiredAllow;
+    changed = true;
+    console.log(`[patch-config] gateway.nodes.commands.allow = ${JSON.stringify(desiredAllow)}`);
   }
 }
 

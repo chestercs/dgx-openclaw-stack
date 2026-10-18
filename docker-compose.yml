@@ -1807,6 +1807,9 @@ services:
       # wss:// URL that `openclaw qr` puts into Companion / mobile setup codes
       # (patcher step 45). Empty = no-op, `off` = remove.
       OPENCLAW_DEVICE_PAIR_PUBLIC_URL: ${OPENCLAW_DEVICE_PAIR_PUBLIC_URL:-}
+      # Comma list of node commands admitted beyond the platform default
+      # (patcher step 46). Empty = no-op, `off` = remove.
+      OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW: ${OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

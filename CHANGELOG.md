@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code carried the container's bridge IP over plaintext ws://, which other
   machines cannot reach and which only grants limited access.
 
+- **`OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW`** (patcher step 46): node commands
+  admitted beyond the platform default (`gateway.nodes.commands.allow`). On
+  2026.10 the Windows Companion's canvas, TTS and STT commands are withheld
+  unless listed here.
+
 - **`OPENCLAW_CANVAS_DIR` / `OPENCLAW_MEDIA_INBOUND_DIR` for the whole
   stack**: config-init, gateway, cli and python-sandbox now mount the canvas
   from this variable, the same way the image bridge already did; config-init,
