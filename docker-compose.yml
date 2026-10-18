@@ -1812,6 +1812,7 @@ services:
       # reads it.
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
       - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
+      - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
       - ./patch-config.mjs:/opt/patch-config.mjs:ro
     entrypoint: ["node", "/opt/patch-config.mjs"]
 
@@ -1904,6 +1905,10 @@ services:
       # copy. Every service that touches it (config-init, gateway, cli,
       # python-sandbox, the image bridge) must mount the same host dir.
       - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
+      # Inbound media = files users send in (Discord attachments). Same idea:
+      # OPENCLAW_MEDIA_INBOUND_DIR keeps uploads out of the config dir; the
+      # image bridge mounts the same dir read-only for image-to-image input.
+      - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
     command: ["node", "dist/index.js", "gateway", "--bind", "${OPENCLAW_GATEWAY_BIND:-lan}", "--port", "18789"]
     init: true
     restart: unless-stopped
@@ -1981,6 +1986,7 @@ services:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
       - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
+      - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
     stdin_open: true
     tty: true
     init: true

@@ -26,9 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off. Removing a group brings it back. Turning off video and music cut the
   bot's prompt from 45.7k to 42.2k tokens.
 
-- **`OPENCLAW_CANVAS_DIR` for the whole stack**: config-init, gateway, cli and
-  python-sandbox now mount the canvas from this variable, the same way the
-  image bridge already did. The default stays `${OPENCLAW_CONFIG_DIR}/canvas`.
+- **`OPENCLAW_CANVAS_DIR` / `OPENCLAW_MEDIA_INBOUND_DIR` for the whole
+  stack**: config-init, gateway, cli and python-sandbox now mount the canvas
+  from this variable, the same way the image bridge already did; config-init,
+  gateway and cli do the same for inbound media. The defaults stay
+  `${OPENCLAW_CONFIG_DIR}/canvas` and `${OPENCLAW_CONFIG_DIR}/media/inbound`.
   Setting it moves generated media out of the config dir, away from tokens and
   auth profiles, and keeps it in place when an upgrade switches
   `OPENCLAW_CONFIG_DIR` to a state copy.
