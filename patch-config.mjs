@@ -2680,6 +2680,27 @@ if (streamingMode !== '' && !STREAMING_ENUM.has(streamingMode)) {
   }
 }
 
+// ─── 24b2. Discord max lines per message ─────────────────────────────────────
+// The Discord plugin splits a reply at 2000 chars OR at maxLinesPerMessage
+// lines (default 17), whichever comes first. A 4.8k-char code answer came out
+// as six messages, its code blocks cut every 17 lines (the chunker closes and
+// reopens the fence, but the code is still scattered). 60 lines lets the
+// 2000-char limit decide, which fits ~50-70 lines of code per message.
+// OPENCLAW_DISCORD_MAX_LINES (default 60; empty = 60; `off` leaves the key alone).
+{
+  const maxLinesRaw = (process.env.OPENCLAW_DISCORD_MAX_LINES ?? '').trim();
+  const maxLines = maxLinesRaw === '' ? 60 : parseInt(maxLinesRaw, 10);
+  if (maxLinesRaw.toLowerCase() !== 'off' && config.channels?.discord) {
+    if (!Number.isInteger(maxLines) || maxLines < 1) {
+      console.warn(`[patch-config] OPENCLAW_DISCORD_MAX_LINES=${JSON.stringify(maxLinesRaw)} is not a positive integer — skipping step 24b2.`);
+    } else if (config.channels.discord.maxLinesPerMessage !== maxLines) {
+      console.log(`[patch-config] channels.discord.maxLinesPerMessage: ${config.channels.discord.maxLinesPerMessage ?? '(unset = 17)'} -> ${maxLines}`);
+      config.channels.discord.maxLinesPerMessage = maxLines;
+      changed = true;
+    }
+  }
+}
+
 // ─── 24c. Per-guild tool policy — opt-in cron on specific guilds ────────────
 // `channels.discord.guilds.<guild-id>.tools.alsoAllow` is the runtime's
 // per-guild tool-policy override. The "shipped core tools but unavailable
@@ -4244,6 +4265,10 @@ const FORMAT_RULES_CHEATSHEET_BODY =
   '- After each sentence emit a newline. Empty lines (paragraph break) ONLY between paragraphs of 2+ sentences — never between every line.\n' +
   '- Plain text endings — no signature emoji, no mascot, no closing flourish. Use emojis sparingly only when they add meaning to the content (max one per reply).\n' +
   '- Long answers (>6 lines) MUST use bullet points or a numbered list.\n' +
+  '- 🚨 **Code:** write ONLY what was asked — one language, one version (no second "bonus" variant unless requested). ' +
+  'Up to ~40 lines: one code block in the reply. LONGER code goes as a FILE: `write` it into your workspace (e.g. `code/<name>.<ext>`), ' +
+  'then end the reply with a standalone `MEDIA:<absolute path of that file>` line (your workspace and `/home/node/.openclaw/canvas/` can be attached); ' +
+  'in the text give 2-4 sentences on what it does and how to run it, no full listing (Discord splits long messages and scatters the code).\n' +
   '- When a tool call is in flight, the streaming preview surfaces a one-line "🔧 tool: …" status automatically — do NOT also embed manual "calling tool…" text in your reply.\n' +
   '- 🚨 **Reply language:** answer in the language the user writes in — Hungarian by default. These instructions are in English; your replies are not. In Hungarian use Hungarian words: no English or French words mixed in, no invented words ("Már", not "Déjà"). When unsure of a word, pick a simpler common one.\n' +
   '- 🚨 **Links = RAW URL, NEVER `[text](url)` masked markdown!** In a plain (non-embed) Discord message `[text](url)` shows up as RAW text (`[...](...)`): not clickable, no embed. Give the FULL raw URL on its own line (`https://example.com/path`) — that is clickable AND auto-embeds a preview. Web_search sources too: raw URL, not `[domain](url)`. (Masked links work only in rich embeds; the bot sends plain messages, so they are banned.)\n' +
@@ -4585,7 +4610,11 @@ const SKILL_ROUTER_BODY =
   '(2) `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&timezone=auto&forecast_days=7`; ' +
   '(3) compute the target day with `datetime` and index THAT day in `daily.time[]`, not today. Give concrete numbers (min/max °C, precipitation %). ' +
   'WMO codes + hourly breakdown: `skills/weather-forecast/SKILL.md`.\n' +
-  '- writing code / hosting a web app / git push → `coding-projects`\n' +
+  '- **writing code ("írj egy scriptet/programot") → code over ~40 lines is a FILE, not chat text:** ' +
+  '(1) `write` the code to `code/<name>.<ext>` in your workspace; (2) reply with 2-4 sentences on what it does and how to run it; ' +
+  '(3) the LAST line of the reply is `MEDIA:/home/node/.openclaw/workspace-discord/code/<name>.<ext>` (that attaches the file). ' +
+  'NO full listing in the chat — Discord splits long messages and scatters the code. One language, one version, unless asked otherwise. ' +
+  'Hosting a web app / git push → `coding-projects`\n' +
   '- **"dolgozz rajta X órát/napot" / "kutass utána alaposan" / long, deep work → call IMMEDIATELY, IN THIS VERY TURN:** ' +
   '`sessions_spawn` `{"thread":true,"taskName":"<short-kebab-name>","cleanup":"keep","context":"isolated","task":"<self-contained, COMPLETE task description, ending with: Az eredményt magyarul írd.>"}`. ' +
   '🚨 Saying "kijövök egy threadbe / megyek dolgozni" WITHOUT the spawn call = a lie: the turn ENDS after your text and nothing keeps running. ' +

@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Code answers no longer scatter across Discord messages.** The Discord
+  plugin splits at 17 lines by default, so a 4.8k-char code reply arrived as
+  six messages with its code blocks cut apart. Patcher step 24b2 sets
+  `channels.discord.maxLinesPerMessage` to 60 (`OPENCLAW_DISCORD_MAX_LINES`).
+  The router and format rules also tell the bot to send code over ~40 lines as
+  a file (`code/<name>.<ext>` + a `MEDIA:` line, since 2026.10 the agent
+  workspace is an allowed attachment root) with a short description, and to
+  write one version only.
 - **Local models never thought.** OpenClaw sends no thinking control to a
   custom vLLM provider unless the catalog entry's `compat` says how. The patcher
   now writes it per family (`LLM_THINKING_COMPAT`, default `auto`):

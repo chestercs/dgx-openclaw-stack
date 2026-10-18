@@ -1400,6 +1400,8 @@ services:
       # another's run (an image reply was lost that way); see .env.example.
       OPENCLAW_DISCORD_QUEUE_MODE: ${OPENCLAW_DISCORD_QUEUE_MODE-followup}
       OPENCLAW_DISCORD_AGENT_TOOLS_DENY: ${OPENCLAW_DISCORD_AGENT_TOOLS_DENY-}
+      # Discord message split height (step 24b2; default 60, upstream 17).
+      OPENCLAW_DISCORD_MAX_LINES: ${OPENCLAW_DISCORD_MAX_LINES:-}
       # Media tool groups to hide from the Discord agent (video, music).
       OPENCLAW_DISCORD_MEDIA_TOOLS_OFF: ${OPENCLAW_DISCORD_MEDIA_TOOLS_OFF:-}
       OPENCLAW_SYSTEM_AGENT: ${OPENCLAW_SYSTEM_AGENT-main}
