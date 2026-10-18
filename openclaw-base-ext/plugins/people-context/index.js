@@ -51,20 +51,20 @@ export default definePluginEntry({
       if (!sections) return;
 
       const own = sections.get(sender);
-      const parts = ['[Emberek-memória — a people/MEMORY.md idevágó sorai]'];
+      const parts = ['[People memory — the relevant lines of people/MEMORY.md]'];
       if (own && own.lines.length) {
-        parts.push(`A feladó: ${own.head}`, ...own.lines);
-        parts.push('Ha a feladó MAGÁRÓL kérdez (mit csinál, hol van, mit tudsz róla), ezekből a sorokból válaszolj; ' +
-          'az „ideiglenes” sor a jelenlegi állapota. Ez róla szól, nem a csatorna korábbi feladatairól.');
+        parts.push(`Sender: ${own.head}`, ...own.lines);
+        parts.push('If the sender asks about THEMSELVES (what they are doing, where they are, what you know about them), answer from these lines; ' +
+          'the "ideiglenes" line is their current state. The question is about them, not about earlier tasks in the channel.');
       } else {
-        parts.push(`A feladóról (<@${sender}>) még nincs elmentett tény — ha magáról kérdez, mondd meg, hogy nem tudsz róla semmit.`);
+        parts.push(`No facts saved about the sender (<@${sender}>) yet — if they ask about themselves, say you know nothing about them yet.`);
       }
       // Only the admitted request: `prompt` may contain reconstructed history.
       const request = typeof event?.currentUserMessage === 'string' ? event.currentUserMessage : '';
       const tagged = [...new Set([...request.matchAll(/<@!?(\d{15,22})>/g)].map((m) => m[1]))]
         .filter((id) => id !== sender && sections.get(id)?.lines.length)
         .slice(0, MAX_TAGGED);
-      for (const id of tagged) parts.push(`Megemlítve: ${sections.get(id).head}`, ...sections.get(id).lines);
+      for (const id of tagged) parts.push(`Mentioned: ${sections.get(id).head}`, ...sections.get(id).lines);
       return { prependContext: parts.join('\n') };
     });
 
@@ -81,8 +81,8 @@ export default definePluginEntry({
       if (!targets.some((t) => typeof t === 'string' && t.replace(/\\/g, '/').endsWith(PEOPLE_FILE))) return;
       return {
         block: true,
-        blockReason: 'A people/MEMORY.md-t nem szerkesztheted közvetlenül. Mentés: exec `node /opt/people-digest.mjs note --id <ID> --name "<név>" --text "<tény>"`; ' +
-          'javítás: ugyanez `--replace "<régi részlet>"`-tel; törlés: `node /opt/people-digest.mjs forget --id <ID> --match "<részlet>"`.',
+        blockReason: 'people/MEMORY.md cannot be edited directly. Save: exec `node /opt/people-digest.mjs note --id <ID> --name "<name>" --text "<fact>"`; ' +
+          'correct: the same with `--replace "<old fragment>"`; delete: `node /opt/people-digest.mjs forget --id <ID> --match "<fragment>"`.',
       };
     }, { matcher: ['edit', 'write', 'apply_patch'] });
   },

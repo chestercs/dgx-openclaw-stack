@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The Discord agent's prompt is in English.** That covers the patcher's
+  AGENTS.md blocks, the skill bodies and descriptions, the people-memory
+  recipe and seed header, the `people-context` plugin text and the
+  `AGENTS.md.example` template. A Hungarian sentence costs ~1.8× the tokens
+  of its English version here (47 vs 26). The bot's prompt went from 42.2k to
+  39.9k tokens, and open models follow English instructions more reliably. The
+  bot still replies in the user's language: Hungarian trigger phrases stay as
+  quoted examples, and a reply-language rule sits in the format rules.
+
 - **`LLM_MODEL_ID` replaces the Gemma catalog entry** instead of adding a
   second one. vLLM serves a single id, so the old entry was a dead picker item.
   The patcher also moves `imageModel`, `utilityModel`, per-agent models and

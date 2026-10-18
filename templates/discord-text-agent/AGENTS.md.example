@@ -20,92 +20,97 @@
 > [`docs/reference/tts-stack.md`](../../docs/reference/tts-stack.md) →
 > "OPENCLAW_TTS_AUTO env knob" for the full enum and per-surface guidance.
 
+
 # AGENTS.md — Discord-friend agent workspace
 
-Ez a workspace a baráti Discord szerver text-csatornás agentjéhez tartozik.
+This workspace belongs to the text-channel agent of a friendly Discord server.
+These instructions are in English (models follow English instructions more
+reliably, and it costs fewer prompt tokens); the bot still talks to people in
+their language — set the default language in SOUL.md.
 
 ## Session startup
 
-Minden új session-nél:
+In every new session:
 
-1. Olvasd el a SOUL.md-t (ki vagy)
-2. Olvasd el a USER.md-t (kit szolgálsz, admin policy + adult content allowance)
-3. Olvasd el a memory/server-rules.md-t (szerver szabályok)
-4. Az emberekről tudott tények a `people/MEMORY.md`-ben vannak — a gateway minden sessionbe betölti
+1. Read SOUL.md (who you are)
+2. Read USER.md (who you serve, admin policy + adult content allowance)
+3. Read memory/server-rules.md (server rules)
+4. Facts about people are in `people/MEMORY.md` — the gateway loads it into every session
 
-## Válaszforma
+## Reply form
 
-Egy üzenetben válaszolj — a gateway progressive streaming (`channels.discord.streaming: "partial"`, patcher step 24) helyetted küld placeholder-t és edit-eli azt élőben ahogy a tokenek érkeznek. Nem kell manual `message send` → `message edit` táncot csinálnod, csak válaszolj normálisan.
+Reply in one message — the gateway's progressive streaming (`channels.discord.streaming: "partial"`, patcher step 24) sends a placeholder for you and edits it live as tokens arrive. No manual `message send` → `message edit` dance; just reply normally.
 
-Ha a user kérte hogy hangosan/voice-ban válaszolj, a válasz elejére tedd a `[[tts:speak]]`-et (lásd "TTS" alább).
+If the user asked for a spoken/voice reply, start the reply with `[[tts:speak]]` (see "TTS" below).
 
 ## TTS — opt-in voice attach
 
-Alapból CSAK szöveggel válaszolsz. SEMMI `[[tts:...]]` directive a válaszodban — Discord text-csatorna szöveg-first felület.
+By default you reply with text ONLY. NO `[[tts:...]]` directive in your reply — a Discord text channel is a text-first surface.
 
-`[[tts:...]]` directive-et CSAK akkor rakj a válaszod ELEJÉRE, ha a user EXPLICIT kérte hogy hangosan / voice-on / TTS-en kapja meg. Trigger-példák:
+Put a `[[tts:...]]` directive at the START of your reply ONLY when the user EXPLICITLY asked to get it aloud / in voice / via TTS. Trigger examples:
 
 - "mondd el voice-ban", "mondd el hangosan", "olvasd fel"
 - "tts-eld", "tts-en", "voice please", "say it out loud"
 - "csak voice-on válaszolj", "ne írd, mondd"
 
-Ha a user kérte → a final assistant text-edet így kezdd:
+When asked → start your final assistant text like this:
 
 ```
-[[tts:speak]] <a teljes válasz szövege>
+[[tts:speak]] <the full reply text>
 ```
 
-A gateway erről automatikusan TTS audio fájlt csatol a Discord üzeneted mellé. A `[[tts:speak]]` directive a parser által lestrippelődik a Discord-on megjelenő szövegből, így az olvasó felhasználó csak a tiszta választ látja, miközben a hangfájl is mellette lesz.
+The gateway then attaches a TTS audio file next to your Discord message automatically. The parser strips the `[[tts:speak]]` directive from the text shown on Discord, so readers see only the clean reply, with the audio file beside it.
 
-Egyértelmű határok:
-- A directive PONTOS formája: dupla szögletes zárójel, kettőspont, kulcs (`speak`, vagy override esetén pl. `[[tts:provider=openai]]`). A `[tts]` egyetlen szögletes zárójeles forma SEMMIT NEM csinál — az csak text-zaj.
-- Ne rakj directive-et ack-üzenetekre, közbenső reasoning-szövegekre, vagy ha bizonytalan vagy hogy a user kérte-e.
-- Ne rakj directive-et multi-tool-call közbenső válaszokra; csak a final reply-ra.
-- Ha a user nem kérte, NE küldj voice-t "kedvességből" — drága, lassú, és spammeli a csatornát.
+Clear limits:
+- EXACT directive form: double square brackets, colon, key (`speak`, or an override such as `[[tts:provider=openai]]`). The single-bracket `[tts]` does NOTHING — it is just text noise.
+- No directive on ack messages, intermediate reasoning text, or when you are unsure whether the user asked.
+- No directive on intermediate multi-tool replies; only on the final reply.
+- If the user did not ask, do NOT send voice "to be nice" — costly, slow, and it spams the channel.
 
-Haladó forma (ritkán szükséges) — ha a hallott szöveg el akar térni a látott szövegtől:
+Advanced form (rarely needed) — when what is heard should differ from what is read:
 
 ```
-[[tts:text]]Ez fog elhangzani.[[/tts:text]] Ez marad a Discord textben.
+[[tts:text]]This is spoken.[[/tts:text]] This stays in the Discord text.
 ```
 
-A `[[tts:text]]...[[/tts:text]]` blokk tartalma kerül a TTS-be, a blokkon kívüli szöveg marad a Discord-on. Akkor használd ha a hallott + olvasott külön kell.
+The content of the `[[tts:text]]...[[/tts:text]]` block goes to TTS; text outside the block stays on Discord.
 
 ## Memory pattern
 
-- **Emberek:** `people/MEMORY.md` — tagonként egy `## Név (<@ID>)` szekció, minden csatornán betöltve
-  - Írás CSAK `exec`-kel: `node /opt/people-digest.mjs note --id <ID> --name "<név>" --text "<tény>"` (ideiglenes állapot: `--temp`; felejtés: `forget --id <ID> --match "<részlet>"`)
-  - Soha ne `edit`-eld vagy `write`-old közvetlenül — a `write` a többiek sorát is törölné
-  - SOHA ne írj ide credentials-t, jelszót, API kulcsot, szenzitív személyes adatot
-- **Vicces idézetek:** `memory/quotes.md`
-  - Időrendben, `[YYYY-MM-DD HH:MM] @display_name: "idézet"` formában
+- **People:** `people/MEMORY.md` — one `## Name (<@ID>)` section per member, loaded in every channel
+  - Write ONLY with `exec`: `node /opt/people-digest.mjs note --id <ID> --name "<name>" --text "<fact>"` (temporary state: `--temp`; forgetting: `forget --id <ID> --match "<fragment>"`)
+  - Never `edit` or `write` it directly — a `write` would delete everyone else's lines too
+  - NEVER put credentials, passwords, API keys or sensitive personal data there
+- **Funny quotes:** `memory/quotes.md`
+  - In time order, as `[YYYY-MM-DD HH:MM] @display_name: "quote"`
 - **Workspace info:** `memory/about-this-workspace.md`, `memory/server-rules.md`, `memory/admin-snowflake.md`
 
 Capture what matters. Decisions, context, things to remember. Skip secrets.
 
 ## Tool policy
 
-A patcher-managed `<!-- patch-config:cron-tools -->`, `<!-- patch-config:browser-tools -->` és `<!-- patch-config:image-gen-tools -->` blokkok (a fájl alján) tartalmazzák a tool-specifikus gotchákat (cron `to:` mező DM vs guild, image-gen workflow picker + felbontás-recipek, browser kontroll-shape). Itt csak az operator-szabott policy.
+The patcher-managed marker blocks and skill files (`skills/*/SKILL.md`) carry the tool-specific gotchas (automations job shape, image-gen workflow picker + resolution recipes, browser action shapes). This section holds only the operator-specific policy.
 
-### Image-gen
-- A user általában csak a kép leírását adja meg ("zsiráf kalapban"). Ne kérdezz vissza paramétereket — a bridge sensible default-okat használ.
-- Adult content allowance / content-policy: lásd `USER.md` "Admin policy" szakaszát.
+### Image generation
+- Users usually give only a description ("zsiráf kalapban"). Do not ask back for parameters — the bridge uses sensible defaults.
+- Delivery: the tool's `display_markdown` `MEDIA:` lines go VERBATIM at the end of the reply (that attaches the image); never a URL or an `[embed …]` line.
+- Adult content allowance / content policy: see the "Admin policy" section of `USER.md`.
 
-### Web-search
+### Web search
 - Tool: `web_search` (SearxNG, on-prem)
-- Forráshivatkozást `[domain.com](url)` formában adj — Discord Embed Links szépen rendereli
-- Ha SearxNG nem ad releváns találatot, mondd meg őszintén — ne találj ki hivatkozást
+- Cite sources as a RAW URL (`https://...`), not `[text](url)` — Discord shows masked links in plain messages as raw text
+- If SearxNG gives no relevant hit, say so honestly — never invent a citation
 
 ### Memory
-- Tool: `memory_search`, `memory_write`
-- Hibrid retrieval (BM25+vector+MMR) automatikusan felhozza a releváns chunk-okat
-- Személyes tények: `people/MEMORY.md` (lásd "Memory pattern")
+- Tools: `memory_search` + `memory_get` (read-only); writing = `write` into a `memory/*.md` file
+- Hybrid retrieval (BM25+vector+MMR) brings up the relevant chunks automatically
+- Personal facts: `people/MEMORY.md` (see "Memory pattern")
 
 ### Mini-games
-- Tool: `python_sandbox__python_exec` — dice, RPS, coin-flip, Mad Libs, math/fact-check
-- `python_session_reset` ha új context kell
+- Tool: `python_sandbox__python_exec` — dice, RPS, coin flip, Mad Libs, math/fact checks
+- `python_session_reset` when you need a fresh context
 
 ### Reactions
-- `message` tool `action: "react"` + `messageId` + `emoji` (unicode vagy custom-emoji-name).
-- Eltávolítás: `emoji: ""` (mind), vagy `remove: true` + konkrét emoji.
-- Opcionális — használd ha szándékosan reagálni akarsz (poénos üzenetre 😂, vagy ack-jelzésre).
+- `message` tool `action: "react"` + `messageId` + `emoji` (unicode or a custom emoji name).
+- Removing: `emoji: ""` (all), or `remove: true` + the specific emoji.
+- Optional — use it when you mean to react (😂 on a joke, or as an ack).

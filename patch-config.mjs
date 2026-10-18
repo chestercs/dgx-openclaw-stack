@@ -4073,28 +4073,28 @@ const WORKSPACE_DISCORD_AGENTS_PATH = '/home/node/.openclaw/workspace-discord/AG
 const CRON_CHEATSHEET_START = '<!-- patch-config:cron-tools:start -->';
 const CRON_CHEATSHEET_END = '<!-- patch-config:cron-tools:end -->';
 const CRON_CHEATSHEET_BODY =
-  '\n## Időzített akciók — `automations` tool (régi neve `cron`, az is működik)\n\n' +
-  '🚨 **CSAK akkor használj cron-t, ha a user EXPLICIT ismétlődő vagy jövőbeli ELKÜLDÉST / EMLÉKEZTETŐT kér** ("emlékeztess", "minden reggel küldj", "5 perc múlva szólj", "naponta"). 🚫 **NEM cron — egy jövőbeli INFÓ kérdése:** "csütörtökön milyen idő lesz", "mi lesz a meccs eredménye", "milyen hírek jönnek" — ezek a célnap ADATÁT kérik MOST (pl. az open-meteo 7-16 napot ad ELŐRE), tehát AZONNAL nézd meg (python_exec / web_search) és válaszolj. A "csütörtökön" a kért adat NAPJÁT jelöli, NEM a művelet ütemezését. Ha bizonytalan vagy: alapból nézd meg MOST, ne ütemezz cron-t.\n\n' +
-  'Ha a user időzített akciót kér ("X múlva szólj", "holnap reggel küldj…", "minden hétfőn"), NE most hajtsd végre — ' +
-  'hozz létre egy automationt, és a futáskor te kapod meg a `message`-et feladatként.\n\n' +
-  '🚨 Az `automations` tool argumentuma `action` + `job` OBJEKTUM (a régi lapos `at`/`to`/`deleteAfterRun` forma NEM működik). ' +
-  'SOHA ne próbáld `exec`-ből (`crontab`, `curl`, `sleep`) — azok nem léteznek / nem futnak tovább. ' +
-  'Csak akkor mondd hogy "beállítottam", ha a tool-result `ok`/`jobId`-t adott.\n\n' +
-  'Egyszeri (ugyanebbe a beszélgetésbe jön vissza):\n' +
+  '\n## Scheduled actions — the `automations` tool (old name `cron` still works)\n\n' +
+  '🚨 **Use it ONLY when the user explicitly asks for a recurring or future SEND / REMINDER** ("emlékeztess", "minden reggel küldj", "5 perc múlva szólj", "naponta"). 🚫 **NOT a cron job — a question about future INFO:** "csütörtökön milyen idő lesz", "mi lesz a meccs eredménye", "milyen hírek jönnek". Those ask for the target day\'s DATA NOW (open-meteo forecasts 7-16 days AHEAD), so look it up IMMEDIATELY (python_exec / web_search) and answer. "Csütörtökön" names the DAY of the data, not when to act. When unsure: look it up now, do not schedule anything.\n\n' +
+  'When the user asks for a timed action ("X múlva szólj", "holnap reggel küldj…", "minden hétfőn"), do NOT do it now — ' +
+  'create an automation; when it runs, you receive its `message` as the task.\n\n' +
+  '🚨 The `automations` argument is `action` + a `job` OBJECT (the old flat `at`/`to`/`deleteAfterRun` shape does NOT work). ' +
+  'NEVER try it through `exec` (`crontab`, `curl`, `sleep`): those do not exist or die with the turn. ' +
+  'Say "beállítottam" only after the tool result returned `ok`/`jobId`.\n\n' +
+  'One-shot (the result comes back into this conversation):\n' +
   '```json\n' +
   '{"action":"add","job":{"name":"szemet-emlekezteto",\n' +
   ' "schedule":{"kind":"at","at":"2026-10-17T08:00:00+02:00"},\n' +
   ' "sessionTarget":"current",\n' +
   ' "payload":{"kind":"agentTurn","message":"Emlékeztesd a usert: vigye le a szemetet."}}}\n' +
   '```\n\n' +
-  '- `at`: ISO-8601 idő IDŐZÓNA-ELTOLÁSSAL (tz nélkül UTC!). Relatív kérésnél előbb számold ki: ' +
-  '`exec` `TZ=Europe/Budapest date -d "+5 minutes" -Iseconds` (vagy `"tomorrow 08:00"`).\n' +
-  '- Ismétlődő: `"schedule":{"kind":"cron","expr":"0 9 * * 1","tz":"Europe/Budapest"}` (falióra-idő, NE számold át UTC-re).\n' +
-  '- `sessionTarget` a `job` KÖZVETLEN mezője (NEM a `delivery`-n belül); `"current"` = az eredmény ebbe a csatornába/DM-be érkezik — ' +
-  'ilyenkor `delivery`-t EGYÁLTALÁN NE adj meg (a fenti példa pontosan így helyes). ' +
-  'Másik csatornára: `"delivery":{"mode":"announce","channel":"discord","to":"channel:<SZÁM>"}` — a számot az inbound metadatából másold, SOHA ne találd ki.\n' +
-  '- Listázás / törlés: `{"action":"list"}` → `jobId`, majd `{"action":"remove","jobId":"…"}`.\n' +
-  '- A futó automation-ban NE küldj külön `message`-et: a futás végső válasza maga a kézbesítés.\n';
+  '- `at`: ISO-8601 time WITH a timezone offset (no offset = UTC!). For a relative request compute it first: ' +
+  '`exec` `TZ=Europe/Budapest date -d "+5 minutes" -Iseconds` (or `"tomorrow 08:00"`).\n' +
+  '- Recurring: `"schedule":{"kind":"cron","expr":"0 9 * * 1","tz":"Europe/Budapest"}` (wall-clock time, do NOT convert to UTC).\n' +
+  '- `sessionTarget` is a DIRECT field of `job` (NOT inside `delivery`); `"current"` = the result arrives in this channel/DM, ' +
+  'and then give NO `delivery` at all (the example above is exactly right). ' +
+  'Another channel: `"delivery":{"mode":"announce","channel":"discord","to":"channel:<NUMBER>"}`. Copy the number from the inbound metadata, NEVER invent it.\n' +
+  '- List / delete: `{"action":"list"}` → `jobId`, then `{"action":"remove","jobId":"…"}`.\n' +
+  '- Inside a running automation do NOT send a separate `message`: the final reply of the run IS the delivery.\n';
 
 // Step 27 cheatsheet — image-gen workflow picker. Body interpolates the
 // configured IMAGE_GEN_DEFAULT_WORKFLOW so the cheatsheet stays accurate
@@ -4104,30 +4104,30 @@ const IMAGE_GEN_CHEATSHEET_START = '<!-- patch-config:image-gen-tools:start -->'
 const IMAGE_GEN_CHEATSHEET_END = '<!-- patch-config:image-gen-tools:end -->';
 const IMAGE_GEN_DEFAULT_WORKFLOW = (process.env.IMAGE_GEN_DEFAULT_WORKFLOW || '').trim();
 const IMAGE_GEN_CHEATSHEET_BODY =
-  '\n## Képgenerálás — `comfyui_image__generate` workflow picker\n\n' +
-  'Workflow-k ezen a deploy-on (FLUX.1-Krea-dev alapú, single-stage):\n\n' +
-  '- SFW: hagyd ki a `workflow=`-t — a bridge a beállított\n' +
-  `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-2k'}\`-t használja.\n` +
-  '- Adult/NSFW: `workflow="flux-krea-2k-adult"` — ugyanaz a pipeline +\n' +
-  '  flux-uncensored-v2 LoRA. Adult-policy a `USER.md`-ben.\n' +
-  '- Realism / fotorealisztikus portré v. jelenet, VAGY ha a user a\n' +
-  '  `realism-text-to-img` workflow-ra hivatkozik (akár név szerint kéri):\n' +
+  '\n## Image generation — `comfyui_image__generate` workflow picker\n\n' +
+  'Workflows on this deploy (FLUX.1-Krea-dev based, single-stage):\n\n' +
+  '- SFW: leave out `workflow=` — the bridge uses the configured\n' +
+  `  \`${IMAGE_GEN_DEFAULT_WORKFLOW || 'flux-krea-2k'}\`.\n` +
+  '- Adult/NSFW: `workflow="flux-krea-2k-adult"` — the same pipeline +\n' +
+  '  the flux-uncensored-v2 LoRA. The adult policy is in `USER.md`.\n' +
+  '- Realism / photorealistic portrait or scene, OR when the user names the\n' +
+  '  `realism-text-to-img` workflow:\n' +
   '  `workflow="realism-text-to-img"` (SDXL: Juggernaut-XL + Realism LoRA).\n' +
-  '  🚨 EZ SDXL, NEM Flux → a natív felbontás ~1024; NE a fenti 2K/FullHD\n' +
-  '  Flux-recepteket add rá (SDXL duplikál/torzul fölötte). SDXL-bucketek:\n' +
-  '  négyzet 1024×1024 (default), portré 832×1216, fekvő 1216×832. Csak erre\n' +
-  '  a névre / explicit realizmus-kérésre add meg; egyébként hagyd a default-ot.\n\n' +
-  'Felbontás — `width`+`height` MINDIG párban (különben aspect-mismatch). Default\n' +
-  '1280×720 (HD 16:9); a "2K" jellemzően "2K HD 16:9", nem négyzet (csak explicit\n' +
-  '"square/négyzet" → 1:1). Recipek (kérés → `width×height`): "2K"/"2K HD"/"1080p"/\n' +
+  '  🚨 This is SDXL, NOT Flux → native resolution ~1024; do NOT apply the 2K/FullHD\n' +
+  '  Flux recipes below (SDXL duplicates/distorts above that). SDXL buckets:\n' +
+  '  square 1024×1024 (default), portrait 832×1216, landscape 1216×832. Use it only\n' +
+  '  for that name / an explicit realism request; otherwise keep the default.\n\n' +
+  'Resolution — `width`+`height` ALWAYS as a pair (otherwise aspect mismatch). Default\n' +
+  '1280×720 (HD 16:9); "2K" usually means "2K HD 16:9", not square (only an explicit\n' +
+  '"square/négyzet" → 1:1). Recipes (request → `width×height`): "2K"/"2K HD"/"1080p"/\n' +
   '"FullHD"/"panoráma"/"wide" → 1920×1088; "portrait"/"függőleges"/"álló" → 768×1280;\n' +
   '"portrait 2K"/"álló 2K" → 1152×2048; "négyzet"/"square" → 1024×1024; "négyzet 2K"/\n' +
-  '"square 2K" → 2048×2048. FLUX 1024-2048 natív res-en a legjobb; magasabb lassabb +\n' +
-  'kompozíciós hibák. 4K workflow nincs (UltimateSDUpscale tile-seam műtermékek a\n' +
-  'FLUX latensen, 2026-05-09).\n\n' +
-  'Kézbesítés: egy rövid mondat, majd a válaszod VÉGÉRE a tool-output `display_markdown`\n' +
-  'mezője SZÓ SZERINT — minden `MEDIA:/home/node/.openclaw/canvas/…png` sor külön sorban;\n' +
-  'ettől lesz a kép valódi csatolmány. URL-t, linket és `[embed …]` sort SOHA ne írj.\n';
+  '"square 2K" → 2048×2048. FLUX is best at 1024-2048 native; higher is slower and\n' +
+  'breaks composition. There is no 4K workflow (UltimateSDUpscale tile seams on the\n' +
+  'FLUX latent, 2026-05-09).\n\n' +
+  'Delivery: one short sentence, then at the END of your reply the tool output\'s\n' +
+  '`display_markdown` VERBATIM — every `MEDIA:/home/node/.openclaw/canvas/…png` line on its\n' +
+  'own line; that makes the image a real attachment. NEVER write a URL, link or `[embed …]` line.\n';
 
 // Step 27b — LTX-Video 2.3 workflow picker. Same marker-block pattern as
 // the image-gen cheatsheet, separate markers so the two blocks can coexist
@@ -4141,60 +4141,58 @@ const LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV = (process.env.LTX_VIDEO_DEFAULT_LENGT
 const LTX_VIDEO_DEFAULT_FPS_ENV = (process.env.LTX_VIDEO_DEFAULT_FPS || '24').trim();
 const LTX_VIDEO_MAX_DURATION_S_ENV = (process.env.LTX_VIDEO_MAX_DURATION_S || '10').trim();
 const LTX_VIDEO_CHEATSHEET_BODY =
-  '\n## Videógenerálás — `comfyui_image__generate_video` (LTX-Video 2.3)\n\n' +
-  '🚨 **Videóhoz KIZÁRÓLAG a `comfyui_image__generate_video` tool (KÉT aláhúzás) a helyes.** ' +
-  'A beépített `video_generate` / `video_generation` toolok TILTOTTAK — azok egy OpenAI ' +
-  'Sora-endpointot hívnak, amihez NINCS API-kulcs beállítva → `HTTP 401 Incorrect API key` ' +
-  'hiba, a user 0 videót kap (pontosan ez rontotta el 2026-06-16-án az "animáld ezt a képet" ' +
-  'kérést). Akár szöveg→videó, akár kép→videó: MINDIG a `comfyui_image__generate_video` — ' +
-  'a helyi ComfyUI/LTX-en fut, kulcs nélkül. SOHA ne hívd a `video_generate`/`video_generation`-t.\n\n' +
-  'Ugyanaz a bridge, mint a képeknél, csak más tool. Két mód:\n\n' +
-  '- **T2V** (text-to-video): csak `prompt` kell → bridge `ltx-2.3-t2v` workflow.\n' +
+  '\n## Video generation — `comfyui_image__generate_video` (LTX-Video 2.3)\n\n' +
+  '🚨 **For video ONLY the `comfyui_image__generate_video` tool (TWO underscores) is correct.** ' +
+  'The built-in `video_generate` / `video_generation` tools are DENIED: they call an OpenAI ' +
+  'Sora endpoint with NO API key configured → `HTTP 401 Incorrect API key`, ' +
+  'and the user gets 0 videos (exactly how an "animáld ezt a képet" request broke on 2026-06-16). ' +
+  'Text→video or image→video: ALWAYS `comfyui_image__generate_video`, ' +
+  'which runs on the local ComfyUI/LTX without a key. NEVER call `video_generate`/`video_generation`.\n\n' +
+  'Same bridge as for images, different tool. Two modes:\n\n' +
+  '- **T2V** (text-to-video): only `prompt` → bridge workflow `ltx-2.3-t2v`.\n' +
   '- **I2V** (image-to-video): `prompt` + `init_image_url` → bridge `ltx-2.3-i2v`.\n' +
-  '  Discord attachment-re **AZ ABSZOLÚT FILESYSTEM PATH-t** add, ne URL-t:\n' +
-  '  `/home/node/.openclaw/media/inbound/<uuid>.png` (in-container path, a\n' +
-  '  bridge a volume mountból olvassa). NE konstruálj\n' +
-  '  `https://vision.<domain>/view?type=inbound&...`-szerű URL-t — a ComfyUI\n' +
-  '  `/view` csak `type=output|input|temp`-et ismer, 400-zik.\n\n' +
-  '**Felbontás — a `resolution` arg a legfontosabb (v0.12.4 óta).** Ha a user\n' +
-  'szövegében BÁRMILYEN resolution-kifejezést látsz (magyarul vagy angolul), tedd\n' +
-  'be PONTOSAN azt a `resolution` argba — ez túléli ha a promptot átfogalmazod\n' +
-  'angolra/szebbre. Példák: "fullhd"→`resolution:"fullhd"`, "1080p"→`"1080p"`,\n' +
+  '  For a Discord attachment pass **THE ABSOLUTE FILESYSTEM PATH**, not a URL:\n' +
+  '  `/home/node/.openclaw/media/inbound/<uuid>.png` (in-container path; the\n' +
+  '  bridge reads it from the volume mount). Do NOT build a\n' +
+  '  `https://vision.<domain>/view?type=inbound&...` URL — ComfyUI\n' +
+  '  `/view` only knows `type=output|input|temp` and answers 400.\n\n' +
+  '**Resolution — the `resolution` arg matters most (since v0.12.4).** If the\n' +
+  'user\'s text contains ANY resolution phrase (Hungarian or English), put\n' +
+  'EXACTLY that into the `resolution` arg — it survives you rephrasing the prompt\n' +
+  'into nicer English. Examples: "fullhd"→`resolution:"fullhd"`, "1080p"→`"1080p"`,\n' +
   '"négyzet/square"→`"square"`, "portrait/álló"→`"portrait"`, "hd/720p"→`"hd"`,\n' +
-  '"4K"→`"4k"`, "1024x1024"→`"1024x1024"`. NINCS resolution-szó → ne adj át\n' +
-  '`resolution`-t, a tool default 1024×576-ra esik.\n\n' +
-  '**Felismerendő kulcsszavak:** fullhd, full hd, fhd, 1080p, 4k, uhd, 2160p,\n' +
+  '"4K"→`"4k"`, "1024x1024"→`"1024x1024"`. NO resolution word → pass no\n' +
+  '`resolution`; the tool defaults to 1024×576.\n\n' +
+  '**Keywords to recognise:** fullhd, full hd, fhd, 1080p, 4k, uhd, 2160p,\n' +
   'qhd, 1440p, hd, 720p, mini-hd, square, négyzet, kocka, portrait, függőleges,\n' +
-  'álló, landscape, fekvő, szélesvásznú, VAGY explicit `AxB` (1024x1024, 1920x1088).\n\n' +
-  '**Precedencia:** (1) explicit `width`+`height` pair nyer — MINDIG párban\n' +
-  '(külön küldve a hiányzó dim 768 default marad → torz kép); (2) `resolution`\n' +
-  'arg alias-táblából; (3) prompt-szövegbeli AxB/keyword safety-net; (4) default\n' +
-  '1024×576. Step-32 kerekítés (720→704, 1080→1088).\n\n' +
-  '🚨 **Felbontás-plafon (hardver-korlát):** ez a GB10 megosztott GPU-poolon\n' +
-  'fut (a vLLM is bent van a memóriában), ezért a videó felbontása kb.\n' +
-  '**1024×576-ig (~SD/MiniHD)** renderel megbízhatóan, pár perc alatt. A ennél\n' +
-  'nagyobb kérést (720p / 1080p / fullhd / 4K) a bridge AUTOMATIKUSAN\n' +
-  'lekicsinyíti ebbe a pixel-budgetbe (a képarányt megtartva, pl. 1920×1088 →\n' +
-  '~992×576) — NEM utasítja el, mindig kapsz videót. Ezért NYUGODTAN fogadd el\n' +
-  'az „1080p" kérést és indítsd el; a `resolution` argot ettől is add meg\n' +
-  'pontosan. A válaszban a metaadat a TÉNYLEGES (lekicsinyített) felbontást\n' +
-  'tartalmazza — ha a user nagyobbat kért, említsd meg kedvesen, hogy a gyors\n' +
-  'kézbesítés érdekében a hardver-barát változat készült el. SOHA ne mondd,\n' +
-  'hogy „nem megy" vagy „technikai hiba" — a lekicsinyítés a NORMÁL működés.\n\n' +
-  'A render a megosztott poolon pár perc (a memória-nyomás miatt változó); a\n' +
-  'nagyobb kérések ide (≤~1024×576) kicsinyülnek. Hosszú render esetén jelezd\n' +
-  'a várakozást, ne tagadd meg.\n\n' +
-  'Egyéb paraméterek:\n' +
-  '- `length`: frame-szám, default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' (' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps → ' +
-  (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + 's). **MUST** `8k+1` (1, 9, 17, ..., 201).\n' +
-  '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. `audio_enabled`: default `true` (LTX-2.3 natív hang); néma: `false`.\n' +
-  '- `timeout_s`: ≥600 (cold-cache első hívás 3-10 perc). Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + 's (`LTX_VIDEO_MAX_DURATION_S`, Discord ~50 MB embed cap).\n\n' +
+  'álló, landscape, fekvő, szélesvásznú, OR an explicit `AxB` (1024x1024, 1920x1088).\n\n' +
+  '**Precedence:** (1) an explicit `width`+`height` pair wins — ALWAYS as a pair\n' +
+  '(sent alone, the missing side stays at 768 → distorted); (2) the `resolution`\n' +
+  'arg via the alias table; (3) AxB/keyword safety net in the prompt text; (4) default\n' +
+  '1024×576. Rounded to multiples of 32 (720→704, 1080→1088).\n\n' +
+  '🚨 **Resolution ceiling (hardware limit):** this runs on the GB10\'s shared GPU\n' +
+  'pool (the LLM lives in the same memory), so video renders reliably up to about\n' +
+  '**1024×576 (~SD/MiniHD)**, in a few minutes. Larger requests\n' +
+  '(720p / 1080p / fullhd / 4K) are AUTOMATICALLY scaled down by the bridge to\n' +
+  'that pixel budget (aspect ratio kept, e.g. 1920×1088 → ~992×576) — NOT refused,\n' +
+  'a video always comes. So accept a "1080p" request and start it; still pass the\n' +
+  '`resolution` arg exactly. The reply metadata carries the ACTUAL (scaled)\n' +
+  'resolution — if the user asked for more, mention kindly that the hardware-friendly\n' +
+  'version was made for quick delivery. NEVER say it "does not work" or call it\n' +
+  'a "technical error" — scaling down is NORMAL operation.\n\n' +
+  'A render on the shared pool takes a few minutes (varies with memory pressure).\n' +
+  'For a long render, tell the user to wait; do not refuse.\n\n' +
+  'Other parameters:\n' +
+  '- `length`: frame count, default ' + LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV + ' (' + LTX_VIDEO_DEFAULT_FPS_ENV + ' fps → ' +
+  (parseFloat(LTX_VIDEO_DEFAULT_LENGTH_FRAMES_ENV) / parseFloat(LTX_VIDEO_DEFAULT_FPS_ENV)).toFixed(1) + 's). **MUST** be `8k+1` (1, 9, 17, ..., 201).\n' +
+  '- `fps`: default ' + LTX_VIDEO_DEFAULT_FPS_ENV + '. `audio_enabled`: default `true` (LTX-2.3 native audio); silent: `false`.\n' +
+  '- `timeout_s`: ≥600 (the first cold-cache call takes 3-10 min). Hard limit: ' + LTX_VIDEO_MAX_DURATION_S_ENV + 's (`LTX_VIDEO_MAX_DURATION_S`, Discord ~50 MB embed cap).\n\n' +
   '**Prompt→args:** "videót [X]-ről" → `{prompt:"[X]"}`; "animáld ezt a képet" +\n' +
-  'attachment → I2V `init_image_url=<path>`; "8s" → hosszabb `length=`; "néma" → `audio_enabled=false`.\n\n' +
-  '**KÖTELEZŐ válasz:** a `display_markdown` tartalmát tedd a válaszodba SZÓ SZERINT,\n' +
-  'minden sort külön sorba. Normál esetben ez egy `MEDIA:/home/node/.openclaw/canvas/…mp4`\n' +
-  'sor: ettől lesz a videó csatolmány, ami a chatben lejátszható. A kommentárod mehet elé,\n' +
-  'magyarul. SOHA ne hagyd ki, mert anélkül a user nem lát videót, csak szöveget.\n';
+  'attachment → I2V `init_image_url=<path>`; "8s" → longer `length=`; "néma" → `audio_enabled=false`.\n\n' +
+  '**MANDATORY reply:** put the `display_markdown` content into your reply VERBATIM,\n' +
+  'every line on its own line. Normally it is one `MEDIA:/home/node/.openclaw/canvas/…mp4`\n' +
+  'line: that makes the video an attachment that plays in the chat. Your comment may go before it,\n' +
+  'in the user\'s language. NEVER leave it out, or the user sees only text and no video.\n';
 
 // Music-generation skill (ACE-Step 1.5). The bridge generate_music tool is
 // MCP-discovered; this recipe teaches the agent WHEN to call it and — the
@@ -4205,21 +4203,21 @@ const LTX_VIDEO_CHEATSHEET_BODY =
 const MUSIC_CHEATSHEET_START = '<!-- patch-config:music-tools:start -->';
 const MUSIC_CHEATSHEET_END = '<!-- patch-config:music-tools:end -->';
 const MUSIC_CHEATSHEET_BODY =
-  '\n## Zenegenerálás — `comfyui_image__generate_music` (ACE-Step 1.5)\n\n' +
-  'Ha a user zenét / dalt / számot / aláfestést / beatet kér ("csinálj egy zenét", "írj egy dalt", "kéne egy lo-fi beat"):\n' +
-  '- Hívd a `comfyui_image__generate_music` toolt (KÉT aláhúzás a névben). Paraméterek: `tags` (kötelező), `lyrics` (opcionális), `duration` (mp). A pontos hívás-formátumot a tool-katalógusból veszed — NE a chat-szövegbe írd be a hívást.\n' +
-  '- `tags` KÖTELEZŐ, ez a fő kreatív kontroll (pl. `lo-fi hip hop, mellow, jazzy piano, vinyl crackle`). A nyelv alapból magyar.\n' +
-  '🚨 **ÉNEKES vs INSTRUMENTÁLIS — a kéréstől függ, és ELRONTHATÓ:**\n' +
-  '  • Ha a user ÉNEKES dalt kér ("énekelj arról hogy…", "írj egy dalt a … -ról", énekes/előadó-stílus, "legyen szövege"): a `lyrics` paramétert KÖTELEZŐ kitöltened a TÉNYLEGES, megírt szöveggel (soronként `\\n`, `[verse]`/`[chorus]` tagek mennek), ÉS TILOS az `instrumental` (vagy `no vocals`) szót a `tags`-be tenni. A szöveget a `lyrics` ARGUMENTUMBAN add át — ha csak a gondolkodásodban írod meg, a dal NÉMA instrumentális lesz (ez konkrétan elromlott 2026-06-15-kor).\n' +
-  '  • Csak akkor hagyd ÜRESEN a `lyrics`-et (és tehetsz `instrumental` tag-et), ha a user kifejezetten ÉNEK NÉLKÜLI zenét/beatet/aláfestést kér.\n' +
-  '- További opciók: `duration` (mp, max ~120), `bpm`, `language`, `keyscale` (pl. `C major`), `steps`.\n\n' +
-  '🚨 **KÉZBESÍTÉS DISCORDON — a válasz `canvas_path` mezőjét töltsd fel, NE linkként.** A `message` toolt hívd PONTOSAN ÍGY (lapos `path`, NEM attachments-tömb):\n' +
+  '\n## Music generation — `comfyui_image__generate_music` (ACE-Step 1.5)\n\n' +
+  'When the user asks for music / a song / a track / a backing / a beat ("csinálj egy zenét", "írj egy dalt", "kéne egy lo-fi beat"):\n' +
+  '- Call the `comfyui_image__generate_music` tool (TWO underscores in the name). Parameters: `tags` (required), `lyrics` (optional), `duration` (s). Take the exact call shape from the tool catalog — do NOT write the call into the chat text.\n' +
+  '- `tags` is REQUIRED and the main creative control (e.g. `lo-fi hip hop, mellow, jazzy piano, vinyl crackle`). The default language is Hungarian.\n' +
+  '🚨 **VOCAL vs INSTRUMENTAL — depends on the request, and easy to get wrong:**\n' +
+  '  • When the user wants a song WITH vocals ("énekelj arról hogy…", "írj egy dalt a … -ról", a singer/performer style, "legyen szövege"): you MUST fill the `lyrics` parameter with the ACTUAL written lyrics (one line per `\\n`, `[verse]`/`[chorus]` tags allowed), AND you must NOT put `instrumental` (or `no vocals`) into `tags`. Pass the lyrics IN THE `lyrics` ARGUMENT — written only in your thinking, the song comes out silent and instrumental (this broke on 2026-06-15).\n' +
+  '  • Leave `lyrics` EMPTY (and you may add an `instrumental` tag) only when the user explicitly asks for music/a beat/a backing WITHOUT vocals.\n' +
+  '- More options: `duration` (s, max ~120), `bpm`, `language`, `keyscale` (e.g. `C major`), `steps`.\n\n' +
+  '🚨 **DELIVERY ON DISCORD — upload the result\'s `canvas_path`, NOT a link.** Call the `message` tool EXACTLY like this (flat `path`, NOT an attachments array):\n' +
   '```\n' +
   'message({"action":"upload-file","path":"<canvas_path>"})\n' +
   '```\n' +
-  '🚫 HIBÁS (ettől jön a `"upload-file requires filePath, path, or media"` hiba): `{"action":"upload-file","attachments":[{"media":"..."}]}` — a path a FELSŐ szinten van, NEM attachments-ben. A `/view` URL NEM publikus (401) — SOHA ne csak linket ragassz. Az upload-file SIKERE UTÁN írj egy rövid magyar kommentet. (Render ~1-2 perc — jelezd hogy dolgozol rajta, ne tagadd meg.)\n' +
-  '🚨 **VALÓDI tool-hívás kell, NEM szöveg — ez a leggyakoribb hiba.** A generálás CSAK akkor indul el, ha a toolt ténylegesen MEGHÍVOD (a stream „🔧 tool" sora jelzi, hogy elindult). Ha a látható válaszodba beírod a tool nevét zárójellel/argumentumokkal — mintha függvényt írnál ki —, az NEM hívás, csak szöveg: a user 0 zenét kap. Ezért: max EGY rövid „egy pillanat" mondat, és RÖGTÖN a valódi tool-hívás UGYANEBBEN a turn-ben. NE sorold fel/komponáld a tageket prózában a hívás előtt — a user szavait/stílusát add át közvetlenül a `tags`-be és hívj.\n' +
-  '- **Meglévő track átstílusozása** ("alakítsd át ezt a zenét", "csináld lo-fivá") + csatolt audio → `comfyui_image__generate_music_repaint` (`init_audio_base64` a csatolt fájlból + `denoise` 0.05-1.0, alacsony=finom). Ugyanaz a `canvas_path` → `upload-file` kézbesítés (lapos `path`!).\n';
+  '🚫 WRONG (this causes the `"upload-file requires filePath, path, or media"` error): `{"action":"upload-file","attachments":[{"media":"..."}]}` — the path goes at the TOP level, NOT inside attachments. The `/view` URL is NOT public (401) — NEVER paste just a link. AFTER the upload-file succeeds, write a short comment. (A render takes ~1-2 min — say you are working on it; do not refuse.)\n' +
+  '🚨 **It takes a REAL tool call, NOT text — the most common failure.** Generation starts ONLY when you actually CALL the tool (the stream\'s "🔧 tool" line shows it started). Writing the tool name with brackets/arguments into your visible reply — as if printing a function — is NOT a call, only text: the user gets 0 music. So: at most ONE short "egy pillanat" sentence, then IMMEDIATELY the real tool call in the SAME turn. Do NOT list or compose the tags in prose before the call — pass the user\'s words/style straight into `tags` and call.\n' +
+  '- **Restyling an existing track** ("alakítsd át ezt a zenét", "csináld lo-fivá") + attached audio → `comfyui_image__generate_music_repaint` (`init_audio_base64` from the attached file + `denoise` 0.05-1.0, low = subtle). Same `canvas_path` → `upload-file` delivery (flat `path`!).\n';
 
 // Step XXa/b/c — Discord agent UX cheatsheet blocks (Reverend Green's first-pass
 // review, 2026-06-06: format spam, lobster emoji at every reply, missing skills
@@ -4247,22 +4245,22 @@ const FORMAT_RULES_CHEATSHEET_BODY =
   '- Plain text endings — no signature emoji, no mascot, no closing flourish. Use emojis sparingly only when they add meaning to the content (max one per reply).\n' +
   '- Long answers (>6 lines) MUST use bullet points or a numbered list.\n' +
   '- When a tool call is in flight, the streaming preview surfaces a one-line "🔧 tool: …" status automatically — do NOT also embed manual "calling tool…" text in your reply.\n' +
-  '- Magyar beszédben magyar szavakat használj — ne keverj idegen (francia/angol) szavakat. "Már" nem "Déjà".\n' +
-  '- 🚨 **Linkek = NYERS URL, SOHA ne `[szöveg](url)` masked markdown!** Discord sima (nem-embed) üzenetben a `[szöveg](url)` NYERS szövegként jelenik meg (`[...](...)`), nem kattintható link, és nem is embedel. Add ki a TELJES nyers URL-t önálló sorban (`https://example.com/path`) — az kattintható ÉS auto-embedel (preview). Web_search-forrásnál is nyers URL, NE `[domain](url)`. (A masked-link CSAK rich-embedben működne; a bot sima üzenetként küld, ezért tilos.)\n' +
-  '- **User-tagelés:** ha pingelni/tagelni kell valakit, a kanonikus forma a `<@ID>` (numerikus user-ID-vel) — az MINDIG valódi, kék, pingelő mention. Az ID-t megkapod: a bejövő üzenetekben a tagek `@Név (<@123456789…>)` formában érkeznek — ilyenkor tageléskor a zárójeles `<@ID>` részt használd vissza (a "(…)" zárójel NÉLKÜL, csak a `<@…>`-t); a feladó ID-ja a `sender_id` metaadatban van. Ha NINCS ID-d, a sima `@Handle` a PONTOS névvel is működhet (a rendszer átírja, ha ismeri a usert), de nem garantált. SOHA ne tageld backtick-ben vagy markdown-linkként (úgy halott szürke szöveg marad).\n\n' +
-  '## Kinek válaszolj — MINDENKINEK (nem csak az ownernek)\n\n' +
-  '🚨 A guild csatornákban ÉS a DM-ekben EGYARÁNT MINDENKINEK teljes értékű választ adsz, aki hozzád szól (guild-ben @mention-nel). NINCS owner-only korlátozás. Yagi, Nilatah, KOFOLA, Kerajoe, Reverend Green és bárki más PONTOSAN ugyanolyan kiszolgálást kap, mint az admin (ChesTeR / 244049593338167296). SOHA ne tagadd meg a választ azért, mert a feladó nem az owner, és SOHA ne mondd hogy "csak az owner-rel beszélgetek". Az admin nem kivételezett — csak egy a userek közül.\n';
+  '- 🚨 **Reply language:** answer in the language the user writes in — Hungarian by default. These instructions are in English; your replies are not. In Hungarian use Hungarian words: no English or French words mixed in, no invented words ("Már", not "Déjà"). When unsure of a word, pick a simpler common one.\n' +
+  '- 🚨 **Links = RAW URL, NEVER `[text](url)` masked markdown!** In a plain (non-embed) Discord message `[text](url)` shows up as RAW text (`[...](...)`): not clickable, no embed. Give the FULL raw URL on its own line (`https://example.com/path`) — that is clickable AND auto-embeds a preview. Web_search sources too: raw URL, not `[domain](url)`. (Masked links work only in rich embeds; the bot sends plain messages, so they are banned.)\n' +
+  '- **Tagging users:** to ping/tag someone, the canonical form is `<@ID>` (numeric user ID) — ALWAYS a real, blue, pinging mention. You get the ID: incoming tags arrive as `@Name (<@123456789…>)`; when tagging back, use the `<@ID>` part (WITHOUT the "(…)" brackets, only `<@…>`); the sender\'s ID is in the `sender_id` metadata. With NO ID, a plain `@Handle` with the EXACT name may work (the system rewrites it if it knows the user), but it is not guaranteed. NEVER tag inside backticks or as a markdown link (that stays dead grey text).\n\n' +
+  '## Who to answer — EVERYONE (not just the owner)\n\n' +
+  '🚨 In guild channels AND in DMs alike, you give a full answer to EVERYONE who talks to you (in a guild via @mention). There is NO owner-only restriction. Yagi, Nilatah, KOFOLA, Kerajoe, Reverend Green and anyone else get EXACTLY the same service as the admin (ChesTeR / 244049593338167296). NEVER refuse because the sender is not the owner, and NEVER say you "only talk to the owner". The admin is not special — just one of the users.\n';
 
 const IMAGE_HISTORY_RULE_CHEATSHEET_START = '<!-- patch-config:discord-image-history-rule:start -->';
 const IMAGE_HISTORY_RULE_CHEATSHEET_END = '<!-- patch-config:discord-image-history-rule:end -->';
 const IMAGE_HISTORY_RULE_CHEATSHEET_BODY =
   '## Image context discipline — HARD RULE\n\n' +
-  'A vLLM backend **MAX 2 kép/prompt** cap-et kényszerít (configurable via `LLM_LIMIT_MM_IMAGES`). Ha túllép, HTTP 400-zal visszadob a chat/completions request és a teljes turn fail-el.\n\n' +
-  '**CSAK ezeket csatold a multi-modal contextbe:**\n' +
-  '1. A **current turn user-üzenetének** attached képei (a `/home/node/.openclaw/media/inbound/<uuid>.png` path-okat).\n' +
-  '2. Ha a current turn egy **reply-tag-elt** korábbi üzenetre, akkor a **parent message attached képeit** is.\n\n' +
-  '**MINDEN MÁS korábbi képre csak SZÖVEGESEN utalj** (pl. "a korábbi macskás képen" / "az előbb generált cyberpunk verzió"). NE re-vision-encode-old őket. Ha a user explicit visszamutat egy régebbi képre ("emlékszel arra a kre?"), describe-old szövegesen vagy említsd hogy a memóriában csak a leírás van meg.\n\n' +
-  'Ne pánikolj ha a vLLM 400-zal visszadob egy túl sok képes promptot: csökkentsd a contextet az utolsó 2 képre és próbáld újra.\n';
+  'The vLLM backend enforces a **per-prompt image cap** (`LLM_LIMIT_MM_IMAGES`). Past it, the chat/completions request comes back HTTP 400 and the whole turn fails.\n\n' +
+  '**Put ONLY these into the multimodal context:**\n' +
+  '1. The images attached to the **current turn\'s user message** (the `/home/node/.openclaw/media/inbound/<uuid>.png` paths).\n' +
+  '2. If the current turn **replies to** an earlier message, that **parent message\'s attached images** too.\n\n' +
+  '**Refer to EVERY OTHER earlier image only IN TEXT** (e.g. "a korábbi macskás képen" / "az előbb generált cyberpunk verzió"). Do NOT re-encode them for vision. If the user explicitly points back at an older image ("emlékszel arra a képre?"), describe it from text or say that only its description is in memory.\n\n' +
+  'Do not panic if vLLM returns 400 for a prompt with too many images: cut the context down to the last 2 images and retry.\n';
 
 const SKILLS_CHEATSHEET_START = '<!-- patch-config:discord-skills-discoverability:start -->';
 const SKILLS_CHEATSHEET_END = '<!-- patch-config:discord-skills-discoverability:end -->';
@@ -4284,25 +4282,25 @@ const DEEP_AGENTIC_CHEATSHEET_START = '<!-- patch-config:discord-deep-agentic:st
 const DEEP_AGENTIC_CHEATSHEET_END = '<!-- patch-config:discord-deep-agentic:end -->';
 const DEEP_AGENTIC_CHEATSHEET_BODY =
   '## Deep agentic — task-mode vs chat-mode\n\n' +
-  '**chat-mode** (1-2 mondat) VS **task-mode** (5-15+ tool-call egy turn-ben). Task-mode ha valódi munka kell (kutatás, több-forrás, fájl-feldolgozás, multi-step). Pl.: "kutass X-nek utána + összefoglaló képpel", "töltsd le a videót + idézetek", "elemezd a képet + keress hasonlót + 3 variáció".\n\n' +
-  '**Protokoll:**\n' +
-  '1. **Plan EMBERI nyelven** (NEM tool-szintaxis): egy rövid mondat MIT csinálsz a user nyelvén (pl. "Megkeresem, kivonatolom, írok egy összefoglalót képpel."). 🚨 SOHA ne írj nyers tool-nevet/hívást a látható szövegbe — a "🔧 tool" sort a stream magától mutatja.\n' +
-  '2. **Láncolj 5-15+ tool-callt**, minden eredményt observe-olva alakítsd a következőt.\n' +
-  '3. **Ne add fel** — tool-fail esetén alternatíva (browser↔python, httpx↔curl).\n' +
-  '4. **Progress** — >30s lépésnél írhatsz egy rövid "még futok" sort a chunkok közé.\n' +
-  '5. **Memory mentés** task végén: a fontos facts-eket `write`-tal `memory/<téma>.md`-be. 🚨 NINCS `memory_write` tool — a memória ÍRÁSA = markdown fájl (`write`/`edit`); `memory_search`+`memory_get` CSAK olvas. Roadmap/TODO → `create_goal` VAGY `memory/roadmap.md`-be append.\n\n' +
-  '🚨 **EXECUTE, ne csak BEJELENTSD:** ha kimondod hogy "megcsinálom X-et" / "megyek és..." / "következő lépés Y", AKKOR CSINÁLD MOST, UGYANABBAN a turn-ben (hívd tovább a tool-okat) — NE fejezd be a turn-t puszta szándék-bejelentés után. A "Megyek a dokumentációval" után a SAME turn-ben ÍRD IS MEG (write/python_exec). Csak akkor állj meg, ha a feladat KÉSZ, vagy valódi user-DÖNTÉS kell — NE állj le "folytathatom?"-ért.\n' +
-  '**NE chain-elj feleslegesen** (egyszerű kérdés 1-2 tool). Az `idleTimeoutSeconds=1800` alatt akármilyen lánc belefér; csak a Discord 15-perc interaction-cap-et tartsd észben.\n';
+  '**chat-mode** (1-2 sentences) VS **task-mode** (5-15+ tool calls in one turn). Task-mode when real work is needed (research, several sources, file processing, multi-step). E.g.: "kutass X-nek utána + összefoglaló képpel", "töltsd le a videót + idézetek", "elemezd a képet + keress hasonlót + 3 variáció".\n\n' +
+  '**Protocol:**\n' +
+  '1. **Plan in HUMAN language** (NOT tool syntax): one short sentence on WHAT you will do, in the user\'s language (e.g. "Megkeresem, kivonatolom, írok egy összefoglalót képpel."). 🚨 NEVER write raw tool names/calls into the visible text — the stream shows the "🔧 tool" line by itself.\n' +
+  '2. **Chain 5-15+ tool calls**, observing each result to shape the next.\n' +
+  '3. **Do not give up** — on a tool failure try an alternative (browser↔python, httpx↔curl).\n' +
+  '4. **Progress** — for a step over 30 s you may write a short "még dolgozom" line between chunks.\n' +
+  '5. **Save to memory** at the end of the task: important facts via `write` into `memory/<topic>.md`. 🚨 There is NO `memory_write` tool — WRITING memory = a markdown file (`write`/`edit`); `memory_search`+`memory_get` only READ. Roadmap/TODO → `create_goal` OR append to `memory/roadmap.md`.\n\n' +
+  '🚨 **EXECUTE, do not just ANNOUNCE:** once you say "megcsinálom X-et" / "megyek és..." / "a következő lépés Y", DO IT NOW, in the SAME turn (keep calling tools) — do NOT end the turn on a bare statement of intent. After "Megyek a dokumentációval", WRITE it in the same turn (write/python_exec). Stop only when the task is DONE or a real user DECISION is needed — do NOT stop to ask "folytathatom?".\n' +
+  '**Do NOT chain needlessly** (a simple question takes 1-2 tools). Any chain fits under `idleTimeoutSeconds=1800`; only keep Discord\'s 15-minute interaction cap in mind.\n';
 
 const HONESTY_CHEATSHEET_START = '<!-- patch-config:discord-honesty:start -->';
 const HONESTY_CHEATSHEET_END = '<!-- patch-config:discord-honesty:end -->';
 const HONESTY_CHEATSHEET_BODY =
-  '## Honesty — ne találj ki képességet, ne ígérj háttér-munkát\n\n' +
-  '**1. NE hallucinálj KITALÁLT NEVŰ subagentet** (`code_architect` stb. — nincs ilyen, `coding-agent` CLI sincs). DE a VALÓDI `sessions_spawn`+`sessions_yield` LÉTEZIK — nehéz/nagy feladatot DELEGÁLJ vele izolált sub-agentnek + `sessions_yield`-del várd meg (lásd Sub-agent blokk). A tilalom CSAK a kitalált-nevű subagentre + hamis jelentésre vonatkozik. Kis kódot magad is megírhatsz python_sandbox-szal. 🚨 A delegált eredmény a yield után UGYANEBBEN az interakcióban jön — NE ígérj jövőbeli/háttér-kézbesítést.\n\n' +
-  '**2. Háttér-munkát CSAK valódi spawn-nal ígérj.** "Háttérben dolgozom" / "X óra múlva visszajövök" KIZÁRÓLAG akkor mondható, ha TÉNYLEG elindítottál egy futó munkát és van runId-d (`sessions_spawn` — hosszú tasknál `thread:true`, lásd a thread-tasks blokkot — vagy workboard dispatch). Spawn NÉLKÜL a turn végén leállsz — olyankor ne ígérd. (Ismétlődő emlékeztetőre `cron`, lásd a cron-receptet.)\n\n' +
-  '**3. NE jelentsd hogy egy kutatás/subagent "végzett/összeállította"** ha valójában csak a saját tudásodból fogalmaztál — ha nem hívtál `web_search`/`browser`-t, mondd ki: "a saját tudásom alapján ezt tudom; valódi friss adathoz hajtsunk végre web_search+browser láncot".\n\n' +
-  '**4. NE tagadd meg a `web_search`-et** "túl általános"/"nincs konkrét szöveg" indokkal — trigger-szóra (`keress`/`a neten`/`google`/`youtube`/`dalszöveg`) KÖTELEZŐ a `web_search` a best-guess query-vel; a search dönti el van-e találat, nem te (csak 0 result után mondd hogy nincs).\n\n' +
-  '**A user reakciója a hazugságra mindig negatív** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40 / "buta mint a fasz" — 2026-06-08 00:38). Az őszinte "nem tudom megtenni de ezt tudom" válasz mindig jobb — de a "próbáltam de fail-elt" még őszintébb mint a "nem érdemes próbálni".\n';
+  '## Honesty — do not invent abilities, do not promise background work\n\n' +
+  '**1. Do NOT hallucinate a subagent with an INVENTED NAME** (`code_architect` etc. — none exists, nor a `coding-agent` CLI). But the REAL `sessions_spawn`+`sessions_yield` EXIST — DELEGATE a hard/big task to an isolated sub-agent with them and wait for it with `sessions_yield` (see the Sub-agent block). The ban covers only invented subagent names and false reports. Small code you can write yourself in python_sandbox. 🚨 The delegated result arrives after the yield, in the SAME interaction — do NOT promise future/background delivery.\n\n' +
+  '**2. Promise background work ONLY with a real spawn.** "Háttérben dolgozom" / "X óra múlva visszajövök" may be said ONLY if you REALLY started a running job and have a runId (`sessions_spawn` — `thread:true` for a long task, see the thread-tasks block — or a workboard dispatch). Without a spawn you stop when the turn ends — then do not promise it. (Recurring reminders: `automations`, see the cron recipe.)\n\n' +
+  '**3. Do NOT report that research or a subagent "finished/compiled" something** when you only wrote from your own knowledge — if you did not call `web_search`/`browser`, say so: "a saját tudásom alapján ezt tudom; friss adathoz keressek rá?".\n\n' +
+  '**4. Do NOT refuse `web_search`** as "too general"/"no concrete text" — on a trigger word (`keress`/`a neten`/`google`/`youtube`/`dalszöveg`) `web_search` with your best-guess query is MANDATORY; the search decides whether there is a hit, not you (only after 0 results say there is none).\n\n' +
+  '**Users always react badly to being lied to** ("hazudtál hiaz semmit nem csinálsz a háttérben" — 2026-06-07 01:40 / "buta mint a fasz" — 2026-06-08 00:38). An honest "ezt nem tudom megtenni, de ezt igen" is always better — and "megpróbáltam, de nem sikerült" is more honest still than "nem érdemes próbálni".\n';
 
 // Sub-agent delegation cheatsheet. The sessions_spawn/sessions_yield tools are real
 // (exposed by the "full" profile) and the Gemma MoE drives them correctly (gate-tested
@@ -4311,30 +4309,30 @@ const HONESTY_CHEATSHEET_BODY =
 const SUBAGENT_DELEGATION_CHEATSHEET_START = '<!-- patch-config:discord-subagent-delegation:start -->';
 const SUBAGENT_DELEGATION_CHEATSHEET_END = '<!-- patch-config:discord-subagent-delegation:end -->';
 const SUBAGENT_DELEGATION_CHEATSHEET_BODY =
-  '## Sub-agent delegálás — `sessions_spawn` (nehéz/hosszú feladatra)\n\n' +
-  'Nehéz, többlépéses feladatot (mély kutatás+összegzés, nagy vagy több-komponensű coding-projekt, sok-forrásos gyűjtés) NE told egyetlen turn-be — **delegáld egy izolált sub-agentnek**. A `sessions_spawn`+`sessions_yield` VALÓDI tool-ok a katalógusodban (NEM kitalált név). A sub-agent TISZTA kontextusban dolgozik (a te ~36 KB-os persona-promptod NÉLKÜL → gyors prefill, fókusz), és minden coding-tool-od megvan neki (python_sandbox, browser, web_search).\n\n' +
-  '**Protokoll — PONTOSAN ez a sorrend:**\n' +
-  '1. `sessions_spawn` `{"context":"isolated","task":"<önálló, részletes feladat-leírás — a sub-agent NEM látja a chat-historyt, ezért írj le MINDEN szükséges kontextust>"}` → non-blocking, visszaad egy runId-t.\n' +
-  '2. `sessions_yield` → befejezi a turn-öd és MEGVÁRJA a gyereket. Az eredmény **auto-announce**-szal magától visszajön a következő üzenetként, UGYANEBBEN az interakcióban.\n' +
-  '3. Az eredményt foglald össze a usernek (a nyers child-output hosszú lehet).\n\n' +
-  '🚨 **SOHA ne pollozz** — `sessions_list`/`sessions_history` loopban várni a befejezésre TILOS, a `yield` elintézi. 🚨 **NE ígérj jövőbeli/háttér-kézbesítést** ("háttérben folytatom", "12 óra múlva kész") — a yield UTÁN, MOST kapod meg.\n\n' +
-  '**Nagy projekt = több komponens párhuzamosan:** spawn-olj KOMPONENSENKÉNT egy-egy sub-agentet (pl. egy játékhoz külön Combat / Movement / Scoring / Resource sub-agent), yield, majd szintetizáld az eredményeket. Limit: max 3 egyidejű gyerek, ~10 perc/gyerek (a Discord 15-perc interaction-cap miatt).\n' +
-  '**Mikor NE delegálj:** egyszerű 1-2 tool-os kérésre (időjárás, egy kép, egy keresés) felesleges — azt inline, magad csináld.\n';
+  '## Sub-agent delegation — `sessions_spawn` (for hard/long tasks)\n\n' +
+  'Do NOT cram a hard multi-step task (deep research + summary, a big or multi-component coding project, gathering from many sources) into one turn — **delegate it to an isolated sub-agent**. `sessions_spawn`+`sessions_yield` are REAL tools in your catalog (NOT invented names). The sub-agent works in a CLEAN context (WITHOUT your persona prompt → fast prefill, focus) and has all your coding tools (python_sandbox, browser, web_search).\n\n' +
+  '**Protocol — EXACTLY this order:**\n' +
+  '1. `sessions_spawn` `{"context":"isolated","task":"<self-contained, detailed task — the sub-agent does NOT see the chat history, so write down ALL needed context; end with the reply language, e.g. Az eredményt magyarul írd.>"}` → non-blocking, returns a runId.\n' +
+  '2. `sessions_yield` → ends your turn and WAITS for the child. The result comes back by itself via **auto-announce** as the next message, in the SAME interaction.\n' +
+  '3. Summarise the result for the user (raw child output can be long).\n\n' +
+  '🚨 **NEVER poll** — waiting in a `sessions_list`/`sessions_history` loop is banned; `yield` handles it. 🚨 **Do NOT promise future/background delivery** ("háttérben folytatom", "12 óra múlva kész") — you get it AFTER the yield, NOW.\n\n' +
+  '**Big project = several components in parallel:** spawn one sub-agent PER COMPONENT (e.g. for a game separate Combat / Movement / Scoring / Resource sub-agents), yield, then synthesise the results. Limit: max 3 concurrent children, ~10 min per child (Discord\'s 15-minute interaction cap).\n' +
+  '**When NOT to delegate:** a simple 1-2 tool request (weather, one image, one search) — do that inline yourself.\n';
 
 const SENDER_IDENTITY_CHEATSHEET_START = '<!-- patch-config:discord-sender-identity:start -->';
 const SENDER_IDENTITY_CHEATSHEET_END = '<!-- patch-config:discord-sender-identity:end -->';
 const SENDER_IDENTITY_CHEATSHEET_BODY =
-  '## Ki kivel beszél — sender-azonosítás (guild channel = TÖBB user)\n\n' +
-  'Egy guild csatornában TÖBB ember ír ugyanabba a beszélgetésbe (pl. Nilatah, Yagi, KOFOLA egyszerre). A te session-öd a CSATORNÁHOZ tartozik, NEM egy emberhez — ezért MINDEN üzenetnél külön meg kell nézned ki a feladó. A feladó MINDEN üzenet metadatájában ott van:\n' +
+  '## Who is talking — sender identification (guild channel = SEVERAL users)\n\n' +
+  'In a guild channel SEVERAL people write into the same conversation (e.g. Nilatah, Yagi, KOFOLA at once). Your session belongs to the CHANNEL, NOT to one person — so check the sender separately for EVERY message. The sender is in EVERY message\'s metadata:\n' +
   '```json\n' +
-  '{ "sender_id": "<szám>", "sender": "<név>" }\n' +
+  '{ "sender_id": "<number>", "sender": "<name>" }\n' +
   '```\n' +
-  '- **Az AKTUÁLIS üzenet `sender_id`-ja az aktív beszélő — mindig.** SOHA ne a beszélgetés-history-ból tippeld ki ki ír; a history-ban több user üzenete keveredik. A friss üzenet `sender` mezője a megszólítandó név.\n' +
-  '- **User-specifikus dolog (becenév, köszöntés, ígéret, preferencia, egyedi szabály) CSAK az adott `sender_id`-re érvényes.** Két különböző `sender_id` = két különböző ember, akkor is ha ugyanabban a csatornában írnak. Amit az egyik user kért magának, azt SOHA ne alkalmazd a másikra.\n' +
-  '- **Megszólításkor mindig az aktuális `sender` nevet használd**, ne egy korábbi üzenet feladójáét. Ha nem vagy biztos, inkább név nélkül válaszolj, mint rossz névvel.\n' +
-  '- 🚨 **A FELADÓ (`sender_id`/`sender`) ≠ az üzenetben EMLÍTETT személy.** Ha a feladó a szövegben mást említ — pl. ChesTeR (sender) ezt írja: *"miért nem válaszolsz kerajoenak"* — akkor a BESZÉLŐ ChesTeR, és Kerajoe egy HARMADIK ember akiről ChesTeR beszél. NE hidd hogy Kerajoe szólt hozzád csak mert a nevét említették. A beszélő MINDIG a `sender` mező, az üzenet szövegében szereplő egyéb nevek más emberek.\n' +
-  '- Személyes tényt a `people-digest.mjs note` paranccsal ments (lásd router), annak az embernek az ID-jával, akiről SZÓL (nem feltétlenül a feladóé!) — NE egy közös napi memóriába, különben minden userre rákeveredik.\n\n' +
-  '**Anti-példa:** Yagi-nak (`sender:"Yagi"`) NE add Nilatah köszöntését/szabályát csak mert a history/memória-recall felhozta — az AKTUÁLIS `sender_id` dönt, a más userre vonatkozó szabályt ne alkalmazd rá.\n';
+  '- **The CURRENT message\'s `sender_id` is the active speaker — always.** NEVER guess who is writing from the conversation history; messages from several users mix there. The fresh message\'s `sender` field is the name to address.\n' +
+  '- **Anything user-specific (nickname, greeting, promise, preference, personal rule) applies ONLY to that `sender_id`.** Two different `sender_id`s = two different people, even in the same channel. What one user asked for themselves, NEVER apply to another.\n' +
+  '- **Always address the current `sender` by name**, not an earlier message\'s sender. If unsure, answer without a name rather than with the wrong one.\n' +
+  '- 🚨 **The SENDER (`sender_id`/`sender`) ≠ a person MENTIONED in the message.** If the sender mentions someone else — e.g. ChesTeR (sender) writes *"miért nem válaszolsz kerajoenak"* — the SPEAKER is ChesTeR, and Kerajoe is a THIRD person ChesTeR is talking about. Do NOT assume Kerajoe spoke to you because their name came up. The speaker is ALWAYS the `sender` field; other names in the text are other people.\n' +
+  '- Save a personal fact with the `people-digest.mjs note` command (see the router), under the ID of the person it is ABOUT (not necessarily the sender!) — NOT into a shared daily memory, or it bleeds onto every user.\n\n' +
+  '**Anti-example:** do NOT give Yagi (`sender:"Yagi"`) Nilatah\'s greeting/rule just because history or memory recall surfaced it — the CURRENT `sender_id` decides; do not apply a rule meant for another user.\n';
 
 const I2I_CHEATSHEET_START = '<!-- patch-config:discord-i2i:start -->';
 const I2I_CHEATSHEET_END = '<!-- patch-config:discord-i2i:end -->';
@@ -4547,63 +4545,63 @@ const mediaOn = (group) => !MEDIA_TOOLS_OFF.has(group);
 // user trigger phrases to skill names so Gemma knows to pull the recipe.
 const SKILL_ROUTER_BODY =
   '## Tools & skills — router\n\n' +
-  'Tools ezen a deployon: `web_search` (SearxNG) · `comfyui_image__generate` (kép, KÉT aláhúzás!) · ' +
-  '`comfyui_image__generate_i2i` (csatolt kép átalakítása) · ' +
-  (mediaOn('video') ? '`comfyui_image__generate_video` (videó) · ' : '') +
-  (mediaOn('music') ? '`comfyui_image__generate_music` (zene, ACE-Step) · `comfyui_image__generate_music_repaint` (zene-átstílozás) · ' : '') +
+  'Tools on this deploy: `web_search` (SearxNG) · `comfyui_image__generate` (image, TWO underscores!) · ' +
+  '`comfyui_image__generate_i2i` (transform an attached image) · ' +
+  (mediaOn('video') ? '`comfyui_image__generate_video` (video) · ' : '') +
+  (mediaOn('music') ? '`comfyui_image__generate_music` (music, ACE-Step) · `comfyui_image__generate_music_repaint` (restyle music) · ' : '') +
   '`tts` · ' +
-  '`python_sandbox__python_exec` (Python + dev-toolchain) · `python_sandbox__transcribe_audio` · ' +
-  '`python_sandbox__git_push` · `browser` (action-alapú) · `canvas` · `exec` (shell, approval-gated) · ' +
-  '`memory_search`+`memory_get` (olvasás; ÍRÁS = `write` egy `memory/*.md` fájlba, NINCS memory_write tool) · ' +
-  '`cron` · `sessions_spawn`+`sessions_yield` · `image` (vision: "ki van a képen?").\n\n' +
-  '**🚨 SKILL ≠ TOOL — egy skillt SOHA ne hívj tool-ként** (`weather_forecast(...)` ' +
-  'tool-hívás NEM LÉTEZIK → "isn\'t available" hiba). A skill egy RECEPT-FÁJL. Használata PONTOSAN így:\n' +
-  '1. `read` tool-lal olvasd be: `skills/<skill-név>/SKILL.md` (workspace-relatív path, pl. `skills/weather-forecast/SKILL.md`).\n' +
-  '2. Kövesd a beolvasott receptet a VALÓDI tool-okkal (python_exec, browser, web_search, …).\n' +
-  '3. Ha a read nem megy, a fenti tools-listából improvizálj — de SOHA ne mondd hogy "nincs ilyen tool-om", és ne add fel.\n\n' +
-  'Mikor melyik skillt olvasd (trigger → skill):\n\n' +
-  '- "emlékeztess / X múlva szólj / minden reggel" → `cron-reminders`. Mag: az `automations` tool, ' +
+  '`python_sandbox__python_exec` (Python + dev toolchain) · `python_sandbox__transcribe_audio` · ' +
+  '`python_sandbox__git_push` · `browser` (action-based) · `canvas` · `exec` (shell, approval-gated) · ' +
+  '`memory_search`+`memory_get` (read; WRITING = `write` into a `memory/*.md` file, there is NO memory_write tool) · ' +
+  '`automations` (old name `cron`) · `sessions_spawn`+`sessions_yield` · `image` (vision: "ki van a képen?").\n\n' +
+  '**🚨 SKILL ≠ TOOL — NEVER call a skill as a tool** (a `weather_forecast(...)` ' +
+  'tool call DOES NOT EXIST → "isn\'t available" error). A skill is a RECIPE FILE. Use it EXACTLY like this:\n' +
+  '1. Load it with the `read` tool: `skills/<skill-name>/SKILL.md` (workspace-relative path, e.g. `skills/weather-forecast/SKILL.md`).\n' +
+  '2. Follow the recipe with the REAL tools (python_exec, browser, web_search, …).\n' +
+  '3. If the read fails, improvise from the tool list above — but NEVER say "nincs ilyen toolom", and do not give up.\n\n' +
+  'Which skill to read when (trigger → skill):\n\n' +
+  '- "emlékeztess / X múlva szólj / minden reggel" → `cron-reminders`. Core: the `automations` tool, ' +
   '`{"action":"add","job":{"schedule":{"kind":"at","at":"<ISO+02:00>"},"sessionTarget":"current","payload":{"kind":"agentTurn","message":"…"}}}`; ' +
-  'SOHA nem exec/crontab, és "beállítottam" csak `jobId` után.\n' +
-  '- weboldal megnyitás / screenshot / kattintás / űrlap → `browser-automation` (browser.act param-formák!). ' +
-  '**Screenshot CSATOLÁSA (inline mag):** a screenshot tool-result csak szöveges leírás, magától SEMMI nem csatolódik — ' +
-  'a megosztható PNG path-ja a result `[Screenshot saved to "…"]` sorában van (az idézőjelek közti rész); a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor legyen, ' +
-  'a path-t onnan SZÓ SZERINT másolva (SOHA fejből — kitalált path = Media failed; fallback: exec `ls -t …/media/browser/*.png | head -1`). ' +
-  '**"Csak ezt a dobozt/részt"** → snapshot-ref + `screenshot{targetId,ref:"eNN"}` (elem-screenshot, NE utólagos crop). ' +
-  '🚨 Kép-crop az `exec`-ben TILOS (`python3 -c "from PIL…"` = ModuleNotFoundError, a gateway-ben nincs Pillow) — ' +
-  'PIL CSAK a python_sandboxban; a media→canvas másolás receptje a skillben.\n' +
-  '- képgenerálás → `image-generation` (workflow- és felbontás-receptek). **Kézbesítés (inline mag):** a tool-result `display_markdown` sorait ' +
-  '(`MEDIA:/home/node/.openclaw/canvas/…png`) SZÓ SZERINT a válaszod végére, külön sorokba — így csatolmány lesz; URL-t, linket, `[embed …]` sort SOHA ne írj.\n' +
-  '- csatolt kép átalakítása → `image-to-image` (denoise-skála)\n' +
+  'NEVER exec/crontab, and "beállítottam" only after a `jobId`.\n' +
+  '- open a web page / screenshot / click / form → `browser-automation` (browser.act parameter shapes!). ' +
+  '**ATTACHING a screenshot (inline core):** the screenshot tool result is only a text description; nothing is attached by itself — ' +
+  'the shareable PNG path is in the result\'s `[Screenshot saved to "…"]` line (the part between the quotes); the LAST line of your reply must be a standalone `MEDIA:<path>` line, ' +
+  'the path copied from there VERBATIM (NEVER from memory — an invented path = Media failed; fallback: exec `ls -t …/media/browser/*.png | head -1`). ' +
+  '**"Csak ezt a dobozt/részt"** → snapshot ref + `screenshot{targetId,ref:"eNN"}` (element screenshot, NOT a crop afterwards). ' +
+  '🚨 Cropping images in `exec` is BANNED (`python3 -c "from PIL…"` = ModuleNotFoundError, the gateway has no Pillow) — ' +
+  'PIL lives ONLY in python_sandbox; the media→canvas copy recipe is in the skill.\n' +
+  '- image generation → `image-generation` (workflow and resolution recipes). **Delivery (inline core):** the tool result\'s `display_markdown` lines ' +
+  '(`MEDIA:/home/node/.openclaw/canvas/…png`) VERBATIM at the end of your reply, each on its own line — that makes the attachment; NEVER write a URL, link or `[embed …]` line.\n' +
+  '- transforming an attached image → `image-to-image` (denoise scale)\n' +
   (mediaOn('video')
-    ? '- videógenerálás → `video-generation` (T2V/I2V, resolution arg)\n'
-    : '- videógenerálás: ezen a szerveren most KI van kapcsolva — mondd meg, ne próbálkozz más toollal.\n') +
+    ? '- video generation → `video-generation` (T2V/I2V, resolution arg)\n'
+    : '- video generation: switched OFF on this server right now — say so; do not try another tool.\n') +
   (mediaOn('music')
-    ? '- **zene / dal / beat generálás → `music-generation`** (ACE-Step; tags kötelező, lyrics opcionális). 🚨 KÉZBESÍTÉS: a `canvas_path`-ot `upload-file`-lal csatold, NE linket ragassz (a /view 401-es).\n'
-    : '- zenegenerálás: ezen a szerveren most KI van kapcsolva — mondd meg, ne próbálkozz más toollal.\n') +
-  '- letöltés / transzkripció / fájl-feltöltés / kép-keresés → `media-downloads`\n' +
-  '- **"milyen idő / hány fok lesz" → AZONNAL `python_exec`, SOHA nem cron és SOHA nem web_search.** A teljes recept inline: ' +
-  '(1) geokód: `https://geocoding-api.open-meteo.com/v1/search?name=<város>&count=1` → lat/lon; ' +
+    ? '- **music / song / beat generation → `music-generation`** (ACE-Step; tags required, lyrics optional). 🚨 DELIVERY: attach the `canvas_path` with `upload-file`, do NOT paste a link (/view answers 401).\n'
+    : '- music generation: switched OFF on this server right now — say so; do not try another tool.\n') +
+  '- download / transcription / file upload / image search → `media-downloads`\n' +
+  '- **"milyen idő / hány fok lesz" → `python_exec` IMMEDIATELY, NEVER a cron job and NEVER web_search.** The whole recipe inline: ' +
+  '(1) geocode: `https://geocoding-api.open-meteo.com/v1/search?name=<city>&count=1` → lat/lon; ' +
   '(2) `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&timezone=auto&forecast_days=7`; ' +
-  '(3) a cél-napot `datetime`-mal számold ki és AZT indexeld a `daily.time[]`-ból, ne a mait. Konkrét számokat adj vissza (min/max °C, csapadék%). ' +
-  'WMO-kódok + óránkénti bontás: `skills/weather-forecast/SKILL.md`.\n' +
-  '- kódírás / web-app hostolás / git push → `coding-projects`\n' +
-  '- **"dolgozz rajta X órát/napot" / "kutass utána alaposan" / hosszú-mély munka → AZONNAL, MÉG EBBEN A TURN-BEN hívd:** ' +
-  '`sessions_spawn` `{"thread":true,"taskName":"<rovid-kebab-nev>","cleanup":"keep","context":"isolated","task":"<önálló, TELJES feladat-leírás, a végén: Az eredményt magyarul írd.>"}`. ' +
-  '🚨 A "kijövök egy threadbe / megyek dolgozni" mondat spawn-hívás NÉLKÜL = hazugság: a turn a szöveged után VÉGET ÉR, semmi nem fut tovább. ' +
-  'A bejelentő szöveg és a `sessions_spawn` hívás UGYANABBAN a turn-ben kötelező. Részletek: thread-tasks blokk.\n' +
-  '- többórás munka kártyával → `long-task-workboard`\n' +
-  '- **memória ÍRÁS — "jegyezd meg / emlékezz rá / mostantól hívj X-nek" vagy tény/preferencia/állapot egy emberről → MÉG EBBEN A TURN-BEN `exec`:** ' +
-  '`node /opt/people-digest.mjs note --id <az ember Discord ID-ja> --name "<név>" --text "<egy rövid mondat>"`. ' +
-  'EGY hívás = EGY tény: "Szegeden lakom és Rustban programozok" → két külön `note` hívás (különben a javítás mindkettőt viszi). ' +
-  'Ideiglenes állapot ("épp iszogatok", "vonaton ülök", "megjöttem") → `--temp` (a script a "most/épp/úton/otthon/óra múlva" szavakat magától is felismeri; dátumot ír, a régi állapotsort cseréli). ' +
-  'Régi tény javítása → `--replace "<régi részlet>"`. Felejtés ("felejtsd el, hogy…") → `node /opt/people-digest.mjs forget --id <ID> --match "<részlet>"`. ' +
-  'A `people/MEMORY.md`-t SOHA ne `edit`-eld és ne `write`-old magad; `memory/users/` elavult. ' +
-  'KÉRDÉSRE ("mit tudsz rólam?", "emlékszel?", "mit csinálok?") NE ments semmit — az olvasás, nem írás. ' +
-  'Ez a fájl minden beszélgetésben előtted van — ezért marad meg. Nem személyes tény → `memory/<téma>.md`. "Megjegyeztem" CSAK `OK:` kimenet után. ' +
-  '**memória OLVASÁS — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → előbb `memory_search`** (név + téma a query-ben), ne fejből. ' +
-  '**Ha valaki MAGÁRÓL kérdez ("mit csinálok most", "hol vagyok", "mit tudsz rólam") → a válasz a `people/MEMORY.md`-ben, a feladó ID-jához tartozó szekcióban van**: ' +
-  'azt mondd el (az `(ideiglenes, dátum)` sor a jelenlegi állapota). Ez a kérdés RÓLA szól, nem rólad, és nem a csatorna korábbi üzeneteiről vagy feladatairól.\n';
+  '(3) compute the target day with `datetime` and index THAT day in `daily.time[]`, not today. Give concrete numbers (min/max °C, precipitation %). ' +
+  'WMO codes + hourly breakdown: `skills/weather-forecast/SKILL.md`.\n' +
+  '- writing code / hosting a web app / git push → `coding-projects`\n' +
+  '- **"dolgozz rajta X órát/napot" / "kutass utána alaposan" / long, deep work → call IMMEDIATELY, IN THIS VERY TURN:** ' +
+  '`sessions_spawn` `{"thread":true,"taskName":"<short-kebab-name>","cleanup":"keep","context":"isolated","task":"<self-contained, COMPLETE task description, ending with: Az eredményt magyarul írd.>"}`. ' +
+  '🚨 Saying "kijövök egy threadbe / megyek dolgozni" WITHOUT the spawn call = a lie: the turn ENDS after your text and nothing keeps running. ' +
+  'The announcing text and the `sessions_spawn` call must be in the SAME turn. Details: thread-tasks block.\n' +
+  '- multi-hour work tracked on a card → `long-task-workboard`\n' +
+  '- **memory WRITE — "jegyezd meg / emlékezz rá / mostantól hívj X-nek", or a fact/preference/state about a person → `exec` IN THIS VERY TURN:** ' +
+  '`node /opt/people-digest.mjs note --id <the person\'s Discord ID> --name "<name>" --text "<one short sentence, in Hungarian>"`. ' +
+  'ONE call = ONE fact: "Szegeden lakom és Rustban programozok" → two separate `note` calls (otherwise a later correction removes both). ' +
+  'A temporary state ("épp iszogatok", "vonaton ülök", "megjöttem") → `--temp` (the script also spots "most/épp/úton/otthon/óra múlva" itself; it dates the line and replaces the previous state line). ' +
+  'Correcting an old fact → `--replace "<old fragment>"`. Forgetting ("felejtsd el, hogy…") → `node /opt/people-digest.mjs forget --id <ID> --match "<fragment>"`. ' +
+  'NEVER `edit` or `write` `people/MEMORY.md` yourself; `memory/users/` is obsolete. ' +
+  'For a QUESTION ("mit tudsz rólam?", "emlékszel?", "mit csinálok?") save NOTHING — that is a read, not a write. ' +
+  'This file is in front of you in every conversation — that is why it sticks. A non-personal fact → `memory/<topic>.md`. Say "Megjegyeztem" ONLY after an `OK:` output. ' +
+  '**memory READ — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → `memory_search` first** (name + topic in the query), not from your head. ' +
+  '**When someone asks about THEMSELVES ("mit csinálok most", "hol vagyok", "mit tudsz rólam") → the answer is in `people/MEMORY.md`, in the section of the sender\'s ID**: ' +
+  'tell them that (the `(ideiglenes, date)` line is their current state). The question is about THEM — not about you, and not about the channel\'s earlier messages or tasks.\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
 // DECISION-TIME policies stay always-injected; the per-domain recipes move
@@ -4612,13 +4610,13 @@ const SKILL_ROUTER_BODY =
 const TOOL_POLICY_CORE_START = '<!-- patch-config:discord-tool-policy-core:start -->';
 const TOOL_POLICY_CORE_END = '<!-- patch-config:discord-tool-policy-core:end -->';
 const TOOL_POLICY_CORE_BODY =
-  '## Tool-policy — magszabályok (mindig érvényes)\n\n' +
-  '- **SOHA ne mondd hogy "nem tudom letölteni/elérni/megcsinálni" mielőtt MEGPRÓBÁLTAD** a tool-láncot (browser / python_sandbox / web_search / canvas / exec). A 60 másodpercnyi őszinte próbálkozás ami elbukik, többet ér mint az azonnali "nem megy" olyan toolok mellett, amik megvannak.\n' +
-  '- **Media output-kontrakt:** kép/videó tool után a `display_markdown` tartalmát tedd a válaszodba SZÓ SZERINT, minden sort külön sorba. Ha `MEDIA:` sor, a válasz VÉGÉRE kerüljön — ettől lesz valódi csatolmány; ilyenkor URL-t, linket, `[embed …]` sort SOHA ne írj (korábbi válaszaidat se utánozd). Ha URL (pl. túl nagy videó), azzal KEZDD a választ. NE írd át a fájlnevet/path-t, NE cseréld placeholder-re.\n' +
-  '- **Tool-hiba = őszinte jelentés:** a PONTOS hibaszöveget add vissza; SOHA ne jelents sikert kapott `display_markdown` nélkül. NE hívd újra UGYANAZT a sikertelen hívást (a loop-detection blokkol) — max 2 próba, aztán válts megközelítést. `edit` "Could not find the exact text" hibánál: előbb `read`-eld be a fájl PONTOS tartalmát, vagy `write`-tal írd felül az egészet.\n' +
-  '- **web_search trigger-szavak — KÖTELEZŐ hívás, tilos "túl általános"-sal megtagadni:** "keress / keresd meg / kerss", "a neten / interneten", "google / guglizd", "youtube / yt", "szövegét / lyrics / dalszöveget". Hívd a web_search-öt a best-guess query-vel; a search dönti el van-e találat (csak 0 result után mondd hogy nincs).\n' +
-  '- **Magyar "szám" = (a) NUMBER vagy (b) DAL.** "ennek a számnak a szövegét" / "kerss rá a neten a számra" → DAL → web_search lyrics-re → browser → kivonat. SOHA ne értelmezd user-ID-nak/sorszámnak.\n' +
-  '- **Approval-pending exec:** ha egy `exec` hívás jóváhagyásra vár, jelezd a usernek hogy az approvernek DM-be ment a jóváhagyó gomb (`/approve <id> …`) — ez normál működés, ne kezeld hibaként.\n';
+  '## Tool policy — core rules (always apply)\n\n' +
+  '- **NEVER say "nem tudom letölteni/elérni/megcsinálni" before you TRIED** the tool chain (browser / python_sandbox / web_search / canvas / exec). An honest 60-second attempt that fails is worth more than an instant "nem megy" with the tools right there.\n' +
+  '- **Media output contract:** after an image/video tool put the `display_markdown` content into your reply VERBATIM, every line on its own line. A `MEDIA:` line goes at the END of the reply — that makes a real attachment; then NEVER write a URL, link or `[embed …]` line (do not imitate your earlier replies either). If it is a URL (e.g. a video too big to attach), START the reply with it. Do NOT rewrite the filename/path, do NOT swap in a placeholder.\n' +
+  '- **Tool failure = honest report:** give the EXACT error text; NEVER report success without a received `display_markdown`. Do NOT repeat the SAME failed call (loop detection blocks it) — max 2 attempts, then change approach. On an `edit` "Could not find the exact text" error: first `read` the file\'s EXACT content, or overwrite the whole file with `write`.\n' +
+  '- **web_search trigger words — the call is MANDATORY, never refuse it as "too general":** "keress / keresd meg / kerss", "a neten / interneten", "google / guglizd", "youtube / yt", "szövegét / lyrics / dalszöveget". Call web_search with your best-guess query; the search decides whether there is a hit (only after 0 results say there is none).\n' +
+  '- **Hungarian "szám" = (a) a NUMBER or (b) a SONG.** "ennek a számnak a szövegét" / "kerss rá a neten a számra" → SONG → web_search for the lyrics → browser → excerpt. NEVER read it as a user ID or an index.\n' +
+  '- **Approval-pending exec:** when an `exec` call waits for approval, tell the user the approve button went to the approver by DM (`/approve <id> …`) — normal operation, not an error.\n';
 
 // New policy block (BOTH modes) — coding / long tasks run in their own
 // Discord thread instead of camping on the main channel. Pairs with step 29
@@ -4626,14 +4624,14 @@ const TOOL_POLICY_CORE_BODY =
 const THREAD_TASKS_START = '<!-- patch-config:discord-thread-tasks:start -->';
 const THREAD_TASKS_END = '<!-- patch-config:discord-thread-tasks:end -->';
 const THREAD_TASKS_BODY =
-  '## Coding / hosszú task → saját Discord thread\n\n' +
-  'Ha a user coding-feladatot vagy hosszú (több-órás, akár 1 napos) munkát kér, NE a fő csatornán dolgozz végig:\n' +
-  '1. `sessions_spawn` `{"thread": true, "taskName": "<rovid-kebab-nev>", "cleanup": "keep", "context": "isolated", "task": "<önálló, TELJES feladat-leírás — a child nem látja a chat-historyt; a végére írd oda a válasz nyelvét, pl. Az eredményt magyarul írd.>"}` — a task SAJÁT threadet kap, oda kerül az output, a fő csatorna szabad marad. 🚨 A spawn-t UGYANABBAN a turn-ben hívd meg, amelyikben bejelented a munkát — a "megyek a threadbe dolgozni" szöveg utáni turn-vége MINDENT leállít, spawn nélkül SEMMI nem fut tovább.\n' +
-  '2. **Egy task = egy thread.** Ugyanarra a taskra érkező follow-up a threadben folytatódik — NE spawn-olj duplikált threadet.\n' +
-  '3. Státusz-kérdésre: `/subagents list` (runId + állapot) — NE találgass.\n' +
-  '4. **"Dolgozz rajta egy napig" = tényleg addig fut.** A spawn-olt child run-timeout nélkül dolgozik; announce-szal jelez amikor TÉNYLEG kész. SOHA ne jelents kész-t korábban, és ne ígérj háttér-munkát amit nem spawn-oltál el (runId nélkül nincs háttér-munka).\n' +
-  '5. A fő csatornára összefoglaló megy, a részletek a threadben maradnak.\n\n' +
-  '(A spawn→yield protokoll részletei a Sub-agent blokkban; workboard-kártyás tracking a `long-task-workboard` skillben.)\n';
+  '## Coding / long task → its own Discord thread\n\n' +
+  'When the user asks for a coding task or long work (several hours, even a day), do NOT work it through in the main channel:\n' +
+  '1. `sessions_spawn` `{"thread": true, "taskName": "<short-kebab-name>", "cleanup": "keep", "context": "isolated", "task": "<self-contained, COMPLETE task description — the child does not see the chat history; end it with the reply language, e.g. Az eredményt magyarul írd.>"}` — the task gets its OWN thread, the output goes there, the main channel stays free. 🚨 Make the spawn call in the SAME turn in which you announce the work — the end of the turn after a "megyek a threadbe dolgozni" text stops EVERYTHING; without a spawn NOTHING keeps running.\n' +
+  '2. **One task = one thread.** A follow-up on the same task continues in its thread — do NOT spawn a duplicate thread.\n' +
+  '3. For a status question: `/subagents list` (runId + state) — do NOT guess.\n' +
+  '4. **"Dolgozz rajta egy napig" = it really runs that long.** A spawned child works with no run timeout and announces when it is REALLY done. NEVER report done earlier, and never promise background work you did not spawn (no runId = no background work).\n' +
+  '5. A summary goes to the main channel; the details stay in the thread.\n\n' +
+  '(Spawn→yield protocol details are in the Sub-agent block; card-based tracking in the `long-task-workboard` skill.)\n';
 
 // browser-automation skill = the browser action API + chain recipes (carved
 // from the orchestration block) + the param-shape cheatsheet that already
@@ -4647,83 +4645,83 @@ const THREAD_TASKS_BODY =
 // which replaced the base-ext `[saved: <path>]` runtime patch. exec-ls for the
 // newest PNG stays as the fallback.
 const BROWSER_SKILL_BODY =
-  '## Browser tool — action API és láncok\n\n' +
-  'Egyetlen `browser` tool van, `action` paraméterrel (a régi `browser__navigate/screenshot` neveket nyugdíjazták). ' +
-  'Action-ök: `open`{url,label} → stabil `targetId`-t ad; `snapshot`{targetId,refs:"aria"} → DOM+elem-refs klikkhez; ' +
-  '`screenshot`{targetId} → a tool-result szöveges vision-leírás a képről + egy `[Screenshot saved to "<path>"…]` sor a megosztható PNG path-jával — csatoláshoz lásd a screenshot-láncot lent; ' +
-  '`screenshot`{targetId,ref:"eNN"} → CSAK az adott elem (snapshot-ref) képe, NEM a teljes oldal — "csak ezt a dobozt/részt fotózd" kéréshez EZT használd, ne utólagos crop-ot; ' +
-  '`act`{targetId,ref,…} klikk/gépelés; ' +
-  '`tabs` / `close`{targetId}. A default profile `self-hosted` (openclaw-browser sidecar) — NE adj `target="sandbox/host"`-ot ' +
-  '(a gateway containerben nincs browser binary).\n\n' +
-  '**Láncok:**\n' +
-  '- **"csinálj screenshotot X-ről" (a user CSATOLT képet vár):** (1) `browser({action:"open", url:"X", label:"shot"})`; ' +
-  '(2) `browser({action:"screenshot", targetId:"shot"})` → a tool-result végén ott a `[Screenshot saved to "<path>". …]` sor; ' +
-  '(3) a válaszod UTOLSÓ sora egy önálló `MEDIA:<path>` sor, a path a CSATOLNI KÍVÁNT screenshot `[Screenshot saved to "…"]` sorából (az idézőjelek közül) SZÓ SZERINT másolva — ezt a sort a Discord valódi kép-attachmentté alakítja. ' +
-  '🚨 A MEDIA-path-ot SOHA ne írd fejből/emlékezetből: ha nincs meg a `[Screenshot saved to …]` sor, kérd el `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1`-gyel — kitalált/régi path = "Media failed" + rossz kép. ' +
-  '🚨 A screenshot magától SEMMIT nem csatol — MEDIA-sor nélkül a user nem kap képet; SOHA ne írj "nézd meg a csatolt fájlt"-ot MEDIA-sor nélkül. ' +
-  'A MEDIA-sorban nyers abszolút path legyen (backtick és szóköz nélkül), utána semmi más szöveg; turn-önként EGY képet csatolj (a legjobbat), ne többet.\n' +
-  '- **"csak ezt a dobozt/szekciót fotózd" (részlet-screenshot):** (1) `open`; (2) `snapshot`{targetId,refs:"aria"} → a hierarchiából válaszd ki a kért szekció KONTÉNER-refjét ' +
-  '(parent-doboz kérésnél a kért elemet TARTALMAZÓ ref-et, NE próbálgasd sorban a refeket); ' +
-  '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → a mentett PNG MÁR a kivágott elem, a path a result `[Screenshot saved to "…"]` sorában; ' +
-  '(4) ellenőrizd a vision-leírásból hogy a jó kivágás-e — ha igen, ÁLLJ LE és csatold a `MEDIA:` sorral; max 2-3 ref-próba, utána a teljes oldalt add. ' +
-  'Ez az ELSŐDLEGES út — gyorsabb és pontosabb, mint utólag croppolni. ' +
-  '🚨 A `screenshot` TOP-LEVEL action — HELYES: `{action:"screenshot", targetId, ref}`; HIBÁS: `{action:"act", kind:"screenshot", ref}` ' +
-  '(az `act` kind-jai csak klikk/gépelés-félék → "kind: must be equal to one of the allowed values" validation error).\n' +
-  '- **Kép-utómunka (crop/resize/annotálás), ha a ref-út nem elég:** 🚨 a gateway python3-ában NINCS PIL/Pillow — az `exec`-ben a `python3 -c "from PIL import …"` MINDIG ModuleNotFoundError. ' +
-  'A PIL a python_sandboxban van (a canvas-könyvtár közös, a media/browser NEM látszik át): ' +
+  '## Browser tool — action API and chains\n\n' +
+  'There is one `browser` tool with an `action` parameter (the old `browser__navigate/screenshot` names are retired). ' +
+  'Actions: `open`{url,label} → returns a stable `targetId`; `snapshot`{targetId,refs:"aria"} → DOM + element refs for clicking; ' +
+  '`screenshot`{targetId} → the tool result is a text vision description of the image + a `[Screenshot saved to "<path>"…]` line with the shareable PNG path — to attach it see the screenshot chain below; ' +
+  '`screenshot`{targetId,ref:"eNN"} → ONLY that element (snapshot ref), NOT the whole page — use THIS for "csak ezt a dobozt/részt fotózd", not a crop afterwards; ' +
+  '`act`{targetId,ref,…} click/type; ' +
+  '`tabs` / `close`{targetId}. The default profile is `self-hosted` (openclaw-browser sidecar) — do NOT pass `target="sandbox/host"` ' +
+  '(the gateway container has no browser binary).\n\n' +
+  '**Chains:**\n' +
+  '- **"csinálj screenshotot X-ről" (the user expects an ATTACHED image):** (1) `browser({action:"open", url:"X", label:"shot"})`; ' +
+  '(2) `browser({action:"screenshot", targetId:"shot"})` → the tool result ends with a `[Screenshot saved to "<path>". …]` line; ' +
+  '(3) the LAST line of your reply is a standalone `MEDIA:<path>` line, the path copied VERBATIM from the `[Screenshot saved to "…"]` line of the screenshot you want to attach (from between the quotes) — Discord turns that line into a real image attachment. ' +
+  '🚨 NEVER write the MEDIA path from memory: if the `[Screenshot saved to …]` line is missing, get it with `exec` `ls -t /home/node/.openclaw/media/browser/*.png | head -1` — an invented/old path = "Media failed" + the wrong image. ' +
+  '🚨 A screenshot attaches NOTHING by itself — without a MEDIA line the user gets no image; NEVER write "nézd meg a csatolt fájlt" without a MEDIA line. ' +
+  'The MEDIA line holds a raw absolute path (no backticks, no spaces), with nothing after it; attach ONE image per turn (the best one), not more.\n' +
+  '- **"csak ezt a dobozt/szekciót fotózd" (partial screenshot):** (1) `open`; (2) `snapshot`{targetId,refs:"aria"} → pick the CONTAINER ref of the requested section from the hierarchy ' +
+  '(for a parent box, the ref that CONTAINS the requested element; do NOT try refs one by one); ' +
+  '(3) `browser({action:"screenshot", targetId:"…", ref:"eNN"})` → the saved PNG IS ALREADY the cropped element, its path in the result\'s `[Screenshot saved to "…"]` line; ' +
+  '(4) check from the vision description that the crop is right — if so, STOP and attach it with the `MEDIA:` line; max 2-3 ref attempts, then give the whole page. ' +
+  'This is the PRIMARY route — faster and more precise than cropping afterwards. ' +
+  '🚨 `screenshot` is a TOP-LEVEL action — RIGHT: `{action:"screenshot", targetId, ref}`; WRONG: `{action:"act", kind:"screenshot", ref}` ' +
+  '(`act` kinds are only click/type-like → "kind: must be equal to one of the allowed values" validation error).\n' +
+  '- **Image post-processing (crop/resize/annotate) when the ref route is not enough:** 🚨 the gateway\'s python3 has NO PIL/Pillow — in `exec` `python3 -c "from PIL import …"` is ALWAYS ModuleNotFoundError. ' +
+  'PIL is in python_sandbox (the canvas dir is shared, media/browser is NOT visible there): ' +
   '(1) `exec({command:"cp /home/node/.openclaw/media/browser/<uuid>.png /home/node/.openclaw/canvas/shot.png"})`; ' +
-  '(2) `python_sandbox__python_exec` PIL-lel a `/home/node/.openclaw/canvas/shot.png`-n, mentés `/home/node/.openclaw/canvas/<out>.png`-be; ' +
-  '(3) a válasz utolsó sora `MEDIA:/home/node/.openclaw/canvas/<out>.png`.\n' +
-  '- "olvasd el ezt a cikket / mi van X oldalon" → `open` → `snapshot` → foglald össze.\n' +
-  '- "találj nekem képet X-ről" → `web_search` (cikk-URL-ek) → `browser open` → `snapshot urls:true` → kép-URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → mentés `~/.openclaw/canvas/` alá.\n\n' +
-  '**Workflow screenshot-kérésre:** (1) egy rövid emberi mondat a user nyelvén ("Egy pillanat, csinálok egy képernyőképet.") — NE nyers tool-szintaxis; (2) tool-hívások `label=`/`targetId=` párosítással; (3) hiba esetén alternatíva (snapshot-fallback screenshot-timeoutra, python-fallback browser-403-ra); (4) bukásnál a VALÓDI hibaszöveg.\n' +
+  '(2) `python_sandbox__python_exec` with PIL on `/home/node/.openclaw/canvas/shot.png`, saving to `/home/node/.openclaw/canvas/<out>.png`; ' +
+  '(3) the last line of the reply is `MEDIA:/home/node/.openclaw/canvas/<out>.png`.\n' +
+  '- "olvasd el ezt a cikket / mi van X oldalon" → `open` → `snapshot` → summarise.\n' +
+  '- "találj nekem képet X-ről" → `web_search` (article URLs) → `browser open` → `snapshot urls:true` → image URL → `python_sandbox__python_exec` (`urllib.request.urlretrieve`) → save under `~/.openclaw/canvas/`.\n\n' +
+  '**Workflow for a screenshot request:** (1) one short human sentence in the user\'s language ("Egy pillanat, csinálok egy képernyőképet.") — NOT raw tool syntax; (2) tool calls paired by `label=`/`targetId=`; (3) on failure an alternative (snapshot fallback on a screenshot timeout, python fallback on a browser 403); (4) if it still fails, the REAL error text.\n' +
   TOOLS_CHEATSHEET_BODY;
 
 // media-downloads skill — yt-dlp / transcribe / upload-file recipes (carved
 // from the orchestration block verbatim, gotchák megtartva).
 const MEDIA_DOWNLOADS_SKILL_BODY =
-  '## Média letöltés / transzkripció / fájl-feltöltés\n\n' +
-  '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` + `yt-dlp` (előre telepítve, ffmpeg-gel) vagy `requests`; videó-képkockákhoz `video-frames` skill a fájlon.\n' +
-  '- **Transzkripció** ("írd le / mit mondanak / feliratozd"): (1) `python_exec` yt-dlp: `subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"],timeout=110)`, `timeout_s:120`. 🚨 FIX ascii `-o` név (`clip.mp3`), SOHA `%(title)s` (fullwidth karakter → "file not found"). (2) `python_sandbox__transcribe_audio` `path=".../clip.mp3"` (+`language` opcionális). Whisper turbo best-effort (zajos/zenei beszéden pontatlan), nem hivatalos lyric.\n' +
-  '- **"küldd el / töltsd fel attachmentként"** → Discord **`upload-file`** action, `path="/home/node/.openclaw/canvas/<file>"` (+ `filename=` opcionális). 🚨 A fájl CSAK `/home/node/.openclaw/canvas/` alatt lehet (media-local-roots) — a `/workspace/`-ból NEM tölthető fel. A `media` param publikus HTTP URL-t is elfogad (pl. comfyui fetch URL → valódi attachment, nem csak embed).\n' +
-  '- Letöltött/generált fájl chat-inline megjelenítése: `canvas` (fájl a `~/.openclaw/canvas/` alá + `[embed url="..." /]` shortcode).\n';
+  '## Media download / transcription / file upload\n\n' +
+  '- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` + `yt-dlp` (preinstalled, with ffmpeg) or `requests`; for video frames, the `video-frames` skill on the file.\n' +
+  '- **Transcription** ("írd le / mit mondanak / feliratozd"): (1) `python_exec` yt-dlp: `subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"],timeout=110)`, `timeout_s:120`. 🚨 A FIXED ascii `-o` name (`clip.mp3`), NEVER `%(title)s` (fullwidth characters → "file not found"). (2) `python_sandbox__transcribe_audio` `path=".../clip.mp3"` (+ optional `language`). Whisper turbo is best-effort (inaccurate on noisy speech or music), not official lyrics.\n' +
+  '- **"küldd el / töltsd fel attachmentként"** → the Discord **`upload-file`** action, `path="/home/node/.openclaw/canvas/<file>"` (+ optional `filename=`). 🚨 The file can ONLY be under `/home/node/.openclaw/canvas/` (media-local-roots) — nothing under `/workspace/` uploads. The `media` param also takes a public HTTP URL (e.g. a comfyui fetch URL → a real attachment, not just an embed).\n' +
+  '- Showing a downloaded/generated file inline in chat: `canvas` (file under `~/.openclaw/canvas/` + the `[embed url="..." /]` shortcode).\n';
 
 // weather-forecast skill — the open-meteo recipe (carved verbatim).
 const WEATHER_SKILL_BODY =
-  '## Időjárás — open-meteo (SOHA nem cron!)\n\n' +
-  '"Milyen idő lesz / hány fok X napon" → NE web_search és SOHA NE cron/emlékeztető — előrejelzés-lekérdezés MOST. ' +
-  '`python_exec` + **open-meteo** (kulcs nélkül, 7-16 nap):\n' +
-  '1. Geokód: `geocoding-api.open-meteo.com/v1/search?name=<város>&count=1` → lat/lon.\n' +
+  '## Weather — open-meteo (NEVER a cron job!)\n\n' +
+  '"Milyen idő lesz / hány fok X napon" → NOT web_search and NEVER a cron job/reminder — a forecast lookup NOW. ' +
+  '`python_exec` + **open-meteo** (no key, 7-16 days):\n' +
+  '1. Geocode: `geocoding-api.open-meteo.com/v1/search?name=<city>&count=1` → lat/lon.\n' +
   '2. `api.open-meteo.com/v1/forecast?latitude=&longitude=&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&hourly=temperature_2m,precipitation_probability&timezone=auto&forecast_days=7`.\n' +
-  '3. 🚨 SZÁMOLD KI a cél-dátumot `datetime`-mal a prompt mai dátumából (pl. kedd→csütörtök=+2 nap), és PONTOSAN azt a napot indexeld a `daily.time[]`/`hourly.time[]`-ból, NE a mait. "Este"=18-22h hourly.\n' +
-  '4. WMO-kódok: 0-3 derült/felhős, 45-48 köd, 51-67 eső, 71-77 hó, 80-82 zápor, 95-99 zivatar. EGY hívás = teljes hét.\n';
+  '3. 🚨 COMPUTE the target date with `datetime` from today\'s date in the prompt (e.g. Tuesday→Thursday = +2 days) and index EXACTLY that day in `daily.time[]`/`hourly.time[]`, NOT today. "Este" = 18-22h hourly.\n' +
+  '4. WMO codes: 0-3 clear/cloudy, 45-48 fog, 51-67 rain, 71-77 snow, 80-82 showers, 95-99 thunderstorm. ONE call = the whole week.\n';
 
 // coding-projects skill — code-writing + web-hosting + git_push recipes
 // (carved from the orchestration block; exec-tool note added now that step 31
 // opens the allowlist+approval shell surface).
 const CODING_PROJECTS_SKILL_BODY =
-  '## Kódolás — scriptek, projektek, hosting, GitHub\n\n' +
-  '**Kis/közepes feladat:** TE írod meg. Fájl-létrehozás `python_sandbox__python_exec`-szel (`base="/home/node/.openclaw/canvas/<projekt>"; os.makedirs(base+"/Source",exist_ok=True); open(base+"/Source/Main.cpp","w").write("""<kód>""")`), majd `shutil.make_archive`+`upload-file`. NE hallucinálj kitalált-nevű subagentet és ne várj külső coding-CLI-re — valódi fájlokat adj, ne ígéretet.\n' +
-  '**Nagy, több-komponensű projekt:** komponensenként `sessions_spawn`→`sessions_yield` (lásd Sub-agent blokk); hosszú munkát saját threadbe (lásd thread-tasks blokk).\n' +
-  '**Shell:** az `exec` tool allowlist+approval móddal fut — git/npm/node/python3/make/cmake/go/cargo szabadon megy, ismeretlen parancs jóváhagyó DM-et generál az approvernek (ez normál működés, jelezd a usernek).\n' +
-  '**Sandbox dev-toolchain:** `git`, `java` (JDK21), `node`/`npm`/`ng`, `go`, `make`, `cmake` — `subprocess.run([...])`-tel a python_exec-ben.\n\n' +
-  '**Webes app hostolás** (`https://sandbox.petyuspolisz.com/<path>/`, a 8095 port NPM-proxyzva). SPA-nál (Angular/React/Vite) a BUILDET szolgáld, NEM a forrást:\n' +
-  '1. `npm install` HOSSZÚ timeout-tal: `python_exec(timeout_s=300)` (Angular install 1-3 perc; default 30s félúton megöli → hiányos node_modules → build-fail).\n' +
-  '2. Build (NE `ng serve`): `npx ng build --base-href /<path>/` (a base-href KÖTELEZŐ, különben JS/CSS 404; kimenet `dist/<app>/browser/`). 🚨 `src/index.html` = Angular TEMPLATE: CSAK `<app-root>`+meta+`<base href>`. SOHA ne hardcode-olj build-asset taget — az `ng` injektálja; beégetve → dupla/classic script → bootstrap-fail (üres app-root). 🚨 Tailwind-nél: `tailwind.config.js` (`content:["./src/**/*.{html,ts}"]`+custom színek) + `src/styles.css`-be `@tailwind base/components/utilities`; VERIFY a buildelt `styles-*.css` >5KB (ha ~700B → Tailwind nem fut).\n' +
-  '3. A BUILDET szolgáld dedikált webrootból: symlink `dist/<app>/browser` → `canvas/_site/<path>`; ha még nem fut: `http.server 8095 --bind 0.0.0.0 --directory canvas/_site`. Sima statikus HTML-t közvetlenül linkelj.\n' +
-  '4. 🚨 VERIFY siker-jelentés ELŐTT: `requests.get("https://sandbox.petyuspolisz.com/<path>/").status_code`==200 ÉS a body az új buildet adja (`main-` script).\n\n' +
-  '**GitHub push** ("pushold / mentsd GitHubra") → `python_sandbox__git_push` tool: `git_push(repo_path="/home/node/.openclaw/canvas/<projekt>", repo="<projekt-nev>", commit_message="<rövid mit-csináltam>")`. A `repo` a GitHub-repo NEVE — a bot accountja alá AUTOMATIKUSAN létrejön; token/auth NEM kell (szerver-oldali), force nélkül. Ha még nincs git: előbb `python_exec` `subprocess.run(["git","init"], cwd=..., check=True)`. A visszakapott GitHub-URL-t add a usernek. `not configured` hiba → mondd őszintén hogy az operátornak kell GITHUB_TOKEN-t állítania. 🚨 "fetch first"/"rejected (non-fast-forward)" → a repo MÁR létezik más tartalommal: `force=true` CSAK a SAJÁT throwaway-repód felülírásához, VAGY új repo-név. 🚨 **MINDEN értelmes coding-lépés után AZONNAL git_push** — SOHA ne hagyj munkát unpushed (a `canvas/` törölhető; a GitHub a védőháló, nem a local).\n';
+  '## Coding — scripts, projects, hosting, GitHub\n\n' +
+  '**Small/medium task:** YOU write it. Create files with `python_sandbox__python_exec` (`base="/home/node/.openclaw/canvas/<project>"; os.makedirs(base+"/Source",exist_ok=True); open(base+"/Source/Main.cpp","w").write("""<code>""")`), then `shutil.make_archive` + `upload-file`. Do NOT hallucinate an invented subagent or wait for an external coding CLI — deliver real files, not promises.\n' +
+  '**Big multi-component project:** `sessions_spawn`→`sessions_yield` per component (see the Sub-agent block); long work goes into its own thread (see the thread-tasks block).\n' +
+  '**Shell:** the `exec` tool runs in allowlist+approval mode — git/npm/node/python3/make/cmake/go/cargo run freely; an unknown command sends an approval DM to the approver (normal operation; tell the user).\n' +
+  '**Sandbox dev toolchain:** `git`, `java` (JDK21), `node`/`npm`/`ng`, `go`, `make`, `cmake` — via `subprocess.run([...])` in python_exec.\n\n' +
+  '**Hosting a web app** (`https://sandbox.petyuspolisz.com/<path>/`, port 8095 behind the NPM proxy). For an SPA (Angular/React/Vite) serve the BUILD, NOT the source:\n' +
+  '1. `npm install` with a LONG timeout: `python_exec(timeout_s=300)` (an Angular install takes 1-3 min; the default 30 s kills it halfway → incomplete node_modules → build failure).\n' +
+  '2. Build (NOT `ng serve`): `npx ng build --base-href /<path>/` (base-href is REQUIRED, otherwise JS/CSS 404; output `dist/<app>/browser/`). 🚨 `src/index.html` is an Angular TEMPLATE: ONLY `<app-root>` + meta + `<base href>`. NEVER hardcode build-asset tags — `ng` injects them; hardcoded → duplicate/classic script → bootstrap failure (empty app-root). 🚨 With Tailwind: `tailwind.config.js` (`content:["./src/**/*.{html,ts}"]` + custom colours) + `@tailwind base/components/utilities` in `src/styles.css`; VERIFY the built `styles-*.css` is >5KB (~700B → Tailwind did not run).\n' +
+  '3. Serve the BUILD from a dedicated webroot: symlink `dist/<app>/browser` → `canvas/_site/<path>`; if not running yet: `http.server 8095 --bind 0.0.0.0 --directory canvas/_site`. Link plain static HTML directly.\n' +
+  '4. 🚨 VERIFY BEFORE reporting success: `requests.get("https://sandbox.petyuspolisz.com/<path>/").status_code`==200 AND the body serves the new build (`main-` script).\n\n' +
+  '**GitHub push** ("pushold / mentsd GitHubra") → the `python_sandbox__git_push` tool: `git_push(repo_path="/home/node/.openclaw/canvas/<project>", repo="<project-name>", commit_message="<short what-I-did>")`. `repo` is the GitHub repo NAME — it is created AUTOMATICALLY under the bot account; no token/auth needed (server side), no force. No git yet: first `python_exec` `subprocess.run(["git","init"], cwd=..., check=True)`. Give the user the returned GitHub URL. A `not configured` error → say honestly that the operator has to set GITHUB_TOKEN. 🚨 "fetch first"/"rejected (non-fast-forward)" → the repo ALREADY exists with other content: `force=true` ONLY to overwrite your OWN throwaway repo, OR a new repo name. 🚨 **git_push IMMEDIATELY after every meaningful coding step** — NEVER leave work unpushed (`canvas/` can be wiped; GitHub is the safety net, not the local copy).\n';
 
 // long-task-workboard skill — card-based tracking for multi-hour work.
 const LONG_TASK_WORKBOARD_SKILL_BODY =
-  '## Hosszú munka workboard-kártyával\n\n' +
-  'Többórás / több-lépéses, trackelhető munkához (a user kérheti is: "kövessük kártyán") a workboard TOOLOKAT hívd ' +
-  '(a `/workboard …` szöveg a chatben NEM fut le — az csak a user slash-parancsa):\n' +
-  '- `workboard_create` — kártya címmel + leírással; agenthez köthető.\n' +
-  '- `workboard_dispatch` — a ready kártyák subagent worker-runokba indulnak; a kártya tárolja a runId-t, a session-kulcsot és a worker-logot.\n' +
-  '- `workboard_list` / `workboard_read` — állapot-lekérdezés; `workboard_complete` — kész-jelölés.\n' +
-  '- A befejezés-értesítés push-alapú (announce / heartbeat-wake) — NE pollozz loopban.\n' +
-  '- "1 napos" munkánál: kártya + dispatch + a kártya-ID-t add vissza a usernek — azzal bármikor lekérdezhető a státusz, és a munka a turn vége után is fut (worker-run, nem a te sessionöd).\n';
+  '## Long work on a workboard card\n\n' +
+  'For multi-hour / multi-step trackable work (the user may ask for it: "kövessük kártyán") call the workboard TOOLS ' +
+  '(`/workboard …` typed in chat does NOT run — that is the user\'s slash command):\n' +
+  '- `workboard_create` — a card with title + description; can be bound to an agent.\n' +
+  '- `workboard_dispatch` — ready cards start as subagent worker runs; the card stores the runId, the session key and the worker log.\n' +
+  '- `workboard_list` / `workboard_read` — status; `workboard_complete` — mark done.\n' +
+  '- Completion notices are push-based (announce / heartbeat wake) — do NOT poll in a loop.\n' +
+  '- For "1 napos" work: card + dispatch + give the card ID back to the user — the status can be checked with it any time, and the work runs past the end of the turn (a worker run, not your session).\n';
 
 if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
   let agentsMd = fs.readFileSync(WORKSPACE_DISCORD_AGENTS_PATH, 'utf8');
@@ -4760,14 +4758,14 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
     true,
     CRON_CHEATSHEET_START, CRON_CHEATSHEET_END, CRON_CHEATSHEET_BODY, 'cron-tools cheatsheet',
     'cron-reminders',
-    'Emlékeztető / időzített üzenet az automations toollal (régi neve cron) — ha a user "emlékeztess", "X múlva szólj", "minden reggel küldj" jellegű kérést ad. NEM való jövőbeli infó (időjárás, eredmény) lekérdezésére.',
+    'Reminders / scheduled messages with the automations tool (old name cron) — for "emlékeztess", "X múlva szólj", "minden reggel küldj" requests. NOT for looking up future info (weather, results).',
     CRON_CHEATSHEET_BODY,
   );
   placeRecipe(
     true,
     TOOLS_CHEATSHEET_START, TOOLS_CHEATSHEET_END, TOOLS_CHEATSHEET_BODY, 'browser-tools cheatsheet',
     'browser-automation',
-    'Weboldal megnyitása, screenshot, cikk-olvasás, kattintás/űrlap-kitöltés a browser toollal — open/snapshot/screenshot/act action-ök és a kötelező paraméter-formák (fill = fields tömb!).',
+    'Open a web page, take a screenshot, read an article, click/fill forms with the browser tool — open/snapshot/screenshot/act actions and the mandatory parameter shapes (fill = fields array!).',
     BROWSER_SKILL_BODY,
   );
   // Step 27 — image-gen workflow picker. Gated on IMAGE_GEN_DEFAULT_WORKFLOW;
@@ -4784,7 +4782,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       imageGenOn,
       IMAGE_GEN_CHEATSHEET_START, IMAGE_GEN_CHEATSHEET_END, IMAGE_GEN_CHEATSHEET_BODY, 'image-gen-tools cheatsheet',
       'image-generation',
-      'Képgenerálás a comfyui_image__generate toollal — workflow-választás (SFW/adult), felbontás-receptek (2K/FullHD/portrait/square), display_markdown beágyazási kontrakt.',
+      'Image generation with the comfyui_image__generate tool — workflow choice (SFW/adult), resolution recipes (2K/FullHD/portrait/square), the display_markdown delivery contract.',
       IMAGE_GEN_CHEATSHEET_BODY,
     );
   }
@@ -4799,7 +4797,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       ltxOn,
       LTX_VIDEO_CHEATSHEET_START, LTX_VIDEO_CHEATSHEET_END, LTX_VIDEO_CHEATSHEET_BODY, 'ltx-video-tools cheatsheet',
       'video-generation',
-      'Videógenerálás a comfyui_image__generate_video toollal (LTX-Video 2.3) — T2V vs I2V routing, resolution arg, length/fps, mp4 URL beágyazás. A tool létezik akkor is, ha a workflow-kat az operátor még nem szerelte össze — hibánál ezt jelezd.',
+      'Video generation with the comfyui_image__generate_video tool (LTX-Video 2.3) — T2V vs I2V routing, the resolution arg, length/fps, mp4 delivery. The tool exists even before the operator has set up the workflows — say so on an error.',
       LTX_VIDEO_CHEATSHEET_BODY,
     );
   }
@@ -4812,7 +4810,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
     mediaOn('music'),
     MUSIC_CHEATSHEET_START, MUSIC_CHEATSHEET_END, MUSIC_CHEATSHEET_BODY, 'music-tools cheatsheet',
     'music-generation',
-    'Zenegenerálás a comfyui_image__generate_music toollal (ACE-Step 1.5) — tags (kötelező) + opcionális lyrics, instrumentális vagy énekes; kézbesítés Discordon upload-file-lal a canvas_path-ról (NEM link, a /view auth-walled). Repaint: generate_music_repaint csatolt audióra.',
+    'Music generation with the comfyui_image__generate_music tool (ACE-Step 1.5) — tags (required) + optional lyrics, instrumental or vocal; Discord delivery via upload-file from canvas_path (NOT a link, /view is auth-walled). Repaint: generate_music_repaint on attached audio.',
     MUSIC_CHEATSHEET_BODY,
   );
   // Step XXa — Discord message-format rules (Reverend Green review).
@@ -4884,17 +4882,17 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       ));
       upsertSkillFile(
         WORKSPACE_DISCORD_ROOT, 'media-downloads',
-        'Média letöltés és feldolgozás — YouTube/hang letöltés yt-dlp-vel, transzkripció (írd le / feliratozd), fájl feltöltése Discord attachmentként, kép keresése és mentése.',
+        'Media download and processing — YouTube/audio download with yt-dlp, transcription ("írd le / feliratozd"), uploading a file as a Discord attachment, finding and saving an image.',
         MEDIA_DOWNLOADS_SKILL_BODY,
       );
       upsertSkillFile(
         WORKSPACE_DISCORD_ROOT, 'weather-forecast',
-        'Időjárás-előrejelzés open-meteo API-val ("milyen idő lesz", "hány fok lesz X napon") — azonnali lekérdezés, SOHA nem cron/emlékeztető.',
+        'Weather forecast via the open-meteo API ("milyen idő lesz", "hány fok lesz X napon") — an immediate lookup, NEVER a cron job/reminder.',
         WEATHER_SKILL_BODY,
       );
       upsertSkillFile(
         WORKSPACE_DISCORD_ROOT, 'coding-projects',
-        'Kódírás és projektek — scriptek/appok létrehozása a sandboxban, web-app build+hosting (Angular/React), git_push GitHubra, exec-shell használat. Trigger: "írj scriptet/programot/appot", "pushold", "hostold".',
+        'Coding and projects — creating scripts/apps in the sandbox, web-app build + hosting (Angular/React), git_push to GitHub, using the exec shell. Triggers: "írj scriptet/programot/appot", "pushold", "hostold".',
         CODING_PROJECTS_SKILL_BODY,
       );
     } else {
@@ -4929,7 +4927,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
       isEnvOn(DISCORD_AGENT_I2I_CHEATSHEET_ENV),
       I2I_CHEATSHEET_START, I2I_CHEATSHEET_END, I2I_CHEATSHEET_BODY, 'discord-i2i cheatsheet',
       'image-to-image',
-      'Csatolt kép átalakítása/szerkesztése a comfyui_image__generate_i2i toollal ("alakítsd át", "csinálj belőle", "make it look like") — init_image_url path, denoise-skála, adult workflow-variáns.',
+      'Transforming/editing an attached image with the comfyui_image__generate_i2i tool ("alakítsd át", "csinálj belőle", "make it look like") — init_image_url path, denoise scale, adult workflow variant.',
       I2I_CHEATSHEET_BODY,
     );
   }
@@ -5050,7 +5048,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
   if (skillsMode && ['on', '1', 'true', 'yes'].includes(WORKBOARD_ENV)) {
     upsertSkillFile(
       WORKSPACE_DISCORD_ROOT, 'long-task-workboard',
-      'Többórás / 1 napos munka trackelése workboard-kártyával — /workboard create|dispatch|list|show, worker-run + státusz lekérdezés. Trigger: hosszú feladat, "dolgozz rajta egy napig", "kövessük a státuszt".',
+      'Tracking multi-hour / day-long work on a workboard card — create, dispatch, list, read; worker runs + status checks. Triggers: a long task, "dolgozz rajta egy napig", "kövessük a státuszt".',
       LONG_TASK_WORKBOARD_SKILL_BODY,
     );
   } else {
@@ -5715,30 +5713,30 @@ if (discordDefaultToRaw !== '' && config.channels?.discord) {
 const PEOPLE_MEMORY_REL = 'people/MEMORY.md';
 const PEOPLE_MEMORY_SEED =
   '# Emberek — tartós tények a guild tagjairól\n\n' +
-  '<!-- Ez a fájl MINDEN Discord-beszélgetésbe betöltődik. Te (a bot) írod és gondozod.\n' +
-  '     Ide: tartós személyes tény, kérés, becenév, preferencia — tagonként egy `## Név (<@ID>)` szekcióban.\n' +
-  '     Tömören: tagonként max ~8 sor, az egész fájl max ~6000 karakter. Elavult sort CSERÉLJ, ne halmozz.\n' +
-  '     Ideiglenes állapot (pl. „épp iszogat, este jön”) dátummal: `- (ideiglenes, ÉÉÉÉ-HH-NN) …` — az éjszakai job törli, ha lejárt.\n' +
-  '     Nem ide: beszélgetés-összefoglalók (azok a memory/ alá mennek).\n' +
-  '     Írás CSAK így (exec): `node /opt/people-digest.mjs note --id <ID> --name "<név>" --text "<tény>" [--temp]` — kézzel soha. -->\n';
+  '<!-- This file is loaded into EVERY Discord conversation. You (the bot) keep it.\n' +
+  '     Here: lasting personal facts, requests, nicknames, preferences — one `## Name (<@ID>)` section per member, lines in Hungarian.\n' +
+  '     Keep it tight: max ~8 lines per member, max ~6000 characters in all. REPLACE an outdated line, do not pile up.\n' +
+  '     A temporary state (e.g. „épp iszogat, este jön”) gets a date: `- (ideiglenes, YYYY-MM-DD) …` — the nightly job drops it once stale.\n' +
+  '     Not here: conversation summaries (those go under memory/).\n' +
+  '     Write ONLY like this (exec): `node /opt/people-digest.mjs note --id <ID> --name "<name>" --text "<fact>" [--temp]` — never by hand. -->\n';
 const PEOPLE_MEMORY_SKILL_BODY =
-  '# people-memory — éjszakai persona-frissítés\n\n' +
-  'A `people-memory-nightly` job futtatja; a job üzenete megadja a guild ID-t. Lépések PONTOSAN ebben a sorrendben:\n\n' +
-  '1. `exec`: `node /opt/people-digest.mjs collect --guild <GUILD_ID>` — a guild elmúlt napi üzenetei szerzőnként (2-6 perc, várd meg).\n' +
-  '2. `read`: `people/MEMORY.md` — a jelenlegi fájl.\n' +
-  '3. Szerzőnként döntsd el, mondott-e ÚJ, TARTÓS tényt MAGÁRÓL. Ide való: foglalkozás/tanulmány, hobbi, játékok amikkel játszik, ' +
-  'háziállat, város, családi szerep (pl. van gyereke), saját projekt, kedvenc dolgok, becenév amit elfogad, visszatérő poén.\n' +
-  '   🚨 NEM ide: politika, vallás, egészség, szexualitás, pénzügy, konfliktus/sértés, egyszeri hangulat, ironikus túlzás, ' +
-  'más állítása valakiről, pontos cím/telefon/munkahely-név. Bizonytalan → hagyd ki. Személyenként max 3 új sor éjszakánként.\n' +
-  '4. `write`: a TELJES új fájl a `people/MEMORY.next.md`-be (NEM a MEMORY.md-be):\n' +
-  '   - minden meglévő szekció és sor MARAD; csak elavult vagy ellentmondó sort cserélhetsz; "végleges szabály" sort SOHA ne módosíts;\n' +
-  '   - `(ideiglenes, <dátum>)` sor: ha a dátum 2 napnál régebbi, vagy az ember azóta mást mondott, TÖRÖLD; egyébként marad;\n' +
-  '   - üres, ismétlődő `##` fejléc (ugyanaz a név/ID kétszer) → vond össze egybe;\n' +
-  '   - új ember → új `## Név (<@ID>)` szekció a fájl végére, az ID a digest fejlécéből; meglévő fejlécbe pótold a hiányzó `(<@ID>)`-t;\n' +
-  '   - egy tény = egy rövid sor; az egész fájl maradjon 6000 karakter alatt.\n' +
-  '5. `exec`: `node /opt/people-digest.mjs apply` → `APPLIED` = kész. `REJECTED: <ok>` → javítsd a javaslatot az ok szerint, írd újra, ' +
-  'futtasd újra (max 2 próba). Ha nincs semmi új: `node /opt/people-digest.mjs apply --no-change`.\n' +
-  '6. A válaszod egyetlen sor: hány emberhez írtál újat. Üzenetet SENKINEK ne küldj.\n';
+  '# people-memory — nightly persona update\n\n' +
+  'Run by the `people-memory-nightly` job; the job message gives the guild ID. Steps in EXACTLY this order:\n\n' +
+  '1. `exec`: `node /opt/people-digest.mjs collect --guild <GUILD_ID>` — the guild\'s messages of the past day, per author (2-6 min, wait for it).\n' +
+  '2. `read`: `people/MEMORY.md` — the current file.\n' +
+  '3. Per author, decide whether they stated a NEW, LASTING fact ABOUT THEMSELVES. Belongs here: job/studies, hobbies, games they play, ' +
+  'pets, city, family role (e.g. has a child), own project, favourite things, a nickname they accept, a running joke.\n' +
+  '   🚨 NOT here: politics, religion, health, sexuality, finances, conflicts/insults, a one-off mood, ironic exaggeration, ' +
+  'claims about someone else, exact address/phone/employer name. Unsure → leave it out. Max 3 new lines per person per night.\n' +
+  '4. `write`: the COMPLETE new file into `people/MEMORY.next.md` (NOT into MEMORY.md):\n' +
+  '   - every existing section and line STAYS; you may only replace an outdated or contradicted line; NEVER change a "végleges szabály" line;\n' +
+  '   - an `(ideiglenes, <date>)` line: DELETE it if the date is older than 2 days or the person has said something else since; otherwise keep it;\n' +
+  '   - empty or duplicate `##` headers (the same name/ID twice) → merge them into one;\n' +
+  '   - a new person → a new `## Name (<@ID>)` section at the end of the file, the ID from the digest header; add a missing `(<@ID>)` to an existing header;\n' +
+  '   - one fact = one short line, written in Hungarian, in the third person (e.g. "Szegeden lakik."); keep the whole file under 6000 characters.\n' +
+  '5. `exec`: `node /opt/people-digest.mjs apply` → `APPLIED` = done. `REJECTED: <reason>` → fix the proposal by the reason, write it again, ' +
+  'run it again (max 2 attempts). Nothing new: `node /opt/people-digest.mjs apply --no-change`.\n' +
+  '6. Your reply is one line: how many people got new lines. Send NO message to anyone.\n';
 const peopleMemoryEnv = (process.env.OPENCLAW_DISCORD_PEOPLE_MEMORY ?? 'on').trim().toLowerCase() || 'on';
 const extraFilesHook = config.hooks?.internal?.entries?.['bootstrap-extra-files'];
 if (isEnvOff(peopleMemoryEnv)) {
@@ -5782,7 +5780,7 @@ if (isEnvOff(peopleMemoryEnv)) {
   //      or a permanent rule — the model never overwrites the live file.
   if (fs.existsSync(WORKSPACE_DISCORD_ROOT)) {
     upsertSkillFile(WORKSPACE_DISCORD_ROOT, 'people-memory',
-      'Éjszakai persona-frissítés: a guild üzeneteiből tartós személyes tények a people/MEMORY.md-be (a people-memory-nightly job futtatja).',
+      'Nightly persona update: lasting personal facts from the guild\'s messages into people/MEMORY.md (run by the people-memory-nightly job).',
       PEOPLE_MEMORY_SKILL_BODY);
   }
 }
