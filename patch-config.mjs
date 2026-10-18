@@ -313,7 +313,7 @@ function thinkingCompatFor(id) {
     return {
       supportsReasoningEffort: true,
       supportedReasoningEfforts: ['none', 'high'],
-      reasoningEffortMap: { off: 'none', minimal: 'none', low: 'high', medium: 'high', high: 'high', xhigh: 'high', max: 'high' },
+      reasoningEffortMap: { off: 'none', minimal: 'none', low: 'high', medium: 'high', high: 'high', xhigh: 'high', max: 'high', ultra: 'high' },
     };
   }
   return undefined;
