@@ -1422,6 +1422,7 @@ services:
       # Step 44: always-loaded people/MEMORY.md for the Discord agent.
       OPENCLAW_DISCORD_PEOPLE_MEMORY: ${OPENCLAW_DISCORD_PEOPLE_MEMORY:-on}
       OPENCLAW_PEOPLE_DIGEST_NSFW: ${OPENCLAW_PEOPLE_DIGEST_NSFW:-off}
+      OPENCLAW_COMMUNITY_SUMMARY: ${OPENCLAW_COMMUNITY_SUMMARY:-on}
       LLM_DENSE_ENABLED: ${LLM_DENSE_ENABLED:-on}
       # MeshCore agent registration (patcher step 42). MESHCORE_ENABLED=on
       # registers the `meshcore` agents.list entry + seeds its workspace

@@ -5778,6 +5778,28 @@ const PEOPLE_MEMORY_SKILL_BODY =
   '5. `exec`: `node /opt/people-digest.mjs apply` → `APPLIED` = done. `REJECTED: <reason>` → fix the proposal by the reason, write it again, ' +
   'run it again (max 2 attempts). Nothing new: `node /opt/people-digest.mjs apply --no-change`.\n' +
   '6. Your reply is one line: how many people got new lines. Send NO message to anyone.\n';
+const COMMUNITY_SUMMARY_SKILL_BODY =
+  '# community-summary — a few days of the community, into the searchable memory\n\n' +
+  'Run by the `community-summary` job (every 3 days) or by a backfill turn. The job message gives the window and the file name; ' +
+  'without one, use `--last-days 3` and name the file after the last 3 days. Steps in EXACTLY this order:\n\n' +
+  `1. \`exec\`: \`node /opt/people-digest.mjs collect --guild all${PEOPLE_DIGEST_NSFW_FLAG} --last-days 3\` ` +
+  '(a backfill message gives `--from <date> --to <date>` instead of `--last-days 3`). It takes 1-10 min; wait for it.\n' +
+  '2. `write`: `memory/community/<FROM>_<TO>.md` (dates as YYYY-MM-DD), in Hungarian, 1500-3500 characters:\n' +
+  '   `# Közösségi összefoglaló <FROM> – <TO>`, then these sections:\n' +
+  '   - `## Témák`: one line per topic: what it was about and who took part.\n' +
+  '   - `## Események`: games played, plans, meetups, voice evenings, things that happened.\n' +
+  '   - `## Emberek`: 1-2 lines per active member: what they were up to, ONLY from their own messages.\n' +
+  '   - `## Futó poénok, idézetek`: short.\n' +
+  '   - `## Hasznos infók, linkek`: recommendations, decisions, useful links.\n' +
+  '   Rules:\n' +
+  '   - Only what the digest says. Never invent, never guess motives.\n' +
+  '   - Name people as `Name (<@ID>)` the first time.\n' +
+  '   - `(bot)` lines are context: write "a bot azt írta…", never treat them as facts.\n' +
+  '   - The `Voice-aktivitás` block is the voice log: describe who was in voice and when, as a pattern.\n' +
+  '   - 🚨 Leave out health details, sexual details, finances, exact address/phone. From an NSFW channel write at most one neutral line ' +
+  '(e.g. "#csatorna: felnőtt tartalmú poénkodás").\n' +
+  '   - An almost empty window gets a 2-line file that says so.\n' +
+  '3. Do NOT touch people/MEMORY.md here. Your reply is one line: the file name and how many people it covers. Send NO message to anyone.\n';
 const peopleMemoryEnv = (process.env.OPENCLAW_DISCORD_PEOPLE_MEMORY ?? 'on').trim().toLowerCase() || 'on';
 const extraFilesHook = config.hooks?.internal?.entries?.['bootstrap-extra-files'];
 if (isEnvOff(peopleMemoryEnv)) {
@@ -5823,6 +5845,24 @@ if (isEnvOff(peopleMemoryEnv)) {
     upsertSkillFile(WORKSPACE_DISCORD_ROOT, 'people-memory',
       'Nightly persona update: lasting personal facts from the guild\'s messages into people/MEMORY.md (run by the people-memory-nightly job).',
       PEOPLE_MEMORY_SKILL_BODY);
+  }
+  // 44d. Community summaries for the searchable memory. people/MEMORY.md keeps
+  //      ~6000 chars of person facts in every prompt; "what did we talk about
+  //      in August" needs the conversations themselves. Every 3 days a job
+  //      (an `openclaw cron` entry, like 44b) writes one summary under
+  //      memory/community/, which the bge-m3 memory index picks up, so
+  //      memory_search finds it later without growing any prompt. Same digest
+  //      script, windowed (`--last-days 3`, or `--from/--to` for a backfill),
+  //      so the nightly cursors stay untouched. OPENCLAW_COMMUNITY_SUMMARY=off
+  //      removes the skill.
+  if (fs.existsSync(WORKSPACE_DISCORD_ROOT)) {
+    if (isEnvOff((process.env.OPENCLAW_COMMUNITY_SUMMARY ?? 'on').trim().toLowerCase() || 'on')) {
+      removeSkillFile(WORKSPACE_DISCORD_ROOT, 'community-summary');
+    } else {
+      upsertSkillFile(WORKSPACE_DISCORD_ROOT, 'community-summary',
+        'Community summary of a few days of the guilds\' messages into memory/community/ (searchable; run by the community-summary job or a backfill).',
+        COMMUNITY_SUMMARY_SKILL_BODY);
+    }
   }
 }
 

@@ -6,7 +6,7 @@
 // date from what guild members say in ordinary channel traffic, not only
 // from what they tell the bot directly. Two subcommands:
 //
-//   collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24] [--exclude a,b] [--max-chars 60000]
+//   collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24 | --from <date> [--to <date>] | --last-days N] [--exclude a,b] [--max-chars 60000]
 //     Reads every text channel of the guild(s) since the last committed cursor
 //     (first run: the last --hours) through `openclaw message read` and
 //     prints a compact per-author digest. A 26B model calling `message read`
@@ -160,6 +160,19 @@ async function collect(opt) {
   const state = loadState();
   const floor = snowflakeAt(Date.now() - MAX_LOOKBACK_HOURS * 3600e3);
   const start = snowflakeAt(Date.now() - hours * 3600e3);
+  // Backfill: --from/--to (dates) read a fixed past window, past the 72 h cap,
+  // and leave the nightly cursors untouched (no pending write, so `apply`
+  // commits nothing). Used once to learn from older history in weekly slices.
+  // --last-days N is the same window ending now (the community-summary job).
+  if (opt['last-days'] !== undefined && opt.from === undefined) {
+    opt.from = new Date(Date.now() - Number(opt['last-days']) * 86400e3).toISOString();
+  }
+  const windowed = opt.from !== undefined;
+  const fromMs = windowed ? Date.parse(opt.from) : NaN;
+  const toMs = windowed && opt.to !== undefined ? Date.parse(opt.to) : Date.now();
+  if (windowed && (Number.isNaN(fromMs) || Number.isNaN(toMs) || fromMs >= toMs)) throw new Error('--from/--to need valid dates, from < to');
+  const winEnd = windowed ? BigInt(snowflakeAt(toMs)) : null;
+  const maxPages = Number(opt.pages) || (windowed ? 30 : 5);
 
   const keepNsfw = opt.nsfw === true || /^(on|1|true|yes)$/i.test(process.env.PEOPLE_DIGEST_NSFW || '');
   const skipLogs = opt['skip-logs'] === true || /^(off|0|false|no)$/i.test(process.env.PEOPLE_DIGEST_LOGS || '');
@@ -188,9 +201,10 @@ async function collect(opt) {
   let total = 0;
   for (const ch of channels) {
     const cursor = state.cursors[ch.id];
-    let after = cursor ? maxId(cursor, floor) : start;
+    let after = windowed ? snowflakeAt(fromMs) : (cursor ? maxId(cursor, floor) : start);
     let last = after;
-    for (let page = 0; page < 5; page++) {
+    let pastEnd = false;
+    for (let page = 0; page < maxPages && !pastEnd; page++) {
       let msgs;
       try {
         msgs = firstArray(openclaw(['message', 'read', '--channel', 'discord', '--target', `channel:${ch.id}`, '--after', after, '--limit', '100'])) || [];
@@ -200,6 +214,7 @@ async function collect(opt) {
       if (msgs.length === 0) break;
       msgs.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
       for (const m of msgs) {
+        if (winEnd !== null && BigInt(m.id) >= winEnd) { pastEnd = true; break; }
         last = maxId(last, m.id);
         if (!m.author || (m.author.bot && (!self || m.author.id === self))) continue;
         const text = messageText(m).replace(/\s+/g, ' ').trim();
@@ -222,11 +237,13 @@ async function collect(opt) {
       after = last;
       if (msgs.length < 100) break;
     }
-    if (last !== (cursor ?? start)) pending[ch.id] = last;
+    if (!windowed && last !== (cursor ?? start)) pending[ch.id] = last;
   }
 
-  state.pending = { at: new Date().toISOString(), cursors: pending };
-  saveState(state);
+  if (!windowed) {
+    state.pending = { at: new Date().toISOString(), cursors: pending };
+    saveState(state);
+  }
 
   // Keep the longest messages per author (they carry the most about the
   // person), shrinking the per-author cap until the digest fits.
@@ -485,7 +502,7 @@ try {
   else if (cmd === 'note') note(opt);
   else if (cmd === 'forget') forget(opt);
   else {
-    console.error('usage: people-digest.mjs collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24] [--exclude a,b] [--max-chars 60000] | apply [--no-change]\n' +
+    console.error('usage: people-digest.mjs collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24 | --from <date> [--to <date>] | --last-days N] [--exclude a,b] [--max-chars 60000] | apply [--no-change]\n' +
       '       | note --id <id> --name <name> --text <fact> [--temp|--durable] [--replace <part>] | forget --id <id> (--match <part> | --all)');
     process.exitCode = 2;
   }

@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   traps), it was the most factual: web 5/5, honesty traps 8/8. Its Hungarian
   was the weakest.
 
+### Added — community summaries in the searchable memory
+
+- **New `community-summary` skill** (patcher step 44d,
+  `OPENCLAW_COMMUNITY_SUMMARY`): every 3 days a cron job summarises the
+  guilds' messages into `workspace-discord/memory/community/<from>_<to>.md`,
+  in Hungarian, with sections for topics, events, people, running jokes and
+  useful links. The bge-m3 memory index picks the files up, so
+  `memory_search` can answer "what did we talk about in August". They do not
+  enter any prompt, unlike the size-capped people/MEMORY.md.
+- **`people-digest.mjs collect` time windows**: `--from <date> [--to <date>]`
+  and `--last-days N` read a fixed window past the 72 h cap and leave the
+  nightly cursors untouched. This is what the summary job uses, and it also
+  backfills older history in slices.
+
 ### Changed — people-memory reads log channels and other bots
 
 - **Log channels** (`*log`) are read now. Voice-log embeds
