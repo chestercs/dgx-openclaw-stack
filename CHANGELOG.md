@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — web search returned junk (SearxNG engine set, audit 2026-10-19)
+
+- **Root cause**: every general web engine in the old whitelist was dead
+  from the reference host. DuckDuckGo and Startpage answered CAPTCHA, Brave
+  answered 429, and Mojeek and Qwant never ran: they ship `disabled: true`
+  and had no override. Only Wikibooks, Wikiquote and Wikisource still
+  answered, so `web_search` for "mi az a wow forever" returned Mirad grammar
+  pages and a court indictment, and most queries returned 0 results.
+- **`searxng/settings/settings.yml`**: new privacy-side engine set: Yep and
+  Mwmbl (both re-enabled explicitly), DuckDuckGo, Brave, DuckDuckGo News,
+  Wikipedia (now also in the result list, which the plugin reads), GitHub,
+  arXiv. Dropped the Wikibooks / Wikiquote / Wikisource full-text noise,
+  infobox-only Wikidata, and Mojeek / Startpage / Qwant / Reddit, which are
+  inactive, blocked or removed upstream. `default_lang: "auto"`, so a
+  Hungarian query without a `language` parameter gets Hungarian results.
+  Mwmbl timeout 6 s.
+- **`SEARXNG_PULL_POLICY`** (default `weekly`): the compose `:latest` tag
+  had never been re-pulled, and the running image was 6 months old.
+- Google / Bing are still excluded. `docs/CUSTOMIZATION.md` lists the
+  measured trade-off if you want to add `google cse`.
+
 ### Added — Mistral Small 4 backend
 
 - **`docker-compose.mistral.yml`**: an override that runs

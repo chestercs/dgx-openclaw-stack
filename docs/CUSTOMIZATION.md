@@ -165,44 +165,37 @@ SearxNG has three knobs that matter for this stack. All live in `searxng/setting
 
 ```yaml
 keep_only:
+  - yep
+  - mwmbl
   - duckduckgo
   - brave
-  - mojeek
-  - qwant
-  - startpage
+  - duckduckgo news
   - wikipedia
-  - wikidata
-  - wikibooks
-  - wikiquote
-  - wikisource
-  - reddit
   - github
   - arxiv
 ```
 
-Add `google`, `bing`, `yandex` etc. here if you want broader coverage — know that those engines will then see your query text. Any engine shipped `disabled: true` in the upstream defaults needs an explicit override in the `engines:` block:
+Before adding or keeping an engine, check that it actually answers from your IP — a blocked engine produces no error, just missing results:
+
+```bash
+docker exec ${PROJ}openclaw-cli curl -sS \
+  "http://searxng:8080/search?q=test&format=json&engines=yep" \
+  | jq '{n: (.results | length), down: .unresponsive_engines}'
+```
+
+Add `google cse`, `bing`, `yahoo` etc. here if you want broader coverage — know that those engines will then see your query text. On the reference host (Hungarian residential IP, 2026-10) `google cse` gave the best Hungarian results, `bing` / `yahoo` answered but ranked worse, and `google` returned "access denied". Any engine shipped `disabled: true` in the upstream defaults needs an explicit override in the `engines:` block (`google cse` is enabled upstream and needs only the `keep_only` line):
 
 ```yaml
 engines:
-  - name: google
+  - name: bing
     disabled: false
 ```
 
-(Reddit, Wikibooks, Wikiquote, Wikisource are already enabled this way in the shipped file.)
+(Yep and Mwmbl are already enabled this way in the shipped file.)
 
 ### Categories and language passed to SearxNG
 
-`patch-config.mjs` step 10 writes the defaults the OpenClaw plugin sends on every call:
-
-```js
-const desiredWebSearch = {
-  baseUrl: 'http://searxng:8080',
-  categories: 'general,news,science',
-  language: '',
-};
-```
-
-Per-query overrides (different categories, a `time_range`, an explicit language) are the agent's job via the tool-call parameters. The defaults above just set the floor.
+`patch-config.mjs` step 10 writes only `baseUrl` and an empty `language`, and no `categories` (see the step comment for why). The agent passes `language` / `categories` per query through the tool-call parameters. When it sends no language, SearxNG's `search.default_lang: "auto"` detects it from the query text, so Hungarian queries get Hungarian results and English queries stay English.
 
 ### Disabling web search entirely
 

@@ -503,6 +503,13 @@ services:
   ######################
   searxng:
     image: searxng/searxng:latest
+    # `:latest` alone never refreshes: the reference host was still running
+    # the 2026.4 image in 2026-10, while upstream had since marked Mojeek and
+    # Startpage inactive and dropped Reddit. Scrapers track search-site
+    # changes, so let `docker compose up -d` re-pull on a schedule. The
+    # container is stateless and boots in seconds, so the recreate a new
+    # image triggers is harmless. `missing` restores pull-once behaviour.
+    pull_policy: ${SEARXNG_PULL_POLICY:-weekly}
     container_name: ${CONTAINER_NAME_PREFIX:-}searxng
     hostname: searxng
     restart: unless-stopped

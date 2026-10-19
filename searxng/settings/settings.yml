@@ -16,6 +16,24 @@
 #      never reach them.
 #   3. Rate limiter disabled (internal-only service on the compose bridge).
 #   4. Safe search off (research / world-building scope — you're the only user).
+#
+# Engine health is what silently rots here. Scraped engines start answering
+# CAPTCHA / 429 / 403 to a home or datacenter IP, and no error reaches the
+# agent: SearxNG just returns fewer results. When only the niche engines
+# survive, the agent gets confident off-topic junk. Audit it with the
+# `unresponsive_engines` field of the JSON response:
+#   docker exec openclaw-cli curl -sS \
+#     "http://searxng:8080/search?q=test&format=json" | jq .unresponsive_engines
+# and per engine with `&engines=<name>`. Measured on the reference host
+# (2026-10, Hungarian residential IP, SearxNG 2026.10.17):
+#   yep         OK, best privacy-side quality, honours language=hu
+#   mwmbl       OK, small open index, good on technical / English pages
+#   duckduckgo  intermittent CAPTCHA (kept: free when it answers)
+#   brave       HTTP 429 most of the time (kept for the same reason)
+#   mojeek, startpage  marked `inactive` upstream (proof-of-work CAPTCHA)
+#   qwant       HTTP 403 "access denied"
+# A suspended engine costs nothing per query (SearxNG skips it until its
+# suspension expires), so flaky-but-sometimes-good engines stay listed.
 
 use_default_settings:
   engines:
@@ -26,20 +44,27 @@ use_default_settings:
     # (https://github.com/searxng/searxng/blob/master/searx/settings.yml).
     keep_only:
       # Privacy-respecting general engines
+      - yep
+      - mwmbl
       - duckduckgo
       - brave
-      - mojeek
-      - qwant
-      - startpage
+      # News. The gateway's searxng plugin retries a zero-hit
+      # `categories=news` search as `general`, so when this engine is down
+      # the query falls through to the general engines above.
+      - duckduckgo news
       # Public-knowledge / domain engines
       - wikipedia
-      - wikidata
-      - wikibooks
-      - wikiquote
-      - wikisource
-      - reddit
       - github
       - arxiv
+      # Deliberately NOT listed:
+      # - wikibooks / wikiquote / wikisource: full-text search over books and
+      #   quote collections, filed under `general`. When the web engines were
+      #   blocked they were the only survivors and answered "mi az a wow
+      #   forever" with Mirad grammar pages and a court indictment.
+      # - reddit: dropped from the upstream defaults (SearxNG 2026.10 logs
+      #   `The "engine" field is missing` for a bare override of it).
+      # - wikidata: infobox-only (the OpenClaw plugin reads `results`, never
+      #   `infoboxes`), and its SPARQL backend times out at the 3 s default.
 
 general:
   debug: false
@@ -67,7 +92,12 @@ ui:
 search:
   safe_search: 0                # research scope, no filtering
   autocomplete: ""
-  default_lang: ""              # the caller picks per-query (mix EN + your locale)
+  # "auto" = detect the language from the query text whenever the caller
+  # sends no `language` (an explicit per-query language still wins). The
+  # model often omits it; with "" (= all languages) a Hungarian query like
+  # "Debrecen programok hétvégén" got English tourist pages from yep, with
+  # "auto" it gets Hungarian event listings. English queries stay English.
+  default_lang: "auto"
   ban_time_on_fail: 5
   max_ban_time_on_fail: 120
   formats:
@@ -80,12 +110,20 @@ search:
 # the upstream defaults (stability / quality gating). `use_default_settings.
 # engines.keep_only` only filters the registry — it does NOT flip the
 # disabled flag. We explicitly re-enable the ones we actively want to query.
+# (The earlier engine set listed mojeek and qwant in keep_only without this
+# override, so those two never ran at all.)
 engines:
-  - name: reddit
+  - name: yep
     disabled: false
-  - name: wikibooks
+  - name: mwmbl
     disabled: false
-  - name: wikiquote
-    disabled: false
-  - name: wikisource
-    disabled: false
+    # The 3 s global default trips on longer queries (measured "timeout" on
+    # ordinary 5-word queries); the agent-side budget is 20 s, so 6 s here
+    # costs nothing.
+    timeout: 6.0
+  # Upstream ships Wikipedia as infobox-only. The OpenClaw plugin ignores
+  # infoboxes, so without "list" an exact article hit never reaches the agent.
+  # The engine fetches one article summary by title: at most one extra
+  # result per query, no noise.
+  - name: wikipedia
+    display_type: ["infobox", "list"]

@@ -158,15 +158,19 @@ Self-hosted meta-search backend for OpenClaw's native `webSearch` provider (`doc
 
 SearxNG only hides the *client* from upstream engines — the query text itself still reaches whichever engines you enable. The real privacy win comes from the strict engine whitelist in `searxng/settings/settings.yml`:
 
-- **Privacy-respecting general engines**: DuckDuckGo, Brave Search, Mojeek, Qwant, Startpage.
-- **Public knowledge / domain engines**: Wikipedia family, Reddit, GitHub, arXiv.
+- **Privacy-respecting general engines**: Yep, Mwmbl, DuckDuckGo, Brave Search (+ DuckDuckGo News).
+- **Public knowledge / domain engines**: Wikipedia, GitHub, arXiv.
 - **NOT in the whitelist**: Google, Bing, Yandex, Yahoo, Baidu — these are filtered out of the SearxNG registry entirely via `use_default_settings.engines.keep_only`, so there's no way they can run even if a per-query override requests them.
 
 If you're OK with Google/Bing coverage in exchange for a weaker privacy story, add those engines to `keep_only` in `settings.yml` and restart SearxNG. See [`CUSTOMIZATION.md`](CUSTOMIZATION.md) for the details.
 
 ### Gotcha: `keep_only` + `disabled: true`
 
-A subtle SearxNG quirk: `keep_only` only filters the engine *registry* — it doesn't override the per-engine `disabled: true` flags shipped in the upstream defaults. A few engines (Reddit, Wikibooks, Wikiquote, Wikisource) are shipped disabled-by-default upstream for stability / quality reasons, so the settings file also contains explicit `engines: - name: X, disabled: false` overrides for the ones we want live.
+A subtle SearxNG quirk: `keep_only` only filters the engine *registry* — it doesn't override the per-engine `disabled: true` flags shipped in the upstream defaults. Yep and Mwmbl are shipped disabled-by-default upstream, so the settings file also contains explicit `engines: - name: X, disabled: false` overrides for them. (An earlier engine set listed Mojeek and Qwant without that override, so they never ran.)
+
+### Gotcha: engine health rots silently
+
+Scraped engines start answering CAPTCHA / 429 / 403 to a home or datacenter IP, and nothing reaches the agent except fewer results. When only niche engines survive, `web_search` returns confident off-topic junk instead of an error. Check `unresponsive_engines` in the JSON response (`.../search?q=test&format=json`), test one engine with `&engines=<name>`, and keep the image fresh: the compose file re-pulls it weekly (`SEARXNG_PULL_POLICY`). The engine-by-engine measurements behind the shipped list are in the header of `searxng/settings/settings.yml`.
 
 ### JSON API
 
