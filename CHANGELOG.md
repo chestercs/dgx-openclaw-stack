@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools (`valheim__*`) are denied for every other agent, and `csharp_run` is
   denied for the builder too.
 
+- **`scripts/netns-dependents-up.sh`**: after a host reboot it starts
+  `openclaw-cli` and `openclaw-meshcore-bridge` once the gateway is healthy,
+  and recreates them if they point at an old gateway container. Both share the
+  gateway's network namespace, and the daemon does not retry a start that
+  raced ahead of the gateway. Run it from cron `@reboot`
+  (docs/reference/patterns.md).
+
 - **`mcp-image-saver` plugin** (openclaw-base-ext, patcher step 47b): a tool
   result middleware that writes images returned by MCP tools (here DevBridge's
   `screenshot` / `shot`) into the canvas and adds a `[saved: <path>]` line, so

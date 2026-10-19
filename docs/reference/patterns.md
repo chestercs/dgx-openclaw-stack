@@ -85,6 +85,12 @@ Symptom: `openclaw agent` prints `Gateway agent failed; falling back to embedded
 
 - `depends_on:` does NOT trigger the CLI recreate automatically — this is a network-namespace dependency, not a startup-order one, and Compose doesn't track it.
 - Verify after the recreate: `docker inspect openclaw-cli --format '{{.HostConfig.NetworkMode}}'` should match `docker inspect openclaw-gateway --format '{{.Id}}'`.
+- The same holds for `openclaw-meshcore-bridge`. Recreate it too (`--profile meshcore`), or the next start fails with "joining network namespace of container: No such container".
+- **After a host reboot** the daemon starts containers in no set order. A namespace sharer that comes up before the gateway fails once and is not retried, and `openclaw-cli` has no restart policy. `scripts/netns-dependents-up.sh` waits for a healthy gateway, then starts both, recreating any that point at an old gateway. Run it from cron:
+
+  ```bash
+  ( crontab -l 2>/dev/null; echo "@reboot $PWD/scripts/netns-dependents-up.sh >> $HOME/netns-dependents.log 2>&1" ) | crontab -
+  ```
 
 ## SearxNG bundled-but-default-disabled gotcha
 
