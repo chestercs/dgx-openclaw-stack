@@ -349,7 +349,11 @@ const LLM_MODEL_ENTRY_MOE = {
   // it won't abort, but each full-context reply waits ~2 min. Lower to 32K (~10s) / 64K
   // (~40s) for snappier replies; operator chose context depth over speed).
   contextWindow: parseInt(process.env.LLM_CONTEXT_WINDOW || '131072', 10),
-  maxTokens: 8192,
+  // Output budget per reply; with thinking on, reasoning and answer share it.
+  // A long design (a big tool-call JSON) after a long think can run out of
+  // 8192 and end the turn empty. LLM_MAX_TOKENS raises it (NVIDIA's examples
+  // use 16384 for Nemotron 3.5 Super).
+  maxTokens: parseInt(process.env.LLM_MAX_TOKENS || '8192', 10),
 };
 const LLM_MODEL_ENTRY_DENSE = {
   ...LLM_MODEL_ENTRY_MOE,

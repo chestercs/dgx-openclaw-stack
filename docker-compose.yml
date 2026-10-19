@@ -1313,6 +1313,8 @@ services:
       LLM_DENSE_BASE_URL: ${LLM_DENSE_BASE_URL:-http://vllm-llm-dense:8005/v1/}
       LLM_MODEL_ID: ${LLM_MODEL_ID:-}
       LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-131072}
+      # Output token budget per reply (reasoning + answer). Default 8192.
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-8192}
       LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-1800}
       LLM_REASONING_ENABLED: ${LLM_REASONING_ENABLED:-true}
       # TTS provider wiring. When set, patcher step 11 writes
