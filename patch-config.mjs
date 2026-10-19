@@ -5751,10 +5751,15 @@ const PEOPLE_MEMORY_SEED =
   '     A temporary state (e.g. „épp iszogat, este jön”) gets a date: `- (ideiglenes, YYYY-MM-DD) …` — the nightly job drops it once stale.\n' +
   '     Not here: conversation summaries (those go under memory/).\n' +
   '     Write ONLY like this (exec): `node /opt/people-digest.mjs note --id <ID> --name "<name>" --text "<fact>" [--temp]` — never by hand. -->\n';
+// OPENCLAW_PEOPLE_DIGEST_NSFW=on adds `--nsfw` to the collect step: NSFW
+// channels are read too. Off by default because people/MEMORY.md is injected
+// into every channel's prompt, so what is learnt there surfaces everywhere.
+const PEOPLE_DIGEST_NSFW_FLAG = isEnvOff((process.env.OPENCLAW_PEOPLE_DIGEST_NSFW ?? 'off').trim().toLowerCase() || 'off') ? '' : ' --nsfw';
 const PEOPLE_MEMORY_SKILL_BODY =
   '# people-memory — nightly persona update\n\n' +
-  'Run by the `people-memory-nightly` job; the job message gives the guild ID. Steps in EXACTLY this order:\n\n' +
-  '1. `exec`: `node /opt/people-digest.mjs collect --guild <GUILD_ID>` — the guild\'s messages of the past day, per author (2-6 min, wait for it).\n' +
+  'Run by the `people-memory-nightly` job; the job message gives the guild ID (`all` = every server the bot is in). Steps in EXACTLY this order:\n\n' +
+  `1. \`exec\`: \`node /opt/people-digest.mjs collect --guild <GUILD_ID>${PEOPLE_DIGEST_NSFW_FLAG}\` — the messages of the past day, per author ` +
+  '(2-10 min, wait for it). With several servers each line starts with `[#server/channel]`.\n' +
   '2. `read`: `people/MEMORY.md` — the current file.\n' +
   '3. Per author, decide whether they stated a NEW, LASTING fact ABOUT THEMSELVES. Belongs here: job/studies, hobbies, games they play, ' +
   'pets, city, family role (e.g. has a child), own project, favourite things, a nickname they accept, a running joke.\n' +

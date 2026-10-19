@@ -6,14 +6,14 @@
 // date from what guild members say in ordinary channel traffic, not only
 // from what they tell the bot directly. Two subcommands:
 //
-//   collect --guild <id> [--hours 24] [--exclude a,b] [--max-chars 60000]
-//     Reads every text channel of the guild since the last committed cursor
+//   collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24] [--exclude a,b] [--max-chars 60000]
+//     Reads every text channel of the guild(s) since the last committed cursor
 //     (first run: the last --hours) through `openclaw message read` and
 //     prints a compact per-author digest. A 26B model calling `message read`
 //     thirty times itself was slow and lost track; one pre-digested block is
 //     cheaper and deterministic. Dropped: our own bot (feedback loop), NSFW
-//     channels (the file reaches every channel; PEOPLE_DIGEST_NSFW=on keeps
-//     them) and --exclude names. Other bots stay, marked `(bot)`: the members
+//     channels (the file reaches every channel; --nsfw or PEOPLE_DIGEST_NSFW=on
+//     keeps them) and --exclude names. Other bots stay, marked `(bot)`: the members
 //     talk to them (a Markov chat bot), so their lines are context, not
 //     facts. Voice-log lines ("<@id> joined voice channel", Dyno-style
 //     embeds) are folded into one per-member activity summary instead of
@@ -130,10 +130,30 @@ const hhmm = (iso) => new Date(iso).toLocaleTimeString('hu-HU', { timeZone: 'Eur
 const snowflakeAt = (ms) => ((BigInt(ms) - DISCORD_EPOCH) << 22n).toString();
 const maxId = (a, b) => (BigInt(a) > BigInt(b) ? a : b);
 
-function collect(opt) {
+// `--guild all`: every guild the bot is in. The OpenClaw CLI has no guild
+// list, so ask Discord directly with the bot token from openclaw.json (this
+// script runs as the gateway's user, which owns that file).
+async function resolveGuilds(spec) {
+  if (spec !== 'all') {
+    const ids = spec.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!ids.length || !ids.every((id) => /^\d{5,}$/.test(id))) {
+      throw new Error('collect needs --guild <id>[,<id>…] | all (or PEOPLE_DIGEST_GUILD)');
+    }
+    return ids.map((id) => ({ id, name: null }));
+  }
+  const cfg = JSON.parse(fs.readFileSync(path.join(HOME, 'openclaw.json'), 'utf8'));
+  const token = cfg.channels?.discord?.token;
+  if (typeof token !== 'string' || !token || token.startsWith('${')) {
+    throw new Error('--guild all needs a literal channels.discord.token in openclaw.json; pass guild ids instead');
+  }
+  const res = await fetch('https://discord.com/api/v10/users/@me/guilds?limit=200', { headers: { Authorization: `Bot ${token}` } });
+  if (!res.ok) throw new Error(`Discord guild list: HTTP ${res.status}`);
+  return (await res.json()).map((g) => ({ id: g.id, name: g.name }));
+}
+
+async function collect(opt) {
   heal();
-  const guild = String(opt.guild || process.env.PEOPLE_DIGEST_GUILD || '');
-  if (!/^\d{5,}$/.test(guild)) throw new Error('collect needs --guild <id> (or PEOPLE_DIGEST_GUILD)');
+  const guilds = await resolveGuilds(String(opt.guild || process.env.PEOPLE_DIGEST_GUILD || ''));
   const hours = Math.min(Number(opt.hours) || 24, MAX_LOOKBACK_HOURS);
   const maxChars = Number(opt['max-chars']) || 60000;
   const exclude = new Set(String(opt.exclude || '').split(',').map((s) => s.trim()).filter(Boolean));
@@ -141,11 +161,25 @@ function collect(opt) {
   const floor = snowflakeAt(Date.now() - MAX_LOOKBACK_HOURS * 3600e3);
   const start = snowflakeAt(Date.now() - hours * 3600e3);
 
-  const keepNsfw = /^(on|1|true|yes)$/i.test(process.env.PEOPLE_DIGEST_NSFW || '');
+  const keepNsfw = opt.nsfw === true || /^(on|1|true|yes)$/i.test(process.env.PEOPLE_DIGEST_NSFW || '');
   const skipLogs = opt['skip-logs'] === true || /^(off|0|false|no)$/i.test(process.env.PEOPLE_DIGEST_LOGS || '');
-  const channels = (firstArray(openclaw(['message', 'channel', 'list', '--channel', 'discord', '--guild-id', guild])) || [])
-    .filter((c) => (c.type === 0 || c.type === 5) && (keepNsfw || !c.nsfw) && !exclude.has(c.name)
-      && !(skipLogs && /(^|-)log$/.test(c.name)));
+  const channels = [];
+  for (const g of guilds) {
+    let list;
+    try {
+      list = firstArray(openclaw(['message', 'channel', 'list', '--channel', 'discord', '--guild-id', g.id])) || [];
+    } catch {
+      continue; // left the guild / no permission: skip it
+    }
+    for (const c of list) {
+      if ((c.type === 0 || c.type === 5) && (keepNsfw || !c.nsfw) && !exclude.has(c.name)
+        && !(skipLogs && /(^|-)log$/.test(c.name))) {
+        // With several guilds, tag lines with the guild so the model can tell
+        // which community a fact came from.
+        channels.push({ ...c, label: guilds.length > 1 ? `${g.name || g.id}/${c.name}` : c.name });
+      }
+    }
+  }
   const self = selfId();
 
   const authors = new Map();
@@ -181,7 +215,7 @@ function collect(opt) {
         }
         const id = m.author.id;
         const a = authors.get(id) ?? { id, bot: !!m.author.bot, name: m.author.global_name || m.author.username, user: m.author.username, msgs: [] };
-        a.msgs.push({ ch: ch.name, t: m.timestamp, text: text.length > 240 ? text.slice(0, 237) + '…' : text });
+        a.msgs.push({ ch: ch.label, t: m.timestamp, text: text.length > 240 ? text.slice(0, 237) + '…' : text });
         authors.set(id, a);
         total++;
       }
@@ -208,7 +242,7 @@ function collect(opt) {
   }
   let perAuthor = 40, out = '';
   for (;;) {
-    out = `# Discord digest — ${total} üzenet, ${list.length} szerző, ${channels.length} csatorna\n`;
+    out = `# Discord digest — ${total} üzenet, ${list.length} szerző, ${channels.length} csatorna, ${guilds.length} szerver\n`;
     for (const a of list) {
       const cap = a.bot ? Math.min(10, perAuthor) : perAuthor;
       const picked = [...a.msgs].sort((x, y) => y.text.length - x.text.length).slice(0, cap)
@@ -446,12 +480,12 @@ function apply(opt) {
 const opt = args(process.argv.slice(2));
 const cmd = opt._[0];
 try {
-  if (cmd === 'collect') collect(opt);
+  if (cmd === 'collect') await collect(opt);
   else if (cmd === 'apply') apply(opt);
   else if (cmd === 'note') note(opt);
   else if (cmd === 'forget') forget(opt);
   else {
-    console.error('usage: people-digest.mjs collect --guild <id> [--hours 24] [--exclude a,b] [--max-chars 60000] | apply [--no-change]\n' +
+    console.error('usage: people-digest.mjs collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24] [--exclude a,b] [--max-chars 60000] | apply [--no-change]\n' +
       '       | note --id <id> --name <name> --text <fact> [--temp|--durable] [--replace <part>] | forget --id <id> (--match <part> | --all)');
     process.exitCode = 2;
   }

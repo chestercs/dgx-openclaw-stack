@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Knobs**: `PEOPLE_DIGEST_LOGS=off` and `PEOPLE_DIGEST_NSFW=on` override
   the defaults, `PEOPLE_DIGEST_SELF_ID` sets our bot's id. On the reference
   guild the nightly digest went from 9 to 15 authors.
+- **Every server**: `collect --guild all` reads every guild the bot is in,
+  using the Discord guild list from the bot token, since the OpenClaw CLI has
+  none. With several guilds, lines are tagged `[#server/channel]`.
+  `--guild a,b` takes a list.
+- **`OPENCLAW_PEOPLE_DIGEST_NSFW=on`** makes the patcher add `--nsfw` to the
+  skill's collect step.
 
 ### Added — GB10 power and thermal hardening (2026-10-19)
 
