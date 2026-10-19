@@ -4287,6 +4287,26 @@ const FORMAT_RULES_CHEATSHEET_BODY =
   '## Who to answer — EVERYONE (not just the owner)\n\n' +
   '🚨 In guild channels AND in DMs alike, you give a full answer to EVERYONE who talks to you (in a guild via @mention). There is NO owner-only restriction. Yagi, Nilatah, KOFOLA, Kerajoe, Reverend Green and anyone else get EXACTLY the same service as the admin (ChesTeR / 244049593338167296). NEVER refuse because the sender is not the owner, and NEVER say you "only talk to the owner". The admin is not special — just one of the users.\n';
 
+// Media tool groups the Discord agent can be cut off from, when ComfyUI does
+// not run them (a large LLM backend leaves no room for video renders).
+// The bridge still advertises the tools, and each schema costs prompt
+// space (generate_video alone is ~5 KB), so a dead tool is denied, its
+// skill removed and its router lines dropped. OPENCLAW_DISCORD_MEDIA_TOOLS_OFF
+// = comma list of groups (image, video, music). Groups left out are restored.
+// `image` exists for a large LLM backend that leaves no room for ComfyUI at
+// all (Nemotron at util 0.70): the bot kept calling the dead generate tool,
+// and on a Hungarian request ("bögre") it even sent the wrong prompt (a frog).
+const MEDIA_TOOL_GROUPS = {
+  image: ['comfyui_image__generate', 'comfyui_image__generate_i2i', 'comfyui_image__list_workflows'],
+  video: ['comfyui_image__generate_video'],
+  music: ['comfyui_image__generate_music', 'comfyui_image__generate_music_repaint'],
+};
+const MEDIA_TOOLS_OFF = new Set(
+  (process.env.OPENCLAW_DISCORD_MEDIA_TOOLS_OFF ?? '').split(',')
+    .map((s) => s.trim().toLowerCase()).filter((g) => g in MEDIA_TOOL_GROUPS),
+);
+const mediaOn = (group) => !MEDIA_TOOLS_OFF.has(group);
+
 const IMAGE_HISTORY_RULE_CHEATSHEET_START = '<!-- patch-config:discord-image-history-rule:start -->';
 const IMAGE_HISTORY_RULE_CHEATSHEET_END = '<!-- patch-config:discord-image-history-rule:end -->';
 const IMAGE_HISTORY_RULE_CHEATSHEET_BODY =
@@ -4564,25 +4584,6 @@ function removeSkillFile(workspaceRoot, name) {
 // constants stay untouched (agentsmd rollback path); these are the
 // skills-mode equivalents, same Hungarian operator-facing register.
 
-// Media tool groups the Discord agent can be cut off from, when ComfyUI does
-// not run them (a large LLM backend leaves no room for video renders).
-// The bridge still advertises the tools, and each schema costs prompt
-// space (generate_video alone is ~5 KB), so a dead tool is denied, its
-// skill removed and its router lines dropped. OPENCLAW_DISCORD_MEDIA_TOOLS_OFF
-// = comma list of groups (image, video, music). Groups left out are restored.
-// `image` exists for a large LLM backend that leaves no room for ComfyUI at
-// all (Nemotron at util 0.70): the bot kept calling the dead generate tool,
-// and on a Hungarian request ("bögre") it even sent the wrong prompt (a frog).
-const MEDIA_TOOL_GROUPS = {
-  image: ['comfyui_image__generate', 'comfyui_image__generate_i2i', 'comfyui_image__list_workflows'],
-  video: ['comfyui_image__generate_video'],
-  music: ['comfyui_image__generate_music', 'comfyui_image__generate_music_repaint'],
-};
-const MEDIA_TOOLS_OFF = new Set(
-  (process.env.OPENCLAW_DISCORD_MEDIA_TOOLS_OFF ?? '').split(',')
-    .map((s) => s.trim().toLowerCase()).filter((g) => g in MEDIA_TOOL_GROUPS),
-);
-const mediaOn = (group) => !MEDIA_TOOLS_OFF.has(group);
 
 // Replaces SKILLS_CHEATSHEET_BODY in skills mode — same marker, richer body:
 // the tool list stays (catalog-discoverability) and a router section maps
