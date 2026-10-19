@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Nemotron 3.5 Super backend
+
+- **`docker-compose.nemotron.yml`**: an override that runs
+  `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` as the `vllm-llm`
+  service. It uses upstream `vllm/vllm-openai:v0.32.0` with DFlash
+  speculative decoding (LiLiCorr draft), medium-effort thinking by default,
+  and the hybrid-Mamba prefix-cache flags.
+  - Enable it with `COMPOSE_FILE=…:docker-compose.nemotron.yml` plus
+    `LLM_MODEL_ID`.
+  - Knobs: `LLM_NEMOTRON_IMAGE`, `LLM_NEMOTRON_GPU_MEM_UTIL` (0.70),
+    `LLM_NEMOTRON_MAX_MODEL_LEN`, `LLM_NEMOTRON_MAX_NUM_SEQS`,
+    `LLM_NEMOTRON_DRAFT_MODEL`, `LLM_NEMOTRON_SPEC_TOKENS`, and
+    `LLM_SERVED_MODEL_ALIASES` (extra served ids for one switch-over).
+- **Measured on GB10, clock-capped**: 19.8 tok/s single stream, prefill
+  2588 tok/s.
+- **Eval**: in a three-way run against Mistral Small 4 and Qwen3.5-122B on
+  the Discord agent (IQ, web search, Hungarian chat, edgy requests, honesty
+  traps), it was the most factual: web 5/5, honesty traps 8/8. Its Hungarian
+  was the weakest.
+
+### Changed — people-memory reads log channels and other bots
+
+- **Log channels** (`*log`) are read now. Voice-log embeds
+  (`<@id> joined/left/switched voice channel`, Dyno style) are folded into
+  one per-member activity block instead of hundreds of raw lines.
+- **Other bots' messages** (e.g. a Markov chat bot) are kept as context,
+  marked `(bot)`. The skill says they are never a person and never a source
+  of facts. Our own bot is still dropped, and its id is read from
+  `openclaw channels status`.
+- **NSFW channels** stay excluded: people/MEMORY.md reaches every channel.
+- **Knobs**: `PEOPLE_DIGEST_LOGS=off` and `PEOPLE_DIGEST_NSFW=on` override
+  the defaults, `PEOPLE_DIGEST_SELF_ID` sets our bot's id. On the reference
+  guild the nightly digest went from 9 to 15 authors.
+
 ### Added — GB10 power and thermal hardening (2026-10-19)
 
 - **`scripts/gb10-clock-cap.service`**: a systemd unit that locks the GPU

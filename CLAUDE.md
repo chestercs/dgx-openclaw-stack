@@ -270,6 +270,12 @@ file before changing the area.
   (`docker-compose.mistral.yml` in `COMPOSE_FILE` + `LLM_MODEL_ID`). It
   needs `TRITON_MLA` on GB10 and ~78 GiB of the pool. The EAGLE draft does
   not load on vLLM 0.31/0.32.
+- Nemotron 3.5 Super 120B-A12B VL NVFP4 is the second opt-in swap
+  (`docker-compose.nemotron.yml` + `LLM_MODEL_ID`), the reference host's
+  Discord model since 2026-10-19 (the most factual on the eval). It needs
+  `--default-chat-template-kwargs '{"medium_effort": true}'` (full thinking ran
+  57k-token turns, off looped on tool JSON), ~70 GiB at util 0.70 (no ComfyUI
+  beside it), and the GB10 clock cap.
 - A local model only thinks if its catalog entry has the right `compat`
   (Gemma: `thinkingFormat: "qwen-chat-template"`, Mistral:
   `supportsReasoningEffort`). The patcher writes it (`LLM_THINKING_COMPAT`).

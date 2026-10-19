@@ -8,11 +8,17 @@
 //
 //   collect --guild <id> [--hours 24] [--exclude a,b] [--max-chars 60000]
 //     Reads every text channel of the guild since the last committed cursor
-//     (first run: the last --hours) through `openclaw message read`, drops
-//     bot authors, NSFW channels, *log channels and --exclude names, and
+//     (first run: the last --hours) through `openclaw message read` and
 //     prints a compact per-author digest. A 26B model calling `message read`
 //     thirty times itself was slow and lost track; one pre-digested block is
-//     cheaper and deterministic.
+//     cheaper and deterministic. Dropped: our own bot (feedback loop), NSFW
+//     channels (the file reaches every channel; PEOPLE_DIGEST_NSFW=on keeps
+//     them) and --exclude names. Other bots stay, marked `(bot)`: the members
+//     talk to them (a Markov chat bot), so their lines are context, not
+//     facts. Voice-log lines ("<@id> joined voice channel", Dyno-style
+//     embeds) are folded into one per-member activity summary instead of
+//     hundreds of raw lines. PEOPLE_DIGEST_LOGS=off restores the old rule
+//     that skipped every `*log` channel.
 //
 //   apply [--no-change]
 //     Validates the model's proposal (people/MEMORY.next.md) against the
@@ -93,6 +99,34 @@ function firstArray(o) {
   return null;
 }
 
+// Our own bot's user id, so its replies never feed back into the file.
+// `openclaw channels status` lists the logged-in account; the env override is
+// for setups where that call is unavailable. Unknown → every bot is skipped.
+function selfId() {
+  if (process.env.PEOPLE_DIGEST_SELF_ID) return process.env.PEOPLE_DIGEST_SELF_ID;
+  try {
+    const seen = [];
+    const walk = (o) => {
+      if (!o || typeof o !== 'object') return;
+      if (typeof o.id === 'string' && /^\d{15,}$/.test(o.id) && typeof o.username === 'string') seen.push(o.id);
+      for (const v of Object.values(o)) walk(v);
+    };
+    walk(openclaw(['channels', 'status']));
+    return seen[0] || null;
+  } catch { return null; }
+}
+
+// Text of a message: its content, else its embeds (log bots post embeds).
+function messageText(m) {
+  const own = String(m.content || '').trim();
+  if (own) return own;
+  return (m.embeds || []).map((e) => [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`)]
+    .filter(Boolean).join(' ')).join(' ').trim();
+}
+
+const VOICE_RE = /<@!?(\d+)>\*{0,2}\s+(joined|left|switched)\s+voice channel/i;
+const hhmm = (iso) => new Date(iso).toLocaleTimeString('hu-HU', { timeZone: 'Europe/Budapest', hour: '2-digit', minute: '2-digit' });
+
 const snowflakeAt = (ms) => ((BigInt(ms) - DISCORD_EPOCH) << 22n).toString();
 const maxId = (a, b) => (BigInt(a) > BigInt(b) ? a : b);
 
@@ -107,10 +141,15 @@ function collect(opt) {
   const floor = snowflakeAt(Date.now() - MAX_LOOKBACK_HOURS * 3600e3);
   const start = snowflakeAt(Date.now() - hours * 3600e3);
 
+  const keepNsfw = /^(on|1|true|yes)$/i.test(process.env.PEOPLE_DIGEST_NSFW || '');
+  const skipLogs = opt['skip-logs'] === true || /^(off|0|false|no)$/i.test(process.env.PEOPLE_DIGEST_LOGS || '');
   const channels = (firstArray(openclaw(['message', 'channel', 'list', '--channel', 'discord', '--guild-id', guild])) || [])
-    .filter((c) => (c.type === 0 || c.type === 5) && !c.nsfw && !exclude.has(c.name) && !/(^|-)log$/.test(c.name));
+    .filter((c) => (c.type === 0 || c.type === 5) && (keepNsfw || !c.nsfw) && !exclude.has(c.name)
+      && !(skipLogs && /(^|-)log$/.test(c.name)));
+  const self = selfId();
 
   const authors = new Map();
+  const voice = new Map(); // member id -> { joined, left, switched, times: [] }
   const pending = {};
   let total = 0;
   for (const ch of channels) {
@@ -128,11 +167,20 @@ function collect(opt) {
       msgs.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
       for (const m of msgs) {
         last = maxId(last, m.id);
-        if (m.author?.bot) continue;
-        const text = String(m.content || '').replace(/\s+/g, ' ').trim();
+        if (!m.author || (m.author.bot && (!self || m.author.id === self))) continue;
+        const text = messageText(m).replace(/\s+/g, ' ').trim();
         if (!text || /^(https?:\/\/\S+\s*)+$/.test(text)) continue;
+        const v = m.author.bot && text.match(VOICE_RE);
+        if (v) {
+          const s = voice.get(v[1]) ?? { joined: 0, left: 0, switched: 0, times: [] };
+          s[v[2].toLowerCase()]++;
+          s.times.push(m.timestamp);
+          voice.set(v[1], s);
+          total++;
+          continue;
+        }
         const id = m.author.id;
-        const a = authors.get(id) ?? { id, name: m.author.global_name || m.author.username, user: m.author.username, msgs: [] };
+        const a = authors.get(id) ?? { id, bot: !!m.author.bot, name: m.author.global_name || m.author.username, user: m.author.username, msgs: [] };
         a.msgs.push({ ch: ch.name, t: m.timestamp, text: text.length > 240 ? text.slice(0, 237) + '…' : text });
         authors.set(id, a);
         total++;
@@ -148,16 +196,29 @@ function collect(opt) {
 
   // Keep the longest messages per author (they carry the most about the
   // person), shrinking the per-author cap until the digest fits.
-  const list = [...authors.values()].sort((a, b) => b.msgs.length - a.msgs.length);
+  // Humans first; bots after them with a tighter cap (their lines are context).
+  const list = [...authors.values()].sort((a, b) => (a.bot - b.bot) || (b.msgs.length - a.msgs.length));
+  let voiceBlock = '';
+  if (voice.size) {
+    voiceBlock = '\n## Voice-aktivitás (napló, nem személy) — ki mikor volt voice-ban\n';
+    for (const [id, s] of [...voice.entries()].sort((a, b) => b[1].times.length - a[1].times.length)) {
+      const t = s.times.sort();
+      voiceBlock += `- <@${id}>: ${s.joined}× be, ${s.left}× ki, ${s.switched}× váltott; ${hhmm(t[0])}–${hhmm(t[t.length - 1])}\n`;
+    }
+  }
   let perAuthor = 40, out = '';
   for (;;) {
     out = `# Discord digest — ${total} üzenet, ${list.length} szerző, ${channels.length} csatorna\n`;
     for (const a of list) {
-      const picked = [...a.msgs].sort((x, y) => y.text.length - x.text.length).slice(0, perAuthor)
+      const cap = a.bot ? Math.min(10, perAuthor) : perAuthor;
+      const picked = [...a.msgs].sort((x, y) => y.text.length - x.text.length).slice(0, cap)
         .sort((x, y) => (x.t < y.t ? -1 : 1));
-      out += `\n## ${a.name} (@${a.user}, <@${a.id}>) — ${a.msgs.length} üzenet\n`;
+      out += a.bot
+        ? `\n## (bot) ${a.name} (@${a.user}) — ${a.msgs.length} üzenet, NEM személy\n`
+        : `\n## ${a.name} (@${a.user}, <@${a.id}>) — ${a.msgs.length} üzenet\n`;
       for (const m of picked) out += `- [#${m.ch}] ${m.text}\n`;
     }
+    out += voiceBlock;
     if (out.length <= maxChars || perAuthor <= 3) break;
     perAuthor = Math.max(3, Math.floor(perAuthor * 0.7));
   }

@@ -5760,6 +5760,10 @@ const PEOPLE_MEMORY_SKILL_BODY =
   'pets, city, family role (e.g. has a child), own project, favourite things, a nickname they accept, a running joke.\n' +
   '   🚨 NOT here: politics, religion, health, sexuality, finances, conflicts/insults, a one-off mood, ironic exaggeration, ' +
   'claims about someone else, exact address/phone/employer name. Unsure → leave it out. Max 3 new lines per person per night.\n' +
+  '   - `## (bot) …` sections are other bots (e.g. a Markov chat bot): NEVER a person, NEVER a `##` section of their own, no facts from their ' +
+  'text. Use them only as context for what the humans said to them (e.g. a running joke with the bot).\n' +
+  '   - `## Voice-aktivitás` is the voice log of that day: record at most a lasting HABIT (e.g. "Esténként 21 után szokott voice-ban lenni."), ' +
+  'and only if the person\'s existing lines or several entries back it. Never record single join/leave times.\n' +
   '4. `write`: the COMPLETE new file into `people/MEMORY.next.md` (NOT into MEMORY.md):\n' +
   '   - every existing section and line STAYS; you may only replace an outdated or contradicted line; NEVER change a "végleges szabály" line;\n' +
   '   - an `(ideiglenes, <date>)` line: DELETE it if the date is older than 2 days or the person has said something else since; otherwise keep it;\n' +

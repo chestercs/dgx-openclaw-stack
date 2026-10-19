@@ -79,7 +79,24 @@ honesty about unknown history, memory write and read, casual chat,
 translation). Mistral wins on reasoning and tool use. Gemma writes the more
 natural Hungarian: Mistral now and then invents words.
 
-### Also tried: Nemotron 3.5 Super VL 120B-A12B NVFP4 (2026-10-18)
+### Nemotron 3.5 Super VL 120B-A12B NVFP4 (tried 2026-10-18, default on the reference host since 2026-10-19)
+
+**Update 2026-10-19.** The reference host now runs Nemotron as its Discord
+model through [`docker-compose.nemotron.yml`](../../docker-compose.nemotron.yml)
+(util 0.70, medium-effort thinking, GPU clock cap). The operator ranks factual
+reliability above Hungarian fluency. A three-way run on the Discord agent:
+
+| | Qwen3.5-122B | Mistral Small 4 | Nemotron |
+|---|---|---|---|
+| IQ puzzles (10) | 10 | 6 | 9 |
+| Web search (5) | 3, one invented detail | 5 | 5, with dates and sources |
+| Honesty traps (8) | — | — | 8 |
+| Refusals of edgy-but-legit requests (6) | 1 | 0 | 0 |
+| Hungarian | best | odd at times | weakest |
+
+The two hard power-offs blamed on Nemotron below turned out to be the GB10
+cutting out at acpitz ~94 °C, well before the 104 °C trip. The clock cap in
+[`gb10-power-thermal.md`](./gb10-power-thermal.md) fixes that.
 
 NVIDIA's DGX Spark recipe (vLLM v0.32.0, LiLiCorr `dflash` drafter with 7
 draft tokens, `--max-num-seqs 1`, `qwen3_coder` tool parser, `nemotron_v3`
