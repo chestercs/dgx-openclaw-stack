@@ -4399,8 +4399,12 @@ const TOOL_ORCHESTRATION_CHEATSHEET_BODY =
   '- **időjárás** ("milyen idő lesz / hány fok X napon") → NE web_search; `python_exec` + **open-meteo** (kulcs nélkül, 7-16 nap): geokód `geocoding-api.open-meteo.com/v1/search?name=<város>&count=1` → lat/lon → `api.open-meteo.com/v1/forecast?latitude=&longitude=&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&hourly=temperature_2m,precipitation_probability&timezone=auto&forecast_days=7`. 🚨 SZÁMOLD KI a cél-dátumot `datetime`-mal a prompt mai dátumából (pl. kedd→csütörtök=+2nap), és PONTOSAN azt a napot indexeld a `daily.time[]`/`hourly.time[]`-ból, NE a mait. "Este"=18-22h hourly. WMO: 0-3 derült/felhős, 45-48 köd, 51-67 eső, 71-77 hó, 80-82 zápor, 95-99 zivatar. EGY hívás=teljes hét. 🚨 Időjárás SOHA nem cron/emlékeztető — előrejelzés MOST.\n' +
   '- **transzkripció** ("írd le / mit mondanak / feliratozd") → (1) `python_exec` yt-dlp: `subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"],timeout=110)`, `timeout_s:120`. 🚨 FIX ascii `-o` név (`clip.mp3`), SOHA `%(title)s` (fullwidth karakter → "file not found"). (2) `python_sandbox__transcribe_audio` path=.../clip.mp3 (+`language` opc.). Whisper turbo best-effort (zajos/zenei beszéden pontatlan), nem hivatalos lyric.\n' +
   '- **"küldd el / töltsd fel a hangot / fájlt attachmentként"** → a Discord **`upload-file`** action, `path="/home/node/.openclaw/canvas/<file>"` (+ `filename=` opcionális). 🚨 A fájl CSAK `/home/node/.openclaw/canvas/` alatt lehet (media-local-roots) — a `/workspace/`-ban lévő NEM tölthető fel. A `media` param publikus HTTP URL-t is vesz (pl. comfyui fetch URL → valódi attachment, nem csak embed).\n' +
-  '- **"csinálj nekem ilyen képet"** → `comfyui_image__generate(prompt=..., resolution=fullhd)` — TWO underscores in the tool name.\n' +
-  '- **"csinálj nekem videót" (T2V) / "animáld ezt a képet" (I2V, csatolt képpel)** → `comfyui_image__generate_video` (TWO underscores; T2V: `prompt`; I2V: `prompt` + `init_image_url=/home/node/.openclaw/media/inbound/<uuid>.png`). 🚨 SOHA NE a beépített `video_generate` / `video_generation` toolt hívd — azok OpenAI Sora-endpointot kérnek (nincs kulcs → HTTP 401, 0 videó). Typo `comfyui_imagegenerate_video` (no underscores) → nem létezik.\n' +
+  (mediaOn('image')
+    ? '- **"csinálj nekem ilyen képet"** → `comfyui_image__generate(prompt=..., resolution=fullhd)` — TWO underscores in the tool name.\n'
+    : '- **"csinálj nekem képet"** → a képgenerálás most ki van kapcsolva ezen a szerveren; mondd meg egy mondatban, ne próbálj más toolt.\n') +
+  (mediaOn('video')
+    ? '- **"csinálj nekem videót" (T2V) / "animáld ezt a képet" (I2V, csatolt képpel)** → `comfyui_image__generate_video` (TWO underscores; T2V: `prompt`; I2V: `prompt` + `init_image_url=/home/node/.openclaw/media/inbound/<uuid>.png`). 🚨 SOHA NE a beépített `video_generate` / `video_generation` toolt hívd — azok OpenAI Sora-endpointot kérnek (nincs kulcs → HTTP 401, 0 videó). Typo `comfyui_imagegenerate_video` (no underscores) → nem létezik.\n'
+    : '') +
   '\n' +
   '**🚨 MANDATORY OUTPUT CONTRACT for media tools (image, video, screenshot):** when a tool-call returns a `display_markdown` field, your reply MUST start with the EXACT VERBATIM contents of that field — first line is a markdown link `[📷/🎬 fname](url)`, second line is the raw URL (Discord auto-embeds the raw URL into a preview). DO NOT rewrite the filename, DO NOT strip the token from the URL, DO NOT replace the URL with a placeholder. The user wants the file embedded; Discord can only auto-embed a raw URL it can fetch.\n' +
   '\n' +
@@ -4565,8 +4569,12 @@ function removeSkillFile(workspaceRoot, name) {
 // The bridge still advertises the tools, and each schema costs prompt
 // space (generate_video alone is ~5 KB), so a dead tool is denied, its
 // skill removed and its router lines dropped. OPENCLAW_DISCORD_MEDIA_TOOLS_OFF
-// = comma list of groups (video, music). Groups left out are restored.
+// = comma list of groups (image, video, music). Groups left out are restored.
+// `image` exists for a large LLM backend that leaves no room for ComfyUI at
+// all (Nemotron at util 0.70): the bot kept calling the dead generate tool,
+// and on a Hungarian request ("bögre") it even sent the wrong prompt (a frog).
 const MEDIA_TOOL_GROUPS = {
+  image: ['comfyui_image__generate', 'comfyui_image__generate_i2i', 'comfyui_image__list_workflows'],
   video: ['comfyui_image__generate_video'],
   music: ['comfyui_image__generate_music', 'comfyui_image__generate_music_repaint'],
 };
@@ -4581,8 +4589,8 @@ const mediaOn = (group) => !MEDIA_TOOLS_OFF.has(group);
 // user trigger phrases to skill names so Gemma knows to pull the recipe.
 const SKILL_ROUTER_BODY =
   '## Tools & skills — router\n\n' +
-  'Tools on this deploy: `web_search` (SearxNG) · `comfyui_image__generate` (image, TWO underscores!) · ' +
-  '`comfyui_image__generate_i2i` (transform an attached image) · ' +
+  'Tools on this deploy: `web_search` (SearxNG) · ' +
+  (mediaOn('image') ? '`comfyui_image__generate` (image, TWO underscores!) · `comfyui_image__generate_i2i` (transform an attached image) · ' : '') +
   (mediaOn('video') ? '`comfyui_image__generate_video` (video) · ' : '') +
   (mediaOn('music') ? '`comfyui_image__generate_music` (music, ACE-Step) · `comfyui_image__generate_music_repaint` (restyle music) · ' : '') +
   '`tts` · ' +
@@ -4606,9 +4614,11 @@ const SKILL_ROUTER_BODY =
   '**"Csak ezt a dobozt/részt"** → snapshot ref + `screenshot{targetId,ref:"eNN"}` (element screenshot, NOT a crop afterwards). ' +
   '🚨 Cropping images in `exec` is BANNED (`python3 -c "from PIL…"` = ModuleNotFoundError, the gateway has no Pillow) — ' +
   'PIL lives ONLY in python_sandbox; the media→canvas copy recipe is in the skill.\n' +
-  '- image generation → `image-generation` (workflow and resolution recipes). **Delivery (inline core):** the tool result\'s `display_markdown` lines ' +
-  '(`MEDIA:/home/node/.openclaw/canvas/…png`) VERBATIM at the end of your reply, each on its own line — that makes the attachment; NEVER write a URL, link or `[embed …]` line.\n' +
-  '- transforming an attached image → `image-to-image` (denoise scale)\n' +
+  (mediaOn('image')
+    ? '- image generation → `image-generation` (workflow and resolution recipes). **Delivery (inline core):** the tool result\'s `display_markdown` lines ' +
+      '(`MEDIA:/home/node/.openclaw/canvas/…png`) VERBATIM at the end of your reply, each on its own line — that makes the attachment; NEVER write a URL, link or `[embed …]` line.\n' +
+      '- transforming an attached image → `image-to-image` (denoise scale)\n'
+    : '- image generation / image editing: switched OFF on this server right now (the image service does not run next to the current language model) — say so in one sentence; do not try another tool. Describing or analysing an image still works (`image`).\n') +
   (mediaOn('video')
     ? '- video generation → `video-generation` (T2V/I2V, resolution arg)\n'
     : '- video generation: switched OFF on this server right now — say so; do not try another tool.\n') +
@@ -4816,7 +4826,7 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
   // stayed in AGENTS.md after env retraction (operator-visible markdown
   // posture); the skills path removes the skill on retraction because skill
   // files are 100% patcher-owned.
-  const imageGenOn = Boolean(IMAGE_GEN_DEFAULT_WORKFLOW);
+  const imageGenOn = Boolean(IMAGE_GEN_DEFAULT_WORKFLOW) && mediaOn('image');
   if (imageGenOn || skillsMode) {
     placeRecipe(
       imageGenOn,
@@ -4962,9 +4972,9 @@ if (fs.existsSync(WORKSPACE_DISCORD_AGENTS_PATH)) {
   // Step XXe — img2img recipe (Flux image-to-image, 2026-06-06). Routes
   // attached-image-modify requests to comfyui_image__generate_i2i (NOT plain
   // generate which is t2i-only and ignores attachments).
-  if (isEnvOn(DISCORD_AGENT_I2I_CHEATSHEET_ENV) || isEnvOff(DISCORD_AGENT_I2I_CHEATSHEET_ENV)) {
+  if (isEnvOn(DISCORD_AGENT_I2I_CHEATSHEET_ENV) || isEnvOff(DISCORD_AGENT_I2I_CHEATSHEET_ENV) || !mediaOn('image')) {
     placeRecipe(
-      isEnvOn(DISCORD_AGENT_I2I_CHEATSHEET_ENV),
+      isEnvOn(DISCORD_AGENT_I2I_CHEATSHEET_ENV) && mediaOn('image'),
       I2I_CHEATSHEET_START, I2I_CHEATSHEET_END, I2I_CHEATSHEET_BODY, 'discord-i2i cheatsheet',
       'image-to-image',
       'Transforming/editing an attached image with the comfyui_image__generate_i2i tool ("alakítsd át", "csinálj belőle", "make it look like") — init_image_url path, denoise scale, adult workflow variant.',

@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   traps), it was the most factual: web 5/5, honesty traps 8/8. Its Hungarian
   was the weakest.
 
+### Added — `image` media tool group
+
+- `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` takes `image` as well as `video` and
+  `music`. It denies `comfyui_image__generate`, `__generate_i2i` and
+  `__list_workflows`, removes the image-generation and image-to-image skills,
+  and makes the router say image generation is off.
+- Why: next to Nemotron ComfyUI does not run at all, but the bot kept calling
+  the dead tool, and on one Hungarian request it sent the wrong prompt.
+- Image *analysis* (`image`) is not affected.
+
 ### Added — community summaries in the searchable memory
 
 - **New `community-summary` skill** (patcher step 44d,
