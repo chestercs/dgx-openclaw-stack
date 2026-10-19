@@ -13,7 +13,7 @@
 #   */5 * * * * /path/to/scripts/gb10-memguard.sh
 set -u
 MIN_AVAIL_MB=${MIN_AVAIL_MB:-6144}
-TARGETS=${TARGETS:-"vllm-qwen vllm-nemotron"}
+TARGETS=${TARGETS:-"vllm-llm vllm-qwen vllm-nemotron"}
 INTERVAL=${INTERVAL:-2}
 DIR=${DIR:-$HOME/thermguard}
 LOG=${LOG:-$DIR/memguard.log}

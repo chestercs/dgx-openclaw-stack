@@ -30,8 +30,12 @@ for svc in $SERVICES; do
   # shellcheck disable=SC2086
   cid=$(docker compose $PROFILES ps -a -q "$svc" 2>/dev/null)
   [ -z "$cid" ] && { log "$svc: no container (profile off?), skipped"; continue; }
-  [ "$(docker inspect -f '{{.State.Running}}' "$cid")" = true ] && { log "$svc: running"; continue; }
   ns=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid")
+  # A sharer can keep running after the gateway was recreated, inside the
+  # old, now-dead namespace (no network at all), so check that first.
+  if [ "$(docker inspect -f '{{.State.Running}}' "$cid")" = true ] && [ "$ns" = "container:$gw_id" ]; then
+    log "$svc: running"; continue
+  fi
   if [ "$ns" = "container:$gw_id" ]; then
     docker start "$cid" >/dev/null && log "$svc: started"
   else
