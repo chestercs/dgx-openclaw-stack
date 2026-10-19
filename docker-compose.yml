@@ -1833,6 +1833,7 @@ services:
       VALHEIM_AGENT_CHANNELS: ${VALHEIM_AGENT_CHANNELS:-}
       VALHEIM_AGENT_TOOLS_DENY: ${VALHEIM_AGENT_TOOLS_DENY:-}
       VALHEIM_AGENT_TOOLS: ${VALHEIM_AGENT_TOOLS:-}
+      VALHEIM_AGENT_THINKING: ${VALHEIM_AGENT_THINKING:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

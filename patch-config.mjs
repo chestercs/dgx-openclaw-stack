@@ -6027,6 +6027,17 @@ if (nodeCmdAllowRaw.toLowerCase() === 'off') {
     // (managed: replaces alsoAllow); the sub-agent tools are added so a
     // design can be built stage by stage in small sessions. Empty = all
     // `valheim__*` (fill-only, as created above).
+    // Thinking level of the builder (managed when set). Nemotron 3.5 Super
+    // with full thinking spent ~57k reasoning tokens and a 40-minute turn on
+    // ONE dry run; the dry-run verdicts already give it feedback, so the
+    // builder can run with thinking off while the Discord bot keeps its own
+    // level. Empty = leave as created ("high").
+    const vhThinking = (process.env.VALHEIM_AGENT_THINKING || '').trim().toLowerCase();
+    if (['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(vhThinking) && agent.thinkingDefault !== vhThinking) {
+      agent.thinkingDefault = vhThinking;
+      changed = true;
+      console.log(`[patch-config] agents.list[id=${JSON.stringify(vhAgentId)}].thinkingDefault = ${vhThinking} (VALHEIM_AGENT_THINKING)`);
+    }
     const vhToolsRaw = (process.env.VALHEIM_AGENT_TOOLS || '').trim();
     if (vhToolsRaw) {
       const wanted = vhToolsRaw.split(',').map((s) => s.trim()).filter(Boolean)
