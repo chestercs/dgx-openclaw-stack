@@ -640,6 +640,46 @@ for (const k of Object.keys(config.agents.defaults.models)) {
     console.log(`[patch-config] agents.defaults.models: removed stale "${k}".`);
   }
 }
+// (3c) Sampling temperature per local model. vLLM takes temperature 1.0 /
+//      top_p 0.95 from Nemotron's generation_config.json, and at 1.0 Hungarian
+//      replies fill with tokens from other scripts (Korean, Cyrillic, Arabic,
+//      mid-word). Measured 2026-10-20, 6 Hungarian ~250-word answers each:
+//      38 foreign-script chars at 1.0, 2 at 0.6. OpenClaw sends nothing unless
+//      `params.temperature` is set on the model entry, and the entry hot-
+//      reloads, so this needs no vLLM restart.
+//      LLM_TEMPERATURE: auto (default) = 0.6 for Nemotron ids, nothing else;
+//      a number = that value on every local model; off = remove the key.
+const LLM_TEMPERATURE_MODE = (process.env.LLM_TEMPERATURE ?? 'auto').trim().toLowerCase() || 'auto';
+const temperatureFor = (key) => {
+  if (LLM_TEMPERATURE_MODE === 'off') return undefined;
+  if (LLM_TEMPERATURE_MODE === 'auto') return /nemotron/i.test(key) ? 0.6 : undefined;
+  const t = Number(LLM_TEMPERATURE_MODE);
+  return Number.isFinite(t) && t >= 0 && t <= 2 ? t : undefined;
+};
+if (LLM_TEMPERATURE_MODE !== 'auto' && LLM_TEMPERATURE_MODE !== 'off' && temperatureFor('x') === undefined) {
+  console.log(`[patch-config] LLM_TEMPERATURE="${LLM_TEMPERATURE_MODE}" is not a number in 0..2; temperature left unchanged.`);
+} else {
+  for (const k of knownModelKeys) {
+    const entry = config.agents.defaults.models[k];
+    if (!entry || typeof entry !== 'object') continue;
+    const want = temperatureFor(k);
+    const have = entry.params?.temperature;
+    if (want === undefined) {
+      // Self-heal only where the knob says off; auto leaves a hand-set value on
+      // a non-Nemotron model alone.
+      if (LLM_TEMPERATURE_MODE === 'off' && have !== undefined) {
+        delete entry.params.temperature;
+        if (Object.keys(entry.params).length === 0) delete entry.params;
+        changed = true;
+        console.log(`[patch-config] agents.defaults.models["${k}"].params.temperature removed (LLM_TEMPERATURE=off).`);
+      }
+    } else if (have !== want) {
+      entry.params = { ...(entry.params || {}), temperature: want };
+      changed = true;
+      console.log(`[patch-config] agents.defaults.models["${k}"].params.temperature = ${want} (was ${have ?? 'unset'}).`);
+    }
+  }
+}
 const modelPolicyAllow = config.agents.defaults.modelPolicy?.allow;
 if (Array.isArray(modelPolicyAllow)) {
   const kept = modelPolicyAllow.filter((k) => !isLocalModelKey(k) || knownModelKeys.includes(k));

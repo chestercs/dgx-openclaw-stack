@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Nemotron Hungarian token salad
+
+- **Patcher step 3c** (`LLM_TEMPERATURE`, default `auto`) writes
+  `params.temperature: 0.6` on Nemotron model entries. vLLM had used the
+  model's own 1.0, and Hungarian replies picked up tokens from other scripts
+  (38 foreign-script characters in six answers at 1.0, 2 at 0.6).
+
 ### Added — Nemotron 3.5 Super backend
 
 - **`docker-compose.nemotron.yml`**: an override that runs

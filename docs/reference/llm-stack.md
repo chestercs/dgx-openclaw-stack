@@ -154,6 +154,17 @@ despite `thinkingDefault: "high"` (0 of 225 turns had reasoning tokens).
 Check what a turn really did in the agent sqlite: a `model.completed` event
 carries `usage.reasoningTokens`.
 
+### Sampling temperature
+
+OpenClaw sends no temperature unless the model entry in
+`agents.defaults.models` has `params.temperature`, so vLLM falls back to the
+model's `generation_config.json`. For Nemotron 3.5 Super that is 1.0 / top_p
+0.95, and at 1.0 Hungarian replies pick up stray tokens from other scripts
+(Korean, Cyrillic, Arabic, often mid-word). A direct A/B on 2026-10-20, six
+Hungarian ~250-word answers per setting: 38 foreign-script characters at 1.0,
+2 at 0.6. The patcher (step 3c, `LLM_TEMPERATURE=auto`) writes 0.6 on Nemotron
+entries. The entry hot-reloads; no vLLM restart is needed.
+
 ## Standalone variants (port 8004 mutex — only one at a time)
 
 Under `llm/` there's an intentional pattern: several Gemma 4 variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.
