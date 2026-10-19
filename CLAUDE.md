@@ -276,6 +276,21 @@ file before changing the area.
   Without it OpenClaw sends no thinking control at all. Verify with
   `usage.reasoningTokens` on `model.completed` events in the agent sqlite.
 
+**GB10 power, thermals, firmware** → [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md)
+
+- Under sustained load the box hard-powers-off with no journal entry at acpitz
+  ~94 °C, far below the 104.8 °C ACPI trip. The fix is a GPU clock cap
+  (`scripts/gb10-clock-cap.service`, `nvidia-smi -lgc 300,2200`; `-pl` is
+  N/A on GB10). `scripts/gb10-thermguard.sh` is the backstop. Watch the
+  hottest acpitz zone, which reads 8–15 °C above nvidia-smi.
+- After such a crash the GPU can stick at 611 MHz / ~10 W with no throttle
+  reason (PD wedge). Only a cold drain clears it: PSU out of wall and box,
+  hold power 30 s.
+- On the unified pool a model load can livelock the host (no OOM kill, no
+  SSH). Huge checkpoint shards are one cause (vLLM keeps a shard mapped until
+  it is fully loaded); `scripts/reshard-safetensors.py` splits them.
+  `scripts/gb10-memguard.sh` kills trial models early.
+
 **TTS surface (Fish Audio S2 Pro + SGLang-Omni)** → [`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md)
 
 - ONE container with two processes: a FastAPI shim on `:8080` (auth +

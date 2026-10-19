@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — GB10 power and thermal hardening (2026-10-19)
+
+- **`scripts/gb10-clock-cap.service`**: a systemd unit that locks the GPU
+  clock at 2200 MHz. The reference GX10 hard-powered-off twice under
+  sustained LLM load (no journal entry, acpitz ~94 °C). With the cap, the same
+  25-minute prefill stress peaked at acpitz 87 °C with 0 errors; matmul lost
+  2.5 % and decode speed did not drop.
+- **`scripts/gb10-thermguard.sh`**: a backstop. It polls the GPU sensor and
+  the hottest acpitz zone every 2 s, SIGKILLs the LLM containers at 93 °C and
+  restarts them once the box has cooled.
+- **`scripts/gb10-memguard.sh`**: SIGKILLs large trial-model containers when
+  `MemAvailable` drops under 6 GiB, before the unified pool livelocks the host.
+- **`scripts/reshard-safetensors.py`**: rewrites a checkpoint into small
+  shards at byte level. vLLM's per-shard memory peak (35 GB for
+  Qwen3.5-122B NVFP4) froze the host; 2 GB shards bring the peak down to
+  1–3 GB.
+- **`docs/reference/gb10-power-thermal.md`**: the findings, plus the
+  611 MHz PD-wedge cold-drain recipe and the ASUS GX10 firmware update
+  procedure (capsule-on-disk, v0106).
+
 ### Fixed — web search returned junk (SearxNG engine set, audit 2026-10-19)
 
 - **Root cause**: every general web engine in the old whitelist was dead

@@ -1,0 +1,28 @@
+# GB10 GPU clock cap: the fix for log-less thermal hard power-offs under
+# sustained LLM load (see docs/reference/gb10-power-thermal.md).
+#
+# `nvidia-smi -pl` (power limit) is N/A on GB10; locking the graphics clock is
+# the one knob that works, and it does not survive a reboot, hence this unit.
+# Measured on an ASUS GX10 (firmware v0106): matmul 92.3 -> 90.0 TFLOPS,
+# 93 -> 82 W; Nemotron prefill stress 25 min at acpitz max 87 C (it powered
+# off at 94 C uncapped). Decode speed did not drop (memory-bandwidth bound).
+#
+# Install:
+#   sudo cp scripts/gb10-clock-cap.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gb10-clock-cap
+# Undo: sudo systemctl disable --now gb10-clock-cap   (ExecStop resets the clocks)
+# Still shutting down? Lower the cap to 2100, then 2000.
+[Unit]
+Description=GB10 GPU clock cap (2200 MHz) against thermal hard power-offs
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nvidia-smi -pm 1
+ExecStart=/usr/bin/nvidia-smi -lgc 300,2200
+ExecStop=/usr/bin/nvidia-smi -rgc
+
+[Install]
+WantedBy=multi-user.target

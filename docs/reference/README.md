@@ -21,6 +21,7 @@ research rationale behind the chosen LLM / TTS stack, this is where to look.
 | [`tts-stack.md`](./tts-stack.md) | **SUPERSEDED** (Kokoro EN + F5-TTS HU + router era — preserved for historical context). Current TTS is Fish Audio S2 Pro, see [`openclaw-tts-fish/README.md`](../../openclaw-tts-fish/README.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md) § "TTS subsystem" |
 | [`tts-research-hungarian.md`](./tts-research-hungarian.md) | **SUPERSEDED** Hungarian TTS open-source landscape (F5-TTS, XTTS, Piper, tier list) — research notes from the pre-Fish-Audio era |
 | [`stt-stack.md`](./stt-stack.md) | Whisper large-v3 self-built CUDA 13 image: three voice surfaces, CTranslate2 on Blackwell notes |
+| [`gb10-power-thermal.md`](./gb10-power-thermal.md) | GB10 hard power-offs under load (clock cap, thermal guard), the 611 MHz PD wedge (cold drain), ASUS GX10 firmware update, unified-memory livelock on big checkpoint shards |
 
 ## Discord integration
 
