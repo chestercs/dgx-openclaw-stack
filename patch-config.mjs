@@ -6036,7 +6036,9 @@ if (nodeCmdAllowRaw.toLowerCase() === 'off') {
         '- Tools run one at a time. A write can wait for the owner to confirm it in the game; if a\n' +
         '  call is slow, tell the user it is waiting for that confirmation.\n' +
         '- Report what actually happened from the tool results. Never claim a build that a tool did\n' +
-        '  not confirm.\n');
+        '  not confirm.\n' +
+        '- Screenshots (`screenshot`, `shot`): the result has a `[saved: <path>]` line; put\n' +
+        '  `MEDIA:<path>` on its own line in your reply so the image is attached in the chat.\n');
       console.log(`[patch-config] seeded ${agentsMd} (Valheim builder)`);
     }
 
@@ -6067,6 +6069,39 @@ if (nodeCmdAllowRaw.toLowerCase() === 'off') {
         console.log(`[patch-config] agents.list[id=${JSON.stringify(other.id)}].tools.deny += ${VH_GLOB}`);
       }
     }
+  }
+
+  // 47b. Screenshots in chat. DevBridge's screenshot/shot tools answer with an
+  // image block, which the model sees but Discord cannot attach. The
+  // mcp-image-saver plugin (a tool result middleware, openclaw-base-ext)
+  // writes those images into the canvas and adds a `[saved: <path>]` line, so
+  // the agent can attach them with a MEDIA line. On while step 47 is on.
+  const IMG_SAVER_DIR = '/opt/openclaw-plugins/mcp-image-saver';
+  const imgSaverOn = !vhOff && Boolean(vhUrl && vhToken) && fs.existsSync(IMG_SAVER_DIR);
+  if (imgSaverOn) {
+    config.plugins ??= {};
+    config.plugins.load ??= {};
+    if (!Array.isArray(config.plugins.load.paths)) config.plugins.load.paths = [];
+    if (!config.plugins.load.paths.includes(IMG_SAVER_DIR)) {
+      config.plugins.load.paths.push(IMG_SAVER_DIR);
+      changed = true;
+      console.log(`[patch-config] plugins.load.paths += ${IMG_SAVER_DIR}`);
+    }
+    config.plugins.entries ??= {};
+    const entry = (config.plugins.entries['mcp-image-saver'] ??= {});
+    if (entry.enabled !== true) { entry.enabled = true; changed = true; console.log('[patch-config] plugins.entries.mcp-image-saver.enabled = true'); }
+    entry.config ??= {};
+    const prefixes = Array.isArray(entry.config.prefixes) ? entry.config.prefixes : [];
+    if (!prefixes.includes('valheim__')) {
+      entry.config.prefixes = [...prefixes, 'valheim__'];
+      changed = true;
+      console.log('[patch-config] plugins.entries.mcp-image-saver.config.prefixes += valheim__');
+    }
+  } else if (vhOff && config.plugins?.entries?.['mcp-image-saver']) {
+    delete config.plugins.entries['mcp-image-saver'];
+    if (Array.isArray(config.plugins.load?.paths)) config.plugins.load.paths = config.plugins.load.paths.filter((p) => p !== IMG_SAVER_DIR);
+    changed = true;
+    console.log('[patch-config] VALHEIM_MCP=off — removed the mcp-image-saver plugin');
   }
 }
 

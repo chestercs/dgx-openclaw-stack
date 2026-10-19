@@ -1,0 +1,17 @@
+{
+  "id": "mcp-image-saver",
+  "name": "MCP Image Saver",
+  "description": "Saves images returned by MCP tools to the canvas and adds a [saved: <path>] line, so replies can attach them with MEDIA lines.",
+  "categories": ["other"],
+  "activation": { "onStartup": true },
+  "contracts": { "agentToolResultMiddleware": ["openclaw"] },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "prefixes": { "type": "array", "items": { "type": "string" } },
+      "dir": { "type": "string" },
+      "keep": { "type": "integer", "minimum": 1 }
+    }
+  }
+}

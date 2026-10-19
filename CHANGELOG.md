@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools (`valheim__*`) are denied for every other agent, and `csharp_run` is
   denied for the builder too.
 
+- **`mcp-image-saver` plugin** (openclaw-base-ext, patcher step 47b): a tool
+  result middleware that writes images returned by MCP tools (here DevBridge's
+  `screenshot` / `shot`) into the canvas and adds a `[saved: <path>]` line, so
+  the agent can attach them in Discord with a `MEDIA:` line. The model still
+  sees the image. Needs a base-ext image rebuild.
+
 - **Changed:** the Discord persona steps (22, 25, 25c, 32, 43b and the media
   tool groups) now target only agents behind the catch-all Discord binding.
   Channel-scoped agents keep their own tool profile and thinking level.
