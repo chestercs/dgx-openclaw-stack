@@ -1315,6 +1315,9 @@ services:
       LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-131072}
       # Output token budget per reply (reasoning + answer). Default 8192.
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-8192}
+      # How the thinking level reaches the local model (patcher
+      # thinkingCompatFor): auto (by model id) | off | qwen-chat-template.
+      LLM_THINKING_COMPAT: ${LLM_THINKING_COMPAT:-auto}
       LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-1800}
       LLM_REASONING_ENABLED: ${LLM_REASONING_ENABLED:-true}
       # TTS provider wiring. When set, patcher step 11 writes
@@ -1822,6 +1825,7 @@ services:
       VALHEIM_AGENT_ID: ${VALHEIM_AGENT_ID:-}
       VALHEIM_AGENT_CHANNELS: ${VALHEIM_AGENT_CHANNELS:-}
       VALHEIM_AGENT_TOOLS_DENY: ${VALHEIM_AGENT_TOOLS_DENY:-}
+      VALHEIM_AGENT_TOOLS: ${VALHEIM_AGENT_TOOLS:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       # Workspace mount — patcher step 16 writes a soft policy block into

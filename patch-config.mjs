@@ -310,11 +310,16 @@ const LLM_REASONING_ENABLED = ((process.env.LLM_REASONING_ENABLED ?? 'true').tri
 //     "qwen-chat-template" (OpenClaw's name for exactly that switch).
 //   - Mistral Small 4 / Magistral: `reasoning_effort` "none" | "high", and
 //     vLLM rejects other values → map every OpenClaw level onto those two.
-// LLM_THINKING_COMPAT=off leaves `compat` alone (operator-managed).
-const LLM_THINKING_COMPAT_ON = (process.env.LLM_THINKING_COMPAT ?? 'auto').trim().toLowerCase() !== 'off';
+//   - Nemotron 3.x: chat_template_kwargs.enable_thinking, like Gemma.
+// LLM_THINKING_COMPAT=off leaves `compat` alone (operator-managed);
+// LLM_THINKING_COMPAT=qwen-chat-template forces that switch whatever the id
+// says (a model served under another model's id, as in a swap test).
+const LLM_THINKING_COMPAT_MODE = (process.env.LLM_THINKING_COMPAT ?? 'auto').trim().toLowerCase();
+const LLM_THINKING_COMPAT_ON = LLM_THINKING_COMPAT_MODE !== 'off';
 function thinkingCompatFor(id) {
   if (!LLM_THINKING_COMPAT_ON) return undefined;
-  if (/gemma-?4/i.test(id)) return { thinkingFormat: 'qwen-chat-template' };
+  if (LLM_THINKING_COMPAT_MODE === 'qwen-chat-template') return { thinkingFormat: 'qwen-chat-template' };
+  if (/gemma-?4|nemotron/i.test(id)) return { thinkingFormat: 'qwen-chat-template' };
   if (/mistral|magistral|devstral|ministral/i.test(id)) {
     return {
       supportsReasoningEffort: true,
@@ -6013,6 +6018,25 @@ if (nodeCmdAllowRaw.toLowerCase() === 'off') {
         agent.tools.deny = [...deny, ...addDeny];
         changed = true;
         console.log(`[patch-config] agents.list[id=${JSON.stringify(vhAgentId)}].tools.deny += ${addDeny.join(', ')}`);
+      }
+    }
+    // A slim tool set. The ~58 DevBridge schemas are verbose: with all of them
+    // the builder's prompt was ~81k tokens, and both local models (Mistral
+    // Small 4, Nemotron 3.5 Super) lost the thread and narrated tool calls
+    // instead of making them. VALHEIM_AGENT_TOOLS lists the tools to keep
+    // (managed: replaces alsoAllow); the sub-agent tools are added so a
+    // design can be built stage by stage in small sessions. Empty = all
+    // `valheim__*` (fill-only, as created above).
+    const vhToolsRaw = (process.env.VALHEIM_AGENT_TOOLS || '').trim();
+    if (vhToolsRaw) {
+      const wanted = vhToolsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+        .map((t) => (t.startsWith('valheim__') ? t : `valheim__${t}`));
+      const desiredAlso = [...new Set([...wanted, 'sessions_spawn', 'sessions_yield', 'subagents'])];
+      agent.tools ??= {};
+      if (JSON.stringify(agent.tools.alsoAllow) !== JSON.stringify(desiredAlso)) {
+        agent.tools.alsoAllow = desiredAlso;
+        changed = true;
+        console.log(`[patch-config] agents.list[id=${JSON.stringify(vhAgentId)}].tools.alsoAllow = ${desiredAlso.length} tools (VALHEIM_AGENT_TOOLS)`);
       }
     }
     const agentsMd = `${workspace}/AGENTS.md`;
