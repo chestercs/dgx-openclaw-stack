@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Discord DMs only from people who share a server with the bot
+
+- **`dm-guild-gate` plugin** (patcher step 44g,
+  `OPENCLAW_DISCORD_DM_GUILD_GATE`, default `on`). A `before_dispatch` hook
+  asks the Discord API whether a DM's sender is a member of any of the bot's
+  guilds and ends a stranger's turn silently (`{ handled: true }`, no model
+  call). `dmPolicy` has no such mode. Members are cached for 6 h, non-members
+  for 10 min; when Discord cannot be asked, the DM goes through and the error
+  is logged. Optional plugin config: `guilds`, `allow`, `block`. Verified
+  live: a member's DM was answered, the same account on the `block` list got
+  no reply and no model run, and removing it restored replies. 12 unit cases
+  with a mocked Discord pass.
+
+### Added — keep news channels out of the digest
+
+- **`OPENCLAW_PEOPLE_DIGEST_EXCLUDE`**: channel IDs or names the nightly job
+  and the community summaries never read (written into both skills' collect
+  command; `people-digest.mjs --exclude` now also matches channel IDs). A
+  channel of WoW / FFXIV patch notes had filled the summaries with release
+  details nobody had discussed, and the bot repeated them as community news.
+  On the reference host the 31 existing summaries were cleaned once by the
+  model (patch notes and health details out; a second model pass checked
+  that nothing else went; backup kept) and re-indexed.
+
 ### Added — daily structure-only status report
 
 - **`scripts/daily-status.sh`** appends one block per day to
