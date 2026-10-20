@@ -11,12 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`openclaw-base-ext/plugins/claim-guard`** + patcher step 44e
   (`OPENCLAW_DISCORD_CLAIM_GUARD`, default `on`). A `before_agent_finalize`
-  hook checks that "elmentettem / megnéztem / beállítottam az emlékeztetőt"
-  in the final answer is backed by a tool call that succeeded in the same
-  run, and on a mismatch asks for one more model pass (do it, or say it was
-  not done). Prompt rules had not stopped such claims. Not a reply hook, so
-  Discord preview streaming stays on. Findings, structure only, are logged
-  to `logs/claim-guard.jsonl`.
+  hook hands the final answer and the run's tool list to the host model
+  (`api.runtime.llm.complete`, thinking off). The model lists the actions
+  the answer claims, each with a type, and the code checks that a succeeded
+  tool can do that type. On a mismatch the runner gets one more model pass
+  (do it, or say it was not done). A first regex version missed "jegyeztem"
+  in the first live test. The model judge scored 31/31 on the live test set
+  (9/9 on wording not in its prompt), about 1 s per answer. Not a reply hook,
+  so Discord preview streaming stays on. Every checked answer is logged,
+  structure only, to `logs/claim-guard.jsonl`.
 
 ### Fixed — Nemotron Hungarian token salad
 

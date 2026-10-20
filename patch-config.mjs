@@ -241,7 +241,7 @@
 //      hook (channel sessions never see the root MEMORY.md). Env-gated by
 //      OPENCLAW_DISCORD_PEOPLE_MEMORY (default on). 44b nightly-job skill,
 //      44c people-context plugin (sender's own lines prepended per turn).
-//      44e claim-guard plugin (an unbacked "elmentettem" gets one more pass).
+//      44e claim-guard plugin (model-judged unbacked action claim → one more pass).
 //  45. plugins.entries.device-pair.config.publicUrl — the wss:// address
 //      `openclaw qr` puts in setup codes (OPENCLAW_DEVICE_PAIR_PUBLIC_URL).
 //  46. gateway.nodes.commands.allow — node commands admitted beyond the
@@ -5965,10 +5965,10 @@ if (isEnvOff(peopleMemoryEnv) || !fs.existsSync(PEOPLE_CONTEXT_DIR)) {
 // 44e. claim-guard plugin (openclaw-base-ext, /opt/openclaw-plugins). Prompt
 //      rules did not stop false action claims: on 2026-10-19 the bot said it
 //      had saved notes to memory in a turn with no write call. The plugin's
-//      before_agent_finalize hook compares "elmentettem / megnéztem /
-//      beállítottam az emlékeztetőt" in the final answer with the tool calls
-//      that succeeded in the run and, on a mismatch, asks for one more model
-//      pass (do it, or say it was not done). It is not a reply hook, so
+//      before_agent_finalize hook asks the host model which actions the final
+//      answer claims, checks them against the tool calls that succeeded in
+//      the run and, on a mismatch, asks for one more model pass (do it, or
+//      say it was not done). It is not a reply hook, so
 //      Discord preview streaming stays on. Findings (structure only, no text)
 //      land in logs/claim-guard.jsonl. Needs hooks.allowConversationAccess
 //      like any non-bundled finalize hook. OPENCLAW_DISCORD_CLAIM_GUARD
