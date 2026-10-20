@@ -1,0 +1,38 @@
+{
+  "id": "dm-guild-gate",
+  "name": "DM Guild Gate",
+  "description": "Answers a Discord DM only when the sender shares a server with the bot.",
+  "categories": [
+    "other"
+  ],
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "guilds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Only these guild IDs count. Empty: every guild the bot is in."
+      },
+      "allow": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "User IDs that may always DM the bot, member or not."
+      },
+      "block": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "User IDs that never get a DM reply, member or not."
+      }
+    }
+  }
+}

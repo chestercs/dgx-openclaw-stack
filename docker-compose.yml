@@ -1425,9 +1425,12 @@ services:
       # Step 44: always-loaded people/MEMORY.md for the Discord agent.
       OPENCLAW_DISCORD_PEOPLE_MEMORY: ${OPENCLAW_DISCORD_PEOPLE_MEMORY:-on}
       OPENCLAW_PEOPLE_DIGEST_NSFW: ${OPENCLAW_PEOPLE_DIGEST_NSFW:-off}
+      OPENCLAW_PEOPLE_DIGEST_EXCLUDE: ${OPENCLAW_PEOPLE_DIGEST_EXCLUDE:-}
       OPENCLAW_COMMUNITY_SUMMARY: ${OPENCLAW_COMMUNITY_SUMMARY:-on}
       # Step 44e: claim-guard plugin (unbacked "elmentettem" → one more pass).
       OPENCLAW_DISCORD_CLAIM_GUARD: ${OPENCLAW_DISCORD_CLAIM_GUARD:-on}
+      # Step 44g: DMs only from people who share a server with the bot.
+      OPENCLAW_DISCORD_DM_GUILD_GATE: ${OPENCLAW_DISCORD_DM_GUILD_GATE:-on}
       # Step 44f: full-thinking `deep` sub-agent (measured no gain; off).
       OPENCLAW_DISCORD_DEEP_AGENT: ${OPENCLAW_DISCORD_DEEP_AGENT:-off}
       LLM_DENSE_ENABLED: ${LLM_DENSE_ENABLED:-on}

@@ -57,6 +57,8 @@ replicates upstream defaults without disabling the step.
 | 44c | `people-context` plugin: a `before_prompt_build` hook prepends the sender's people-file lines (and those of tagged members) to each turn. | follows `OPENCLAW_DISCORD_PEOPLE_MEMORY` | `on` | `off` removes the load path and the plugin entry. |
 | 44d | `community-summary` skill: every 3 days a job writes a summary of the guilds' messages under `memory/community/`, found later through `memory_search`. | `OPENCLAW_COMMUNITY_SUMMARY` | `on` | `off` removes the skill (the job, if created, then fails loudly). |
 | 44e | `claim-guard` plugin: a `before_agent_finalize` hook checks the final answer's action claims and uncommon facts against the run's tool calls and asks for one more pass on a mismatch. See "Honesty checks" below. | `OPENCLAW_DISCORD_CLAIM_GUARD` | `on` | `off` removes the load path and the plugin entry. |
+| 44 (sub) | Channels the digest never reads (nightly job and community summaries), e.g. a feed of game patch notes. | `OPENCLAW_PEOPLE_DIGEST_EXCLUDE` | empty | Comma-separated channel IDs or names; written into both skills' collect command as `--exclude`. |
+| 44g | `dm-guild-gate` plugin: a `before_dispatch` hook answers a Discord DM only when the sender shares a server with the bot; anyone else gets no reply and no model call. See "DMs only from server members" below. | `OPENCLAW_DISCORD_DM_GUILD_GATE` | `on` | `off` removes the load path and the plugin entry (step 28's open DMs apply again). |
 | 44f | `deep` sub-agent: the same model with full thinking (`chat_template_kwargs`), spawnable by the Discord agent. | `OPENCLAW_DISCORD_DEEP_AGENT` | `off` | `on` adds the agent and the delegation hint; `off` removes both. |
 | X | `plugins.entries.active-memory` — deep recall sub-agent in `escalate` mode (runs only when the message asks about the past). | `OPENCLAW_ACTIVE_MEMORY` | unset (no-op) | `on` writes, `off` removes the entry, empty leaves config alone. |
 | docs | `OPENCLAW_AGENT_DOCS_MODE` — recipe placement: on-demand workspace **skills** (default, ~20 KB lighter bootstrap) vs legacy always-injected AGENTS.md blocks. | `OPENCLAW_AGENT_DOCS_MODE` | `skills` | `agentsmd` restores the legacy layout and removes the skill files (rollback path). |
@@ -463,6 +465,36 @@ The stack closes the gap in three layers:
 Dreaming storage is `separate` (step 6). The inline mode wrote
 `## Light Sleep` blocks into the daily notes, and on a group bot those blocks
 were session-metadata noise that outranked real notes in `memory_search`.
+
+## DMs only from server members (dm-guild-gate, step 44g)
+
+Step 28 sets `dmPolicy: "open"` so members can DM the bot without a pairing
+round. That also lets a stranger who finds the bot's profile talk to it.
+`dmPolicy` has four modes (`pairing`, `allowlist`, `open`, `disabled`) and
+none of them means "people who share a server with me"; `allowlist` would
+need every member's ID in the config by hand.
+
+The `dm-guild-gate` plugin decides per message. Its `before_dispatch` hook
+sees `channel`, `isGroup` and `senderId`. For a Discord DM it asks the
+Discord REST API with the bot token whether the sender is a member of any
+guild the bot is in (`GET /guilds/{guild}/members/{user}`: 200 = member,
+404 code 10007 = not a member, 10013 = no such user; no privileged intent
+needed). A non-member's turn ends with `{ handled: true }`: no model call,
+no reply, no reaction. It is not a reply hook, so preview streaming stays on.
+
+- Cache: members 6 h, non-members 10 min (someone who just joined gets in
+  soon).
+- If Discord gives no clear answer (no readable token, network error, rate
+  limit), the DM goes through and the error is logged. An outage should not
+  silence the bot for its own members.
+- Plugin config (`plugins.entries.dm-guild-gate.config`, operator-managed,
+  hot-reloaded): `guilds` limits which servers count, `allow` lists user IDs
+  that may always DM, `block` lists user IDs that never get a DM reply.
+- Log, structure only: `logs/dm-guild-gate.jsonl` with sender ID, outcome
+  (`allow` / `block` / `error_allow`) and how it was decided.
+
+Slash commands sent in a DM take the native command path, not
+`before_dispatch`; step 28's authorization still governs those.
 
 ## Honesty checks (claim-guard, step 44e)
 

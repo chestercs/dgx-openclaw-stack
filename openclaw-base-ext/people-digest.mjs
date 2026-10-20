@@ -13,7 +13,7 @@
 //     thirty times itself was slow and lost track; one pre-digested block is
 //     cheaper and deterministic. Dropped: our own bot (feedback loop), NSFW
 //     channels (the file reaches every channel; --nsfw or PEOPLE_DIGEST_NSFW=on
-//     keeps them) and --exclude names. Other bots stay, marked `(bot)`: the members
+//     keeps them) and --exclude channels (names or IDs). Other bots stay, marked `(bot)`: the members
 //     talk to them (a Markov chat bot), so their lines are context, not
 //     facts. Voice-log lines ("<@id> joined voice channel", Dyno-style
 //     embeds) are folded into one per-member activity summary instead of
@@ -229,7 +229,7 @@ async function collect(opt) {
       continue; // left the guild / no permission: skip it
     }
     for (const c of list) {
-      if ((c.type === 0 || c.type === 5) && (keepNsfw || !c.nsfw) && !exclude.has(c.name)
+      if ((c.type === 0 || c.type === 5) && (keepNsfw || !c.nsfw) && !exclude.has(c.name) && !exclude.has(c.id)
         && !(skipLogs && /(^|-)log$/.test(c.name))) {
         // With several guilds, tag lines with the guild so the model can tell
         // which community a fact came from.

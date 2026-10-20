@@ -255,6 +255,11 @@ file before changing the area.
   Audit `logs/claim-guard.jsonl` (outcomes `none` / `revise` / `resolved` /
   `unresolved` / `judge_failed`). `openclaw plugins reload` cannot replace it
   while a run holds the old instance; rebuild the image and recreate.
+- Discord DMs are answered only for people who share a server with the
+  bot: the `dm-guild-gate` plugin (step 44g, a `before_dispatch` hook)
+  asks the Discord API per sender (cached) and ends a stranger's turn with
+  `{ handled: true }`. `dmPolicy` has no such mode. Audit
+  `logs/dm-guild-gate.jsonl`.
 - Registering ANY `reply_payload_sending` / `message_sending` plugin hook
   turns off Discord draft-preview streaming for every Discord turn (the
   plugin checks `hasHooks(...)` globally). That is why generated-image

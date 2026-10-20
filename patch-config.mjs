@@ -5822,10 +5822,16 @@ const PEOPLE_MEMORY_SEED =
 // channels are read too. Off by default because people/MEMORY.md is injected
 // into every channel's prompt, so what is learnt there surfaces everywhere.
 const PEOPLE_DIGEST_NSFW_FLAG = isEnvOff((process.env.OPENCLAW_PEOPLE_DIGEST_NSFW ?? 'off').trim().toLowerCase() || 'off') ? '' : ' --nsfw';
+// OPENCLAW_PEOPLE_DIGEST_EXCLUDE: channels (IDs or names, comma-separated)
+// the digest never reads, for both the nightly job and the community
+// summaries. On the reference host a news channel full of game patch notes
+// filled the summaries with release details nobody had talked about.
+const PEOPLE_DIGEST_EXCLUDE = (process.env.OPENCLAW_PEOPLE_DIGEST_EXCLUDE ?? '').split(',').map((s) => s.trim()).filter((s) => /^[\p{L}\p{N}_-]+$/u.test(s));
+const PEOPLE_DIGEST_FLAGS = PEOPLE_DIGEST_NSFW_FLAG + (PEOPLE_DIGEST_EXCLUDE.length ? ` --exclude ${PEOPLE_DIGEST_EXCLUDE.join(',')}` : '');
 const PEOPLE_MEMORY_SKILL_BODY =
   '# people-memory — nightly persona update\n\n' +
   'Run by the `people-memory-nightly` job; the job message gives the guild ID (`all` = every server the bot is in). Steps in EXACTLY this order:\n\n' +
-  `1. \`exec\`: \`node /opt/people-digest.mjs collect --guild <GUILD_ID>${PEOPLE_DIGEST_NSFW_FLAG}\` — the messages of the past day, per author ` +
+  `1. \`exec\`: \`node /opt/people-digest.mjs collect --guild <GUILD_ID>${PEOPLE_DIGEST_FLAGS}\` — the messages of the past day, per author ` +
   '(2-10 min, wait for it). With several servers each line starts with `[#server/channel]`.\n' +
   '2. `read`: `people/MEMORY.md` — the current file.\n' +
   '3. Per author, decide whether they stated a NEW, LASTING fact ABOUT THEMSELVES. Belongs here: job/studies, hobbies, games they play, ' +
@@ -5854,7 +5860,7 @@ const COMMUNITY_SUMMARY_SKILL_BODY =
   '# community-summary — a few days of the community, into the searchable memory\n\n' +
   'Run by the `community-summary` job (every 3 days) or by a backfill turn. The job message gives the window and the file name; ' +
   'without one, use `--last-days 3` and name the file after the last 3 days. Steps in EXACTLY this order:\n\n' +
-  `1. \`exec\`: \`node /opt/people-digest.mjs collect --guild all${PEOPLE_DIGEST_NSFW_FLAG} --last-days 3\` ` +
+  `1. \`exec\`: \`node /opt/people-digest.mjs collect --guild all${PEOPLE_DIGEST_FLAGS} --last-days 3\` ` +
   '(a backfill message gives `--from <date> --to <date>` instead of `--last-days 3`). It takes 1-10 min; wait for it.\n' +
   '2. `write`: `memory/community/<FROM>_<TO>.md` (dates as YYYY-MM-DD), in Hungarian, 1500-3500 characters:\n' +
   '   `# Közösségi összefoglaló <FROM> – <TO>`, then these sections:\n' +
@@ -6023,6 +6029,44 @@ if (isEnvOff(claimGuardEnv) || !fs.existsSync(CLAIM_GUARD_DIR)) {
     changed = true;
     console.log('[patch-config] plugins.entries.claim-guard.hooks.allowConversationAccess = true');
   }
+}
+
+// 44g. dm-guild-gate plugin (openclaw-base-ext, /opt/openclaw-plugins). Step 28
+//      opens Discord DMs (dmPolicy=open) so members can DM the bot without a
+//      pairing round, but that also lets anyone who finds the bot talk to it.
+//      dmPolicy has no "members of my servers" mode, so the plugin's
+//      before_dispatch hook asks Discord whether the sender shares a guild
+//      with the bot and ends the turn silently when not. Not a reply hook:
+//      preview streaming stays on. Decisions (structure only) land in
+//      logs/dm-guild-gate.jsonl. The plugin config (`guilds`, `allow`) is
+//      operator-managed and left alone. OPENCLAW_DISCORD_DM_GUILD_GATE
+//      (default on); `off` removes the load path and entry.
+const DM_GATE_DIR = '/opt/openclaw-plugins/dm-guild-gate';
+const dmGateEnv = (process.env.OPENCLAW_DISCORD_DM_GUILD_GATE ?? 'on').trim().toLowerCase() || 'on';
+if (isEnvOff(dmGateEnv) || !fs.existsSync(DM_GATE_DIR)) {
+  const paths = config.plugins?.load?.paths;
+  if (Array.isArray(paths) && paths.includes(DM_GATE_DIR)) {
+    config.plugins.load.paths = paths.filter((p) => p !== DM_GATE_DIR);
+    changed = true;
+    console.log(`[patch-config] plugins.load.paths: removed ${DM_GATE_DIR}`);
+  }
+  if (config.plugins?.entries?.['dm-guild-gate']) {
+    delete config.plugins.entries['dm-guild-gate'];
+    changed = true;
+    console.log('[patch-config] plugins.entries.dm-guild-gate removed');
+  }
+} else if (config.channels?.discord) {
+  config.plugins ??= {};
+  config.plugins.load ??= {};
+  if (!Array.isArray(config.plugins.load.paths)) config.plugins.load.paths = [];
+  if (!config.plugins.load.paths.includes(DM_GATE_DIR)) {
+    config.plugins.load.paths.push(DM_GATE_DIR);
+    changed = true;
+    console.log(`[patch-config] plugins.load.paths += ${DM_GATE_DIR}`);
+  }
+  config.plugins.entries ??= {};
+  const entry = (config.plugins.entries['dm-guild-gate'] ??= {});
+  if (entry.enabled !== true) { entry.enabled = true; changed = true; console.log('[patch-config] plugins.entries.dm-guild-gate.enabled = true'); }
 }
 
 // 44f. deep agent — the Discord agent's sub-agent with FULL thinking.
