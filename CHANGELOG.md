@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — optional full-thinking `deep` sub-agent (off by default)
+
+- **Patcher step 44f** (`OPENCLAW_DISCORD_DEEP_AGENT`, default `off`) adds a
+  patcher-owned `deep` agent: same model, Discord workspace and tool policy,
+  `params.chat_template_kwargs: {enable_thinking: true, medium_effort: false}`
+  (Nemotron's full thinking), plus `subagents.allowAgents: ["deep"]` on the
+  Discord agent and a delegation hint for careful reasoning. OpenClaw only
+  offers an on/off `/think` for vLLM Nemotron, so this is the documented way
+  to a deeper level. Off by default because it bought nothing measurable:
+  on 40 checkable reasoning questions medium thinking scored 39/40 and full
+  40/40, at 2-2.5× the time and twice the tokens. Verified on the host: the
+  agent-level kwargs reach vLLM (with `enable_thinking: false` the agent
+  answered with zero reasoning tokens), `on` adds and `off` removes the
+  entry, and a second run changes nothing. Schema checked with
+  `openclaw config validate` in a throwaway container first.
+
+### Changed — clearer embed text in people-digest
+
+- Embed fields are written as `name: value | name: value` with invisible
+  spacer fields (soft hyphen, LRM) dropped. RuinBot's `szín:: Copper Rust ­: ­
+  ennyiből…` ran together, and the bot mixed up two adjacent win lines.
+
 ### Added — claim-guard checks unverified facts; channel-history command
 
 - **claim-guard** asks a second question in parallel: the model rates each

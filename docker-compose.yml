@@ -1428,6 +1428,8 @@ services:
       OPENCLAW_COMMUNITY_SUMMARY: ${OPENCLAW_COMMUNITY_SUMMARY:-on}
       # Step 44e: claim-guard plugin (unbacked "elmentettem" → one more pass).
       OPENCLAW_DISCORD_CLAIM_GUARD: ${OPENCLAW_DISCORD_CLAIM_GUARD:-on}
+      # Step 44f: full-thinking `deep` sub-agent (measured no gain; off).
+      OPENCLAW_DISCORD_DEEP_AGENT: ${OPENCLAW_DISCORD_DEEP_AGENT:-off}
       LLM_DENSE_ENABLED: ${LLM_DENSE_ENABLED:-on}
       # MeshCore agent registration (patcher step 42). MESHCORE_ENABLED=on
       # registers the `meshcore` agents.list entry + seeds its workspace

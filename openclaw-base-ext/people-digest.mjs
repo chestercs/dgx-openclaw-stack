@@ -124,10 +124,23 @@ function selfId() {
 // A slash-command reply names who ran the command only in its interaction
 // metadata (a RuinBot win embed says "kapta …", the winner is the user who
 // ran /ruin), so that is appended.
+// Embed fields become "name: value | name: value": bots like RuinBot end
+// field names with ":" and pad with invisible spacer fields (soft hyphen,
+// LRM), which ran together as "szín:: Copper Rust ­: ­ ennyiből…" and the bot
+// mixed up two adjacent win lines on 2026-10-20.
+const INVISIBLE = /[­​-‏⁠﻿]/g;
+const clean = (s) => String(s ?? '').replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
+function embedText(e) {
+  const fields = (e.fields || [])
+    .map((f) => [clean(f.name).replace(/:+$/, ''), clean(f.value)])
+    .filter(([n, v]) => n || v)
+    .map(([n, v]) => (n && v ? `${n}: ${v}` : n || v));
+  const head = [clean(e.title), clean(e.description)].filter(Boolean).join(' — ');
+  return [head, fields.join(' | ')].filter(Boolean).join(' — ');
+}
 function messageText(m) {
   const own = String(m.content || '').trim();
-  const text = own || (m.embeds || []).map((e) => [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`)]
-    .filter(Boolean).join(' ')).join(' ').trim();
+  const text = own || (m.embeds || []).map(embedText).filter(Boolean).join(' || ').trim();
   const ia = m.interaction_metadata ?? m.interaction;
   const by = ia?.user?.global_name || ia?.user?.username;
   return by && text ? `${text} [/${ia.name || 'parancs'} — ${by}]` : text;

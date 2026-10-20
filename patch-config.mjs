@@ -4309,6 +4309,10 @@ const DISCORD_AGENT_HONESTY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_HONESTY ||
 const DISCORD_AGENT_SENDER_IDENTITY_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY || '').trim().toLowerCase();
 const DISCORD_AGENT_SUBAGENTS_ENV = (process.env.OPENCLAW_DISCORD_AGENT_SUBAGENTS || '').trim().toLowerCase();
 const isEnvOn = (v) => v === 'on' || v === '1' || v === 'true' || v === 'yes';
+// Step 44f knob, read this early: the delegation block below names the deep
+// agent only when the step creates it.
+const DEEP_AGENT_ON = isEnvOn((process.env.OPENCLAW_DISCORD_DEEP_AGENT ?? 'off').trim().toLowerCase());
+const DEEP_AGENT_ID = (process.env.OPENCLAW_DISCORD_DEEP_AGENT_ID || 'deep').trim();
 
 const FORMAT_RULES_CHEATSHEET_START = '<!-- patch-config:discord-format-rules:start -->';
 const FORMAT_RULES_CHEATSHEET_END = '<!-- patch-config:discord-format-rules:end -->';
@@ -4415,7 +4419,13 @@ const SUBAGENT_DELEGATION_CHEATSHEET_BODY =
   '3. Summarise the result for the user (raw child output can be long).\n\n' +
   '🚨 **NEVER poll** — waiting in a `sessions_list`/`sessions_history` loop is banned; `yield` handles it. 🚨 **Do NOT promise future/background delivery** ("háttérben folytatom", "12 óra múlva kész") — you get it AFTER the yield, NOW.\n\n' +
   '**Big project = several components in parallel:** spawn one sub-agent PER COMPONENT (e.g. for a game separate Combat / Movement / Scoring / Resource sub-agents), yield, then synthesise the results. Limit: max 3 concurrent children, ~10 min per child (Discord\'s 15-minute interaction cap).\n' +
-  '**When NOT to delegate:** a simple 1-2 tool request (weather, one image, one search) — do that inline yourself.\n';
+  '**When NOT to delegate:** a simple 1-2 tool request (weather, one image, one search) — do that inline yourself.\n' +
+  (DEEP_AGENT_ON
+    ? `**Careful reasoning → \`"agentId":"${DEEP_AGENT_ID}"\`:** when getting it right matters more than speed — a tricky puzzle, math or logic, ` +
+      'a plan with many constraints, or someone asks you to think it through carefully — spawn ' +
+      `\`{"agentId":"${DEEP_AGENT_ID}","context":"isolated","task":"…"}\` and yield. It is the same model with full thinking ` +
+      '(about 1-2 minutes instead of seconds). Everyday chat and quick look-ups stay with you.\n'
+    : '');
 
 const SENDER_IDENTITY_CHEATSHEET_START = '<!-- patch-config:discord-sender-identity:start -->';
 const SENDER_IDENTITY_CHEATSHEET_END = '<!-- patch-config:discord-sender-identity:end -->';
@@ -6012,6 +6022,71 @@ if (isEnvOff(claimGuardEnv) || !fs.existsSync(CLAIM_GUARD_DIR)) {
     entry.hooks.allowConversationAccess = true;
     changed = true;
     console.log('[patch-config] plugins.entries.claim-guard.hooks.allowConversationAccess = true');
+  }
+}
+
+// 44f. deep agent — the Discord agent's sub-agent with FULL thinking.
+//      Nemotron's chat template has three thinking settings: off, medium
+//      (`medium_effort`, the server default) and full. OpenClaw exposes only
+//      an on/off /think for vLLM Nemotron, so a per-message "think harder"
+//      does not exist; a per-agent `params.chat_template_kwargs` does, and
+//      sessions_spawn can target another agent listed in
+//      subagents.allowAgents. Measured 2026-10-20, two sets of 10 checkable
+//      reasoning questions ×2 each:
+//        easier set: medium 19/20 (median 34 s, 410 tokens), full 20/20 (47 s, 873)
+//        harder set: medium 20/20 (median 21 s, 499 tokens), full 20/20 (48 s, 1081)
+//      Full thinking bought nothing measurable at 2-2.5× the time, so the
+//      step is OFF by default (OPENCLAW_DISCORD_DEEP_AGENT=on adds it). The
+//      agent is patcher-owned: it shares the Discord workspace, mirrors the
+//      Discord agent's tool policy on every run, and `off` removes it again.
+//      Schema checked with `openclaw config validate` in a throwaway container
+//      before shipping.
+{
+  const list = config.agents?.list;
+  const discordAgent = Array.isArray(list)
+    ? (list.find((a) => a?.workspace === WORKSPACE_DISCORD_ROOT) ?? list.find((a) => a?.id === 'discord-friend'))
+    : null;
+  if (discordAgent && DEEP_AGENT_ID && DEEP_AGENT_ID !== discordAgent.id) {
+    const idx = list.findIndex((a) => a?.id === DEEP_AGENT_ID);
+    const allow = Array.isArray(discordAgent.subagents?.allowAgents) ? discordAgent.subagents.allowAgents : [];
+    if (DEEP_AGENT_ON) {
+      const desired = {
+        id: DEEP_AGENT_ID,
+        name: 'Deep',
+        workspace: discordAgent.workspace,
+        thinkingDefault: 'high',
+        params: { chat_template_kwargs: { enable_thinking: true, medium_effort: false } },
+        ...(discordAgent.tools ? { tools: structuredClone(discordAgent.tools) } : {}),
+      };
+      // Key order differs after the entries→list conversion (id last), so
+      // compare with sorted keys or every run would rewrite the entry.
+      const stable = (v) => (Array.isArray(v) ? `[${v.map(stable).join(',')}]`
+        : v && typeof v === 'object' ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`
+          : JSON.stringify(v));
+      if (idx < 0 || stable(list[idx]) !== stable(desired)) {
+        if (idx >= 0) list[idx] = desired; else list.push(desired);
+        changed = true;
+        console.log(`[patch-config] agents.list[${DEEP_AGENT_ID}] ${idx >= 0 ? 'synced' : 'added'} (full thinking, tools mirrored from ${discordAgent.id})`);
+      }
+      if (!allow.includes(DEEP_AGENT_ID)) {
+        discordAgent.subagents = { ...(discordAgent.subagents || {}), allowAgents: [...allow, DEEP_AGENT_ID] };
+        changed = true;
+        console.log(`[patch-config] agents.list[${discordAgent.id}].subagents.allowAgents += ${DEEP_AGENT_ID}`);
+      }
+    } else {
+      if (idx >= 0) {
+        list.splice(idx, 1);
+        changed = true;
+        console.log(`[patch-config] agents.list[${DEEP_AGENT_ID}] removed (OPENCLAW_DISCORD_DEEP_AGENT=off)`);
+      }
+      if (allow.includes(DEEP_AGENT_ID)) {
+        const rest = allow.filter((a) => a !== DEEP_AGENT_ID);
+        if (rest.length) discordAgent.subagents.allowAgents = rest; else delete discordAgent.subagents.allowAgents;
+        if (discordAgent.subagents && Object.keys(discordAgent.subagents).length === 0) delete discordAgent.subagents;
+        changed = true;
+        console.log(`[patch-config] agents.list[${discordAgent.id}].subagents.allowAgents -= ${DEEP_AGENT_ID}`);
+      }
+    }
   }
 }
 

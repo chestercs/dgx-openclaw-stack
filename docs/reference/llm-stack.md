@@ -178,6 +178,28 @@ off, misspelled or non-Hungarian words counted by a judge pass):
 decoding is on ("not yet supported with speculative decoding"), so it would
 cost the DFlash draft. top_p 0.9 was no better.
 
+### Thinking depth (Nemotron)
+
+Nemotron's chat template has three thinking settings: `enable_thinking`
+false (off), `medium_effort` true (the server default here) and
+`medium_effort` false (full). OpenClaw exposes only an on/off `/think` for
+vLLM Nemotron, so `thinkingDefault: "high"` and `"medium"` send the same
+request. A deeper level is reachable through a per-agent
+`params.chat_template_kwargs`, which does reach vLLM (an agent with
+`enable_thinking: false` answered with zero reasoning tokens).
+
+Measured 2026-10-20 directly on vLLM, two sets of 10 reasoning questions
+with checkable answers, two runs each:
+
+| Set | Medium | Full |
+|---|---|---|
+| easier | 19/20, median 34 s, 410 tokens | 20/20, 47 s, 873 tokens |
+| harder | 20/20, median 21 s, 499 tokens | 20/20, 48 s, 1081 tokens |
+
+Full thinking bought nothing measurable at 2-2.5× the time, so the
+full-thinking `deep` sub-agent (patcher step 44f) ships off. Earlier, in long
+tool-using agent turns, full thinking also produced 57k-token turns.
+
 ## Standalone variants (port 8004 mutex — only one at a time)
 
 Under `llm/` there's an intentional pattern: several Gemma 4 variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.
