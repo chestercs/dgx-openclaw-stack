@@ -1,144 +1,29 @@
-# Local extension of the upstream OpenClaw gateway image.
+# The upstream OpenClaw image plus what this stack adds on top. Built once,
+# used by openclaw-config-init, openclaw-gateway and openclaw-cli.
 #
-# Why this exists: the upstream image (ghcr.io/openclaw/openclaw) does NOT
-# ship `ffmpeg`. The Discord text-channel TTS-attachment path
-# (`messages.tts.auto = always`) shells out to ffmpeg to transcode the
-# Kokoro/F5-TTS wav into the Opus/mp3 the Discord bot upload API wants —
-# and crashes with `ffmpeg not found in trusted system directories` when
-# it can't find the binary. The default workaround is
-# `OPENCLAW_TTS_AUTO=tagged` which only TTS-attaches when the LLM
-# explicitly tags a reply, so the text-channel flow never tries the
-# ffmpeg path; that's a real feature regression though (no auto TTS for
-# Discord text-channel agents).
-#
-# This Dockerfile takes the upstream image and apt-installs ffmpeg, so
-# `OPENCLAW_TTS_AUTO=always` works end-to-end on every surface (web
-# chat / Discord text / Discord voice / agent skill API). The bundled
-# ffmpeg in `openclaw-tts-router` is unaffected — that stays as the
-# narrow EN/HU autoroute + adelay layer; this new ffmpeg in the gateway
-# image is what the Discord plugin's attachment pipeline shells out to.
-#
-# Three main-stack services pull from this image (config-init, gateway,
-# cli — they all run the same OpenClaw codebase with different
-# entrypoints), so we build it once and reuse via the `image:` tag.
+# Nothing here patches OpenClaw itself: the plugins use the plugin SDK and
+# are loaded through plugins.load.paths, the patcher writes documented
+# config only. The upstream ENTRYPOINT (tini + docker-entrypoint.mjs, which
+# runs the state migration before the gateway starts) is kept as is.
 ARG OPENCLAW_BASE=ghcr.io/openclaw/openclaw:latest
 FROM ${OPENCLAW_BASE}
 
 USER root
+# ffmpeg: OpenClaw shells out to it to turn TTS audio into the Opus/MP3 a
+# Discord upload needs, and the bot uses it for media it downloads.
+# git, curl, file, procps: tools the agent's exec reaches for in coding tasks.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ffmpeg \
-       build-essential procps file curl ca-certificates git sudo \
+    && apt-get install -y --no-install-recommends ffmpeg git curl ca-certificates file procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Homebrew (Linuxbrew) so the WebUI's "manual MCP install" buttons
-# can shell out to `brew install <pkg>` in the gateway / cli containers.
-# Without it, the WebUI shows skills as "blocked: brew not installed" for
-# every Homebrew-only CLI dep (gog/gogcli, plus any other tap-distributed
-# tool the operator wants).
-#
-# NONINTERACTIVE=1 + CI=1 skip the brew install script's TTY prompts.
-# The script auto-creates a `linuxbrew` user and unpacks into
-# `/home/linuxbrew/.linuxbrew/`. We then symlink the `brew` binary into
-# `/usr/local/bin/` (already on PATH for the node user) so skills don't
-# need to know the brew home path.
-#
-# Size cost: ~400 MB extra layer (brew core + ruby + the cellar
-# bootstrap). Cached after first build, so subsequent
-# `docker compose build --no-cache openclaw-config-init` rebuilds re-use
-# this layer unless this RUN changes.
-RUN useradd -m -s /bin/bash linuxbrew \
-    && echo "linuxbrew ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-
-USER linuxbrew
-RUN NONINTERACTIVE=1 CI=1 /bin/bash -c \
-    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-USER root
-# Install the brew wrapper at /usr/local/bin/brew (NOT a symlink — a symlink
-# would make Homebrew detect /usr/local as its prefix and abort on aarch64
-# with "Intel default prefix" error). The wrapper sets HOMEBREW_PREFIX
-# explicitly and adds steipete/tap → openclaw/tap migration fallback for
-# OpenClaw skill installs with stale formula paths.
-COPY brew-wrapper.sh /usr/local/bin/brew
-RUN chmod +x /usr/local/bin/brew \
-    && ln -sf /home/linuxbrew/.linuxbrew/Homebrew/Library /home/linuxbrew/.linuxbrew/Library \
-    && chmod -R o+rx /home/linuxbrew \
-    && usermod -aG linuxbrew node \
-    && chmod -R g+rwx /home/linuxbrew/.linuxbrew \
-    && find /home/linuxbrew/.linuxbrew -type d -exec chmod g+s {} \;
-
-# Pre-tap both repos at image-build time so the first WebGUI install doesn't
-# pay the tap-clone cost (~5 s each) and `brew search` works immediately.
-USER linuxbrew
-RUN /home/linuxbrew/.linuxbrew/bin/brew tap openclaw/tap \
-    && /home/linuxbrew/.linuxbrew/bin/brew tap steipete/tap \
-    && /home/linuxbrew/.linuxbrew/bin/brew --version
-
-USER root
-# HOMEBREW_PREFIX must be on the runtime env too — some skill install scripts
-# spawn brew without inheriting from the wrapper's exec env. Belt-and-braces.
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}" \
-    HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
-    HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
-    HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew \
-    HOMEBREW_NO_ANALYTICS=1 \
-    HOMEBREW_NO_AUTO_UPDATE=1 \
-    HOMEBREW_NO_ENV_HINTS=1
-
-# Patch the MCP SDK's hardcoded 60-second default request timeout.
-#
-# The `@modelcontextprotocol/sdk` ships with `DEFAULT_REQUEST_TIMEOUT_MSEC =
-# 60000` in `shared/protocol.js`. OpenClaw's MCP runtime calls
-# `session.client.callTool({name, arguments})` WITHOUT a third options
-# argument (verified live 2026-05-14 by grepping `pi-bundle-mcp-runtime-*.js`),
-# so the timeout falls through to the SDK constant unchanged. Any tool that
-# takes longer than 60 s — LTX-Video cold-cache renders (~130 s), FLUX-Krea
-# cold-cache (~90 s), large image gens at high resolution, future high-res
-# 4K video renders that can run multiple minutes — surfaces `MCP error -32001:
-# Request timed out` to the agent BEFORE the bridge can return the result,
-# even though the underlying render usually succeeds on disk.
-#
-# The right fix is upstream (have OpenClaw pass `options.timeout` per server,
-# or honor `mcp.servers.<name>.requestTimeoutMs` if added to the schema).
-# Until that lands, our `patch-mcp-timeout.sh` entrypoint wrapper runs at
-# every container start, grep-finds every `DEFAULT_REQUEST_TIMEOUT_MSEC =
-# 60000` literal under `/app`, and sed-replaces it with
-# `(parseInt(process.env.MCP_REQUEST_TIMEOUT_MS,10)||1800000)` — env-driven
-# at runtime, defaults to 30 minutes.
-#
-# Why a runtime hook rather than a build-time RUN: empirical observation
-# (2026-05-14) showed the upstream openclaw image has BOTH a top-level
-# `/app/node_modules/...` SDK copy AND a `/app/dist/extensions/browser/node_modules/...`
-# extension-bundled copy, and a build-time `find` only matched one of the
-# locations — the other got (re)populated later in image layering or at
-# runtime, leaving its 60s default in place. Starting the patch at runtime
-# via `ENTRYPOINT` finds and rewrites both unconditionally.
-#
-# Idempotent: a restart on an already-patched container finds no `60000`
-# literal to replace and exits clean in ~50ms. Scope reminder: this
-# affects ALL MCP tool calls from the gateway — comfyui_image__generate(_video),
-# python_sandbox, browser, etc. A 30-minute ceiling is overhead-only for
-# fast calls; for genuinely-hung tools it delays the error surface by ~29
-# minutes vs the previous default. The tradeoff favors long-running media
-# generators.
-COPY patch-mcp-timeout.sh /opt/patch-mcp-timeout.sh
-RUN chmod +x /opt/patch-mcp-timeout.sh
-
-# Digest + guarded writer for the Discord agent's nightly people-memory job
-# (patch-config.mjs step 44b). Lives in the image, not the config volume, so
-# the gate that protects people/MEMORY.md cannot be edited by the agent.
+# The Discord agent's people-memory digest and its guarded writer (exec'd
+# by the nightly job and by the bot). It lives in the image, not in the
+# config volume, so the agent cannot edit the guard that protects
+# people/MEMORY.md.
 COPY people-digest.mjs /opt/people-digest.mjs
 
-# Local gateway plugins, loaded through plugins.load.paths (patch-config.mjs
-# step 44c). people-context hands the Discord agent the sender's own
-# people/MEMORY.md lines on every turn.
+# Local plugins (people-context, claim-guard, dm-guild-gate, mcp-image-saver),
+# loaded through plugins.load.paths by config-init.
 COPY plugins/ /opt/openclaw-plugins/
-
-# Wrap the upstream image's entrypoint via a JSON-form ENTRYPOINT so any
-# `command:` from compose services is passed through verbatim. The
-# wrapper delegates to /app/docker-entrypoint.mjs when present so newer
-# images retain their automatic state migration before gateway startup.
-ENTRYPOINT ["/opt/patch-mcp-timeout.sh"]
 
 USER node
