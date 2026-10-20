@@ -51,3 +51,13 @@ export function oneOf(name, choices, def) {
 
 // Discord snowflakes as strings (19-digit IDs lose precision as numbers).
 export const ids = (name) => list(name).filter((s) => /^\d{15,22}$/.test(s));
+
+// Whether an optional compose service runs: its profile is in
+// COMPOSE_PROFILES (config-init gets .env through env_file). Unset counts as
+// yes, so a host that starts services with --profile flags keeps its wiring.
+export function profile(name) {
+  const v = raw('COMPOSE_PROFILES');
+  if (v === undefined) return true;
+  const set = v.split(',').map((s) => s.trim());
+  return set.includes(name) || set.includes('*');
+}

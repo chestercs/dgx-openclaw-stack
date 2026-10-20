@@ -53,20 +53,19 @@ err()  { printf '%b[err ]%b %s\n'  "$RED"    "$RESET" "$*" >&2; }
 DEFAULT_KEYS=(
   VLLM_API_KEY
   SEARXNG_SECRET
-  OPENCLAW_TTS_FISH_API_KEY
-  TTS_API_TOKEN
   STT_API_TOKEN
   BROWSER_API_TOKEN
   BROWSER_VNC_PASSWORD
 )
 PYTHON_SANDBOX_KEY=PYTHON_SANDBOX_API_TOKEN
+TTS_KEY=OPENCLAW_TTS_FISH_API_KEY
 IMAGE_GEN_KEY=IMAGE_GEN_API_TOKEN
 GATEWAY_KEY=OPENCLAW_GATEWAY_TOKEN
 
-# PYTHON_SANDBOX_KEY and IMAGE_GEN_KEY are conditional: --all auto-includes
+# PYTHON_SANDBOX_KEY, TTS_KEY and IMAGE_GEN_KEY are conditional: --all auto-includes
 # them only when already set (an empty value = the user opted out, and
 # auto-generating one would re-enable a service they declined).
-ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$PYTHON_SANDBOX_KEY" "$IMAGE_GEN_KEY" "$GATEWAY_KEY")
+ALL_ROTATABLE=("${DEFAULT_KEYS[@]}" "$PYTHON_SANDBOX_KEY" "$TTS_KEY" "$IMAGE_GEN_KEY" "$GATEWAY_KEY")
 
 # Map a rotated key to the space-separated compose service list that reads it.
 # Keep this aligned with docker-compose.yml — see plan for line-number refs.
@@ -75,7 +74,6 @@ services_for() {
     VLLM_API_KEY)                echo "vllm-llm vllm-embedding openclaw-config-init openclaw-gateway openclaw-cli" ;;
     SEARXNG_SECRET)              echo "searxng" ;;
     OPENCLAW_TTS_FISH_API_KEY)   echo "openclaw-config-init openclaw-gateway openclaw-cli openclaw-tts-fish" ;;
-    TTS_API_TOKEN)               echo "openclaw-tts-fish" ;;
     STT_API_TOKEN)               echo "openclaw-stt-whisper openclaw-config-init openclaw-gateway openclaw-cli" ;;
     BROWSER_API_TOKEN)           echo "openclaw-browser openclaw-config-init openclaw-gateway openclaw-cli" ;;
     PYTHON_SANDBOX_API_TOKEN)    echo "openclaw-python-sandbox openclaw-config-init openclaw-gateway openclaw-cli" ;;
@@ -114,8 +112,8 @@ Flags:
   -h, --help                   Show this help.
 
 Default set (rotated by --all or the interactive menu):
-  VLLM_API_KEY, SEARXNG_SECRET, OPENCLAW_TTS_FISH_API_KEY, TTS_API_TOKEN,
-  STT_API_TOKEN, BROWSER_API_TOKEN, BROWSER_VNC_PASSWORD
+  VLLM_API_KEY, SEARXNG_SECRET, STT_API_TOKEN, BROWSER_API_TOKEN,
+  BROWSER_VNC_PASSWORD
   (+ PYTHON_SANDBOX_API_TOKEN if it is already set in .env — empty token
   means the sandbox opt-in was declined and --all does not silently re-enable it.
   + IMAGE_GEN_API_TOKEN under the same conditional rule — empty token means
@@ -125,7 +123,7 @@ Explicit positional args rotate any rotatable key regardless of current
 value, including PYTHON_SANDBOX_API_TOKEN, IMAGE_GEN_API_TOKEN, and
 OPENCLAW_GATEWAY_TOKEN:
 
-  ./rotate-secrets.sh VLLM_API_KEY TTS_API_TOKEN
+  ./rotate-secrets.sh VLLM_API_KEY STT_API_TOKEN
   ./rotate-secrets.sh PYTHON_SANDBOX_API_TOKEN
   ./rotate-secrets.sh IMAGE_GEN_API_TOKEN
 
@@ -231,11 +229,11 @@ if (( ROTATE_ALL )); then
   if [[ -n "$(current_value "$PYTHON_SANDBOX_KEY")" ]]; then
     add_key "$PYTHON_SANDBOX_KEY"
   fi
-  # Same conditional rule for the image-gen bridge — empty token means the
-  # operator declined the bridge opt-in, --all should not regenerate it.
-  if [[ -n "$(current_value "$IMAGE_GEN_KEY")" ]]; then
-    add_key "$IMAGE_GEN_KEY"
-  fi
+  # Same rule for the optional TTS and image-gen services: an empty token
+  # means they are not in use, and --all must not switch them on.
+  for k in "$TTS_KEY" "$IMAGE_GEN_KEY"; do
+    [[ -n "$(current_value "$k")" ]] && add_key "$k"
+  done
   if (( INCLUDE_GATEWAY )); then
     add_key "$GATEWAY_KEY"
   fi

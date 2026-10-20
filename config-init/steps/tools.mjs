@@ -60,7 +60,8 @@ function stt(config) {
 // port cannot select a profile. The query-string token is the only auth the
 // cdpUrl field takes; the CDP ports are bound to loopback on the host.
 function browser(config) {
-  const token = env.str('BROWSER_API_TOKEN');
+  // Wired only when the browser service runs (profile) and has a token.
+  const token = env.profile('browser') ? env.str('BROWSER_API_TOKEN') : undefined;
   if (token) {
     const host = env.str('BROWSER_CDP_HOST', 'http://openclaw-browser');
     const base = env.int('BROWSER_PORT_BASE', 9222);
@@ -95,10 +96,10 @@ function browser(config) {
 // MCP SDK's own default is 60 s, and a python_exec run (yt-dlp download,
 // pip install) is allowed 120 s inside the sandbox.
 function pythonSandbox(config) {
-  const token = env.str('PYTHON_SANDBOX_API_TOKEN');
+  const token = env.profile('python') ? env.str('PYTHON_SANDBOX_API_TOKEN') : undefined;
   const p = ['mcp', 'servers', 'python_sandbox'];
   if (!token) {
-    config.remove(p, 'PYTHON_SANDBOX_API_TOKEN unset; the gateway would dial a parked service');
+    config.remove(p, 'python profile off or no token; the gateway would dial a missing service');
     for (const parent of ['mcp.servers', 'mcp']) {
       const v = config.get(parent);
       if (v && typeof v === 'object' && !Object.keys(v).length) config.remove(parent);
