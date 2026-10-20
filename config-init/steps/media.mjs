@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as env from '../lib/env.mjs';
+import { secret } from '../lib/secrets.mjs';
 import { template, upsertBlock, skill, removeSkill, removeFile } from '../lib/files.mjs';
 
 const GROUPS = ['image', 'video', 'music'];
@@ -52,7 +53,7 @@ function tts(config) {
   });
   config.merge('tts.providers.openai', {
     baseUrl: env.str('OPENCLAW_TTS_FISH_URL', 'http://openclaw-tts-fish:8080/v1'),
-    apiKey: key,
+    apiKey: secret('OPENCLAW_TTS_FISH_API_KEY', key),
     model: 'fish-s2-pro', // the shim ignores it; logged for debugging
     speakerVoiceId: env.str('OPENCLAW_TTS_DEFAULT_VOICE', 'default_en'),
   });

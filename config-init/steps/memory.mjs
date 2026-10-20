@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as env from '../lib/env.mjs';
+import { secret } from '../lib/secrets.mjs';
 
 // Removes `path` and then every parent object it leaves empty, so switching a
 // feature off leaves no `plugins.entries: {}` husk behind.
@@ -30,7 +31,7 @@ function search(config) {
   config.merge('memory.search', { enabled: true, provider: 'openai', model: 'BAAI/bge-m3' });
   config.merge('memory.search.remote', {
     baseUrl: env.str('EMBED_BASE_URL', 'http://vllm-embedding:8005/v1/'),
-    apiKey: key,
+    apiKey: secret('VLLM_API_KEY', key),
   });
 }
 

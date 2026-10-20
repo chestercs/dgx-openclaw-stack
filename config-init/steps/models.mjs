@@ -6,6 +6,7 @@
 // a stale one shows up in the model picker and answers 404.
 
 import * as env from '../lib/env.mjs';
+import { secret } from '../lib/secrets.mjs';
 
 export const DEFAULT_MODEL_ID = 'nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4';
 
@@ -53,7 +54,7 @@ export default function models({ config }) {
     timeoutSeconds: env.int('LLM_REQUEST_TIMEOUT_SECONDS', 1800),
   });
   const key = env.str('VLLM_API_KEY');
-  if (key) config.set([...p, 'apiKey'], key);
+  if (key) config.set([...p, 'apiKey'], secret('VLLM_API_KEY', key));
 
   const entry = {
     id,
