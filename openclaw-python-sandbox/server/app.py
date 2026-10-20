@@ -104,7 +104,7 @@ TOOLS = [
             "expression's repr, inline matplotlib plots as base64 PNGs, "
             "and any uncaught exception details. The /workspace directory "
             "(bound from the host) is the canonical place to read/write "
-            "files. Network egress is disabled — pip install will fail."
+            "files. It has internet access, so pip install and downloads work."
         ),
         "inputSchema": {
             "type": "object",

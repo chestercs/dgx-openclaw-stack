@@ -343,6 +343,21 @@ server.
 Anything not starting with `/` goes to the agent. On a channel the trigger
 prefix applies first, so it's `?/status` there.
 
+### "No response from meshcore node"
+
+The bridge reached the serial port but the radio did not answer the
+companion protocol:
+
+1. Check that `MESHCORE_SERIAL_DEVICE` points at the right device. A
+   `/dev/serial/by-path/` alias keeps working on a fixed USB port even when
+   the device name changes; `/dev/serial/by-id/` names the firmware mode.
+2. Use a USB **data** cable, then unplug and replug the radio.
+3. A LilyGO T-Echo that shows up as an `nRF UF2` mass-storage device is in
+   its bootloader: press RESET once to return to the MeshCore app (a double
+   press enters DFU mode).
+4. Recreate the bridge:
+   `docker compose --profile meshcore up -d --no-deps --force-recreate openclaw-meshcore-bridge`
+
 ### Debug recipes
 
 ```bash

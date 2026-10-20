@@ -73,7 +73,8 @@ USER 1000:1000
 # 8094 = MCP server. 8095 = preview/hosting port: an operator-launched dev
 # server (Angular `ng serve --host 0.0.0.0 --port 8095`, a Python http.server,
 # a Go/Java app, …) bound inside the container is reachable on the host's
-# published 8095 and proxied to sandbox.petyuspolisz.com via nginx.
+# published 8095; put a reverse proxy in front of it for a public URL
+# (OPENCLAW_SANDBOX_PUBLIC_URL tells the agent where that is).
 EXPOSE 8094 8095
 
 ENTRYPOINT ["tini", "--"]
