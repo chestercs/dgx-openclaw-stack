@@ -1,0 +1,1 @@
+- **music / song / beat generation → `music-generation`** (ACE-Step; tags required, lyrics optional). 🚨 DELIVERY: attach the `canvas_path` with `upload-file`, do NOT paste a link (/view answers 401).

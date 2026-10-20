@@ -1,0 +1,1 @@
+`comfyui_image__generate` (image, TWO underscores!) · `comfyui_image__generate_i2i` (transform an attached image) · 

@@ -1,0 +1,6 @@
+## Media download / transcription / file upload
+
+- **"töltsd le ezt a YouTube videót / hangot"** → `python_sandbox__python_exec` + `yt-dlp` (preinstalled, with ffmpeg) or `requests`; for video frames, the `video-frames` skill on the file.
+- **Transcription** ("írd le / mit mondanak / feliratozd"): (1) `python_exec` yt-dlp: `subprocess.run(["yt-dlp","-f","bestaudio","-x","--audio-format","mp3","-o","/home/node/.openclaw/canvas/clip.mp3","<URL>"],timeout=110)`, `timeout_s:120`. 🚨 A FIXED ascii `-o` name (`clip.mp3`), NEVER `%(title)s` (fullwidth characters → "file not found"). (2) `python_sandbox__transcribe_audio` `path=".../clip.mp3"` (+ optional `language`). Whisper turbo is best-effort (inaccurate on noisy speech or music), not official lyrics.
+- **"küldd el / töltsd fel attachmentként"** → the Discord **`upload-file`** action, `path="/home/node/.openclaw/canvas/<file>"` (+ optional `filename=`). 🚨 The file can ONLY be under `/home/node/.openclaw/canvas/` (media-local-roots) — nothing under `/workspace/` uploads. The `media` param also takes a public HTTP URL (e.g. a comfyui fetch URL → a real attachment, not just an embed).
+- Showing a downloaded/generated file inline in chat: `canvas` (file under `~/.openclaw/canvas/` + the `[embed url="..." /]` shortcode).

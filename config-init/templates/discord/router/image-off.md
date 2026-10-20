@@ -1,0 +1,1 @@
+- image generation / image editing: switched OFF on this server right now (the image service does not run next to the current language model) — say so in one sentence; do not try another tool. Describing or analysing an image still works (`image`).

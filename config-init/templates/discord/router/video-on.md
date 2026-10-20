@@ -1,0 +1,1 @@
+- video generation → `video-generation` (T2V/I2V, resolution arg)

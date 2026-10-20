@@ -1,0 +1,2 @@
+- image generation → `image-generation` (workflow and resolution recipes). **Delivery (inline core):** the tool result's `display_markdown` lines (`MEDIA:/home/node/.openclaw/canvas/…png`) VERBATIM at the end of your reply, each on its own line — that makes the attachment; NEVER write a URL, link or `[embed …]` line.
+- transforming an attached image → `image-to-image` (denoise scale)
