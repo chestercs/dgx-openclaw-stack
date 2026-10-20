@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — web search: measured engine set, Hungarian results fixed
+
+- **SearxNG engines** are now yahoo, duckduckgo web, privacywall,
+  marginalia, yep and wikipedia, plus bing news, duckduckgo news and yahoo
+  news. Chosen with a 40-question bench (20 Hungarian, 20 English; a hit
+  means the answer is in the top 5): the old set scored 22/40 (Hungarian
+  7/20, with Polish and Czech Wikipedia pages on top), the new one 34/40
+  (Hungarian 17/20, hu.wikipedia.org on top). Google, Bing, Qwant and Brave
+  were blocked or rate-limited from the reference host; the plain
+  duckduckgo engine answers with a CAPTCHA, its `duckduckgo web` backend
+  does not. Per-engine numbers are in `searxng/settings/settings.yml`.
+- **Gateway search categories** are pinned to `general,news` (patcher step
+  10). A stored `general,news,science` put arXiv papers on top of every
+  answer.
+- **Bot search rule:** search in English as well for anything beyond
+  Hungary, and treat off-topic results as "search again", not as "no".
+- **claim-guard:** a cited source link is part of the answer, not a claim
+  that the page was read; it no longer triggers a revision that dropped the
+  link.
+- **`scripts/daily-status.sh`** reports which search engines answered.
+
+### Fixed — heartbeats on Discord never ran
+
+- `commands.ownerAllowFrom` is written channel-scoped (`discord:<id>`), the
+  documented form.
+- The heartbeat's default `owner` target strips that prefix and the Discord
+  plugin reads the bare snowflake as a channel, so every poll skipped with
+  `reason=no-route`. Patcher step 5 now sets `target: "discord"` and
+  `to: "user:<id>"` on `agents.defaults.heartbeat` (first owner ID, or
+  `OPENCLAW_HEARTBEAT_TO`; `off` restores OpenClaw's default).
+
 ### Changed — namespace sharers reattach themselves after a gateway restart
 
 - **`scripts/netns-dependents-up.sh --watch`** follows `docker events` and

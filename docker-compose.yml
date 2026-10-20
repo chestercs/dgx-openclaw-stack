@@ -1305,6 +1305,7 @@ services:
       OPENCLAW_HEARTBEAT_ACTIVE_START: ${OPENCLAW_HEARTBEAT_ACTIVE_START:-09:00}
       OPENCLAW_HEARTBEAT_ACTIVE_END: ${OPENCLAW_HEARTBEAT_ACTIVE_END:-02:00}
       OPENCLAW_HEARTBEAT_TZ: ${OPENCLAW_HEARTBEAT_TZ:-UTC}
+      OPENCLAW_HEARTBEAT_TO: ${OPENCLAW_HEARTBEAT_TO:-}
       OPENCLAW_LAN_CIDR: ${OPENCLAW_LAN_CIDR:-}
       # Override the in-compose vllm-llm / vllm-embedding DNS targets when the
       # vLLM stack runs on a different host (remote DGX over LAN, cloud OpenAI-

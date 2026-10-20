@@ -1,59 +1,67 @@
-# SearxNG override settings — merged on top of the upstream defaults
-# (use_default_settings: true).
+# SearxNG override settings — merged on top of the upstream defaults.
 # Default settings reference:
 #   https://github.com/searxng/searxng/blob/master/searx/settings.yml
 # Admin docs:
 #   https://docs.searxng.org/admin/settings/index.html
 #
-# This file carries only the deltas from the defaults that are required to make
-# SearxNG usable as a backend for the OpenClaw gateway's native `webSearch`
-# provider (https://docs.openclaw.ai/tools/searxng-search):
+# Only the deltas OpenClaw's `web_search` provider needs
+# (https://docs.openclaw.ai/tools/searxng-search):
 #
-#   1. JSON API enabled (search.formats) — OpenClaw calls /search?...&format=json.
-#   2. Strict privacy engine set (use_default_settings.engines.keep_only) — only
-#      privacy-respecting general engines and public-knowledge domains. Google,
-#      Bing, Yandex, Yahoo, Baidu are NOT in the keep_only list, so queries
-#      never reach them.
-#   3. Rate limiter disabled (internal-only service on the compose bridge).
-#   4. Safe search off (research / world-building scope — you're the only user).
+#   1. JSON API on (search.formats): OpenClaw calls /search?...&format=json.
+#   2. A measured engine set (keep_only below), picked for result quality in
+#      Hungarian and English. Google, Bing, Yandex and Baidu are not listed,
+#      so queries never reach them directly. Yahoo is listed (it serves Bing's
+#      index) because it was the best engine measured.
+#   3. Rate limiter off (internal-only service on the compose bridge).
+#   4. Safe search off.
 #
 # Engine health is what silently rots here. Scraped engines start answering
 # CAPTCHA / 429 / 403 to a home or datacenter IP, and no error reaches the
-# agent: SearxNG just returns fewer results. When only the niche engines
-# survive, the agent gets confident off-topic junk. Audit it with the
-# `unresponsive_engines` field of the JSON response:
+# agent: SearxNG just returns fewer results, and the agent gets confident
+# off-topic junk. Check `unresponsive_engines` in the JSON response:
 #   docker exec openclaw-cli curl -sS \
 #     "http://searxng:8080/search?q=test&format=json" | jq .unresponsive_engines
-# and per engine with `&engines=<name>`. Measured on the reference host
-# (2026-10, Hungarian residential IP, SearxNG 2026.10.17):
-#   yep         OK, best privacy-side quality, honours language=hu
-#   mwmbl       OK, small open index, good on technical / English pages
-#   duckduckgo  intermittent CAPTCHA (kept: free when it answers)
-#   brave       HTTP 429 most of the time (kept for the same reason)
-#   mojeek, startpage  marked `inactive` upstream (proof-of-work CAPTCHA)
-#   qwant       HTTP 403 "access denied"
-# A suspended engine costs nothing per query (SearxNG skips it until its
-# suspension expires), so flaky-but-sometimes-good engines stay listed.
+# and a single engine with `&engines=<name>`.
+#
+# Measured on the reference host (2026-10-20, Hungarian residential IP,
+# SearxNG 2026.10): 20 fact questions, 10 Hungarian and 10 English; a hit
+# means the answer is in the top 5 results. Per engine, hu / en:
+#   yahoo           10/10  10/10
+#   duckduckgo web   9/10   9/10   (the plain "duckduckgo" engine: CAPTCHA)
+#   privacywall      9/10   8/10
+#   marginalia       8/10   9/10
+#   yep              4/10  10/10   (mostly ignores Hungarian)
+#   seznam 4+5, mwmbl 1+4 (timeouts), bing 1+0, google / brave / qwant 0
+#   (blocked or rate-limited), most small engines 0.
+# News engines on "Magyarország kormány" / "Hungary government": duckduckgo
+# news (20 results dated today), bing news (10, Hungarian too), yahoo news
+# (English only); google news, qwant news (access denied), reuters (HTTP
+# error), brave.news (crash) return nothing. Adding them to every search
+# ("general,news") scored 35/40 against 34/40 for "general" alone.
+# The previous set (yep, mwmbl, duckduckgo, brave) scored 4/10 + 9/10 through
+# the gateway, with Polish and Czech Wikipedia pages on Hungarian questions.
+# This set scores 9-10/10 on both, with hu.wikipedia.org on top for
+# Hungarian. Re-measure before you change the list.
 
 use_default_settings:
   engines:
-    # KEEP_ONLY: only the listed engines stay in the registry; every other
-    # engine shipped by the upstream defaults is discarded (so Google / Bing /
-    # Yandex / Yahoo / Baidu never run and queries can't leak to them).
-    # Engine IDs come from the upstream default settings.yml
-    # (https://github.com/searxng/searxng/blob/master/searx/settings.yml).
+    # Only the listed engines stay in the registry; every other upstream
+    # engine is discarded.
     keep_only:
-      # Privacy-respecting general engines
+      # General web (measurements above)
+      - yahoo
+      - duckduckgo web
+      - privacywall
+      - marginalia
       - yep
-      - mwmbl
-      - duckduckgo
-      - brave
-      # News. The gateway's searxng plugin retries a zero-hit
-      # `categories=news` search as `general`, so when this engine is down
-      # the query falls through to the general engines above.
+      # News (dated articles; the gateway asks for "general,news")
+      - bing news
       - duckduckgo news
-      # Public-knowledge / domain engines
+      - yahoo news
+      # Public knowledge
       - wikipedia
+      # Queried only when a search asks for their category (it / science),
+      # never on a default "general" search.
       - github
       - arxiv
       # Deliberately NOT listed:
@@ -61,8 +69,6 @@ use_default_settings:
       #   quote collections, filed under `general`. When the web engines were
       #   blocked they were the only survivors and answered "mi az a wow
       #   forever" with Mirad grammar pages and a court indictment.
-      # - reddit: dropped from the upstream defaults (SearxNG 2026.10 logs
-      #   `The "engine" field is missing` for a bare override of it).
       # - wikidata: infobox-only (the OpenClaw plugin reads `results`, never
       #   `infoboxes`), and its SPARQL backend times out at the 3 s default.
 
@@ -76,10 +82,8 @@ general:
 server:
   port: 8080
   bind_address: "0.0.0.0"
-  # secret_key is substituted from the SEARXNG_SECRET env var by the entrypoint
-  # on recent SearxNG images. The compose file also exports SEARXNG_SECRET as a
-  # belt-and-braces fallback for older images where the settings.yml template
-  # interpolation isn't done at startup.
+  # Substituted from the SEARXNG_SECRET env var by the image entrypoint; the
+  # compose file also exports SEARXNG_SECRET for older images.
   secret_key: "${SEARXNG_SECRET}"
   limiter: false                # internal-only service; no public abuse surface
   public_instance: false
@@ -90,40 +94,39 @@ ui:
   default_locale: ""
 
 search:
-  safe_search: 0                # research scope, no filtering
+  safe_search: 0
   autocomplete: ""
-  # "auto" = detect the language from the query text whenever the caller
-  # sends no `language` (an explicit per-query language still wins). The
-  # model often omits it; with "" (= all languages) a Hungarian query like
-  # "Debrecen programok hétvégén" got English tourist pages from yep, with
-  # "auto" it gets Hungarian event listings. English queries stay English.
+  # "auto" = detect the language from the query whenever the caller sends
+  # none (an explicit per-query language still wins).
   default_lang: "auto"
   ban_time_on_fail: 5
   max_ban_time_on_fail: 120
   formats:
     - html
-    - json                       # REQUIRED — OpenClaw's webSearch plugin calls
-                                 # /search?...&format=json; JSON is OFF by default
-                                 # in upstream SearxNG.
+    - json                      # required by OpenClaw; off by default upstream
 
-# Per-engine overrides: several engines are shipped with `disabled: true` in
-# the upstream defaults (stability / quality gating). `use_default_settings.
-# engines.keep_only` only filters the registry — it does NOT flip the
-# disabled flag. We explicitly re-enable the ones we actively want to query.
-# (The earlier engine set listed mojeek and qwant in keep_only without this
-# override, so those two never ran at all.)
+# `keep_only` only filters the registry; engines that upstream ships with
+# `disabled: true` still need an explicit `disabled: false` to run.
 engines:
+  - name: yahoo
+    disabled: false
+  - name: duckduckgo web
+    disabled: false
+  - name: privacywall
+    disabled: false
+  - name: marginalia
+    disabled: false
   - name: yep
     disabled: false
-  - name: mwmbl
+  - name: bing news
     disabled: false
-    # The 3 s global default trips on longer queries (measured "timeout" on
-    # ordinary 5-word queries); the agent-side budget is 20 s, so 6 s here
-    # costs nothing.
-    timeout: 6.0
+  - name: duckduckgo news
+    disabled: false
+  # Upstream marks it inactive; it answered English news queries on 2026-10-20.
+  - name: yahoo news
+    disabled: false
+    inactive: false
   # Upstream ships Wikipedia as infobox-only. The OpenClaw plugin ignores
   # infoboxes, so without "list" an exact article hit never reaches the agent.
-  # The engine fetches one article summary by title: at most one extra
-  # result per query, no noise.
   - name: wikipedia
     display_type: ["infobox", "list"]

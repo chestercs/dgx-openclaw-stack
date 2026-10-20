@@ -89,6 +89,21 @@ for x in sorted(jobs, key=lambda x: x.get("name", "")):
     echo \"people-digest rejected proposals: \$(find $STATE/people-digest/history -name 'rejected-*' -newermt '$since' 2>/dev/null | wc -l)\"
   " 2>/dev/null
 
+  # Web search: which SearxNG engines answered one Hungarian and one English
+  # query. A blocked engine fails silently (fewer results, no error), so this
+  # line is the only place it shows. Engine list: searxng/settings/settings.yml.
+  for lq in "hu:Magyarország legmagasabb hegye" "en:Mount Everest height"; do
+    q=${lq#*:}
+    docker exec "$GATEWAY" sh -c "curl -sS --max-time 20 --get --data-urlencode 'q=$q' \
+      --data-urlencode categories=general,news 'http://searxng:8080/search?format=json'" 2>/dev/null |
+      python3 -c 'import json, sys
+d = json.load(sys.stdin)
+ok = sorted({e for r in d["results"] for e in r["engines"]})
+bad = ["%s (%s)" % (e, m) for e, m in d.get("unresponsive_engines", [])]
+print("search %s: %d results, answered: %s%s" % (sys.argv[1], len(d["results"]), ", ".join(ok) or "none",
+      "; failed: " + ", ".join(bad) if bad else ""))' "${lq%%:*}" 2>/dev/null || echo "search: SearxNG did not answer"
+  done
+
   # Host: temperatures over the window (thermguard CSV: time,gpu,acpitz),
   # guard events, memory, disk, GPU clock. A clock far below the cap with no
   # load is the PD wedge described in docs/reference/gb10-power-thermal.md.

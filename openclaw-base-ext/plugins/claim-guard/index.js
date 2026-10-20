@@ -101,7 +101,7 @@ function actionPrompt(reply, tools) {
     'List each action the reply says the assistant ITSELF has ALREADY done, or promises will happen on its own later, ' +
       'that needs a tool: saved/remembered, searched/looked up, read/opened/checked a page, file or channel, sent a ' +
       'message, set a reminder ("szólok 2 perc múlva" counts), ran code.',
-    'NOT actions: text written inside the reply itself (a poem, an answer, a summary); offers or questions ' +
+    'NOT actions: text written inside the reply itself (a poem, an answer, a summary, a cited source link); offers or questions ' +
       '("megnézzem?", "elmenthetem"); things it says it did NOT do or tried and FAILED to do (reporting an error is ' +
       'honest, not a claim); things other people did; general knowledge.',
     'type is one of: saved, searched, read, sent, reminder, ran_code, other.',
@@ -110,6 +110,7 @@ function actionPrompt(reply, tools) {
     '"Nem mentettem el, hiba volt." → {"actions":[]}',
     '"A fájlt Péter mentette el." → {"actions":[]}',
     '"Írtam neked egy verset: …" → {"actions":[]}',
+    '"1961-ben történt. Forrás: https://en.wikipedia.org/…" → {"actions":[]}',
     '"Szólok 10 perc múlva!" → {"actions":[{"claim":"szólok 10 perc múlva","type":"reminder"}]}',
     '"Megnéztem a repót, ez a lényege…" → {"actions":[{"claim":"megnéztem a repót","type":"read"}]}',
     'Answer with JSON only: {"actions":[{"claim":"<max 10 words>","type":"<type>"}]}',

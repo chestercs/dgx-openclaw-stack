@@ -799,6 +799,33 @@ for (const [k, v] of Object.entries(desiredHours)) {
   }
 }
 
+// Heartbeat delivery. The default target "owner" finds no DM on Discord:
+// it strips `discord:` from the commands.ownerAllowFrom entry and the Discord
+// plugin reads the bare snowflake as a channel, so every poll skips with
+// reason=no-route and the agent never runs (seen 2026-10-20, OpenClaw
+// 2026.10.4). The documented fix is an explicit target + `user:<id>`.
+// It goes on the defaults: a per-agent heartbeat block would switch the
+// heartbeat off for every other agent.
+// OPENCLAW_HEARTBEAT_TO: a Discord user ID; empty = the first concrete ID in
+// OPENCLAW_DISCORD_COMMAND_OWNERS; "off" = leave delivery to OpenClaw.
+const hbToEnv = (process.env.OPENCLAW_HEARTBEAT_TO || '').trim();
+const hbOwner = hbToEnv && hbToEnv !== 'off' ? hbToEnv
+  : (process.env.OPENCLAW_DISCORD_COMMAND_OWNERS || '').split(',').map((s) => s.trim()).find((s) => /^\d+$/.test(s));
+if (hbToEnv !== 'off' && /^\d+$/.test(hbOwner || '') && config.channels?.discord?.enabled === true) {
+  const to = `user:${hbOwner}`;
+  if (hb.target !== 'discord' || hb.to !== to) {
+    hb.target = 'discord';
+    hb.to = to;
+    changed = true;
+    console.log(`[patch-config] agents.defaults.heartbeat.target = discord, to = ${to} (owner DM)`);
+  }
+} else if (hbToEnv === 'off' && hb.target === 'discord') {
+  delete hb.target;
+  delete hb.to;
+  changed = true;
+  console.log('[patch-config] agents.defaults.heartbeat.target/to removed (OPENCLAW_HEARTBEAT_TO=off)');
+}
+
 // (5b) Sub-agent delegation bounds — SCHEMA-GATED (default OFF / self-heal removal).
 //      The sessions_spawn / sessions_yield CAPABILITY is already exposed by the "full"
 //      tool profile, and the Gemma 4 26B-A4B MoE drives the spawn→yield→announce
@@ -1305,7 +1332,11 @@ function parseDiscordIdList(envValue) {
 
 if (config.channels?.discord?.enabled === true) {
   const cmdAllowFromList = parseDiscordIdList(process.env.OPENCLAW_DISCORD_COMMANDS_ALLOW);
-  const cmdOwnerList = parseDiscordIdList(process.env.OPENCLAW_DISCORD_COMMAND_OWNERS);
+  // Owners are written channel-scoped (`discord:<id>`, the documented form).
+  // A bare snowflake parses as a Discord *channel* target, so the heartbeat
+  // finds no owner DM and every poll skips with reason=no-route.
+  const cmdOwnerList = parseDiscordIdList(process.env.OPENCLAW_DISCORD_COMMAND_OWNERS)
+    .map((id) => (/^\d+$/.test(id) ? `discord:${id}` : id));
   const elevatedList = parseDiscordIdList(process.env.OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW);
 
   // commands.allowFrom.discord — guild slash gate
@@ -1700,12 +1731,12 @@ for (const [k, v] of Object.entries(desiredMmr)) {
 //      state and the webSearch tool never lights up in the agent runtime.
 //      The SearxNG service runs as a sibling container on the compose default
 //      bridge, reachable by DNS at http://searxng:8080. Privacy posture lives
-//      in searxng/settings/settings.yml — here we only wire baseUrl + language.
-//      We deliberately do NOT pin `categories`: the gateway forwards a static
-//      string here as a Python-list literal in the SearxNG POST form, which
-//      SearxNG rejects with a validation warning. Letting the agent pass
-//      categories per query (or relying on SearxNG's default) keeps the log
-//      clean and the search functional.
+//      in searxng/settings/settings.yml; here we wire baseUrl, language and
+//      categories. categories is "general,news": the news engines add dated
+//      articles at no cost to fact questions (35/40 against 34/40 for
+//      "general"). A stored "general,news,science" put arXiv papers on top of
+//      every answer (2026-10-20, "Duna hossza km" → arxiv.org); the agent can
+//      still ask for science per call.
 config.tools ??= {};
 config.tools.web ??= {};
 config.tools.web.search ??= {};
@@ -1731,6 +1762,7 @@ const ws = config.plugins.entries.searxng.config.webSearch;
 const desiredWebSearch = {
   baseUrl: 'http://searxng:8080',
   language: '',
+  categories: 'general,news',
 };
 for (const [k, v] of Object.entries(desiredWebSearch)) {
   if (ws[k] !== v) {
@@ -4719,7 +4751,7 @@ const TOOL_POLICY_CORE_BODY =
   '- **NEVER say "nem tudom letölteni/elérni/megcsinálni" before you TRIED** the tool chain (browser / python_sandbox / web_search / canvas / exec). An honest 60-second attempt that fails is worth more than an instant "nem megy" with the tools right there.\n' +
   '- **Media output contract:** after an image/video tool put the `display_markdown` content into your reply VERBATIM, every line on its own line. A `MEDIA:` line goes at the END of the reply — that makes a real attachment; then NEVER write a URL, link or `[embed …]` line (do not imitate your earlier replies either). If it is a URL (e.g. a video too big to attach), START the reply with it. Do NOT rewrite the filename/path, do NOT swap in a placeholder.\n' +
   '- **Tool failure = honest report:** give the EXACT error text; NEVER report success without a received `display_markdown`. Do NOT repeat the SAME failed call (loop detection blocks it) — max 2 attempts, then change approach. On an `edit` "Could not find the exact text" error: first `read` the file\'s EXACT content, or overwrite the whole file with `write`.\n' +
-  '- **Search instead of guessing:** if a fact you are about to state could be wrong or outdated, `web_search` first (Honesty 3). When the user asks you to find something, search with your own reading of the request — never refuse it as "too general", never ask "mire gondolsz pontosan?"; the search decides whether there is a hit (only after 0 results say there is none).\n' +
+  '- **Search instead of guessing:** if a fact you are about to state could be wrong or outdated, `web_search` first (Honesty 3). When the user asks you to find something, search with your own reading of the request — never refuse it as "too general", never ask "mire gondolsz pontosan?"; the search decides whether there is a hit (only after 0 results say there is none). Search where the topic is documented: for anything beyond Hungary, search in English too. Off-topic results are not a "no": rephrase or switch language before you say nothing exists.\n' +
   '- **Discord channel history ("ki nyerte", "mit írt X", "mikor volt"):** FIRST `exec` `node /opt/people-digest.mjs history --channel <channel id> [--author <name or id>] [--grep <word>] [--limit 20] [--days N]` — one compact line per message, embed text and the user who ran a slash command (`[/ruin — Name]`) included, and a header with the range it scanned. Answer only from its lines; on 0 matches say the scanned range it printed, and look further back with the `--before` it gives. Fallback `message` tool: `read` with `limit` at most 30 (bigger pages come back truncated), page with `before:"<oldest id>"` (no `offset`); `search` matches EVERY word, so ONE word + `authorId`.\n' +
   '- **Hungarian "szám" = (a) a NUMBER or (b) a SONG.** "ennek a számnak a szövegét" / "kerss rá a neten a számra" → SONG → web_search for the lyrics → browser → excerpt. NEVER read it as a user ID or an index.\n' +
   '- **Approval-pending exec:** when an `exec` call waits for approval, tell the user the approve button went to the approver by DM (`/approve <id> …`) — normal operation, not an error.\n';
