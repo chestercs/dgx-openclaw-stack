@@ -284,7 +284,7 @@ Read the linked doc before changing the area.
 - **Browser** → [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md).
   One CDP port per profile, token in the query string; passkeys do not work over
   noVNC; `sandbox.browser` stays off or the model targets a sandbox that does not run.
-- **Image / video / music** → [`docs/reference/image-comfyui-bridge.md`](docs/reference/image-comfyui-bridge.md).
+- **Image / video / music** → [`openclaw-image-comfyui/README.md`](openclaw-image-comfyui/README.md).
   Separate compose joined to this stack's network; the repo ships no weights. The MCP
   `requestTimeoutMs` must outlast the bridge's render budget.
   `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` takes groups off the Discord agent when ComfyUI

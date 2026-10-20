@@ -1,808 +1,453 @@
 # Troubleshooting
 
-Common failure modes and their fixes, grouped by the service you're most likely inspecting when you hit them. The two most frequent first-boot issues — the gateway crash-loop before onboarding and the vllm-llm weights download — live at the top of their respective sections.
-
-For a structured map of which media features render on which surfaces (web chat / Discord text / agent skill API / control UI), see `docs/reference/chat-surface-capability-matrix.md`. For pre-flight verification before merging a new media-bridge, see `docs/reference/media-bridge-checklist.md`.
-
-## LLM stack — MoE first-boot
-
-### "vllm-llm crash-loop with `KeyError: 'layers.0.experts.0.down_proj.input_scale'`"
-
-You're hitting [vllm-project/vllm#38912](https://github.com/vllm-project/vllm/issues/38912): the `vllm/vllm-openai:gemma4-cu130` base image's `gemma4.py` model loader doesn't map NVFP4 expert scale-key suffixes (`.weight_scale`, `.weight_scale_2`, `.input_scale`) to the `FusedMoE` parameter names. The `nvidia/Gemma-4-26B-A4B-NVFP4` checkpoint uses the `nvfp4_experts_only` recipe, which produces exactly those scale keys — and the loader trips on the first one.
-
-The upstream fix shipped as PR [#39045](https://github.com/vllm-project/vllm/pull/39045) (merged 2026-04-09) — but the `gemma4-cu130` tag's pinned manifest may pre-date it. Three mitigations, listed by safety:
-
-1. **Switch to a community NVFP4 quantization that ships a self-contained loader patch** — set `LLM_MODEL_ID=RedHatAI/gemma-4-26B-A4B-it-NVFP4` (or another community quant verified working with the current `gemma4-cu130` image) and `LLM_QUANTIZATION=compressed-tensors` (or whatever scheme the quant uses). The patcher auto-registers a catalog entry for the override id, and the OpenClaw UI lists it. Caveat: max-model-len may need to drop from 256K to 96K depending on the quant; check the model card.
-
-2. **Roll forward the base image** to a `gemma4-cu130` revision that includes PR #39045 — `docker pull vllm/vllm-openai:gemma4-cu130 && docker compose build vllm-llm`. If the digest doesn't change, the upstream tag is still pinned to a pre-fix build; fall back to option 1 or 3.
-
-3. **Roll back to the dense 31B alternative** — `docker compose stop vllm-llm && COMPOSE_PROFILES=dense docker compose up -d vllm-llm-dense`, then pick the dense id in the OpenClaw UI's model dropdown. ~7.5× slower but stable; bounce back to MoE when the upstream image picks up the fix.
-
-4. **Apply this stack's bundled build-time loader patch** — `vllm-llm/patch_gemma4_loader.py` (added 2026-05-08) mirrors PR #39045 against the in-image `gemma4.py` at `docker compose build` time. Patches both the `expert_params_mapping` literal, the matching branch in `Gemma4Model.load_weights`, and the `_weight_iterator` namespace re-sub (`.experts.{id}.` → `.moe.experts.{id}.`). All three blocks are idempotent and assert their pre-PR#39045 shapes, so a future base-image bump that lands the upstream fix forces a build-time failure here, prompting you to retire the patch.
-
-Don't bind-mount a `gemma4_patched.py` from a non-pinned third-party HuggingFace user repo without explicit operator approval — vLLM's model loader runs untrusted Python at boot, so the supply chain matters here.
-
-## Media surfaces — first-glance fixes
-
-These are the symptoms operators hit first when integrating image-gen, TTS, or any new media feature. Each links to the deeper reference for context.
-
-### "I generated an image but it doesn't show up in the web chat"
-
-The OpenClaw chat web UI's markdown sanitizer drops both `![alt](url)` image syntax and `[text](url)` external-origin links. Only `mailto:` links and plain auto-linkified URLs survive (clickable, opens new tab). This is a verified upstream limitation through `2026.4.25` — see `docs/reference/image-comfyui-bridge.md` "Future paths" for the three candidate fix paths.
-
-**Quick workaround:** the agent's reply contains a `display_markdown` URL (something like `https://vision.<your-host>/view?token=...`); copy it from the tool-output JSON bubble and open in a new tab. Direct navigation sends Basic auth correctly.
-
-**On Discord text channels:** images attached as files via the bot API render inline natively. The chat UI is the only surface with this gap.
-
-### "Discord bot acts like it's typing but never sends text"
-
-Almost always the Discord text-channel TTS-attachment path crashing on the missing ffmpeg in the gateway image. Check:
-
-```bash
-docker logs ${PROJ}openclaw-gateway 2>&1 | grep -E "final reply failed.*ffmpeg" | tail -3
-docker exec ${PROJ}openclaw-gateway ffmpeg -version | head -1
-```
-
-If `ffmpeg -version` reports `command not found`, you're on a pre-v0.11.0 deploy without the ffmpeg-augmented gateway image. Two paths:
-
-- **Recommended (upgrade)**: `git pull && docker compose build openclaw-config-init && docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`. The v0.11.0 release ships `openclaw-base-ext/Dockerfile` that wraps the upstream gateway image and apt-installs ffmpeg. After recreate, `ffmpeg -version` should print `ffmpeg version 5.1.x-...`.
-
-- **Workaround (stay on the old image)**: set `OPENCLAW_TTS_AUTO=tagged` in `.env` and force-recreate the same three services. Patcher step 11 honors the override; the agent then only TTS-tags replies when the LLM explicitly marks them, leaving normal text flow uncluttered.
-
-### "Web chat 'Read aloud' button speaks bad Hungarian"
-
-The chat bundle is hard-wired to the browser's `speechSynthesis` API. The OS default Hungarian voice is poor on most platforms. Mitigation: a Tampermonkey userscript that monkey-patches `speechSynthesis.speak()` to fetch from the openclaw-tts-fish endpoint instead and plays the returned WAV via `new Audio(blob)`. See `templates/userscripts/openclaw-chat-hu-tts.user.js` (if present in your checkout) and adapt the endpoint URL to `http://<host>:8091/v1/audio/speech` with the `default_hu` voice id.
-
-If something here doesn't match your symptom, the most productive next step is:
+Known failure modes and their fixes, grouped by area. When nothing here matches,
+start with the logs of the service you suspect:
 
 ```bash
 docker compose logs --tail=200 <service>
 ```
 
-Shell snippets use `${PROJ}` for the container-name prefix (default `dgx-`, set via `CONTAINER_NAME_PREFIX` in `.env`). Source it once:
-
-```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
-PROJ=${PROJ:-dgx-}
-```
-
----
-
-## vllm-llm
-
-### Stays in `starting` for 10+ minutes on first boot
-
-Normal if the weights aren't cached yet (~16 GB download + NVFP4 kernel JIT). Follow the progress:
-
-```bash
-docker compose logs -f vllm-llm
-```
-
-You should see `Downloading shards:` lines, then `Loading safetensors checkpoint shards:`, then `INFO: Started server process`. The healthcheck `start_period` is 180s; on slower networks, the first boot can exceed that and the container will be marked unhealthy temporarily. Wait it out; `restart: unless-stopped` will keep it alive and healthy status flips once the API is up.
-
-### `HfHubHTTPError: 401 Client Error: Unauthorized`
-
-Your `HUGGING_FACE_HUB_TOKEN` is missing, wrong, or your account hasn't accepted the Gemma 4 license. Fix:
-
-1. Accept the license: https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4
-2. Create a **read-scope** token at https://huggingface.co/settings/tokens
-3. Put it in `.env` as `HUGGING_FACE_HUB_TOKEN=hf_xxxxx`
-4. `docker compose up -d --force-recreate vllm-llm`
-
-### `torch.OutOfMemoryError: CUDA out of memory`
-
-Both vLLM services are starting in parallel and racing for the unified memory. Check:
-
-- `LLM_GPU_MEM_UTIL=0.68` (with embedding) or `0.85` (without embedding) in `.env`.
-- `EMBED_GPU_MEM_UTIL=0.03` in `.env`.
-
-If the problem persists, something else on the host is holding GPU memory. `nvidia-smi` will show which process.
-
-### `ValueError: The quantization method modelopt is not supported for the current GPU`
-
-You're not on a GB10 / Blackwell (`sm_120` / `sm_121`). The NVFP4 kernels require Blackwell. Either move to supported hardware, or swap to a non-NVFP4 model — see `CUSTOMIZATION.md`.
-
-### Generates raw `call:name{"args":...}` text instead of tool calls
-
-The Gemma 4 chat template isn't being picked up. Check:
-
-```bash
-docker exec ${PROJ}vllm-llm ls /templates/
-# Should show: tool_chat_template_gemma4.jinja
-```
-
-If the file is missing, something went wrong with the volume mount. Ensure you have `templates/tool_chat_template_gemma4.jinja` in the repo, then `docker compose up -d --force-recreate vllm-llm`.
-
-## vllm-embedding
-
-### `docker compose up` fails with OOM before vllm-llm finishes loading
-
-The LLM has grabbed more memory than `LLM_GPU_MEM_UTIL` suggests (vLLM util is fraction-of-free, and it starts allocating before the embedding service does). Options:
-
-- Lower `LLM_GPU_MEM_UTIL` by `0.02–0.05`.
-- Start the embedding service first: `docker compose up -d vllm-embedding`, wait for it to become healthy, then `docker compose up -d`.
-
-### `docker compose exec vllm-embedding curl localhost:8005/v1/embeddings -d '{...}'` returns 401
-
-`VLLM_API_KEY` isn't set, or you forgot the `-H "Authorization: Bearer $VLLM_API_KEY"` header. The embedding service requires the same key as the LLM.
-
-### Embedder crashed mid-index — memory partially vectorized, `Dirty` flag still reports clean
-
-Under unified-memory contention on GB10, the embedder can transiently die with `torch.AcceleratorError: CUDA error: operation not permitted` (`cudaErrorNotPermitted`). Docker's `restart: unless-stopped` brings it back in ~10 s and the service resumes serving — but any `/v1/embeddings` calls in flight at the crash instant return 500, and the chunks OpenClaw was indexing at that moment get silently skipped.
-
-OpenClaw's indexer does not re-dirty files whose embed step failed. `openclaw memory status` then reports `Dirty: no` even though the vector store is incomplete. Real-world example: `Indexed: 2/10 files · 14 chunks` with `Dirty: no` against a workspace that should have 10 files fully indexed.
-
-**Detect:**
-
-```bash
-docker exec ${PROJ}openclaw-cli openclaw memory status \
-  | grep -E "^(Indexed|Dirty|By source)"
-docker inspect ${PROJ}vllm-embedding --format "RestartCount: {{.RestartCount}}"
-```
-
-If the indexed file count is below the actual file count in `~/.openclaw/workspace/memory/` and `RestartCount` is non-zero, you're in this state.
-
-**Fix — force full reindex:**
-
-```bash
-docker exec ${PROJ}openclaw-cli openclaw memory index --force
-```
-
-Ignores the `Dirty` flag, re-embeds every chunk. Expect the post-fix status to show full coverage (e.g. `Indexed: 10/10 files · 34 chunks`).
-
-**Preventive habit:** after any `vllm-embedding` restart, run `memory index --force` once. This is a workaround for an OpenClaw-side gap — the repo's restart policy catches the GPU-level incident, but OpenClaw's indexer state tracking won't auto-repair.
-
-Tracked upstream: [openclaw/openclaw#70567](https://github.com/openclaw/openclaw/issues/70567). When upstream fixes the indexer to re-dirty files whose embed step returned 5xx, this workaround can be retired.
-
-## openclaw-gateway
-
-### `Missing config. Run openclaw setup …` (gateway crash-loops on a fresh install)
-
-Expected on the very first `docker compose up -d` of a fresh install. The OpenClaw security model requires explicit onboarding (you choose the gateway token and pair the UI) before the gateway accepts connections, and the patcher honors this — it skips cleanly when `openclaw.json` doesn't exist yet.
-
-Two-phase fix:
-
-1. **Onboard.** Either pair the Chrome extension (which runs the wizard interactively), or use the headless CLI:
-   ```bash
-   docker exec ${PROJ}openclaw-cli openclaw onboard \
-     --non-interactive --token "$OPENCLAW_GATEWAY_TOKEN"
-   ```
-   This writes `openclaw.json` to your `OPENCLAW_CONFIG_DIR`.
-2. **Re-apply the patcher** so the 11 deterministic-state steps run on the new file:
-   ```bash
-   docker compose up -d --force-recreate \
-     openclaw-config-init openclaw-gateway openclaw-cli
-   ```
-
-The trio of services must be recreated together — see "openclaw-cli loses connectivity after a gateway recreate" below.
-
-### `Profile vllm:default timed out` on first connection from the extension
-
-The gateway's provider config still has a placeholder API key. Either:
-
-- Wait for `openclaw-config-init` to run (it runs before the gateway on every `up`); the next gateway start will have the correct key.
-- Force it: `docker compose run --rm openclaw-config-init`, then `docker compose restart openclaw-gateway`.
-
-Verify:
-
-```bash
-docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/openclaw.json \
-  | grep -A1 '"vllm"' | head -20
-```
-
-The `apiKey` field should be the exact same string as `VLLM_API_KEY` in your `.env`. If it looks like `CHANGE_ME_…` instead, the placeholder was never replaced — check that `bootstrap.sh` actually ran, or set the value by hand and re-run the patcher.
-
-### `Config invalid: must NOT have additional properties` on boot
-
-You have `OPENCLAW_ENABLE_DREAMING=1` in `.env` but your OpenClaw image is older than `2026.4.15`. Either:
-
-- Pull a newer image: `docker compose pull openclaw-gateway && docker compose up -d`.
-- Disable dreaming: `OPENCLAW_ENABLE_DREAMING=0` in `.env`, then `docker compose up -d` (the patcher will clean up the invalid `memory-core` entry).
-
-### `gateway.trustedProxies is empty` security warning
-
-Impossible with the shipped `patch-config.mjs` — step 7 populates it. If you still see this, something is preventing the patcher from writing. Check:
-
-```bash
-docker logs ${PROJ}openclaw-config-init
-```
-
-Common cause: wrong ownership on `$OPENCLAW_CONFIG_DIR`. The init container runs as UID 1000 and needs write access to that directory.
-
-### Chrome extension can't connect (`ws://` fails)
-
-- Make sure the port is actually reachable: `curl http://<host>:18789/healthz` should return 200.
-- If you're using a reverse proxy and see `403`: check that the proxy is forwarding the `Upgrade: websocket` and `Connection: upgrade` headers.
-- If the extension complains about TLS on `ws://` but not `wss://`: modern browsers only allow `ws://` on localhost. Use `wss://` via a reverse proxy for remote access, or run the extension's origin as localhost.
-
-### `openclaw memory status --deep` reports vector index 0 chunks
-
-Nothing has been embedded yet. Start a chat, write a memory, wait ~1s. `--deep` will then show the chunk count matching your recent memory writes.
-
-## openclaw-cli
-
-### `openclaw: command not found` in the cli container
-
-You're probably running `docker exec ${PROJ}openclaw-cli openclaw` but the container isn't up. Check `docker compose ps openclaw-cli`. It should be `Up` (no healthcheck, just running `sleep infinity`).
-
-### `ENETUNREACH` when calling `openclaw memory status --deep`
-
-Impossible with this stack — the CLI shares the gateway's network namespace and resolves both vLLM services by compose DNS. If you're seeing this, you're probably on an older standalone compose file. Migrate to this repo's `docker-compose.yml`.
-
-### Every CLI command takes ~5 s before output
-
-That's Node.js module-loading cold start. It's not your infra — every invocation spins up a fresh Node process inside the container. Not fixable from this stack. For high-frequency scripted use, consider calling the gateway's HTTP API directly.
-
-## TTS (openclaw-tts-fish — Fish Audio S2 Pro)
-
-### Discord/voice surfaces are silent even though the gateway accepted the message
-
-The most common cause on a stack upgraded from < 0.4.0: patcher step 11 wired
-`messages.tts.providers.openai` correctly, but the top-level
-`messages.tts.{enabled,auto,mode}` switches were never written, so the gateway
-silently treats TTS as off. Fix:
-
-```bash
-docker exec ${PROJ}openclaw-cli cat /home/node/.openclaw/openclaw.json \
-  | jq '.messages.tts | {enabled, auto, mode, provider: .providers.openai.baseUrl}'
-```
-
-Expected output:
-
-```json
-{ "enabled": true, "auto": "always", "mode": "final", "provider": "http://openclaw-tts-fish:8080/v1" }
-```
-
-If `enabled` / `auto` / `mode` are missing or false, re-run the patcher:
+Commands below use the default container names. If you set
+`CONTAINER_NAME_PREFIX`, put it in front of every name in `docker exec`. Most
+config fixes end with the trio recreate, which re-runs config-init and keeps the
+CLI in the gateway's network namespace:
 
 ```bash
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-### `OPENCLAW_TTS_FISH_API_KEY not set — skipping messages.tts.*`
+- [Startup and onboarding](#startup-and-onboarding)
+- [Model and vLLM](#model-and-vllm)
+- [GB10 host: power-offs and freezes](#gb10-host-power-offs-and-freezes)
+- [Gateway and CLI](#gateway-and-cli)
+- [Discord bot](#discord-bot)
+- [Web search](#web-search)
+- [Memory search](#memory-search)
+- [Optional components](#optional-components)
+- [Host](#host)
 
-Patcher step 11 logs this and exits cleanly when the env var is missing. By
-design — TTS is opt-in. If you wanted TTS, set the var in `.env` and re-run
-the patcher trio (see above). If you didn't, ignore; the rest of the stack is
-unaffected.
+---
 
-### `voice 'X' not found at /app/voices/X.wav`
+## Startup and onboarding
 
-The shim resolves the OpenAI `voice` field to `/app/voices/<voice>.{wav,txt}`
-on the mounted `tts-fish-voices` volume. A 404 means the file pair isn't there.
-Check what's mounted:
+### The gateway crash-loops with `Missing config. Run openclaw setup …`
 
-```bash
-docker exec ${PROJ}openclaw-tts-fish ls -la /app/voices/
-```
+Expected on the first `docker compose up -d` of a fresh install. There is no
+`openclaw.json` yet, so config-init exits 0 without writing anything, and the
+gateway has no config to start from. OpenClaw requires explicit onboarding (you
+choose the gateway token and pair the UI) before it accepts connections.
 
-The bundled 7-voice library (`default_en`, `bella`, `nicole`, `michael`,
-`fenrir`, `emma`, `default_hu` — each a `.wav` + `.txt` pair) should be
-present after first start; it's baked into the image from
-`openclaw-tts-fish/server/voices/`, so a missing seed means the container
-started before the volume mount, or someone deleted files from the volume
-(the shim never re-copies a name that already exists there). Re-seed by
-recreating the container, or add a voice manually:
+Onboard as described in [`SETUP.md`](../SETUP.md), then run the trio recreate so
+config-init applies the stack's wiring to the new file.
 
-```bash
-docker cp myvoice.wav ${PROJ}openclaw-tts-fish:/app/voices/
-docker cp myvoice.txt ${PROJ}openclaw-tts-fish:/app/voices/
-```
+### The gateway never starts and `openclaw-config-init` exited with an error
 
-No restart needed — the shim resolves at request time.
-
-### `voice 'X' is missing its transcript at /app/voices/X.txt`
-
-Voice cloning requires BOTH files — the WAV and a verbatim transcript. The
-transcript can be a single sentence ("Hello, this is a test.") if it matches
-exactly what's said in the WAV.
-
-### Healthz reports `engine_ready: false` / `upstream_health: unreachable` for >5 minutes
-
-SGLang-Omni cold-load takes several minutes on first start (~11 GB s2-pro
-weights load + JIT kernel compile). Watch the engine progress:
+The gateway waits for config-init to finish successfully, so a config-init error
+stops the whole OpenClaw side. Read why:
 
 ```bash
-docker compose logs -f openclaw-tts-fish
+docker logs openclaw-config-init
 ```
 
-Look for `sglang_omni` startup messages — model load, kernel build, "ready"
-on `:9090`. If the child process exits with `no kernel for sm_NNN`, see the
-next entry. If it hangs on `Downloading shards`, the model bake at image build
-time failed and runtime is re-downloading — kill the container, rebuild with
-`docker compose build --no-cache openclaw-tts-fish`.
-
-### TTS container crash-loops with `torch wheel was built without sm_NNN kernels`
-
-Visible in `docker compose logs openclaw-tts-fish` as a `RuntimeError` (or a
-`gpu_compat: missing (...)` line in `/healthz`) naming the missing compute
-capability. Means the cu130 torch wheel baked into the image predates your
-GPU's arch (e.g. sm_120 on GB10 before Blackwell-ready cu130 wheels shipped).
-Rebuild with a fresh wheel pull:
-
-```bash
-docker compose build --no-cache openclaw-tts-fish
-docker compose up -d --force-recreate openclaw-tts-fish
-```
-
-Confirm the fix via the shim's healthz — the `gpu_compat` field now reports
-`ok exact (sm_XXX; arch_list=[...])` or `ok ptx-fwd (sm_XXX via sm_YYY JIT)`:
-
-```bash
-curl -sS http://127.0.0.1:8091/healthz | jq '{device, gpu_compat, engine_ready}'
-```
-
-If you can't rebuild right now, set `TTS_FISH_DEVICE=cpu` in `.env` and
-recreate — CPU is very slow (10-30s per short clip) but functional for smoke.
-
-### Hungarian sounds wrong / garbled
-
-S2 Pro is multilingual but Hungarian is "Tier 3". The bundled
-`default_hu.wav` (Diana Majlinger / LibriVox PD) is a clean reference and
-should produce intelligible HU. If quality is poor on a custom voice, try:
-
-- Better reference clip: 10-30 s, single speaker, no music/noise/echo, 16-24 kHz
-  mono. Voice cloning quality dominates Hungarian fidelity on Tier-3 langs.
-- Verify the transcript matches the WAV word-for-word (Fish Audio aligns
-  prosody to the transcript during cloning).
-- For accuracy-first HU production work, consider keeping a parked F5-TTS HU
-  fallback service (re-add the legacy `openclaw-tts-f5hun` dir + compose
-  block under `profiles: ["hu-fallback"]`).
-
-### `openclaw infer tts convert` returns success but `provider=microsoft` instead of `openai`
-
-Symptom chain: openclaw-tts-fish returned 500/timeout to the OpenAI-compat
-provider, OpenClaw fell through its provider chain, and Microsoft Edge TTS
-(built-in, cloud, free-tier) answered. User-visible outcome: wrong accent /
-wrong voice. Diagnose with `--json`:
-
-```bash
-docker exec ${PROJ}openclaw-cli openclaw infer tts convert \
-  --text "probe" --voice default_en --output /tmp/t.wav --json
-```
-
-Look at `attempts[]` — the `openai` entry will show `outcome: "failed"` with
-a `reasonCode` and error string. Common reasons:
-
-- `provider_error` with `500 Internal Server Error` → SGLang-Omni child
-  crashed. Check `docker compose logs openclaw-tts-fish` and rebuild.
-- `provider_error` with `401` → `OPENCLAW_TTS_FISH_API_KEY` in `.env`
-  doesn't match `TTS_API_TOKEN` the shim is enforcing. They MUST be equal —
-  `bootstrap.sh` sets both to the same generated secret.
-- `provider_error` with `404` → bad `voice` id; see "voice not found" above.
-- `timeout` → SGLang-Omni alive but slow (CPU fallback mid-synthesis).
-
-The provider chain with a healthy local Fish service should always land `openai` as
-the successful attempt; seeing `microsoft` is a signal that something upstream
-needs fixing — not an acceptable steady state.
-
-### Hungarian text comes out with English phonetics
-
-The diacritic autodetect didn't fire — either the HU backend isn't wired
-(check `/healthz` on the router; `f5hun_enabled` should be `true`), or the
-input genuinely has no `áéíóöőúüűÁÉÍÓÖŐÚÜŰ` characters and the autodetect
-correctly fell through to the EN backend. To force HU explicitly, ask the
-agent to use voice id `default_hu` or `hu_diana`.
-
-## Browser automation (openclaw-browser)
-
-### `session_expired` from a profile that worked yesterday
-
-Upstream sites expire cookies on their own schedule. Approximate 2026
-defaults:
-
-| Service | Typical session lifetime |
+| Message | Cause and fix |
 |---|---|
-| GitHub | 14 days inactive — but **2FA re-prompt at 28 days** from the last 2FA event |
-| Notion (free / pro) | ~30 days |
-| Notion Enterprise | up to 180 days (admin-configurable) |
-| Google consumer | 14 days default; "Stay signed in" extends |
-| MediaWiki | 30 days (default `$wgCookieExpiration`) |
-| Discord | 7 days OAuth tokens |
+| `FOO="x" is not on/off`, `... must be one of ...`, `... is not an integer` | A knob in `.env` has a value config-init does not accept. Fix it (see [`reference/configuration.md`](reference/configuration.md)) and recreate the trio. An empty value means "use the default". |
+| `openclaw.json still has the pre-2026.10 agents.list` | The config predates the 2026.10 schema. Upgrade through [`OPENCLAW_UPGRADE.md`](OPENCLAW_UPGRADE.md), or run `openclaw doctor --fix` first. |
+| `template ...: no value for {{NAME}}` | A template in `config-init/templates/` uses a placeholder its step does not fill. Fix the template or the step. |
+| `OPENCLAW_TTS=on needs OPENCLAW_TTS_FISH_API_KEY` | TTS was switched on without its token. |
+| `EACCES` / permission denied | config-init runs as UID 1000. The host dirs in `.env` (`OPENCLAW_CONFIG_DIR`, `OPENCLAW_WORKSPACE_DIR`, `OPENCLAW_CANVAS_DIR`, ...) must be writable by that UID; `bootstrap.sh` creates them that way. |
 
-GitHub's 28-day 2FA window is the surprise: a session can be active and
-still re-prompt for 2FA. Re-onboard with:
+### The gateway waits for minutes before it starts
 
-```bash
-./bootstrap-browser-login.sh github-user1
-```
+It starts only once `vllm-llm` and `vllm-embedding` are healthy. On a first boot
+that is the model download (see [the next section](#vllm-llm-stays-in-starting-for-a-long-time)).
+`docker compose ps` shows which dependency it is waiting for.
 
-(idempotent — runs in place against the existing user-data-dir).
+### The Control UI or the Chrome extension cannot connect
 
-### `bootstrap-browser-login.sh` says "openclaw-browser not reachable"
+- `curl http://<host>:18789/healthz` should answer `{"ok":true,...}`. If not, the
+  gateway is not up or `OPENCLAW_GATEWAY_PORT` / `OPENCLAW_GATEWAY_BIND` differ.
+- Behind a reverse proxy that answers `403`: the proxy has to forward the
+  `Upgrade: websocket` and `Connection: upgrade` headers.
+- Browsers allow plain `ws://` only on localhost. For remote access use `wss://`
+  through a TLS-terminating proxy. If that proxy forwards plaintext `ws://` to the
+  gateway on a private IP, set `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1`.
+- Clients that reach the gateway directly (not through the proxy) show up as the
+  proxy's address unless their range is in `OPENCLAW_LAN_CIDR`.
 
-The browser service is opt-in and not started by `docker compose up -d`
-without `--profile browser`. Either add `browser` to `COMPOSE_PROFILES`
-in `.env` or pass `--profile browser`:
+## Model and vLLM
 
-```bash
-docker compose --profile browser up -d --build openclaw-browser
-docker compose --profile browser ps openclaw-browser
-```
+### `vllm-llm` stays in `starting` for a long time
 
-If it's running but unreachable, check `BROWSER_BIND` (default
-`127.0.0.1`) and that you're hitting `http://127.0.0.1:9220/healthz`
-from the same host.
-
-### noVNC tab opens but the screen is black
-
-Almost always one of three things:
-
-1. **`shm_size` was reduced.** Chromium needs ≥ 1 GB on `/dev/shm` to render anything non-trivial. Restore the default:
-   ```yaml
-   shm_size: "1gb"
-   ```
-2. **Xvfb didn't start in time.** The `time.sleep(0.5)` in `LoginHelper.start()` covers cold starts. If your host is heavily loaded, raise it. Symptoms: x11vnc starts but reports "no display".
-3. **Browser is paused waiting for user-data-dir to be writable.** Verify the bind mount:
-   ```bash
-   docker compose exec openclaw-browser ls -la /storage
-   ```
-   Should be writable by the container's UID (root in the Playwright base image).
-
-### WebAuthn / passkey screen appears but nothing happens when I click
-
-Expected. WebAuthn over noVNC does NOT work — the W3C spec is
-origin-bound, and the platform authenticator on your laptop has no
-path to the remote Chromium's origin. Workarounds:
-
-1. Pick "Use password instead" on the auth screen if available.
-2. Use a TOTP / SMS OTP option for that account.
-3. For accounts that are passkey-only, switch to an API token /
-   personal access token and route the agent through the service's
-   REST API, bypassing the browser entirely.
-
-USB hardware passkeys (YubiKey) plugged into your laptop are also
-inaccessible — the container does not pass through your laptop's USB
-bus.
-
-### Chromium SIGKILL'd mid-render
-
-Two common root causes:
-
-1. **`shm_size` too small** — see above.
-2. **Docker default seccomp blocks Chromium syscalls.** The compose
-   block ships with a placeholder seccomp profile at
-   `openclaw-browser/config/seccomp.json`. Pull Playwright's upstream
-   profile in for production:
-   ```bash
-   curl -fsS \
-     https://raw.githubusercontent.com/microsoft/playwright/main/utils/docker/seccomp_profile.json \
-     > openclaw-browser/config/seccomp.json
-   ```
-   Then uncomment the `seccomp=` line in the compose service block and
-   `docker compose up -d --force-recreate openclaw-browser`.
-
-### Cloudflare Turnstile / DataDome blocks every navigation
-
-Vanilla Playwright Chromium ships `navigator.webdriver=true`, default
-WebGL fingerprint, default canvas — all detectable by modern bot
-managers. The boundary is documented in
-`docs/reference/browser-automation.md`. Two paths forward:
-
-1. Use the site's official API instead of the browser. Most user-owned
-   accounts have one (GitHub, GitLab, Notion, Linear).
-2. Swap `playwright` for `patchright` in `requirements.txt` and rebuild
-   — see `docs/CUSTOMIZATION.md` → "Swap to Patchright if you need
-   stealth". Apache 2.0; binary-level patches address the most common
-   detection vectors.
-
-### "Profile XYZ exceeds the 20-port range"
-
-You added more than 20 names to `BROWSER_PROFILE_NAMES`. Bump
-`BROWSER_MAX_PROFILES` and the corresponding port range in
-`docker-compose.yml`. See `docs/CUSTOMIZATION.md` → "Expand beyond 20
-profiles".
-
-### `/json/version` returns 401 with the right `?token=`
-
-The token at the URL doesn't reach Chromium (Chromium ignores query
-strings on its discovery endpoint), so 401 here is from the **management
-API** at port 9220 — you're hitting the wrong port. CDP discovery is
-on the per-profile port (default profile = 9222). Confirm:
+On a first start the default Nemotron model downloads ~80 GB and compiles kernels;
+the healthcheck allows 25 minutes (`start_period: 1500s`) for that. Later starts
+only load the weights from disk. Follow the progress:
 
 ```bash
-curl -sS "http://127.0.0.1:9222/json/version" | jq
-# This returns Chromium's debug info — no auth required at this layer.
+docker compose logs -f vllm-llm
 ```
 
-The query-string token is best-effort; production-grade auth needs a
-header-auth reverse proxy in front of the CDP ports (see
-`docs/CUSTOMIZATION.md` → "Expose CDP on the LAN").
+The optional model files have their own budgets: `compose/gemma4.yml` 10 minutes,
+`compose/mistral.yml` 15 minutes (measured ~10 minutes to healthy from a USB SSD).
 
-## Python sandbox (openclaw-python-sandbox)
+If the host has no internet when `vllm-llm` starts, the hub look-ups can hold the
+start. Once the weights are cached, `HF_HUB_OFFLINE=1` in `.env` stops all hub
+dial-outs.
 
-### Agent ignores the tool / replies without calling python_exec
+### `HfHubHTTPError: 401 Client Error: Unauthorized`
 
-Most likely: you referred to the tool as `python_exec` in the prompt,
-but OpenClaw exposes external MCP tools under
-`<server_name>__<tool_name>`. The catalog name is
-`python_sandbox__python_exec` — Gemma 4 NVFP4 silently fails to match
-the bare name and emits an unrelated reply (verified 2026-04-26 on GB10).
+`HUGGING_FACE_HUB_TOKEN` is missing or wrong, or your HuggingFace account has not
+accepted the model's licence. Accept it on the model's HuggingFace page, create a
+read-scope token, put it in `.env`, then `docker compose up -d --force-recreate vllm-llm`.
 
-Fix: use the prefixed name in your prompt:
+### `torch.OutOfMemoryError` or the model does not fit
 
-```text
-Call python_sandbox__python_exec with code="print(2**128)". Reply with VAL: <result>.
-```
+The GB10 has one 128 GB memory pool for the GPU and the OS. Nemotron at
+`LLM_GPU_MEM_UTIL=0.70` takes ~70 GiB, which leaves no room for ComfyUI or Fish TTS
+beside it. vLLM sizes itself from the memory that is free when it starts, so two
+large servers that start at the same time both over-commit. Check `free -g` and
+`docker stats`, stop the other large workload, then restart `vllm-llm`. The Fish
+TTS file waits for a healthy `vllm-llm` for this reason.
 
-If the prefixed name still doesn't trigger a call, follow the
-"tool not registered" diagnostic chain below.
+### `The quantization method modelopt is not supported for the current GPU`
 
-### Agent says "I don't have a python_exec tool" / "no python_sandbox__python_exec"
+The NVFP4 checkpoints need a Blackwell GPU. On other hardware use a model and
+quantization that fits it; see [`CUSTOMIZATION.md`](CUSTOMIZATION.md#a-model-this-repo-does-not-ship).
 
-The MCP server isn't wired into the gateway. Three failure modes,
-diagnose in order:
+### Gemma prints `call:name{...}` text instead of making tool calls
 
-1. **Service not running.** `docker compose ps openclaw-python-sandbox`
-   should show it healthy. If it's missing, you didn't activate the
-   profile — add `python` to `COMPOSE_PROFILES` in `.env` (or pass
-   `--profile python`) and `docker compose up -d openclaw-python-sandbox`.
-2. **Token unset.** `grep '^PYTHON_SANDBOX_API_TOKEN=' .env` returns an
-   empty value or the placeholder. The patcher's step 18 skips when
-   the token is empty. Either run `bootstrap.sh` and choose opt-in,
-   or set the value by hand and re-run the patcher:
-   `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`.
-3. **Patcher hasn't run since opt-in.** `docker compose logs
-   openclaw-config-init | grep python_sandbox` should show the
-   `mcp.servers.python_sandbox.*` write lines from the last patcher
-   run. If absent, force-recreate the init service to retrigger.
-
-Confirm the wiring landed:
-```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
-docker exec ${PROJ}openclaw-cli sh -c \
-  'cat ~/.openclaw/openclaw.json | jq ".mcp.servers.python_sandbox"'
-# Should print { "transport": "streamable-http", "url": "...", "headers": {...} }
-```
-
-### `python_exec` returns `TimeoutError: execution exceeded 30.0s`
-
-The kernel was interrupted mid-run. Two common causes:
-
-- **Genuinely long computation.** Bump `PYTHON_SANDBOX_KERNEL_TIMEOUT_S`
-  in `.env`, recreate the service. The kernel is *interrupted* (not
-  killed) on timeout, so any session state (loaded dataframes,
-  imports) survives. The next call against the same `session_id`
-  inherits that state.
-- **Accidental `time.sleep` or blocking I/O.** If the agent wrote
-  `time.sleep(...)`, the kernel was idle, not computing. Inspect with
-  `docker exec ${PROJ}openclaw-python-sandbox curl -sS
-  http://127.0.0.1:8094/healthz` — if `kernels=N` for `N>0`, kernels
-  are alive. Reset the session via `python_session_reset` and
-  re-prompt the agent without the sleep.
-
-### Kernel OOM-killed mid-call (no error, just truncated output + fresh state)
-
-The container hit `mem_limit` (default 8 GB) and the docker engine
-SIGKILL'd the kernel. The next `python_exec` call against the same
-`session_id` transparently starts a fresh kernel — but the prior
-state (variables, loaded data) is gone.
-
-Three mitigations:
-
-1. **Bump the cap.** Edit `PYTHON_SANDBOX_MEMORY_MB` in `.env`,
-   recreate the service. Watch GB10 vLLM headroom (`docker stats
-   ${PROJ}vllm-llm`) — going over ~16 GB sandbox cap on a 128 GB box
-   is fine; on smaller systems you may starve the LLM.
-2. **Save big intermediate results to `/workspace`.** A 10 GB
-   dataframe in RAM gets killed; the same dataframe written to
-   `/workspace/data.parquet` and re-loaded as needed survives.
-3. **Use `del` and `gc.collect()` after large operations.** ipykernel
-   doesn't always free memory aggressively after a `del`; explicit
-   `gc.collect()` plus `python_session_reset` for a clean slate is
-   the reliable path.
-
-## Image-gen bridge (openclaw-image-comfyui)
-
-### Agent can't find `comfyui_image__generate` / says no such tool
-
-Three failure modes — diagnose in order:
-
-1. **Bridge not running.** The bridge lives in a SEPARATE compose file
-   (`openclaw-image-comfyui/docker-compose.yml`). `docker compose up
-   -d` from the repo root does NOT start it; you have to bring it up
-   explicitly:
-   ```bash
-   docker compose -f openclaw-image-comfyui/docker-compose.yml \
-                  --env-file .env --profile image-gen up -d --build
-   ```
-2. **Token unset.** `grep '^IMAGE_GEN_API_TOKEN=' .env` returns
-   empty. Patcher step 19 skips (and removes any prior wiring) when
-   the token is empty. Either run `bootstrap.sh` and choose opt-in
-   3e, or use `./rotate-secrets.sh IMAGE_GEN_API_TOKEN`.
-3. **Patcher hasn't run since opt-in.** `docker compose logs
-   openclaw-config-init | grep comfyui_image` should show
-   `mcp.servers.comfyui_image.*` write lines from the last patcher
-   run. If absent, force-recreate the init service:
-   ```bash
-   docker compose up -d --force-recreate \
-                  openclaw-config-init openclaw-gateway openclaw-cli
-   ```
-
-Confirm the wiring landed:
-```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
-docker exec ${PROJ}openclaw-cli sh -c \
-  'cat ~/.openclaw/openclaw.json | jq ".mcp.servers.comfyui_image"'
-# Should print { "transport": "streamable-http", "url": "...", "headers": {...} }
-```
-
-Same tool-prefix gotcha as the Python sandbox: in your prompts use
-the full `comfyui_image__generate` name, NOT bare `generate` —
-Gemma 4 NVFP4 silently fails to match unprefixed names.
-
-### Bridge healthy but generate returns "comfyui_error: connect to host.docker.internal:13036 failed"
-
-The bridge can't reach your existing ComfyUI install. Test the hop
-directly:
+The Gemma tool chat template is not mounted. It ships in `compose/gemma4/`, and
+`compose/gemma4.yml` mounts it at `/templates`:
 
 ```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
-docker exec ${PROJ}openclaw-image-comfyui curl -fsS \
-  http://host.docker.internal:13036/system_stats | head -c 200
+docker exec vllm-llm ls /templates/    # tool_chat_template_gemma4.jinja
 ```
 
-Three common causes:
+If it is missing, check that `COMPOSE_FILE` includes `compose/gemma4.yml`, then
+recreate `vllm-llm`.
 
-1. **ComfyUI isn't actually published on `13036`.** Confirm the
-   port-publish in your ComfyUI compose: `docker port comfyui` should
-   show `8188/tcp -> 0.0.0.0:13036` (or wherever you published it).
-   Adjust `COMFYUI_URL` in `.env` to match.
-2. **ComfyUI binds loopback inside its container but the publish is
-   to `127.0.0.1` only on the host.** That's fine — the bridge uses
-   `host.docker.internal:host-gateway` which routes to the host's
-   docker bridge IP, and `127.0.0.1`-published ports are reachable
-   from that interface on Linux. If you locked the publish to a
-   specific external IP, switch the bridge's `COMFYUI_URL` to that IP.
-3. **`host-gateway` not supported.** Requires Docker 20.10+. Older
-   Docker: replace `host.docker.internal:host-gateway` in
-   `openclaw-image-comfyui/docker-compose.yml` with the actual host
-   bridge IP (`172.17.0.1` typically), or move to a shared external
-   network.
+### Turns die as "timed out" while vLLM is still working
 
-### `comfyui_error: prompt rejected (HTTP 400): … missing model …`
+A long prefill (a coding session's context, a big tool result) can take minutes on
+the GB10. Config-init raises the provider timeout (`LLM_REQUEST_TIMEOUT_SECONDS`)
+and the per-run timeout (`OPENCLAW_AGENT_TIMEOUT_SECONDS`) to 1800 s for this; check
+that neither was lowered in `.env`.
 
-The workflow JSON references a checkpoint name (`ckpt_name`) that
-doesn't exist in your ComfyUI's `basedir/models/checkpoints/`. Two
-causes:
-
-1. **Workflow has the `REPLACE_ME.safetensors` placeholder** and you
-   didn't pass `checkpoint=...`. The bridge will refuse cleanly with
-   `_metadata.checkpoint_required` — re-prompt with an explicit
-   `checkpoint` argument referring to a file that exists in your
-   ComfyUI checkpoints directory.
-2. **You passed a checkpoint that isn't installed.** List what's
-   actually present:
-   ```bash
-   ls /media/usb/comfyui/basedir/models/checkpoints/
-   ```
-   (or wherever your ComfyUI's basedir lives — check the
-   `COMFY_UI_APP_BASEDIR_PATH` in your ComfyUI compose's `.env`).
-
-### Generate returns "comfyui_restarted: prompt … disappeared from /history"
-
-Your ComfyUI process restarted (manually, OOM, supervisor) while the
-bridge was polling for a result. The bridge surfaces a one-line error
-rather than hanging. Check:
+For tests through the CLI, `openclaw agent` has its own `--timeout`, and its default
+is too short for tool-using runs. Use `--timeout 600`:
 
 ```bash
-docker compose -f /path/to/your/comfyui/docker-compose.yml ps
-docker compose -f /path/to/your/comfyui/docker-compose.yml logs --tail=50 comfyui
+docker exec openclaw-cli openclaw agent --agent main \
+  --message "Use web_search to find the title of docker.com." \
+  --thinking off --json --timeout 600
 ```
 
-Re-run the generate call once the ComfyUI is healthy again.
+### The model never thinks, or turns end with an empty answer
 
-### Everything works but LLM token generation pauses for 20-30s during image rendering
+- **Never thinks:** the catalog entry needs the right `compat` for the model family,
+  or OpenClaw sends no thinking control at all. `LLM_THINKING_COMPAT=auto` picks it
+  from `LLM_MODEL_ID`; a model id config-init does not recognize gets none. See
+  [`reference/llm-stack.md`](reference/llm-stack.md#thinking-switch-catalog-compat).
+- **Empty answers after a long think:** thinking and answer share `LLM_MAX_TOKENS`
+  (default 32768). At 8192 a long think plus a large tool-call JSON ran out.
 
-ComfyUI runs on the same GB10 GPU as vLLM. Concurrent generation
-pre-empts LLM token gen. Two mitigations:
+### Hungarian replies contain characters from other scripts
 
-1. **Default already serializes the bridge.** `IMAGE_GEN_MAX_CONCURRENCY=1`
-   means the bridge holds an `asyncio.Lock` so two parallel agent
-   calls won't double-tap the GPU. If you've changed this to `0`,
-   change it back.
-2. **Model swap to a faster workflow.** FLUX Schnell at 4 steps
-   finishes in ~3-8s; SDXL at 25 steps takes 20-40s. Use Schnell when
-   the agent doesn't need maximum quality.
+Nemotron samples at temperature 1.0 from its own generation config, and at 1.0
+Hungarian replies picked up foreign-script characters mid-word. `LLM_TEMPERATURE=auto`
+sets 0.6 for Nemotron; check that it was not overridden.
 
-If the contention is unacceptable: move ComfyUI to a separate GPU/box
-and point `COMFYUI_URL` at the new endpoint.
+### vLLM answers 400 and the turn dies when a conversation has many images
 
-### NPM `[emerg] "auth_basic" directive is duplicate` after adding the /view custom location
+vLLM accepts at most `LLM_LIMIT_MM_IMAGES` images per prompt (default 4). The Discord
+prompt carries a rule about earlier images for this reason; raise the limit only if
+the memory budget allows it.
 
-You added `auth_basic off;` to the `/view` custom-location Advanced
-to "make it token-only" — but NPM auto-emits
-`auth_basic "Authorization required";` for every location when the
-host has an Access List with Basic auth. Two `auth_basic` directives
-in the same location → NGINX `[emerg]` → save fails with "internal
-error". Drop the `auth_basic off;` line from the location Advanced.
-The right knob is **`Satisfy Any` on the Access List Details tab** —
-that lets the `auth_request` 200 result alone satisfy the request,
-no Basic creds needed when the token is valid. (See
-`openclaw-image-comfyui/README.md` → "Token-protected proxy".)
+## GB10 host: power-offs and freezes
 
-### `/view` returns 200 even WITHOUT a token (every request lets through)
+Details and measurements: [`reference/gb10-power-thermal.md`](reference/gb10-power-thermal.md).
 
-Your Access List `Satisfy Any` is on, AND the Rules tab has an
-`Allow all` IP rule. With `Satisfy Any` the IP-allow alone passes,
-no auth needed → wide-open. **Drop the `Allow all` rule** from the
-Rules tab. Just leave the auto-fallback `deny all`. Then `Satisfy
-Any` falls through to Basic auth or auth_request — one of those
-must pass, but the IP check no longer auto-satisfies the request.
+### The box switches off under load, with nothing in the journal
 
-### `/view + valid token` returns 401 even though `/auth-validate?token=...` works directly
+Thermal or power protection. Under sustained LLM load a GB10 cuts out at about
+94 °C on the hottest `acpitz` zone, far below the 104.8 °C ACPI trip, and
+`nvidia-smi` reads 8-15 °C lower than that zone. The fix is a GPU clock cap,
+installed as a systemd unit because it does not survive a reboot:
 
-The NGINX `auth_request /auth-validate;` directive sends a
-sub-request with a STATIC URI — the parent request's `?token=...`
-does NOT propagate to the sub-request's `$args`. The bridge's
-`/auth-validate` sees an empty token query param and returns 401.
-
-Fixed in v0.9.10: the bridge now also reads the token from the
-`X-Original-URI` header that the proxy sets to `$request_uri` (NPM's
-default `proxy_set_header X-Original-URI $request_uri;` on the
-custom auth-validate location). If you're on an older bridge build,
-either upgrade or add to the proxy `/auth-validate` Advanced:
-
-```nginx
-proxy_pass http://<bridge-host>:9095/auth-validate?token=$arg_token;
+```bash
+sudo cp scripts/gb10-clock-cap.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now gb10-clock-cap
 ```
 
-But note the duplicate-`proxy_pass` trap — NPM auto-emits its own
-`proxy_pass` from the Forward Hostname/Port form fields, so an
-explicit `proxy_pass` in the Advanced is `[emerg]`. The
-`X-Original-URI` fallback in v0.9.10 sidesteps this entirely.
+It locks the graphics clock at 2200 MHz (`nvidia-smi -pl` is not available on
+GB10). If the box still shuts down, lower the cap to 2100, then 2000.
+`scripts/gb10-thermguard.sh` (from cron) is the backstop: it kills the LLM
+containers at 93 °C and starts them again after the box has cooled.
 
-## Agent runs (multi-step tool calls)
+### After a power-off the GPU is stuck at 611 MHz and everything is slow
 
-### Agent run times out with `Request was aborted` even though vLLM is healthy
+The USB-C power-delivery controller is wedged. `nvidia-smi -rgc` does not help;
+only a cold drain does: power off, unplug the PSU from the wall and from the box,
+hold the power button for 30 s, wait a minute, power on.
 
-Symptom: `openclaw agent --message "..."` returns
-`livenessState: blocked` or `Request timed out before a response was
-generated.` The gateway log shows
-`embedded run timeout: timeoutMs=NNNN` and
-`rawErrorPreview: "Request was aborted." failoverReason: "timeout"`.
-vLLM logs show successful 200 OK chat-completion responses with normal
-generation throughput (~6 tok/s on GB10).
+### The host freezes during a model load (no SSH, `docker ps` hangs)
 
-This is **not a tool-call parser bug** — the agent runtime simply
-hit the `--timeout` budget mid-run. Multi-step tool-call agents do
-several LLM calls per run (system-prompt prefill → tool-call args
-→ tool-result digestion → final reply), each producing 100-300
-tokens. On GB10 at ~6 tok/s that's ~30s per call; a 3-call
-tool-using run easily wants 90-120s. Add a 5-MCP-tool catalog and
-the system-prompt prefill for the first call alone burns 3-5s.
+The unified pool ran out. The kernel then thrashes in reclaim instead of
+OOM-killing, and swap makes it slower, not safer. Recover from the local console
+with `sudo pkill -9 -f '[vV][lL][lL][mM]'`. To keep it from happening:
 
-Fixes, in order of preference:
+- `scripts/gb10-memguard.sh` (from cron) kills the listed model containers while
+  `MemAvailable` is still above 6 GiB.
+- `sudo bash scripts/gb10-resilience-setup.sh` once: kernel memory reserve, lower
+  swappiness, hardware watchdog, sshd kept out of the OOM killer.
+- Checkpoints with huge shards: `scripts/reshard-safetensors.py` splits them, since
+  vLLM keeps a whole shard mapped while it loads.
 
-1. **Pass a generous `--timeout` to the agent invocation.** For any
-   tool-using run with the current MCP catalog (Python sandbox +
-   ComfyUI bridge + node tools + memory plugin):
-   ```bash
-   docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
-     --message "..." --thinking off --json --timeout 600
-   ```
-   `300` is the floor for single-tool runs; `600` is safe for
-   multi-step (e.g. `comfyui_image__list_workflows` then
-   `comfyui_image__generate` in the same run).
-2. **Use `--thinking off` for routine tool calls.** `medium` or
-   `high` reasoning multiplies the token budget by 2-3×. Reserve
-   reasoning for actually hard prompts.
-3. **Trim the tool catalog if you have no use for some.** Drop
-   `python` from `COMPOSE_PROFILES` (or empty
-   `PYTHON_SANDBOX_API_TOKEN`) if you don't run code; same for
-   `image-gen` / `IMAGE_GEN_API_TOKEN`. Each opt-out shaves
-   1-2 KB of system prompt and one less round of tool advertising.
+### `vllm-llm` stays stopped after a guard killed it
 
-The vLLM idle watchdog (`agents.defaults.llm.idleTimeoutSeconds`,
-patcher step 8 sets 300) is independent of `--timeout` — it
-guards against a stuck LLM connection, not a slow-but-progressing
-multi-step run.
+A killed container counts as stopped by hand, so `restart: unless-stopped` does not
+bring it back. `scripts/llm-ensure.sh` (from cron) starts it again, unless
+thermguard still holds it for heat or `~/.llm-ensure-off` exists.
 
-## Host-level issues
+## Gateway and CLI
 
-### `nvidia-smi` inside a container fails with `Failed to initialize NVML`
+### CLI commands fail with network errors after a gateway restart or a reboot
 
-The nvidia-container-toolkit isn't installed or Docker isn't restarted after configuring it:
+`openclaw-cli` (and `openclaw-meshcore-bridge`) run in the gateway's network
+namespace. A sharer that was not recreated together with the gateway keeps running
+in the old, dead namespace: no network at all, while `docker ps` still shows it Up.
+Typical output: `Gateway agent failed; falling back to embedded`, then
+`LLM request failed: network connection error`. After a reboot the daemon may also
+start a sharer before the gateway, which fails once and is not retried;
+`openclaw-cli` has no restart policy at all.
+
+Fix it now with the trio recreate (add `--profile meshcore` and
+`openclaw-meshcore-bridge` if you run it). Fix it for good with the watcher, which
+starts, restarts or recreates the sharers after every gateway start:
+
+```bash
+S=$PWD/scripts/netns-dependents-up.sh
+( crontab -l 2>/dev/null | grep -v netns-dependents-up.sh
+  echo "@reboot $S --watch >> $HOME/netns-dependents.log 2>&1"
+  echo "*/5 * * * * $S --watch >> $HOME/netns-dependents.log 2>&1" ) | crontab -
+```
+
+Details: [`reference/patterns.md`](reference/patterns.md#openclaw-cli-network-namespace-dependency).
+
+### A tool the bot has on Discord is missing in `openclaw agent` tests
+
+Some tools are owner-gated and only appear for a real owner sender, which a CLI run
+does not have. Test those on Discord, or read the agent's actual catalog with
+`openclaw gateway call tools.effective` instead of judging from a CLI run.
+
+### The image or vision tool still calls an old model URL
+
+`agents/<id>/agent/models.json` is a per-agent cache of the providers, regenerated
+only when it is missing; the image tool reads it, text generation does not. After a
+provider URL change, delete it and let the next run rebuild it:
+
+```bash
+docker exec openclaw-gateway sh -c 'rm -f /home/node/.openclaw/agents/*/agent/models.json'
+```
+
+### Every CLI command takes a few seconds before output
+
+Node.js cold start: each `openclaw` invocation is a fresh process. Not fixable from
+this stack; call the gateway's HTTP API for high-frequency scripted use.
+
+## Discord bot
+
+Configuration behind these entries: [`reference/discord-config.md`](reference/discord-config.md).
+
+### The bot does not answer in a channel
+
+By design it answers only when @mentioned or when someone replies to one of its
+messages (`OPENCLAW_DISCORD_REQUIRE_MENTION=on`). Check:
+
+- The mention is a real mention pill (pick the bot from Discord's autocomplete), not
+  the typed text "@Name". See [`reference/discord-text-agent.md`](reference/discord-text-agent.md#mentions).
+- `/activation always` does not open the gate; it is only a hint to the model. To
+  have the bot read every message in specific channels, list them in
+  `OPENCLAW_DISCORD_ALWAYS_CHANNELS`.
+- The plugin is connected:
+  `docker exec openclaw-cli openclaw channels status --deep | grep -i discord`.
+
+### The bot ignores a DM
+
+DMs are answered only for people who share a server with the bot (the
+`dm-guild-gate` plugin). The decision is logged, structure only:
+
+```bash
+docker exec openclaw-gateway tail -n 20 /home/node/.openclaw/logs/dm-guild-gate.jsonl
+```
+
+Outcomes: `allow`, `block` (not a member of any of the bot's servers), `error_allow`
+(Discord gave no clear answer, so the DM went through). Members are cached for 6 h,
+non-members for 10 minutes. To let a specific person in, add their ID to `allow` in
+`plugins.entries.dm-guild-gate.config`; `OPENCLAW_DISCORD_DM_GUILD_GATE=off` removes
+the gate.
+
+### The bot says it did something it did not, or states a fact it did not check
+
+The `claim-guard` plugin checks each answer: claimed actions against the run's
+successful tool calls, and specific, uncommon facts against whether any search ran.
+On a mismatch it asks for one more model pass. Its log holds structure only:
+
+```bash
+docker exec openclaw-gateway tail -n 20 /home/node/.openclaw/logs/claim-guard.jsonl
+```
+
+| Outcome | Meaning |
+|---|---|
+| `none` | nothing to fix |
+| `revise` | a second pass was requested |
+| `resolved` | the second pass fixed it |
+| `unresolved` | still wrong after the second pass |
+| `judge_failed` | judge timeout or unreadable JSON; the answer went out unchanged |
+
+Many `judge_failed` lines mean the model is overloaded or slow. It does not catch a
+tool result the bot then misreads: the tool ran, so the claim counts as backed.
+After changing the plugin, rebuild `openclaw-base-ext` and recreate the gateway;
+`openclaw plugins reload` cannot replace it while a run holds the old instance.
+
+### The bot does not remember people or past conversations in channels
+
+OpenClaw never loads the root `MEMORY.md` into channel or group sessions (a privacy
+filter). Guild long-term memory therefore lives in
+`workspace-discord/people/MEMORY.md`, which is loaded into every Discord session, and
+in the community summaries under `workspace-discord/memory/community/`, which memory
+search finds. Check, in order:
+
+- The nightly people-memory job and the community-summary job exist. They are
+  created once per install with `openclaw cron add`; the commands are in
+  [`reference/discord-config.md`](reference/discord-config.md#long-term-memory-in-guild-channels).
+- `scripts/daily-status.sh` prints the people file's size and section count, the
+  number of community summaries and the rejected proposals of the nightly job.
+- What a session really loads: `systemPromptReport.injectedWorkspaceFiles` in the
+  output of `openclaw agent --json`.
+
+The bot writes the people file only through `/opt/people-digest.mjs note|forget`,
+which heals the file from its last good copy if a section went missing.
+
+### The heartbeat never sends a DM
+
+- An empty `HEARTBEAT.md` means the poll is skipped.
+- The DM goes to `OPENCLAW_HEARTBEAT_TO`, or the first ID in
+  `OPENCLAW_DISCORD_COMMAND_OWNERS`. Without either, the upstream `owner` target
+  finds no DM and every poll logs `reason=no-route`.
+- Outside `OPENCLAW_HEARTBEAT_ACTIVE_START` / `_END` (in `OPENCLAW_HEARTBEAT_TZ`)
+  nothing runs.
+
+### Other Discord symptoms
+
+| Symptom | Cause |
+|---|---|
+| The bot says image, video or music generation is off | The media tools are off until the ComfyUI bridge runs and `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` allows them; see [`openclaw-image-comfyui/README.md`](../openclaw-image-comfyui/README.md). |
+| Links and images do not unfurl | The plugin suppresses embeds unless `suppressEmbeds` is explicitly false; config-init writes that (`OPENCLAW_DISCORD_SUPPRESS_EMBEDS=off`). |
+| The bot cycles emoji reactions on a message | A stale auto-ack queue replaying; `OPENCLAW_DISCORD_ACK_REACTION_SCOPE=off` (the default) turns auto-acks off. |
+| A second person's request got folded into the first one's answer | A guild channel is one session. `OPENCLAW_DISCORD_QUEUE_MODE=followup` (the default) queues it instead of steering the running turn. |
+| A code answer arrives as many short messages | `OPENCLAW_DISCORD_MAX_LINES` (default 60) sets the lines per message. |
+
+## Web search
+
+### Searches return few, off-topic or no results
+
+A blocked SearxNG engine fails silently: no error, just fewer results, and the
+model answers from whatever is left. Check which engines answer:
+
+```bash
+docker exec openclaw-cli curl -sS "http://searxng:8080/search?q=test&format=json" \
+  | jq '{n: (.results | length), down: .unresponsive_engines}'
+```
+
+`scripts/daily-status.sh` runs one Hungarian and one English query each day and
+prints a `search` line with the engines that answered and the ones that failed. The
+SearxNG image is re-pulled weekly (`SEARXNG_PULL_POLICY`) because scraped engines
+break as sites change. To compare engines on your own IP, use
+`scripts/websearch-bench.py`; how to change the engine list is in
+[`CUSTOMIZATION.md`](CUSTOMIZATION.md#tune-web-search-searxng).
+
+### The agent has no `web_search` tool
+
+The bundled searxng plugin ships disabled; config-init enables it and sets the
+provider. Check that config-init ran after onboarding (`docker logs
+openclaw-config-init | grep searxng`), and recreate the trio if it did not.
+
+## Memory search
+
+### Memory search finds nothing, although the notes are there
+
+Check what the index reports:
+
+```bash
+docker exec openclaw-cli openclaw memory status --deep
+```
+
+Look for `Embeddings: ready` and a vector dimension of 1024 (bge-m3). An upgrade or
+rollback can lose the index metadata, and the search then reports paused or empty
+while the Markdown files are intact. Rebuild the index:
+
+```bash
+docker exec openclaw-cli openclaw memory index --force
+```
+
+Each agent has its own index (`main` and the Discord agent separately); rebuild the
+one that is affected.
+
+### The index is incomplete after `vllm-embedding` restarted
+
+Under memory pressure the embedding server can die with
+`CUDA error: operation not permitted`. Docker restarts it within seconds, but the
+chunks being indexed at that moment are skipped, and OpenClaw does not mark their
+files dirty again, so `memory status` still says `Dirty: no`. If the indexed file
+count is below the real one and
+`docker inspect vllm-embedding --format '{{.RestartCount}}'` is not zero, run
+`openclaw memory index --force` as above. Tracked upstream:
+[openclaw/openclaw#70567](https://github.com/openclaw/openclaw/issues/70567).
+
+### Embedding calls return 401
+
+The embedding server uses `VLLM_API_KEY`, the same key as the LLM. If you changed
+the key, recreate both vLLM services and the trio.
+
+### `memory status --deep` shows 0 chunks
+
+Nothing has been indexed yet. Write a note under the workspace's `memory/` folder,
+then run `openclaw memory index --force`.
+
+## Optional components
+
+Each of these has its own document; the entries here are the first things to check.
+
+- **Browser** ([`reference/browser-automation.md`](reference/browser-automation.md)):
+  the service runs only with `browser` in `COMPOSE_PROFILES`, and config-init wires
+  it only with `BROWSER_API_TOKEN` set. A login that expired: re-run
+  `./bootstrap-browser-login.sh <profile>`. Passkeys and WebAuthn do not work over
+  the noVNC login helper (they are bound to the origin); use a password plus TOTP.
+  Profiles past the 20th in `BROWSER_PROFILE_NAMES` are skipped with a warning,
+  because 20 CDP ports are published.
+- **Python sandbox** ([`reference/python-sandbox.md`](reference/python-sandbox.md)):
+  needs `python` in `COMPOSE_PROFILES` and `PYTHON_SANDBOX_API_TOKEN`. MCP tools are
+  named `<server>__<tool>` in the catalog (`python_sandbox__python_exec`); use that
+  name in test prompts. Long computations hit `PYTHON_SANDBOX_KERNEL_TIMEOUT_S`
+  (the kernel is interrupted, its state survives); large data hits
+  `PYTHON_SANDBOX_MEMORY_MB` (the kernel is killed and restarts empty).
+- **Fish TTS** ([`openclaw-tts-fish/README.md`](../openclaw-tts-fish/README.md#troubleshooting)):
+  `compose/tts-fish.yml` in `COMPOSE_FILE` plus `OPENCLAW_TTS_FISH_API_KEY`. The
+  first start compiles kernels for a long time.
+- **ComfyUI bridge** ([`openclaw-image-comfyui/README.md`](../openclaw-image-comfyui/README.md)): runs
+  from its own compose file; config-init wires it only with `IMAGE_GEN_API_TOKEN`
+  set. ComfyUI shares the GPU pool and does not fit next to Nemotron.
+- **MeshCore** ([`reference/meshcore-bridge.md`](reference/meshcore-bridge.md)):
+  `No response from meshcore node` is the radio, not the gateway; the runbook there
+  covers the serial device and companion recovery.
+
+## Host
+
+### `Failed to initialize NVML` inside a container
+
+The NVIDIA container toolkit is missing, or Docker was not restarted after it was
+configured:
 
 ```bash
 sudo apt install -y nvidia-container-toolkit
@@ -810,17 +455,20 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-### Disk fills up after a week
+### Containers exit with code 128 after a power-off
 
-Likely `docker logs` on a chatty service. We already set `max-size: 150m` on both vLLM services, but if you've added stuff:
+The state is on a USB drive that was not plugged in at boot. With
+`nofail,x-systemd.automount` in fstab the host boots without it, and every
+container with a bind mount on it exits. Plug the drive in before powering on, or
+`docker start` the containers once it is back.
+
+### The disk fills up
+
+Each service keeps at most 3 × 50 MB of logs (`x-logging` in `docker-compose.yml`).
+The usual growth is model weights in `VLLM_HF_CACHE_DIR` (~100 GB with the default
+model, more per extra model) and old images:
 
 ```bash
-docker system df           # shows volumes / images / build cache usage
-docker image prune -a      # reclaim old images (CAREFUL: removes untagged)
+docker system df          # images, volumes, build cache
+docker image prune -a     # removes every image no container uses
 ```
-
-The HF cache at `$VLLM_HF_CACHE_DIR` grows by ~16 GB per model version. If you bump image tags, you may want to remove the named cache volume (default `dgx-openclaw-hf-cache`; see `VLLM_HF_CACHE_VOLUME_NAME` in `.env`) via `docker volume rm`, or just `rm -rf` the host path when the stack is down — either forces a fresh download.
-
-### Gateway service shows `(unhealthy)` forever but logs look fine
-
-The healthcheck uses `node -e "fetch('http://127.0.0.1:18789/healthz')"`. On very slow first boots, the internal port binding takes longer than the healthcheck timeout. Raise `healthcheck.start_period` from 20s to 60s as a first troubleshooting step.

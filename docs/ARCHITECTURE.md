@@ -286,7 +286,7 @@ behaviour in detail: [`reference/discord-config.md`](reference/discord-config.md
 |---|---|---|
 | Gemma 4 / Mistral Small 4 | `COMPOSE_FILE=docker-compose.yml:compose/gemma4.yml` (or `mistral.yml`) + `LLM_MODEL_ID` | [`reference/llm-stack.md`](reference/llm-stack.md) |
 | Fish Audio S2 Pro TTS | `compose/tts-fish.yml` + `OPENCLAW_TTS_FISH_API_KEY` | Does not fit beside Nemotron; non-commercial licence. [`openclaw-tts-fish/README.md`](../openclaw-tts-fish/README.md) |
-| Image / video / music tools | `openclaw-image-comfyui/docker-compose.yml` + `IMAGE_GEN_API_TOKEN`; clear `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` | Bridge to an existing ComfyUI, joined to this stack's network. [`reference/image-comfyui-bridge.md`](reference/image-comfyui-bridge.md), [`reference/video-comfyui-bridge.md`](reference/video-comfyui-bridge.md) |
+| Image / video / music tools | `openclaw-image-comfyui/docker-compose.yml` + `IMAGE_GEN_API_TOKEN`; `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF=none` | Bridge to an existing ComfyUI, joined to this stack's network. [`reference/image-comfyui-bridge.md`](reference/image-comfyui-bridge.md), [`reference/video-comfyui-bridge.md`](reference/video-comfyui-bridge.md) |
 | `/claw-img` Discord bot | `compose/claw-img.yml` | Slash commands straight to the bridge, no LLM. [`openclaw-claw-img-bot/README.md`](../openclaw-claw-img-bot/README.md) |
 | Browser | profile `browser` | One CDP port per login profile. [`reference/browser-automation.md`](reference/browser-automation.md) |
 | Python sandbox | profile `python` | [`reference/python-sandbox.md`](reference/python-sandbox.md) |

@@ -1,167 +1,165 @@
 # Customization
 
-How to swap things out without breaking the stack.
+How to change the stack without breaking it. Every knob, with its default and
+why it has that default, is in [`reference/configuration.md`](reference/configuration.md);
+this page covers the changes that touch more than one knob.
+
+Two rules apply everywhere:
+
+- **Change `.env`, not `openclaw.json`.** `openclaw-config-init` rewrites
+  `openclaw.json` and the workspace texts from `.env` on every `docker compose up`,
+  so a hand edit to a field it owns is undone on the next start. If a change should
+  last, it belongs in `.env` or in `config-init/`.
+- **Apply config changes with the trio recreate.** The CLI shares the gateway's
+  network namespace and has to be recreated with it:
+
+  ```bash
+  docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+  ```
+
+  `docker compose run --rm openclaw-config-init` runs config-init alone against the
+  live config and prints its `[patch-config]` lines, without touching the gateway.
+
+Commands below use the default container names. If you set
+`CONTAINER_NAME_PREFIX`, put it in front of every name in `docker exec`.
 
 ---
 
-## Swap the LLM
+## Swap the model
 
-The default backend is `nvidia/Gemma-4-26B-A4B-NVFP4` (MoE, ~52 tok/s on GB10) running in the `vllm-llm` service. The dense 31B alternative is preserved as a profile-gated `vllm-llm-dense` service for parity testing and rollback. Both are registered in the OpenClaw catalog by the patcher regardless of which is running.
+`vllm-llm` serves exactly one model on port 8004, and config-init registers exactly
+that id in OpenClaw (`LLM_MODEL_ID`). Other `vllm/...` catalog entries are removed,
+because a stale one shows up in the model picker and answers 404. A model swap is
+therefore always two settings in `.env`: an optional compose file that replaces the
+`vllm-llm` command, and the matching `LLM_MODEL_ID`.
 
-The three coupled pieces for any further model change are:
+| Model | `.env` |
+|---|---|
+| Nemotron 3.5 Super 120B-A12B NVFP4 (default) | nothing; `COMPOSE_FILE` unset or `docker-compose.yml` |
+| Gemma 4 26B-A4B NVFP4 (MoE) | `COMPOSE_FILE=docker-compose.yml:compose/gemma4.yml`<br>`LLM_MODEL_ID=nvidia/Gemma-4-26B-A4B-NVFP4` |
+| Gemma 4 31B IT NVFP4 (dense, slower) | `COMPOSE_FILE=docker-compose.yml:compose/gemma4.yml`<br>`LLM_MODEL_ID=nvidia/Gemma-4-31B-IT-NVFP4` |
+| Mistral Small 4 119B-A6B NVFP4 | `COMPOSE_FILE=docker-compose.yml:compose/mistral.yml`<br>`LLM_MODEL_ID=mistralai/Mistral-Small-4-119B-2603-NVFP4` |
 
-1. The `--model` flag on `vllm-llm` (or `vllm-llm-dense`) in `docker-compose.yml`.
-2. The `LLM_MODEL_ID_*` constants and the `LLM_MODEL_ENTRIES[]` array in `patch-config.mjs`.
-3. The `LLM_MODEL_ENTRY_*` metadata in `patch-config.mjs` (context window, input modalities, reasoning flag).
-
-Any new model requires editing all three. **Why three places?** vLLM needs to know which weights to load (#1); the patcher needs to know which model id to register in the OpenClaw provider catalog so tool-calling routes to the right entry (#2); and OpenClaw uses the metadata in the catalog entry to cap prompt sizes, gate vision input, and drive the thinking-mode UI (#3). They aren't auto-derived from each other — consistency is your job. We hard-code these rather than templating them because a mistake here (a wrong context window, a missing `image` input type) is silent: the stack boots, chats work, and tool calls or images break in subtle ways hours later.
-
-### Both backends run by default — pick in the UI
-
-Both vLLM services come up together: MoE 26B-A4B on `vllm-llm:8004` (provider id `vllm`) and dense 31B on `vllm-llm-dense:8005` (provider id `vllm-dense`). The OpenClaw gateway reaches both through bridge DNS, the patcher registers separate provider entries for each, and the user picks the active model in the OpenClaw UI's model dropdown.
-
-If you want to disable one to free RAM:
+Then recreate the model and the trio:
 
 ```bash
-# Stop the dense backend (saves ~38 GB host RAM):
-docker compose stop vllm-llm-dense
-
-# Stop the MoE backend (saves ~38 GB host RAM):
-docker compose stop vllm-llm
+docker compose up -d vllm-llm
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-To restart either: `docker compose up -d <service>`.
+Why `LLM_MODEL_ID` has to be in `.env` even though the compose file names the
+model: the optional files fail without it (`${LLM_MODEL_ID:?...}`), and config-init
+would otherwise register the Nemotron id, which the new server does not serve.
 
-To run only one of them on first boot, scale the other to zero in your `compose.override.yml` or use the `--no-start` flag selectively. There's no profile-mutex — neither service is opt-in by default anymore.
+Each compose file states what it needs in its header comment (vLLM image, memory
+share, parsers, measured speed). Two things config-init does from the model id:
 
-Tuning the dense for low-RAM single-user is the same set of knobs as the MoE side, but with the `_DENSE` suffix:
+- **Thinking control** (`LLM_THINKING_COMPAT=auto`). Gemma 4 and Nemotron get
+  `chat_template_kwargs.enable_thinking`, Mistral gets `reasoning_effort` none/high.
+  Without the right `compat` on the catalog entry OpenClaw sends no thinking control
+  and the model never thinks.
+- **Temperature** (`LLM_TEMPERATURE=auto`). 0.6 for Nemotron, the upstream default
+  for the others.
 
-```env
-LLM_GPU_MEM_UTIL_DENSE=0.30        # default — single-user 256K profile
-LLM_MAX_NUM_SEQS_DENSE=1           # default — solo
-LLM_MAX_MODEL_LEN_DENSE=131072     # drop to 128K if 256K isn't needed (~halves dense KV)
+Memory: Nemotron at the default `LLM_GPU_MEM_UTIL=0.70` takes ~70 GiB of the 128 GB
+pool, which leaves no room for ComfyUI or Fish TTS next to it. Long-run notes and
+measurements per model are in [`reference/llm-stack.md`](reference/llm-stack.md).
+
+### A model this repo does not ship
+
+Write your own `compose/<name>.yml` on the pattern of `compose/mistral.yml`:
+
+- Keep the service name `vllm-llm` and port 8004, so the gateway and the
+  healthcheck need no change.
+- Serve the model under the id you put in `LLM_MODEL_ID`
+  (`--served-model-name ${LLM_MODEL_ID}` if it differs from `--model`).
+- Pick the vLLM tool-call and reasoning parsers for the model family, and keep
+  `--enable-auto-tool-choice`; OpenClaw relies on native tool calls.
+- If config-init does not recognize the family, set `LLM_THINKING_COMPAT`
+  (`qwen-chat-template` or `off`), and check `LLM_CONTEXT_WINDOW` / `LLM_MAX_TOKENS`
+  against what the model and `--max-model-len` allow.
+
+Then follow the same two-step recreate.
+
+## Use a remote or cloud LLM backend
+
+Use case: the gateway, SearxNG and the agent state on a small machine, the model
+somewhere else (another GPU box, a hosted vLLM, an OpenAI-compatible cloud endpoint).
+Config-init reads two URLs:
+
+```dotenv
+# OpenAI-compatible chat endpoint. Keep the trailing slash.
+LLM_BASE_URL=https://llm.example.com/v1/
+# Embedding endpoint for memory search. Keep the trailing slash.
+EMBED_BASE_URL=https://embed.example.com/v1/
+# The id the remote serves.
+LLM_MODEL_ID=<model id on the remote>
+# Sent as the API key to BOTH endpoints.
+VLLM_API_KEY=<remote key>
 ```
 
-### Smaller Gemma 4 (12B NVFP4)
+Limits of this path, from the code:
 
-If you want to leave even more headroom for other workloads (image-gen, browser automation, multi-user beyond 2), drop to the 12B variant:
+- One key for both endpoints. Config-init writes `VLLM_API_KEY` as the chat
+  provider's key and as the memory-search key.
+- The embedding model name is fixed to `BAAI/bge-m3` (`config-init/steps/memory.mjs`).
+  The remote embedding endpoint has to serve that name, and switching to another
+  embedding model means a reindex (vector dimensions are fixed once the first
+  chunk is indexed).
+- The provider speaks `openai-completions`. For an endpoint that rejects
+  `chat_template_kwargs`, set `LLM_THINKING_COMPAT=off`.
+
+Then stop the local vLLM services from starting. Do not comment them out; park them
+with a small override file, for example `remote-backend.yml` next to
+`docker-compose.yml`:
 
 ```yaml
-# docker-compose.yml
---model nvidia/Gemma-4-12B-IT-NVFP4
-# also remove --moe-backend ...  (12B is dense, not MoE)
+# remote-backend.yml: the model and embeddings run elsewhere.
+services:
+  vllm-llm:
+    profiles: ["remote-off"]
+  vllm-embedding:
+    profiles: ["remote-off"]
+  # The gateway waits for both vLLM services by default. `!override` replaces
+  # the whole depends_on map; a profile alone makes compose refuse the project
+  # ("depends on undefined service").
+  openclaw-gateway:
+    depends_on: !override
+      openclaw-config-init:
+        condition: service_completed_successfully
 ```
 
-```js
-// patch-config.mjs — add a third entry to LLM_MODEL_ENTRIES, or replace
-// LLM_MODEL_ID_MOE depending on whether you want both registered.
+```dotenv
+COMPOSE_FILE=docker-compose.yml:remote-backend.yml
 ```
 
-The 12B NVFP4 weighs ~6–7 GB. Bump `LLM_GPU_MEM_UTIL` to `0.50–0.60` if you still want a big KV cache, or stay at `0.50` and get a huge effective KV budget.
+`!override` needs Docker Compose 2.24.4 or newer. Check the result with
+`docker compose config --services`: neither vLLM service should be listed.
 
-### BF16 Gemma 4 (if you're on non-NVFP4 hardware)
+Onboard as in [`SETUP.md`](../SETUP.md). Config-init then points the `vllm`
+provider at `LLM_BASE_URL` on the trio recreate, whatever onboarding wrote.
 
-Remove `--quantization modelopt` (and `--moe-backend …` if you were on the MoE branch) and swap the model id:
+Trade-offs: every token travels to the remote, so a LAN backend is fine and a
+cross-region one adds latency to every turn. Use TLS or a private network
+(WireGuard, Tailscale, a VPC peering); the key goes with every request. The URL has
+to resolve and be reachable from inside the gateway container.
 
-```yaml
---model google/gemma-4-31b-it
-# (remove) --quantization modelopt
-# (remove) --moe-backend marlin
-```
+### Use the model API without OpenClaw
 
-BF16 weights are ~62 GB — you'll need to raise `LLM_GPU_MEM_UTIL` and give up the embedding stack. Expect ~3.7 tok/s decode vs ~6.9 tok/s for the dense 31B NVFP4 (and ~52 tok/s for the MoE NVFP4) on GB10.
+`vllm-llm` publishes port 8004 on `LLM_BIND` (default `127.0.0.1`), so other code
+on the host can call `http://127.0.0.1:8004/v1/` with
+`Authorization: Bearer $VLLM_API_KEY`. `LLM_BIND=0.0.0.0` opens it to the LAN, with
+the key as the only barrier. The embedding server is not published; it is reachable
+only on the compose network.
 
-### Non-Gemma models
-
-The `--tool-call-parser gemma4` / `--reasoning-parser gemma4` / `--chat-template tool_chat_template_gemma4.jinja` trio is model-family-specific. Swapping to, say, Qwen3 or DeepSeek-R1 means:
-
-- Change the parser names (`qwen3`, `deepseek_r1`, etc.).
-- Provide the corresponding chat template under `templates/`.
-- Drop `--moe-backend …` (Gemma 4 MoE-specific; other model families either don't use MoE or use vLLM's default expert backend).
-- Set `LLM_MODEL_ENTRY_*.reasoning` correctly (some models have separate `<thinking>` channels that OpenClaw understands if you flag them).
-
-Also update the model's `contextWindow` and `maxTokens` in the `LLM_MODEL_ENTRIES[]` — OpenClaw uses these to cap tool call prompts.
-
-## Swap the embedding model
-
-The embedding service accepts any XLMRoberta- or BERT-family model that vLLM's pooling runner supports. Change two things:
-
-```yaml
-# docker-compose.yml
-vllm-embedding:
-  command: >
-    BAAI/bge-small-en-v1.5     # or intfloat/multilingual-e5-large, etc.
-    ...
-    --served-model-name BAAI/bge-small-en-v1.5
-```
-
-```js
-// patch-config.mjs
-const EMBED_MODEL = 'BAAI/bge-small-en-v1.5';
-```
-
-The OpenClaw `memorySearch` records the embedding vector dimension when you first index a document. **Changing the model after you've written memories means your existing vectors become unreadable** unless the new model uses the same dim. If you're switching, either:
-
-- Pick a model with the same dimension as bge-m3 (1024-dim) — then the old vectors might still *load* but similarity scores will be nonsense.
-- Reindex: stop the gateway, delete `$OPENCLAW_CONFIG_DIR/memory/vectors/` (or whatever the current vector-index path is — check the gateway docs for your version), and re-run. Source memory text stays intact; only the computed vectors are rebuilt.
-
-## Tune for your actual concurrency
-
-The shipped defaults assume ~2 concurrent users on a 128 GB GB10 with the MoE backend active. If that's wrong:
-
-- **Solo user**: `LLM_MAX_NUM_SEQS=1`, optionally raise `LLM_GPU_MEM_UTIL=0.75` if the embedding stack is disabled. Headroom buys prefix-caching depth, not per-decode latency.
-- **3–4 users**: On the MoE backend this is feasible at full 256K because each FP8 KV slot is only ~3.3 GB at 256K — `LLM_MAX_NUM_SEQS=4` fits inside `LLM_GPU_MEM_UTIL=0.50` with margin. The constraint is throughput, not memory: at 4 simultaneously decoding users you split ~52 tok/s across them. On the dense backend, drop to `LLM_MAX_MODEL_LEN=131072` (128K) and raise `LLM_MAX_NUM_SEQS=4`.
-- **Batch throughput workload** (no humans, script-driven): raise `LLM_MAX_NUM_SEQS=8+`, drop `LLM_MAX_MODEL_LEN` to the shortest prompt size you'll actually hit, and accept longer per-request TTFT. MoE is well-suited here — `--max-num-batched-tokens` can also be raised to `16384` for higher prefill throughput on dedicated hardware.
-
-### Idle-timeout headroom
-
-`agents.defaults.llm.idleTimeoutSeconds` (patcher step 8) is the watchdog that catches a stuck LLM connection — OOM, CUDA hang, or a tool-call that's burning GPU forever without sending a response. Default is **600s** (bumped from 300s on 2026-04-28 to give image-gen workloads more headroom) and is env-tunable via `OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS`.
-
-When to drop to 300s:
-- Fast-model-only deploys (Gemma 4 12B, no image-gen, no python sandbox slow paths). Tighter feedback when something genuinely hangs.
-
-When to raise above 600s:
-- FLUX Dev / Pony XL / Illustrious XL workflows on contended GPU (the LLM stays idle while ComfyUI runs on the same hardware; can blow past 600s on big resolution or high step counts).
-- Multi-tool-call agent runs that involve image-gen + browser automation + python sandbox in sequence — each tool can independently hold the LLM idle.
-
-Raise via `.env`:
-```
-OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS=900   # 15 min, conservative for slow workflows
-```
-
-Recreate the patcher to apply: `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`. Verify: `docker exec openclaw-cli python3 -c "import json; d=json.load(open('/home/node/.openclaw/openclaw.json')); print(d['agents']['defaults']['llm']['idleTimeoutSeconds'])"` should print the new value.
-
-## Add your own agents
-
-OpenClaw configures agents under `agents.list[]` in `openclaw.json`. The shipped patcher only manages `agents.defaults.*`; it leaves individual agents alone. If you want a second agent deterministically declared (not just created by the onboarding UI), add a step to `patch-config.mjs`:
-
-```js
-// (9) Ensure my-custom-agent exists
-config.agents ??= {};
-config.agents.list ??= [];
-const existing = config.agents.list.find((a) => a?.id === 'my-custom-agent');
-if (!existing) {
-  config.agents.list.push({
-    id: 'my-custom-agent',
-    name: 'My Custom Agent',
-    model: { primary: LLM_MODEL_ID },
-    tools: ['search', 'memory'],
-    systemPrompt: 'You are ...',
-    isolatedSession: true,
-  });
-  changed = true;
-}
-```
-
-Deep-merge the same way the existing steps do — never overwrite, always check what's there first.
-
-## Tune SearxNG (web search)
-
-SearxNG has three knobs that matter for this stack. All live in `searxng/settings/settings.yml` or `patch-config.mjs` (for the plugin-side wiring).
+## Tune web search (SearxNG)
 
 ### Which engines run
 
-`searxng/settings/settings.yml` → `use_default_settings.engines.keep_only`. Whatever is in this list stays in the registry; every other engine in the upstream defaults is dropped. The shipped list is the one that scored best on the reference host (Hungarian residential IP, 2026-10-20):
+`searxng/settings/settings.yml` → `use_default_settings.engines.keep_only`. Whatever
+is in this list stays in the registry; every other engine in the upstream defaults
+is dropped. The shipped list is the one that scored best on the reference host
+(Hungarian residential IP, 2026-10-20):
 
 ```yaml
 keep_only:
@@ -178,22 +176,28 @@ keep_only:
   - arxiv            # only for categories=science
 ```
 
-Engines get blocked per IP and over time, so measure on your own host before you change the list. `scripts/websearch-bench.py` asks 20 fact questions (10 Hungarian, 10 English, three sets) and counts how often the answer is in the top 5, either through the gateway or per engine:
+Engines get blocked per IP and over time, so measure on your own host before you
+change the list. `scripts/websearch-bench.py` asks 20 fact questions (10 Hungarian,
+10 English, three sets) and counts how often the answer is in the top 5, either
+through the gateway or per engine:
 
 ```bash
 scripts/websearch-bench.py searxng             # what the bot gets
 scripts/websearch-bench.py yahoo 5 searx       # one engine, raw SearxNG JSON
 ```
 
-A blocked engine produces no error, just missing results. Check a single engine and the `unresponsive_engines` field:
+A blocked engine produces no error, just missing results. Check a single engine and
+the `unresponsive_engines` field:
 
 ```bash
-docker exec ${PROJ}openclaw-cli curl -sS \
+docker exec openclaw-cli curl -sS \
   "http://searxng:8080/search?q=test&format=json&engines=yahoo" \
   | jq '{n: (.results | length), down: .unresponsive_engines}'
 ```
 
-On the reference host `google`, `qwant` and `brave` were blocked or rate-limited, and `bing` answered with almost nothing. Any engine shipped `disabled: true` in the upstream defaults needs an explicit override in the `engines:` block:
+On the reference host `google`, `qwant` and `brave` were blocked or rate-limited,
+and `bing` answered with almost nothing. Any engine shipped `disabled: true` in the
+upstream defaults needs an explicit override in the `engines:` block:
 
 ```yaml
 engines:
@@ -201,893 +205,180 @@ engines:
     disabled: false
 ```
 
-`scripts/daily-status.sh` prints which engines answered one Hungarian and one English query each day.
+`scripts/daily-status.sh` prints which engines answered one Hungarian and one
+English query each day.
 
 ### Categories and language passed to SearxNG
 
-`patch-config.mjs` step 10 writes `baseUrl`, an empty `language` and `categories: "general,news"`. Do not add `science` to the default: it put arXiv papers on top of every answer. The agent can still pass `language` / `categories` per query. When it sends no language, SearxNG's `search.default_lang: "auto"` detects it from the query text.
+Config-init (`config-init/steps/tools.mjs`) writes the SearxNG `baseUrl`, an empty
+`language` and `categories: "general,news"`. Do not add `science` to the default:
+it put arXiv papers on top of every answer. The agent can still pass `language` /
+`categories` per query. When it sends no language, SearxNG's
+`search.default_lang: "auto"` detects it from the query text.
 
-### Disabling web search entirely
+The search wiring has no off switch. If you park `searxng`, `web_search` keeps
+pointing at a dead URL and every search call fails.
 
-If you don't want the SearxNG service at all:
+## Turn a service off
 
-1. Comment out the entire `searxng:` service block in `docker-compose.yml`.
-2. Remove `SEARXNG_SECRET` from `.env.example` (optional; leftover env var is harmless).
-3. In `patch-config.mjs` step 10, flip `config.plugins.entries.searxng.enabled = false` (or delete the step). Otherwise the gateway will retry failed `http://searxng:8080` calls on every `web_search` tool invocation and log errors.
+Never comment out a service block: the optional parts already have a switch.
 
-## Heartbeat and dreaming schedules
+| Part | How to turn it off | What config-init does |
+|---|---|---|
+| Browser (`openclaw-browser`) | drop `browser` from `COMPOSE_PROFILES` | stops writing the browser wiring; clear `BROWSER_API_TOKEN` as well, since wiring from an earlier run stays in `openclaw.json` |
+| Python sandbox | drop `python` from `COMPOSE_PROFILES` | removes the `python_sandbox` MCP server |
+| MeshCore bridge | drop `meshcore` from `COMPOSE_PROFILES`, `MESHCORE_ENABLED=off` | stops registering the MeshCore agents |
+| Fish TTS | leave `compose/tts-fish.yml` out of `COMPOSE_FILE`, `OPENCLAW_TTS=off` | removes the `tts` block |
+| Image bot | leave `compose/claw-img.yml` out of `COMPOSE_FILE` | nothing (it talks to the bridge, not to OpenClaw) |
+| ComfyUI bridge | `docker compose -f openclaw-image-comfyui/docker-compose.yml down`, clear `IMAGE_GEN_API_TOKEN` | removes the `comfyui_image` MCP server |
+| Whisper STT | park it with a profile override (see below), clear `STT_API_TOKEN` | stops writing the Whisper entry; an entry already in `tools.media.models` stays |
 
-Both use the timezone from `OPENCLAW_HEARTBEAT_TZ` in `.env`. To change:
-
-- **Active hours**: edit `OPENCLAW_HEARTBEAT_ACTIVE_START` / `OPENCLAW_HEARTBEAT_ACTIVE_END`. Start > End wraps around midnight.
-- **Dreaming time**: edit the `frequency: '0 3 * * *'` cron in `patch-config.mjs` step 6. The shipped default is 03:00 in your configured timezone.
-
-Both take effect on the next `docker compose up`.
-
-## Run without the embedding service
-
-If you don't care about memory search:
-
-1. Comment out the entire `vllm-embedding:` service block in `docker-compose.yml`.
-2. Remove `vllm-embedding` from the gateway's `depends_on`.
-3. Raise `LLM_GPU_MEM_UTIL=0.85` in `.env` to reclaim the reserved memory.
-4. In `patch-config.mjs`, either disable memorySearch (`enabled: false`) or point it at a remote embedding service.
-
-## Run with a remote vLLM backend
-
-Use case: you want the gateway / agent runtime / SearxNG / memory store on machine A (cheap, no GPU — your laptop, a VPS, a small home server) but the heavy LLM and/or embedding model on machine B (a remote DGX, an x86 box with a 4090, vLLM on RunPod, a cloud OpenAI-compatible endpoint, OpenRouter, an AWS Bedrock proxy, …).
-
-The repo natively supports this via three env overrides — no docker-compose surgery beyond parking the local GPU services.
-
-### Step-by-step
-
-1. **Park the local vLLM services** so `docker compose up` doesn't try to start them on machine A. Edit `docker-compose.yml`:
-
-    ```yaml
-    vllm-llm:
-      profiles: ["never"]    # add this one line
-      image: vllm/vllm-openai:gemma4-cu130
-      # …rest unchanged…
-
-    vllm-embedding:
-      profiles: ["never"]    # add this one line
-      image: vllm/vllm-openai:gemma4-cu130
-      # …rest unchanged…
-    ```
-
-    Also remove the two `vllm-llm` / `vllm-embedding` `service_healthy` entries from `openclaw-gateway.depends_on` (otherwise the gateway waits forever for services that never start).
-
-2. **Point the three URL overrides at the remote endpoints** in `.env`:
-
-    ```dotenv
-    # Gateway → LLM (chat completions) — what OpenClaw sends user messages to
-    OPENAI_BASE_URL=https://your-remote-vllm.example.com/v1
-
-    # patch-config.mjs → openclaw.json provider field — must match OPENAI_BASE_URL,
-    # but trailing slash is required by the OpenClaw config schema
-    LLM_BASE_URL=https://your-remote-vllm.example.com/v1/
-
-    # patch-config.mjs → openclaw.json memorySearch.remote.baseUrl — bge-m3 endpoint
-    # (can be the same host or a different one; trailing slash required)
-    EMBED_BASE_URL=https://your-remote-embed.example.com/v1/
-    ```
-
-    `VLLM_API_KEY` stays as your remote vLLM's auth token (the patcher writes it into both the chat provider apiKey and the embedding `remote.apiKey`).
-
-3. **Run bootstrap.sh + first `docker compose up -d`**. The gateway will crash-loop with `Missing config. Run openclaw setup …` because there's no `openclaw.json` yet — that's expected on a fresh install.
-
-4. **Run onboarding** to create `openclaw.json`. You can use the interactive Chrome extension wizard, or the non-interactive CLI (replace `${PROJ}` with the value of `CONTAINER_NAME_PREFIX` from `.env`, default `dgx-`):
-
-    ```bash
-    docker exec ${PROJ}openclaw-cli openclaw onboard \
-      --non-interactive --accept-risk \
-      --mode local --flow manual \
-      --auth-choice vllm \
-      --custom-base-url "$OPENAI_BASE_URL" \
-      --custom-api-key "$VLLM_API_KEY" \
-      --custom-model-id nvidia/Gemma-4-31B-IT-NVFP4 \
-      --custom-compatibility openai \
-      --gateway-bind lan --gateway-port 18789 \
-      --gateway-auth token \
-      --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
-      --skip-daemon --skip-search --skip-skills --skip-channels --skip-ui --skip-health
-    ```
-
-5. **Re-apply the patcher** so the 11 deterministic-state steps run on the freshly-created `openclaw.json` (the first `up` skipped them because the file didn't exist yet):
-
-    ```bash
-    docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
-    ```
-
-6. **Verify**: `curl http://127.0.0.1:18789/healthz` returns `{"ok":true}`, `docker exec ${PROJ}openclaw-cli openclaw memory status` shows `Embeddings: ready`, and `docker exec ${PROJ}openclaw-cli openclaw agent --agent main --message "Use web_search to find …"` produces a real reply.
-
-### What still runs locally
-
-- `openclaw-gateway` (TypeScript app, ~200 MB RAM)
-- `openclaw-cli` (sleep container, shares gateway namespace)
-- `openclaw-config-init` (init-only, exits after patching)
-- `searxng` (~50–100 MB RAM, CPU-only)
-
-Total local footprint: well under 1 GB, no GPU. Suitable for a small VPS, a Raspberry-Pi-class box, or a personal laptop that's not always-on the same network as the LLM host.
-
-### Trade-offs
-
-- **Latency**: every chat token round-trips to the remote endpoint. LAN is fine; cross-region cloud calls add 50–200 ms TTFT.
-- **Auth**: `VLLM_API_KEY` rides on every request to the remote. Use TLS to the remote endpoint (or a private network — Tailscale / WireGuard / cloud VPC peering — over plaintext).
-- **Network reachability**: the remote URL must resolve and be reachable from inside the `openclaw-gateway` container. LAN IPs work because docker bridge networks NAT outbound. Public hostnames work if DNS in the container resolves them.
-
-## Run without the OpenClaw UI
-
-If you just want the vLLM endpoints for your own code and don't need OpenClaw:
-
-1. Uncomment the `"127.0.0.1:8004:8004"` and `"127.0.0.1:8005:8005"` bindings in `docker-compose.yml`.
-2. `docker compose up -d vllm-llm vllm-embedding`.
-
-Your API is then at `http://127.0.0.1:8004/v1/` (chat) and `http://127.0.0.1:8005/v1/embeddings`, both requiring `Authorization: Bearer $VLLM_API_KEY`.
-
-## Container naming (CONTAINER_NAME_PREFIX)
-
-Every service uses `container_name: ${CONTAINER_NAME_PREFIX:-dgx-}<service>`. Default `dgx-` keeps the familiar `dgx-openclaw-gateway`, `dgx-vllm-llm`, … shape — useful for namespacing on a host that may grow other compose stacks.
-
-If this is the only stack on the host and you want clean names like `openclaw-gateway`, `vllm-llm`, set:
-
-```dotenv
-CONTAINER_NAME_PREFIX=
-```
-
-**Bridge DNS reachability is unaffected** — services resolve each other by the compose service name plus the explicit `hostname:` directive (`vllm-llm`, `searxng`, `openclaw-gateway`, …) regardless of how the container shows up in `docker ps`. Sibling compose stacks pointed at the same network can keep using `vllm-llm:8004` no matter what prefix you pick.
-
-## Sharing the HF cache with sibling LLM stacks
-
-If you run other vLLM compose stacks on the same host (an alternate quantization for A/B testing, a different embedding model, an experimental fine-tune), you can share the model cache between them. Two knobs:
-
-```dotenv
-# Same host path everywhere → bind-mount points into the same directory
-VLLM_HF_CACHE_DIR=/opt/dgx-openclaw/hf-cache
-
-# Same Docker volume label → one consistent entry in `docker volume ls`
-VLLM_HF_CACHE_VOLUME_NAME=dgx-openclaw-hf-cache
-```
-
-Set both in every sibling stack's `.env`. The bind-mount makes them physically share the cache (no duplicate `~16 GB` Gemma download); the matching volume name is cosmetic but keeps `docker volume ls` clean.
-
-## TTS port exposure
-
-The Fish Audio TTS service publishes to `${TTS_FISH_BIND:-127.0.0.1}:${TTS_FISH_PORT:-8091}` — loopback by default so `curl 127.0.0.1:8091/healthz` works without `docker exec` while keeping LAN clients out. To expose on the LAN:
-
-```dotenv
-TTS_FISH_BIND=0.0.0.0    # exposes openclaw-tts-fish on LAN
-```
-
-Bearer-token-protected via `TTS_API_TOKEN`, but a leaked token is still a leaked token — keep loopback unless you have a reason to expose. The OpenClaw gateway always reaches the service via bridge DNS regardless of the binding.
-
-## TTS auto-attach mode (`OPENCLAW_TTS_AUTO`)
-
-The patcher (step 11) writes `messages.tts.auto` from the env knob,
-and the value drives how aggressively the gateway attaches a TTS
-audio file to assistant replies. Quick decision tree:
-
-| Symptom | Surface mix | Set `OPENCLAW_TTS_AUTO` to |
-|--|--|--|
-| "I want every reply spoken — voice channels and Discord text" | Voice + Discord text + agent skill API | `always` (default, v0.11.0+) |
-| "I only want spoken replies on voice channels; Discord text should stay text-only" | Voice + Discord text where text channel agents shouldn't auto-attach mp3 | `tagged` |
-| "I'm on a pre-v0.11.0 deploy and Discord text channel is ghosting" | Pre-v0.11.0 (no ffmpeg in gateway image) | `tagged` (until you can rebuild — see TROUBLESHOOTING.md → "Discord bot acts like it's typing but never sends text") |
-| "Heartbeat / cron-driven agents shouldn't make audio" | Heartbeat-only or scripted | `tagged` or `off` |
-| "I want LLM-controlled TTS attach-or-not on every reply" | Mixed surfaces, agent decides per-reply | `tagged` (LLM marks `[tts]` to opt-in) |
-| "Disable TTS attach completely (still allow `tts` agent skill explicitly)" | Anything | `off` |
-| "Only attach when the user spoke the prompt (voice in → voice out)" | Voice channel two-way | `inbound` |
-
-Apply with:
+A service whose profile you dropped keeps running until you remove it:
 
 ```bash
-# In the main .env:
-OPENCLAW_TTS_AUTO=tagged   # or always / off / inbound
-
-# Then re-run the patcher to apply:
-docker compose up -d --force-recreate \
-    openclaw-config-init openclaw-gateway openclaw-cli
-
-# Verify:
-docker exec ${PROJ}openclaw-cli node -e \
-    "const j=require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8'); \
-     console.log('messages.tts.auto =', JSON.parse(j).messages.tts.auto)"
-```
-
-See [`docs/reference/tts-stack.md`](./reference/tts-stack.md) →
-"`OPENCLAW_TTS_AUTO` env knob" for the full enum (`always`, `tagged`,
-`inbound`, `off`) and surface-by-surface behavior.
-
-## Disable TTS entirely
-
-Two-step opt-out:
-
-1. In `.env`, leave `OPENCLAW_TTS_FISH_API_KEY` empty. The patcher's step 11 detects this and skips cleanly — `messages.tts.providers.openai` stays untouched.
-2. Park the Fish Audio TTS service with `profiles: ["never"]` in `docker-compose.yml` so `docker compose up -d` doesn't start it:
-
-    ```yaml
-    openclaw-tts-fish:
-      profiles: ["never"]    # add this one line
-      # …rest unchanged…
-    ```
-
-## Add custom TTS voices (Fish Audio voice cloning)
-
-Voice cloning happens at request time from mounted reference files — no fine-tune, no rebuild:
-
-```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
-# Drop a 10-30 s clean mono WAV + a verbatim transcript into /app/voices/:
-docker cp myvoice.wav ${PROJ}openclaw-tts-fish:/app/voices/
-docker cp myvoice.txt ${PROJ}openclaw-tts-fish:/app/voices/
-
-# Request it (no restart needed):
-curl -H "Authorization: Bearer $TTS_API_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"input":"Sample text.","voice":"myvoice"}' \
-     http://127.0.0.1:8091/v1/audio/speech --output out.wav
-```
-
-To make `myvoice` the gateway default, set `OPENCLAW_TTS_DEFAULT_VOICE=myvoice` in `.env` and re-run the patcher trio. Optional: extend the `voiceAliases` map in `patch-config.mjs` step 11 so agents can address the voice with a friendly name (`english`, `narrator`, etc.).
-
-To swap the Fish Audio checkpoint for a different multilingual TTS (e.g. a commercially-licensed alternative), set `FISH_REPO=<your/repo>` as a build arg and rebuild: `docker compose build --no-cache openclaw-tts-fish`. The shim is model-agnostic as long as the SGLang-Omni config recognizes the new checkpoint.
-
-## Swap the Whisper STT model
-
-The default `deepdml/faster-whisper-large-v3-turbo-ct2` (MIT) is the latency-first choice — ~1.6 GB VRAM at float16, ~8× faster than vanilla large-v3 (pruned 4-layer decoder), MIT-licensed, near-equal English WER. Two alternates are worth knowing:
-
-- **HU accuracy (finetune):** `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu`. Apache-2.0 Hungarian fine-tune, ~3 GB VRAM, ~3pp lower HU WER than turbo on noisy/phone-grade mic input. Slower (full 32-layer decoder) and ~3 min CT2 conversion on first boot.
-- **VRAM-tight (compute_type):** `STT_WHISPER_COMPUTE_TYPE=int8_float16` on either model. Halves VRAM at a 5-10% WER increase. Safe fallback when the LLM + Fish TTS squeeze the GPU budget, or if a Blackwell sm_120 numerical-stability issue turns up.
-
-Either change is a one-line `.env` edit plus `docker compose up -d --force-recreate openclaw-stt-whisper`. The patcher leaves the existing `tools.media.audio.models[]` entry intact and only rewrites `baseUrl`/`headers` when they drift.
-
-## Disable STT entirely
-
-Two-step opt-out, mirrors the TTS path:
-
-1. In `.env`, leave `STT_API_TOKEN` empty. The patcher's step 14 detects this and skips cleanly — `tools.media.audio` stays untouched.
-2. Park the `openclaw-stt-whisper` service with `profiles: ["never"]` in `docker-compose.yml`:
-
-    ```yaml
-    openclaw-stt-whisper:
-      profiles: ["never"]    # add this one line
-      # …rest unchanged…
-    ```
-
-Note: opt-out affects only the voice-note / Discord voice / VoiceCall pipelines. The Control UI realtime mic button uses the browser's Web Speech API independently and stays functional regardless of this service — that is an OpenClaw design choice, not a consequence of the wiring here.
-
-## Remote STT backend
-
-Same pattern as "Run with a remote vLLM backend" above. On a GPU-less host pointing at a remote or cloud Whisper endpoint:
-
-1. Park the local service: add `profiles: ["never"]` to `openclaw-stt-whisper`.
-2. Point the patcher at the remote: `OPENCLAW_STT_BASE_URL=https://your-whisper.example.com/v1/` in `.env`.
-3. Set `STT_API_TOKEN` to whatever Bearer the remote accepts.
-
-The gateway will POST voice notes and voice-channel audio to the remote endpoint. Bridge DNS isn't involved — the URL resolves outside the compose network via the host's DNS.
-
-## Browser automation tuning
-
-The default `openclaw-browser` configuration is calibrated for a single-operator
-GB10 box scraping the operator's own authenticated accounts. A few common
-adjustments:
-
-### Tune the application-layer rate limiter
-
-The shipped per-host token bucket (`BROWSER_RATE_LIMIT_RPS=0.5`,
-`BROWSER_RATE_LIMIT_BURST=5`) is defensive for the public web. For your
-own services (private MediaWiki, Notion, GitHub), bump it:
-
-```bash
-# In .env
-BROWSER_RATE_LIMIT_RPS=5
-BROWSER_RATE_LIMIT_BURST=20
-```
-
-Then `docker compose up -d --force-recreate openclaw-browser`.
-
-### Extend the domain blocklist
-
-Edit `openclaw-browser/config/blocklist.json` and add suffixes to
-`block_suffixes`. The list is consulted at the application layer
-(`/v1/extract`, `/v1/blocklist/check`) — network-level enforcement is a
-Phase 2 enhancement. Reload without restart:
-
-```bash
-curl -X POST -H "Authorization: Bearer $BROWSER_API_TOKEN" \
-  http://127.0.0.1:9220/v1/blocklist/reload
-```
-
-### Expand beyond 20 profiles
-
-`BROWSER_MAX_PROFILES=20` matches the published port range `9222-9241`.
-To go higher, edit `docker-compose.yml`:
-
-```yaml
-ports:
-  - "${BROWSER_BIND:-127.0.0.1}:9222-9261:9222-9261"   # 40 profiles
-```
-
-and in `.env`:
-
-```bash
-BROWSER_MAX_PROFILES=40
-```
-
-The patcher honors the same range automatically.
-
-### Expose CDP on the LAN (do this carefully)
-
-`BROWSER_BIND=127.0.0.1` is the default. The Chromium remote-debugging
-ports give full control of any session connected to them — they are not
-safe to expose on the LAN with only a query-string token. If you need
-LAN access, the recommended pattern is a header-auth reverse proxy
-(Caddy / Traefik) that:
-
-1. Listens on the LAN.
-2. Validates an `Authorization: Bearer` header.
-3. Strips the header and forwards to `127.0.0.1:9222-9241` on the host.
-
-Without that, the query-string token in `cdpUrl` is the only auth surface
-and it leaks into proxy logs, browser histories, and `ps` output. Setting
-`BROWSER_BIND=0.0.0.0` without the proxy is documented as **not
-recommended** in `docs/reference/browser-automation.md`.
-
-### Swap to Patchright if you need stealth
-
-Vanilla Playwright Chromium has `navigator.webdriver=true`, fingerprintable
-canvas + audio + WebGL, default User-Agent leaking the headless tag. Fine
-for the operator's own authenticated accounts; will trip Cloudflare
-Turnstile / DataDome / PerimeterX on hostile public sites.
-
-Patchright (Apache 2.0, https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)
-is a binary-level patched Chromium fork. To swap:
-
-1. In `openclaw-browser/server/requirements.txt`, replace `playwright==1.58.2`
-   with `patchright==1.59.1` (or current).
-2. In `supervise.py`, change `from playwright.sync_api import sync_playwright`
-   to `from patchright.sync_api import sync_playwright`.
-3. Rebuild: `docker compose --profile browser build --no-cache openclaw-browser`.
-
-The control surface is API-compatible. Patchright's binary patches address
-`navigator.webdriver`, runtime detection, and command-line flag leaks.
-
-### Self-host Firecrawl alongside the browser
-
-For static-page fetches that don't need Chromium (the agent just wants
-the article text), a self-hosted Firecrawl sidecar is faster and lighter
-than spinning up a browser context. Issue #22256 confirmed
-`FIRECRAWL_BASE_URL` is overridable. Sketch:
-
-1. Run a Firecrawl container alongside the stack (it has its own
-   docker-compose at https://github.com/firecrawl/firecrawl).
-2. Set `FIRECRAWL_BASE_URL=http://firecrawl:3002` in `.env`.
-3. Set `tools.web.fetch.provider = "firecrawl"` via OpenClaw config.
-
-The agent then has both: `web_fetch` for static pages (fast Firecrawl
-path), `browser` for JS-heavy or login-gated content (slower Chromium
-path).
-
-## Python code execution sandbox
-
-OpenClaw can execute Python the agent writes — load a CSV, run pandas,
-return a chart — via a self-hosted MCP server bundled in this stack.
-**Opt-in, profile=python.** See
-[`reference/python-sandbox.md`](./reference/python-sandbox.md) for the
-full design rationale (why this and not the native `code_execution`
-tool or `agents.defaults.sandbox`).
-
-### Activation
-
-Three pieces must align (mirrors the HU-TTS / browser opt-in pattern):
-
-1. **Token**: `bootstrap.sh` prompts for opt-in on first run and fills
-   `PYTHON_SANDBOX_API_TOKEN` with `openssl rand -base64 48`. Re-runs
-   are no-ops if already set. To opt in later by hand:
-   ```bash
-   PYTHON_SANDBOX_API_TOKEN=$(openssl rand -base64 48)
-   echo "PYTHON_SANDBOX_API_TOKEN=$PYTHON_SANDBOX_API_TOKEN" >> .env
-   ```
-
-2. **Compose profile**: add `python` to `COMPOSE_PROFILES` in `.env`,
-   or pass `--profile python` on every docker compose command.
-
-3. **Patcher**: the next `docker compose up -d` runs step 18 of
-   `patch-config.mjs`, which writes `mcp.servers.python_sandbox` into
-   `openclaw.json`. The gateway picks this up on next reload.
-
-```bash
-docker compose --profile python up -d --build openclaw-python-sandbox
+docker compose --profile browser rm -sf openclaw-browser
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-After the gateway picks up the new MCP server, the agent's tool
-catalog gains `python_exec` and `python_session_reset`.
+The core services (`vllm-llm`, `vllm-embedding`, `searxng`, `openclaw-stt-whisper`)
+have no profile. Park one with an override file that gives it a profile nobody
+enables, as in [the remote backend section](#use-a-remote-or-cloud-llm-backend).
+The two vLLM services also need the gateway's `depends_on` replaced, because the
+gateway waits for them to be healthy.
 
-### Verification
+## Heartbeat and dreaming
 
-```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
-TOKEN=$(grep '^PYTHON_SANDBOX_API_TOKEN=' .env | cut -d= -f2-)
+**Heartbeat.** Every 30 minutes, in an isolated session, inside a daily window:
 
-curl -fsS http://127.0.0.1:8094/healthz                    # → ok kernels=0
-
-curl -sS -X POST http://127.0.0.1:8094/mcp \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  | jq '.result.tools[].name'    # → python_exec, python_session_reset
-
-# Agent end-to-end. The tool's catalog name is python_sandbox__python_exec
-# (OpenClaw <server>__<tool> convention). Use the prefixed name in prompts —
-# Gemma 4 NVFP4 silently fails to call the tool when only the bare name is
-# given. See docs/reference/python-sandbox.md for the verification trail.
-docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
-  --message 'Call python_sandbox__python_exec with code="print(2**128)". Reply with the printed value prefixed by VAL:' \
-  --thinking off --json --timeout 600 \
-  | jq '.toolSummary, .finalAssistantVisibleText'
-# `--timeout 600` because Gemma 4 NVFP4 generates ~6 tok/s on GB10 and a
-# multi-step tool-call run does 2-3 LLM calls of ~200 tokens each. Lower
-# timeouts (60-180s) abort the run with `Request was aborted`. See
-# docs/TROUBLESHOOTING.md → "Agent runs (multi-step tool calls)".
+```dotenv
+OPENCLAW_HEARTBEAT_ACTIVE_START=09:00
+OPENCLAW_HEARTBEAT_ACTIVE_END=02:00     # end before start wraps past midnight
+OPENCLAW_HEARTBEAT_TZ=Europe/Budapest
 ```
 
-### Tuning
+The heartbeat reads the agent's `HEARTBEAT.md`; an empty file means the poll is
+skipped, so write a task list there to make it do something. Its messages go to the
+owner as a Discord DM: `OPENCLAW_HEARTBEAT_TO`, or the first ID in
+`OPENCLAW_DISCORD_COMMAND_OWNERS`. An explicit target is needed because the upstream
+`owner` target finds no DM on Discord (`reason=no-route`). `OPENCLAW_HEARTBEAT_TO=off`
+leaves delivery to OpenClaw.
 
-The defaults target single-user analysis on GB10:
+**Dreaming.** Nightly memory consolidation into `MEMORY.md` at 03:00 in
+`OPENCLAW_HEARTBEAT_TZ`, after the default heartbeat window ends.
+`OPENCLAW_ENABLE_DREAMING=off` removes it. The time has no knob; it is the
+`frequency` cron in `config-init/steps/memory.mjs`. Dream diaries over
+`OPENCLAW_DREAMS_ROTATE_BYTES` move to `memory/dreams-archive/`, which memory search
+still indexes.
 
-- `PYTHON_SANDBOX_MEMORY_MB=8192` — bump if you load multi-GB
-  dataframes; the docker engine OOM-kills the kernel on overshoot.
-- `PYTHON_SANDBOX_KERNEL_TIMEOUT_S=30` — bump for long-running
-  reductions; the kernel is *interrupted* (not killed) on exceed, so
-  state survives.
-- `PYTHON_SANDBOX_MAX_OUTPUT_BYTES=10485760` — truncation cap on
-  combined `stdout + stderr + plot` bytes per call. Save big figures
-  to `/workspace/foo.png` and return the path instead of inlining
-  large base64 PNGs.
+Both take effect on the trio recreate.
 
-### Hardening: hard egress block
+## Edit the prompt text
 
-The default v0.8.0 ships **no hard egress block**. Egress is implicitly
-limited because the kernel runs without root and doesn't import
-network libraries by default, but a determined agent can still reach
-SearxNG / vLLM / the LAN via `urllib`. To enforce no-egress:
+The workspace texts config-init writes come from `config-init/templates/`:
 
-1. Create an internal docker network:
-   ```bash
-   docker network create --internal openclaw-python-sandbox-net
-   ```
-2. Override the service in a `docker-compose.override.yml`:
-   ```yaml
-   services:
-     openclaw-python-sandbox:
-       networks:
-         - openclaw-python-sandbox-net
-   networks:
-     openclaw-python-sandbox-net:
-       external: true
-   ```
-3. Recreate the service. The OpenClaw gateway must be on the same
-   network to reach the MCP endpoint — add it there too if the
-   override fully replaces the default network attachment.
+| Folder | What it becomes |
+|---|---|
+| `discord/AGENTS.d/` | marker blocks in `workspace-discord/AGENTS.md` (Discord agent policy) |
+| `discord/router/` | the media lines of the skill router (an `-on` and an `-off` variant per group) |
+| `discord/people-MEMORY.seed.md` | the first `people/MEMORY.md`, written only when none exists |
+| `main/AGENTS.d/` | marker blocks in the main agent's `AGENTS.md` |
+| `skills/` | `skills/<name>/SKILL.md` in the workspaces |
+| `agents/` | seed `AGENTS.md` for the MeshCore and Valheim agents |
 
-A future v0.8.x patch will fold this in via the `PYTHON_SANDBOX_NETWORK`
-env var; today the env var is a documented placeholder only.
+`{{NAME}}` placeholders are filled by the step that renders the file; a placeholder
+without a value stops config-init, because a half-rendered prompt is worse than a
+failed start.
 
-### Adding libraries
+What you may edit where:
 
-`pip install` won't work at runtime (no egress). To add a library:
+- **In `AGENTS.md`, outside the markers** (`<!-- patch-config:<id>:start -->` …
+  `end`): yours, kept on every run.
+- **Inside the markers, and every skill file:** owned by config-init and
+  overwritten on every run. Change the template in `config-init/templates/`, or add
+  your own skill under a different name.
 
-1. Edit `openclaw-python-sandbox/server/requirements.txt`.
-2. Rebuild: `docker compose --profile python build openclaw-python-sandbox`.
-3. Recreate: `docker compose --profile python up -d openclaw-python-sandbox`.
-4. State in active sessions is lost; the next `python_exec` against
-   any session_id starts a fresh kernel.
+The folder is mounted read-only into config-init (`./config-init:/opt/config-init`),
+so a template change needs no image rebuild: run config-init (or the trio recreate),
+and new sessions get the new text. A session that is already running keeps the
+`AGENTS.md` it started with.
 
-### Disabling
+Write rules as criteria, not keyword lists ("before stating a specific, checkable
+fact you are not certain of, look it up"), with examples only as illustration; see
+[`reference/discord-text-agent.md`](reference/discord-text-agent.md) for the agent
+design.
 
-Either lever opts out independently:
+## Add a knob or a step to config-init
 
-- Drop `python` from `COMPOSE_PROFILES`. The service stays parked.
-- Empty `PYTHON_SANDBOX_API_TOKEN`. The patcher's step 18 removes
-  `mcp.servers.python_sandbox` from `openclaw.json` on the next run,
-  so the gateway stops trying to dial a parked service.
+Config-init is `config-init/patch-config.mjs`, which runs the area modules in
+`config-init/steps/` in order (models, memory, gateway, tools, discord, agents,
+workspaces, media, plugins). It gets the whole `.env` through `env_file`, so a
+config-init knob needs no compose change.
 
-Both are safe and reversible.
-
-## Image generation bridge (ComfyUI MCP)
-
-A thin MCP bridge that lets the OpenClaw agent drive image generation on
-your existing ComfyUI install. The bridge ships **no model weights** —
-you bring whatever checkpoints you want (FLUX Dev / Schnell, SDXL base,
-Pony XL / Illustrious XL / RealVisXL fine-tunes, …); the bridge submits
-workflow JSON templates to ComfyUI's HTTP API and returns base64-encoded
-PNGs to the agent. Three tools surface in the agent catalog:
-`comfyui_image__generate`, `comfyui_image__list_workflows`,
-`comfyui_image__cancel`.
-
-This opt-in lives in a **separate compose file**
-(`openclaw-image-comfyui/docker-compose.yml`) — not in the main stack
-compose. `docker compose up -d` from the repo root does NOT start the
-bridge; the operator brings it up explicitly.
-
-> **License posture.** This repo ships no model weights of any kind.
-> Checkpoint, LoRA, and workflow choices — and their respective
-> licenses (FLUX Dev's research-use terms, Pony Diffusion XL's
-> CC-BY-NC-style restrictions, vendor-specific clauses on Illustrious /
-> RealVisXL / etc.) — are entirely the operator's responsibility. Same
-> posture as the Fish Audio S2 Pro Research-License opt-in.
-
-### Activation
-
-Three independent levers must all be true before the agent sees the
-`comfyui_image__*` tools:
-
-1. **Set `IMAGE_GEN_API_TOKEN` in the main `.env`.** `bootstrap.sh`
-   prompt 3e handles this on first run; on existing installs use
-   `./rotate-secrets.sh IMAGE_GEN_API_TOKEN -y`.
-2. **Confirm `COMFYUI_URL` matches your ComfyUI install.** The default
-   `http://host.docker.internal:13036` works when ComfyUI is in a
-   sibling compose on the same host with port `13036:8188` published
-   on loopback. For a LAN-resident ComfyUI, set
-   `COMFYUI_URL=http://192.168.x.x:13036` in the main `.env`.
-3. **Bring the bridge up** (separate compose):
+1. **Read the knob with `config-init/lib/env.mjs`.** `str`, `bool`, `int`, `num`,
+   `list`, `oneOf`, `ids` (Discord snowflakes as strings), `profile` (is a compose
+   profile on). An empty value counts as unset, and an invalid switch or enum value
+   throws: config-init exits non-zero and the gateway does not start until it is
+   fixed. That is on purpose; a typo should not silently fall back to a default.
+2. **Write through `ctx.config`** (`config-init/lib/config.mjs`): `set`, `merge`,
+   `setDefault` (only when nothing is there, so the operator's value wins), `remove`,
+   `addTo`, `removeFrom`. Each compares first and logs one `[patch-config]` line,
+   masking secrets, so a re-run on a patched config is silent. Give an `off` value a
+   removal path, so turning the knob off cleans up after it.
+3. **Workspace text goes through `config-init/lib/files.mjs`**: `template`,
+   `upsertBlock` / `removeBlock` for `AGENTS.md` marker blocks, `skill` /
+   `removeSkill` for skill files. Put the text itself in `config-init/templates/`.
+4. **A new area** is a new `config-init/steps/<area>.mjs` with a default export
+   `(ctx) => void`, added to the list in `patch-config.mjs`. The order matters only
+   where a later area reads what an earlier one wrote.
+5. **Document the knob** in [`reference/configuration.md`](reference/configuration.md):
+   default, what it does, and why the default is what it is. Add it to
+   `.env.example` only if a typical install sets it.
+6. **Verify.** `node --check` on the files you changed, then the test harness on
+   the Docker host:
 
    ```bash
-   docker compose -f openclaw-image-comfyui/docker-compose.yml \
-                  --env-file .env --profile image-gen \
-                  up -d --build
+   export STACK=/path/to/the/deployed/checkout
+   config-init/test/run.sh before        # the deployed config-init, on a copy of the live state
+   config-init/test/run.sh after /path/to/your/working/copy/config-init/patch-config.mjs
+   config-init/test/diff.sh before after # what changed in openclaw.json and the workspaces
    ```
 
-4. **Re-run the patcher** so the gateway picks up the new MCP server:
-
-   ```bash
-   docker compose up -d --force-recreate \
-                  openclaw-config-init openclaw-gateway openclaw-cli
-   ```
-
-Step 19 of `patch-config.mjs` writes `mcp.servers.comfyui_image` into
-`openclaw.json` only when `IMAGE_GEN_API_TOKEN` is set; an empty token
-removes the entry on the next patcher run.
-
-### Smoke test
-
-```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
-TOKEN=$(grep '^IMAGE_GEN_API_TOKEN=' .env | cut -d= -f2-)
-
-# Bridge healthcheck + workflow inventory
-curl -fsS http://127.0.0.1:9095/healthz
-curl -sS -X POST http://127.0.0.1:9095/mcp \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  | jq '.result.tools[].name'
-
-# End-to-end via the agent (picks a checkpoint that actually exists in
-# your ComfyUI's basedir/models/checkpoints/)
-docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
-  --message "Use comfyui_image__generate with workflow=flux-schnell, checkpoint=flux1-schnell-fp8.safetensors, prompt='a red cube on a white background', width=512, height=512. Reply with the prompt_id." \
-  --thinking off --json --timeout 600 \
-  | jq '.toolSummary, .finalAssistantVisibleText'
-# `--timeout 600` is the safe floor for any agent run that calls an MCP
-# tool. Gemma 4 NVFP4 on GB10 averages ~6 tok/s; a multi-step tool-call
-# run easily wants 90-120s of wall clock. See
-# docs/TROUBLESHOOTING.md → "Agent runs (multi-step tool calls)".
-```
-
-### Adding a model
-
-The bridge reads checkpoints from your existing ComfyUI's
-`basedir/models/checkpoints/` directory — no new bind mounts are
-needed in this stack. To use a new model:
-
-1. Drop the `.safetensors` file into your ComfyUI's
-   `basedir/models/checkpoints/` directory (matches the path your
-   ComfyUI compose has bind-mounted as `/basedir`).
-2. Either pass `checkpoint=<filename>.safetensors` per `generate`
-   call, OR edit a shipped workflow JSON
-   (`openclaw-image-comfyui/server/workflows/<name>.json`) and replace
-   the `"REPLACE_ME.safetensors"` placeholder once.
-3. If you edited a workflow JSON, restart the bridge so it reloads:
-   ```bash
-   docker compose -f openclaw-image-comfyui/docker-compose.yml \
-                  up -d --force-recreate openclaw-image-comfyui
-   ```
-
-### Adding a custom workflow
-
-See `openclaw-image-comfyui/server/workflows/README.md` for the
-authoring guide. TL;DR: in ComfyUI, click **Save (API Format)**, drop
-the JSON into the bridge's `workflows/` directory, prepend a
-`_metadata` block declaring `targets.prompt` and `targets.negative`
-(other targets are auto-resolved by `class_type`), restart the bridge.
-
-### Tuning
-
-| Variable | Default | Use when |
-|--|--|--|
-| `IMAGE_GEN_MAX_CONCURRENCY` | `1` (single-flight) | Drop to `0` only if your ComfyUI runs on a different GPU than vLLM. Otherwise concurrent generation pauses LLM tokens. |
-| `IMAGE_GEN_TIMEOUT_S` | `600` | Bump if your workflows do >25-step SDXL or batched FLUX renders that approach the 10-minute cap. |
-| `IMAGE_GEN_MAX_OUTPUT_BYTES` | `52428800` (50 MiB) | Bump if `batch_size > 1` at high resolution; lower to throttle agent context bloat if you only ever ask for one 1024x1024 image. |
-| `IMAGE_GEN_BIND` | `127.0.0.1` | Set to `0.0.0.0` only if you want to call the MCP endpoint from a LAN client through a header-auth reverse proxy. |
-
-### Disabling
-
-Either lever opts out independently:
-
-- **Stop the bridge container**: `docker compose -f
-  openclaw-image-comfyui/docker-compose.yml down`. The bridge stays
-  off until you bring it back up; the rest of the stack is unaffected.
-- **Empty `IMAGE_GEN_API_TOKEN`**. The next patcher run removes
-  `mcp.servers.comfyui_image` from `openclaw.json`, so the gateway
-  stops trying to dial a parked bridge:
-  ```bash
-  docker compose up -d --force-recreate \
-                 openclaw-config-init openclaw-gateway openclaw-cli
-  ```
-
-Both are safe and reversible.
-
-### Known limit: no inline image render in the OpenClaw chat (v0.9.7+)
-
-The OpenClaw chat surface (2026.4.22) **cannot** render the generated
-image inline in the agent reply. Verified empirically via Chrome
-devtools on 2026-04-27: the chat's markdown sanitizer drops
-`![alt](url)` image syntax (only the `alt` text survives as a `<p>`
-in the DOM), AND the browser refuses to send cached HTTP Basic auth
-credentials on cross-origin `<img>` fetches (silent `onerror`).
-Neither layer is fixable from the bridge side.
-
-**Recommended workflow:** when the agent calls
-`comfyui_image__generate`, the tool-output bubble in the chat shows
-the response JSON. The `display_markdown` field contains the full
-HTTPS URL of the generated image. Copy the URL and open it in a new
-tab — direct navigation opens the image transparently.
-
-### Token-auth proxy (v0.9.8 → v0.9.10) — recommended
-
-The recommended setup for the proxy in front of ComfyUI puts the
-secret only in the bridge container's `.env` (not in the proxy admin
-GUI). The bridge embeds `?token=<COMFYUI_VIEW_TOKEN>` in the URL it
-puts in `display_markdown`, and the proxy validates that token by
-calling the bridge's `/auth-validate` endpoint via NGINX's
-`auth_request` sub-request. Tokens rotate via
-`./rotate-secrets.sh COMFYUI_VIEW_TOKEN` + bridge recreate; **no
-proxy edit needed** at rotation time.
-
-Per-location split:
-
-| Path | Auth | Used by |
-|--|--|--|
-| `/` (HTML/JS/CSS/WS) | Basic auth | You, in the browser |
-| `/api/view?...` | Basic auth | The ComfyUI UI loading its assets |
-| `/view?...&token=...` | URL-param token (auth_request → bridge) | The bridge / chat-image direct-nav |
-
-NPM setup walkthrough is in
-`openclaw-image-comfyui/README.md` → "Token-protected proxy
-(alternative to Basic auth)". Three settings to get right:
-**`Satisfy Any` on the Access List Details tab**, **no `Allow all`
-IP rule on the Rules tab**, and **don't put `auth_basic off;`** in
-the custom location Advanced (NPM auto-emits `auth_basic` from the
-Access List; duplicate is `[emerg]`). Verify with the four-way
-curl recipe in `docs/reference/image-comfyui-bridge.md`.
-
-### Other future paths (not wired)
-
-If inline rendering is critical for your workflow, two not-wired
-future paths are sketched in
-`docs/reference/image-comfyui-bridge.md` → "Chat-side image
-rendering": (a) same-origin proxy via `/__openclaw__/canvas/`,
-(b) workspace bind + agent `read` tool. Track upstream openclaw
-releases for native chat image-content support.
-
-## Voice-controlled agent over Discord
-
-Join an OpenClaw-controlled bot to a Discord voice channel and drive an agent by voice: speak a request → the bundled Whisper STT transcribes → the agent plans + executes → the bundled TTS speaks the reply into the channel. End-to-end round trip is ~3-5 s on GB10 for a simple tool call.
-
-**Isolation posture** — this setup deliberately runs the Discord agent in a **separate workspace** from your main `main` agent, so anyone who can speak in the bound voice channel cannot extract memory notes, chat history, or files from your primary workspace. The bot is also sandboxed to a `cautious` exec-policy (approval-gated destructive tools) by default. Keep the token private — anyone with the bot token can impersonate your bot inside any guild it's joined to.
-
-> **New to Discord bots?** Read [`docs/discord-bot-setup.md`](./discord-bot-setup.md) first — it walks through the Developer Portal, the three-layer permission model (OAuth2 scopes vs bot permissions vs privileged intents), and the server invite flow. This runbook assumes you already have a bot application that's authorized in your guild (member list shows it greyed out) and the token is in `.env`.
-
-### Prerequisites
-
-- The STT + TTS + LLM stack is up and healthy (you've completed onboarding and `curl http://127.0.0.1:18789/healthz` returns ok).
-- A Discord account with a server (guild) you administer.
-- OpenClaw gateway image dated **2026.4.15 or newer** — older images don't speak the `/vc` slash-command protocol. Check with `docker image inspect ghcr.io/openclaw/openclaw:${OPENCLAW_IMAGE_TAG:-latest} --format '{{.Created}}'`; upgrade first via the runbook below if you're behind.
-
-> **Text-channel agents — TTS-attachment now works** (v0.11.0+). The default `OPENCLAW_TTS_AUTO=always` (set by patcher step 11 when `OPENCLAW_TTS_FISH_API_KEY` is configured) attaches a TTS audio file alongside every final reply on the Discord text channel. The v0.11.0 release ships an ffmpeg-augmented gateway image (`openclaw-base-ext/Dockerfile`) that fixes the `ffmpeg not found in trusted system directories` crash present in earlier deploys. If you're stuck on a pre-v0.11.0 deploy, set `OPENCLAW_TTS_AUTO=tagged` until you can rebuild. Voice-channel agents (`/vc join`-driven) and VoiceCall stayed on `always` throughout.
-
-> **Reaction-cycle defence (patcher step 20)**: the Discord plugin auto-fires an "I see your message" emoji-ack lifecycle (👀 / 🤔 / 👍 / 🔥) on inbound mentions. Upstream issue [#46024](https://github.com/openclaw/openclaw/issues/46024) documents a stale-queue replay bug — after heartbeat / cron cycles, the delivery queue resends buffered ack-reaction events, so the bot rapidly cycles 3–5 emojis on the user's message *without the agent having any tool-call awareness of doing it* (it's NOT a Gemma reasoning loop; the agent's session log shows zero `react` calls). Patcher step 20 defends by setting `channels.discord.ackReactionScope = "off"` automatically when the channel is configured — the auto-ack pipeline is silenced and the queue has nothing to replay. Override with `OPENCLAW_DISCORD_ACK_REACTION_SCOPE=group-mentions` (or any of the enum values) in `.env` if you actually want the lifecycle feedback and accept the cycling. The agent can still emit `add_reaction` explicitly via tool call when it really means to react.
-
-### 1. Create the Discord application + bot
-
-1. Go to <https://discord.com/developers/applications> → **New Application**. Name it something identifiable (e.g. `openclaw-gb10`).
-2. Sidebar → **Bot** → **Reset Token** → copy the token. This is the only time you'll see it; store it immediately.
-3. Sidebar → **Bot** → **Privileged Gateway Intents**: leave all three off for the default voice setup — slash commands (`/vc join`, etc.) do not require privileged intents. Enable **Server Members Intent** only if you want per-speaker attribution ("Alice just said X, reply to her") in multi-speaker voice channels. **Message Content Intent** is only needed for legacy prefix commands (not this integration). See [`docs/discord-bot-setup.md`](./discord-bot-setup.md) §1 for the full decision tree.
-4. Sidebar → **OAuth2** → **URL Generator**:
-    - Scopes: `bot`, `applications.commands`
-    - Bot Permissions: `Connect`, `Speak`, `View Channels`, `Send Messages`, `Read Message History`, `Use Slash Commands`
-5. Copy the generated URL, open it in a browser, pick your server, authorize. The bot appears in your member list (offline until we wire it up below).
-
-### 2. Verify the live gateway speaks the Discord voice protocol
-
-```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
-PROJ=${PROJ:-dgx-}
-
-# Read-only probe: inspect the Discord plugin's config schema.
-docker exec ${PROJ}openclaw-cli openclaw channels capabilities --channel discord --json \
-  | python3 -c "import json,sys; d=json.load(sys.stdin); v=d['channels'][0]['plugin']['configSchema']['schema']['properties']['voice']['properties']; print(list(v.keys()))"
-```
-
-Expected output: `['enabled', 'autoJoin', 'daveEncryption', 'decryptionFailureTolerance', 'tts']`. If the `voice` key is missing, your gateway image is too old — upgrade via the runbook below and retry.
-
-### 3. Prepare the isolated workspace
-
-The main `openclaw-gateway` already bind-mounts `${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw` at the top level. Any subdirectory of the config dir that isn't the `workspace/` path is available inside the container without further mounts — so the isolated workspace lives under the same host tree but is orthogonal to the primary workspace.
-
-```bash
-# Host-side: create the isolated workspace tree. chown to 1000:1000 (the
-# node user inside the container) if the bind-mount root isn't already
-# owned by that uid.
-ISOLATED="$(grep '^OPENCLAW_CONFIG_DIR=' .env | cut -d= -f2)/workspace-discord"
-mkdir -p "$ISOLATED/memory" "$ISOLATED/HEARTBEAT.md"
-rmdir "$ISOLATED/HEARTBEAT.md" 2>/dev/null || true
-: > "$ISOLATED/HEARTBEAT.md"
-# Optional seed — a single permissions note the bot will see on first boot.
-cat > "$ISOLATED/memory/about-this-workspace.md" <<'EOF'
-# Discord-voice agent workspace
-
-This workspace is dedicated to voice-channel interactions in our Discord
-server. It contains NO personal files, NO API keys, NO memory notes from
-the primary OpenClaw workspace. Anyone speaking in a bound voice channel
-can trigger tool calls within this sandbox.
-EOF
-```
-
-### 4. Wire the channel + agent (one-time)
-
-Fill in `DISCORD_BOT_TOKEN` in `.env` and restart the config-init + CLI so the new env reaches the container:
-
-```bash
-# .env
-DISCORD_BOT_TOKEN=your-actual-bot-token
-DISCORD_AGENT_NAME=discord-voice
-
-docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
-```
-
-Then run the CLI sequence — the env var is already exported inside the CLI container:
-
-```bash
-docker exec ${PROJ}openclaw-cli sh -c '
-  set -e
-  # a. Register the Discord channel + bot token with the gateway. The
-  #    token lands in the credential store, not in openclaw.json.
-  openclaw channels add --channel discord --bot-token "$DISCORD_BOT_TOKEN"
-
-  # b. Create an isolated agent bound to the Discord channel at creation.
-  #    --non-interactive is required when --workspace is passed.
-  openclaw agents add "$DISCORD_AGENT_NAME" \
-    --workspace /home/node/.openclaw/workspace-discord \
-    --bind discord \
-    --non-interactive
-
-  # c. Tighten exec-policy on that agent: approval-gated destructive tools.
-  openclaw exec-policy preset --agent "$DISCORD_AGENT_NAME" cautious
-
-  # d. Sanity check.
-  openclaw channels list
-  openclaw agents list
-  openclaw agents bindings --agent "$DISCORD_AGENT_NAME"
-'
-```
-
-Verified flag shapes on OpenClaw 2026.4.22:
-
-- `channels add --channel discord --bot-token <token>` — `--token <token>` also works as a generic alias; `--bot-token` is preferred because it matches Discord's credential vocabulary.
-- `agents add <name> --workspace <dir> --bind <channel[:accountId]> --non-interactive` — the isolated agent inherits the default LLM and memory settings; override per-agent via `--model` / the agent's own `openclaw.json` entry if you want different defaults.
-- `exec-policy preset --agent <id> {yolo,cautious,deny-all}` — re-runnable, idempotent. `cautious` is the right preset for a channel that could accept input from anyone in your guild.
-
-Run `openclaw <subcommand> --help` inside the CLI container if your gateway differs.
-
-### 5. Join a voice channel and test
-
-1. In Discord, join one of your guild's voice channels.
-2. Type `/vc join` in any text channel the bot can see — the bot joins your current voice channel.
-3. Speak: "Hey, read me the file `memory/about-this-workspace.md`." — after ~3-5 s you should hear the file read aloud.
-4. Try an out-of-bounds request: "Read the file `../workspace/memory/foo.md`" — the agent should refuse. The `..` path escapes the workspace sandbox and the gateway denies the tool call.
-5. `/vc leave` disconnects the bot.
-
-### Optional: auto-join a specific channel on startup
-
-If you always want the bot in the same voice channel without typing `/vc join` after every gateway restart, write the `channels.discord.voice.autoJoin[]` field directly into `openclaw.json` (the CLI does not yet expose a dedicated subcommand for this field). Schema — `autoJoin[].guildId` + `autoJoin[].channelId`, both 18-19 digit numeric Discord snowflakes:
-
-```bash
-# 1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode).
-# 2. Right-click the guild → Copy Server ID. Right-click the voice channel → Copy Channel ID.
-# 3. Set both in .env for reference / future patcher use:
-DISCORD_AUTOJOIN_GUILD_ID=123456789012345678
-DISCORD_AUTOJOIN_VOICE_CHANNEL_ID=123456789012345679
-
-# 4. One-shot JSON patch into openclaw.json (run on the host, NOT inside the container):
-CONFIG="$(grep ^OPENCLAW_CONFIG_DIR .env | cut -d= -f2)/openclaw.json"
-docker compose exec openclaw-config-init node -e "
-  const fs = require('fs');
-  const path = '/home/node/.openclaw/openclaw.json';
-  const c = JSON.parse(fs.readFileSync(path, 'utf8'));
-  c.channels = c.channels || {};
-  c.channels.discord = c.channels.discord || {};
-  c.channels.discord.voice = c.channels.discord.voice || {};
-  c.channels.discord.voice.autoJoin = [{ guildId: process.env.G, channelId: process.env.C }];
-  fs.writeFileSync(path, JSON.stringify(c, null, 2) + '\n');
-  console.log('autoJoin patched.');
-"
-
-# 5. Force-recreate the gateway so the new autoJoin list takes effect:
-docker compose up -d --force-recreate openclaw-gateway openclaw-cli
-```
-
-The one-shot patch is deliberately a direct JSON write rather than a `patch-config.mjs` step because the field is account-keyed in some gateway builds (`channels.discord.accounts.<id>.voice.autoJoin`) and top-level in others; the patcher can't safely auto-pick without probing the live account id. Re-running `openclaw channels add` overwrites the block, so the manual patch has to come last.
-
-### Rotating the bot token
-
-If the token leaks (anyone with it can impersonate your bot in any guild it's in):
-
-1. Discord Developer Portal → Bot → **Reset Token**. The old token is invalidated immediately.
-2. Update `DISCORD_BOT_TOKEN` in `.env`.
-3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`.
-4. Re-run `channels add` — it upserts the credential store:
-    ```bash
-    docker exec ${PROJ}openclaw-cli openclaw channels add --channel discord --bot-token "$DISCORD_BOT_TOKEN"
-    ```
-
-### Known limitations
-
-- **Voice wake-word**: the OpenClaw `voicewake` feature is macOS/iOS-client only. In a Discord voice channel, the bot listens continuously while joined — speak during a natural pause to avoid interrupting another speaker. The bot's VAD (voice activity detection) chunks the stream.
-- **Latency**: simple replies are ~3-5 s. Multi-tool agent runs (e.g. web search + file write + verify) can take 10-30 s. The bot stays silent during tool execution.
-- **GDPR / transcript retention**: voice audio is transcribed on-prem by the Whisper service above and the transcript can be stored in `workspace-discord/memory/` depending on agent settings. If your guild has EU residents, document this in your server rules.
-- **Deeper reference**: schema details, isolation internals, DAVE (E2E) encryption notes, and risks in [docs/reference/discord-voice-agent.md](reference/discord-voice-agent.md).
-
-## Upgrading the OpenClaw gateway
-
-The three OpenClaw services use the local `openclaw-base-ext` image, built on `ghcr.io/openclaw/openclaw${OPENCLAW_IMAGE_REF:-:latest}`. Upstream changes require a rebuild of that extension; pulling the service image alone does not update the Gateway. Use the [Docker upgrade guide](OPENCLAW_UPGRADE.md) and `scripts/upgrade-openclaw.sh` for the tested 2026.6.1 → 2026.10.3 transition, copied-state migration, validation, and rollback.
-
-```bash
-bash scripts/upgrade-openclaw.sh --prepare 2026.10.3
-bash scripts/upgrade-openclaw.sh --apply 2026.10.3
-```
-
-Run these on the Docker host. The apply phase includes a maintenance interruption;
-keep the printed upgrade directory because it contains the new active state.
-Close terminal clients before applying. The guide explains verification, radio
-recovery, and rollback without deleting the original state.
-
-## Rotating secrets
-
-Use `./rotate-secrets.sh` to overwrite the auto-generated secrets in `.env` with fresh random values. Sibling of `bootstrap.sh`, same helper style. Handles the three common rotation scenarios:
-
-- **Routine hygiene / post-suspected-leak**: rotate one or more keys, recreate the affected services, verify.
-- **Fresh install without the bootstrap prompt dance**: `cp .env.example .env && ./rotate-secrets.sh --all` fills every placeholder in one shot.
-- **Selective, e.g. just the TTS surface**: `./rotate-secrets.sh TTS_API_TOKEN OPENCLAW_TTS_FISH_API_KEY`.
-
-```bash
-./rotate-secrets.sh --help          # full flag list + default set
-./rotate-secrets.sh -n --all        # dry-run: fingerprints + recreate command, no write
-./rotate-secrets.sh -y --all        # non-interactive (CI); rotate the default set
-./rotate-secrets.sh VLLM_API_KEY    # rotate just this key
-```
-
-The default set (`--all`): `VLLM_API_KEY`, `SEARXNG_SECRET`, `OPENCLAW_TTS_FISH_API_KEY`, `TTS_API_TOKEN`, `STT_API_TOKEN`, `BROWSER_API_TOKEN`, `BROWSER_VNC_PASSWORD`, plus `PYTHON_SANDBOX_API_TOKEN` / `IMAGE_GEN_API_TOKEN` only if already non-empty (empty = opt-in declined; `--all` respects that). `OPENCLAW_GATEWAY_TOKEN` is opt-in via `--include-gateway-token` — post-onboarding the real gateway auth lives in `openclaw.json`'s `gateway.auth.token` (picked by the onboarding wizard), so rotating the env var alone is a near no-op. `HUGGING_FACE_HUB_TOKEN` is out of scope (user-owned; can't be generated).
-
-Before every change the script writes a timestamped `.env.backup-YYYYMMDD-HHMMSS` (mode 600), does an atomic write (temp file + `mv`), and runs `docker compose config --quiet` post-write. If the config validation fails, the backup is restored automatically. The script does NOT restart services — it prints the exact `docker compose up -d --force-recreate <services>` command for the services that read each rotated key, and you pick the moment (in-flight agent requests).
-
-The 3-store credential layout `openclaw.json` ↔ per-agent `auth-profiles.json` ↔ `.env` is kept in sync on the next `up` by `patch-config.mjs` steps 2 / 4 / 11 / 13, so the recreate command is all you need after rotation. See `docs/reference/openclaw-internals.md` → "v0.4.x credential layout" for the full invariant.
-
-## Multi-host / scale-out
-
-This stack is a single-host design. If you need a second GB10 as a hot standby or for throughput sharding:
-
-- Run two separate copies of this repo on the two hosts, each with its own `$OPENCLAW_CONFIG_DIR` (agent memory doesn't replicate).
-- Put a load balancer (haproxy, nginx) in front of the two `vllm-llm` endpoints. The OpenClaw gateway can then point at the LB via `OPENAI_BASE_URL`.
-- Synchronize model weights by sharing `$VLLM_HF_CACHE_DIR` over a fast read-only mount, or by running a local HuggingFace mirror.
-
-This is out of scope for the shipped compose file.
+   `run.sh` copies the live state to `~/pc-harness/<name>/` and redirects every
+   mount config-init writes to, so the live state is never touched. It reads
+   `$STACK/.env`; with no second argument it runs the config-init in `$STACK`.
+   `diff.sh` expects `diff.mjs` copied to `~/pc-harness/`.
+
+New keys under `agents.defaults.*` have crash-looped the gateway when the schema did
+not accept them. Validate the shape in the Control UI first; the runbook is in
+[`reference/agentic-coding.md`](reference/agentic-coding.md#adding-a-new-key-the-schema-gate).
+
+## Optional media
+
+- **Text-to-speech (Fish Audio S2 Pro):** `compose/tts-fish.yml` plus
+  `OPENCLAW_TTS_FISH_API_KEY`. Research licence, non-commercial. It does not fit
+  next to Nemotron; run it with a smaller model. Voices, cloning and tuning:
+  [`openclaw-tts-fish/README.md`](../openclaw-tts-fish/README.md).
+- **Image, video and music (ComfyUI bridge):** its own compose file in
+  `openclaw-image-comfyui/`, against a ComfyUI you already run. Activation,
+  workflows, models and the proxy setup:
+  [`openclaw-image-comfyui/README.md`](../openclaw-image-comfyui/README.md).
+  The Discord agent has no media tools until you set
+  `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF=none` (or list only the groups to keep off);
+  until then the router tells the bot to say the feature is off instead of
+  calling a dead tool.
+- **Slash-command image bot:** `compose/claw-img.yml`, a separate Discord bot that
+  calls the bridge directly with no LLM in between:
+  [`openclaw-claw-img-bot/README.md`](../openclaw-claw-img-bot/README.md).
+
+## Discord voice
+
+Joining a voice channel (`/vc join`), the isolated voice agent and its limits are in
+[`reference/discord-voice-agent.md`](reference/discord-voice-agent.md). Creating the
+bot application: [`discord-bot-setup.md`](discord-bot-setup.md). Voice replies need
+the Fish TTS file above.
+
+## See also
+
+- Upgrading OpenClaw: [`OPENCLAW_UPGRADE.md`](OPENCLAW_UPGRADE.md).
+- Browser profiles and logins: [`reference/browser-automation.md`](reference/browser-automation.md).
+- Python sandbox limits and egress: [`reference/python-sandbox.md`](reference/python-sandbox.md).

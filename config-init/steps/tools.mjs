@@ -30,9 +30,17 @@ function webSearch(config) {
 // is matched by baseUrl, so operator-added entries (a cloud fallback) stay.
 function stt(config) {
   const token = env.str('STT_API_TOKEN');
-  if (!token) return;
   // Trailing slash is the OpenClaw convention for baseUrls; accept either form.
   const baseUrl = env.str('OPENCLAW_STT_BASE_URL', 'http://openclaw-stt-whisper:8080/v1').replace(/\/?$/, '/');
+  if (!token) {
+    // Without a token the Whisper entry would only fail auth; drop the one
+    // this step wrote (other audio models stay).
+    const models = config.get('tools.media.models');
+    if (Array.isArray(models) && models.some((m) => m?.baseUrl === baseUrl)) {
+      config.set('tools.media.models', models.filter((m) => m?.baseUrl !== baseUrl), 'STT_API_TOKEN unset');
+    }
+    return;
+  }
   const language = env.str('OPENCLAW_STT_LANGUAGE');
 
   config.set('tools.media.audio.enabled', true);
@@ -78,6 +86,13 @@ function browser(config) {
     // SSRF guard blocks by default (BrowserCdpEndpointBlockedError). Exempt
     // only that host rather than allowing all private networks.
     config.addTo('browser.ssrfPolicy.allowedHostnames', [new URL(host).hostname]);
+  } else {
+    // Browser profile off or no token: drop the CDP profiles this step wrote
+    // (they point at the sidecar host); profiles an operator added stay.
+    const host = env.str('BROWSER_CDP_HOST', 'http://openclaw-browser');
+    for (const [name, p] of Object.entries(config.get('browser.profiles') ?? {})) {
+      if (typeof p?.cdpUrl === 'string' && p.cdpUrl.startsWith(`${host}:`)) config.remove(['browser', 'profiles', name], 'browser service off');
+    }
   }
 
   // Without a default the tool falls through to sandbox/host targets this
