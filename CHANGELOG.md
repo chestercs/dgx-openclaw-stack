@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — daily structure-only status report
+
+- **`scripts/daily-status.sh`** appends one block per day to
+  `~/daily-status/status-YYYY-MM.log` (and `latest.txt`). It covers gateway
+  health and looping or unhealthy containers, claim-guard outcomes per
+  session kind (Discord, heartbeat, cron, other) with judge latency, every
+  scheduled job's last status (flagged when it failed or is overdue),
+  people-file size, community-summary count, the window's hottest ACPI zone,
+  free memory, disk and the GPU clock. It prints counts, sizes, job names and
+  statuses only, never message text. `IGNORE="comfyui"` hides containers
+  stopped on purpose. Run it from the host cron (`15 9 * * *`).
+
+### Docs — memory layers and honesty checks
+
+- `docs/reference/discord-config.md` lists steps 44c-44f in the override
+  table and documents the community summaries (with the job command), the
+  `people-digest.mjs history` command, the per-member style line and a new
+  "Honesty checks" section on claim-guard: how the two judge prompts work,
+  the log outcomes, and what it cannot catch. The nightly-digest paragraph
+  no longer claims that bots and `*log` channels are skipped.
+- `docs/reference/discord-text-agent.md` shows both plugin hooks in the
+  message flow.
+
 ### Added — optional full-thinking `deep` sub-agent (off by default)
 
 - **Patcher step 44f** (`OPENCLAW_DISCORD_DEEP_AGENT`, default `off`) adds a

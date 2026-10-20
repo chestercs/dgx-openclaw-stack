@@ -53,6 +53,11 @@ replicates upstream defaults without disabling the step.
 | 38 | `commitments = {enabled:true, maxPerDay:3}` — the bot notices promised work / check-in opportunities and resurfaces them via heartbeat. | `OPENCLAW_COMMITMENTS` (+ `_MAX_PER_DAY`) | `on` | `off` removes the block (upstream default: disabled). |
 | 39 | `messages.queue.mode = "steer"` — mid-run follow-ups inject at the next model boundary instead of queueing until the run ends. | `OPENCLAW_MESSAGES_QUEUE_MODE` | `steer` | Set `followup` / `collect` / `interrupt`, or empty to skip (upstream docs are self-contradictory on the default, hence the pin). |
 | 44 | Always-loaded `workspace-discord/people/MEMORY.md` (durable facts about guild members) via the `bootstrap-extra-files` hook, plus the `people-memory` skill for the nightly job. See "Long-term memory in guild channels" below. | `OPENCLAW_DISCORD_PEOPLE_MEMORY` | `on` | `off` removes the hook path and the skill; the file stays on disk. |
+| 44 (sub) | The nightly digest also reads NSFW channels. | `OPENCLAW_PEOPLE_DIGEST_NSFW` | `off` | `on` adds `--nsfw` to the skill's collect step. The file reaches every channel's prompt, so what is learnt in an NSFW channel surfaces everywhere. |
+| 44c | `people-context` plugin: a `before_prompt_build` hook prepends the sender's people-file lines (and those of tagged members) to each turn. | follows `OPENCLAW_DISCORD_PEOPLE_MEMORY` | `on` | `off` removes the load path and the plugin entry. |
+| 44d | `community-summary` skill: every 3 days a job writes a summary of the guilds' messages under `memory/community/`, found later through `memory_search`. | `OPENCLAW_COMMUNITY_SUMMARY` | `on` | `off` removes the skill (the job, if created, then fails loudly). |
+| 44e | `claim-guard` plugin: a `before_agent_finalize` hook checks the final answer's action claims and uncommon facts against the run's tool calls and asks for one more pass on a mismatch. See "Honesty checks" below. | `OPENCLAW_DISCORD_CLAIM_GUARD` | `on` | `off` removes the load path and the plugin entry. |
+| 44f | `deep` sub-agent: the same model with full thinking (`chat_template_kwargs`), spawnable by the Discord agent. | `OPENCLAW_DISCORD_DEEP_AGENT` | `off` | `on` adds the agent and the delegation hint; `off` removes both. |
 | X | `plugins.entries.active-memory` — deep recall sub-agent in `escalate` mode (runs only when the message asks about the past). | `OPENCLAW_ACTIVE_MEMORY` | unset (no-op) | `on` writes, `off` removes the entry, empty leaves config alone. |
 | docs | `OPENCLAW_AGENT_DOCS_MODE` — recipe placement: on-demand workspace **skills** (default, ~20 KB lighter bootstrap) vs legacy always-injected AGENTS.md blocks. | `OPENCLAW_AGENT_DOCS_MODE` | `skills` | `agentsmd` restores the legacy layout and removes the skill files (rollback path). |
 | docs | `<!-- patch-config:discord-thread-tasks:* -->` policy block — coding / long tasks spawn into their own Discord thread. | `OPENCLAW_DISCORD_AGENT_THREAD_TASKS` | `on` | `off` removes the block. |
@@ -369,8 +374,13 @@ The stack closes the gap in three layers:
    exist yet failed, and the fallback `write` replaced every section. Each
    command first heals the file from `~/.openclaw/people-digest/last-good.md`
    if something dropped a section or a permanent rule. The file costs prompt
-   tokens on every turn, so its header asks the bot to stay under ~6000
-   characters.
+   tokens on every turn, so its header asks the bot to stay under ~8000
+   characters (the nightly gate refuses anything past 12000).
+   Each member may also carry one `- (stílus) …` line, written by the
+   nightly job: how they talk and what tone works with them, described as a
+   pattern ("short, ironic, answers in English when joking"), never as a
+   verdict on their character. AGENTS.md tells the bot to match that tone
+   without quoting the line back.
    Being in the system prompt was not enough for Gemma. Asked "mit csinálok
    most?" right after a thread task in the same channel, it answered about
    the task. Step 44c therefore loads the `people-context` plugin
@@ -383,9 +393,14 @@ The stack closes the gap in three layers:
    --json` (`typedHooks` lists `before_prompt_build`).
 2. **Nightly people-memory job.** It learns from ordinary channel traffic,
    not only from direct requests. `/opt/people-digest.mjs` (baked into
-   `openclaw-base-ext`) pre-digests the guild's new messages per author:
-   it skips bots, NSFW channels and `*log` channels and uses per-channel
-   cursors. The agent proposes a new file as `people/MEMORY.next.md`.
+   `openclaw-base-ext`) pre-digests the guild's new messages per author and
+   uses per-channel cursors. `--guild all` reads every server the bot is in.
+   It drops only its own bot (feedback loop) and, unless
+   `OPENCLAW_PEOPLE_DIGEST_NSFW=on`, NSFW channels. Other bots stay, marked
+   `(bot)`, because members talk to them; their lines are context, not facts.
+   Voice-log lines in `*log` channels are folded into one activity summary
+   per member (`PEOPLE_DIGEST_LOGS=off` skips those channels instead).
+   The agent proposes a new file as `people/MEMORY.next.md`.
    `people-digest.mjs apply` swaps it in only when no person section vanished,
    no "végleges szabály" (permanent rule) line was lost and the file did not
    shrink below 70 %. Backups land in `~/.openclaw/people-digest/history/`.
@@ -398,13 +413,49 @@ The stack closes the gap in three layers:
      --agent discord-friend --cron '30 4 * * *' --tz Europe/Budapest --exact \
      --session isolated --light-context --tools exec,read,write --no-deliver \
      --timeout-seconds 3600 \
-     --message 'Run the people-memory recipe: read skills/people-memory/SKILL.md and follow it step by step. GUILD_ID = <your guild id>. Do not message anyone.'
+     --message 'Run the people-memory recipe: read skills/people-memory/SKILL.md and follow it step by step. GUILD_ID = <your guild id, or all for every server the bot is in>. Do not message anyone.'
    ```
 
    `--tools exec,read,write` keeps the job from posting anywhere. Collecting
    ~30 channels takes about 4-5 minutes, because each `openclaw message read`
    call costs a CLI round trip.
-3. **Active Memory escalation.** With `OPENCLAW_ACTIVE_MEMORY=on`, a blocking
+3. **Community summaries (step 44d).** The people file holds facts about
+   people, not what was talked about. Every 3 days a `community-summary` job
+   writes one summary of all guilds' messages to
+   `workspace-discord/memory/community/<from>_<to>.md`. The bge-m3 memory
+   index picks it up, so "what did we talk about in August?" is answered
+   through `memory_search` without growing any prompt. The collect step runs
+   windowed (`--last-days 3`, or `--from/--to` for a backfill), so the
+   nightly cursors stay untouched. Create the job once:
+
+   ```bash
+   docker exec ${PROJ}openclaw-gateway openclaw cron add \
+     --name community-summary --declaration-key community-summary \
+     --agent discord-friend --cron '30 5 */3 * *' --tz Europe/Budapest --exact \
+     --session isolated --light-context --tools exec,read,write --no-deliver \
+     --timeout-seconds 3600 \
+     --message 'Run the community-summary recipe: read skills/community-summary/SKILL.md and follow it step by step, with the default --last-days 3 window. Do not message anyone.'
+   ```
+
+   The skill always collects `--guild all` and keeps health, sexual and
+   financial details out of the summary.
+
+   For older history, run the same recipe once per week-long window with
+   `--from/--to` dates, one turn at a time. Treat a turn that comes back with
+   a timeout or error text as failed and run it again.
+4. **Channel history on demand.** "Who won the last /ruin?" or "what did X
+   say yesterday?" is not in any summary. The skill router points the bot at
+   `node /opt/people-digest.mjs history --channel <id> [--author <name|id>]
+   [--grep <text>] [--limit 20] [--days N] [--before <msg id>]`. It pages
+   back through Discord REST (about 1 s per 100 messages; it falls back to
+   `openclaw message read` when no bot token is readable), keeps embed text
+   ("name: value | name: value", invisible spacer fields dropped), appends
+   the slash-command user as `[/command — Name]` (bot answers to a slash
+   command carry the caller only in their interaction metadata), prints
+   Budapest-time dates, and always states the scanned range. Raw
+   `message read` pages were 120-200 KB, got truncated in the tool result,
+   and the bot then made up a reason for not finding the message.
+5. **Active Memory escalation.** With `OPENCLAW_ACTIVE_MEMORY=on`, a blocking
    recall sub-agent searches memory before the reply, but only when the
    message asks about the past. Upstream's intent detector has no Hungarian
    patterns; `openclaw-base-ext` patch 4 adds them.
@@ -412,6 +463,69 @@ The stack closes the gap in three layers:
 Dreaming storage is `separate` (step 6). The inline mode wrote
 `## Light Sleep` blocks into the daily notes, and on a group bot those blocks
 were session-metadata noise that outranked real notes in `memory_search`.
+
+## Honesty checks (claim-guard, step 44e)
+
+Prompt rules did not stop the bot from saying it had done things it had
+not: on 2026-10-19 it told a member "I saved it to memory" in a turn with no
+write call, and when it could not find an old message it invented a reason
+("messages are deleted after 30 seconds"). Word lists did not work either: a
+regex for claim words missed "jegyeztem" on its first live test. The
+`claim-guard` plugin (`openclaw-base-ext/plugins/claim-guard`) asks the
+model itself, through the documented `api.runtime.llm.complete` plugin API,
+with thinking off:
+
+1. `after_tool_call` records which tools succeeded in the run.
+2. `before_agent_finalize` sends the final answer to two judge prompts in
+   parallel (~2 s together on the reference host):
+   - **Actions.** List every action the answer says was done, each with a
+     type (`saved`, `searched`, `read`, `sent`, `reminder`, `ran_code`).
+     The plugin code, not the model, then checks each type against the
+     successful tools.
+   - **Facts.** Rate each statement: is it about the world, the
+     conversation or an opinion; is it specific; is it common knowledge;
+     is it hedged. The code flags a specific, uncommon, unhedged world fact
+     only when no search or fetch tool ran.
+   Keep the two prompts separate. Merged into one, the fact rules leaked
+   into the action verdicts (36-38 of 42 cases instead of 42).
+3. On a mismatch the hook returns `revise` with `maxAttempts: 1`: one more
+   model pass that either does the action / the look-up, or says plainly
+   that it was not done or that the fact is from memory.
+
+It covers the `discord-friend` agent only (`CLAIM_GUARD_AGENTS` overrides
+the list). The judge's JSON is read with a balanced-brace parser, because
+Nemotron sometimes closes one brace too many. Measured on 42 held-in and 14
+held-out cases: all correct. Live, "what is the Hungarian title of *The
+Fighter*?" went fact → revise → `web_search` → the right title. A test
+message that told the bot to say it had saved something without saving it
+got a revise and then "I did not save it"; when the bot really wrote the
+note, the guard stayed quiet (`none`).
+
+What it does not catch: a successful tool result that the bot then misreads
+(it once merged a detail from a neighbouring line of a `history` result into
+its answer). The tool ran, so the claim is backed.
+
+Audit the log, which holds structure only (time, session, tools, verdict
+kind, outcome, latency), never message text:
+
+```bash
+docker exec ${PROJ}openclaw-gateway sh -c \
+  'tail -n 20 /home/node/.openclaw/logs/claim-guard.jsonl'
+```
+
+Outcomes: `none` (nothing to fix), `revise` (a second pass was requested),
+`resolved` (the second pass fixed it), `unresolved` (still wrong after it),
+`judge_failed` (judge timeout or unreadable JSON; the answer goes out
+unchanged). `openclaw plugins reload` cannot swap the plugin while a run
+holds the old instance; after changing it, rebuild `openclaw-base-ext` and
+recreate the gateway.
+
+The skill router backs this with principle-based rules, not trigger words:
+look up a doubtful fact before stating it, never refuse a search, and claim
+"saved" or "read" only after a successful tool call. With temperature 0.6
+and 1.0, 12 honesty traps came out 24 of 24 honest each, so the sampling
+change in [`llm-stack.md`](./llm-stack.md#sampling-temperature) was for the
+Hungarian text, not for honesty.
 
 ## Related docs
 

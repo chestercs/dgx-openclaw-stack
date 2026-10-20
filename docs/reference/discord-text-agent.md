@@ -28,15 +28,26 @@ openclaw-gateway → discord-friend agent
    │    1. tools.profile (default "coding" — set in patcher step 8)
    │    2. tools.deny (global)
    │    3. agents.list[].tools.alsoAllow (per-agent boost — patcher step 22 adds "group:messaging")
+   │  before_prompt_build: people-context plugin prepends the sender's
+   │    people-file lines (step 44c)
    │
-   ▼ tool calls (message, image_generate, web_search, memory_*, react, …)
+   ▼ tool calls (message, web_search, memory_*, exec people-digest.mjs, react, …)
    │
-vllm-llm (Gemma 4 31B NVFP4) + tool runtime
+vllm-llm (Gemma 4 by default; the reference host runs Nemotron 3.5 Super) + tool runtime
    │
    ▼ tool results → final assistant text + reactions
+   │  before_agent_finalize: claim-guard plugin checks claimed actions and
+   │    uncommon facts against the run's tool calls; one more pass on a
+   │    mismatch (step 44e)
    │
 openclaw-gateway → Discord plugin → channel post
 ```
+
+Neither hook is a reply hook (`message_sending` / `reply_payload_sending`),
+so Discord preview streaming stays on. The memory layers (people file,
+community summaries, channel-history command) and the honesty checks are
+described in [`discord-config.md`](./discord-config.md#long-term-memory-in-guild-channels)
+and [`discord-config.md` → Honesty checks](./discord-config.md#honesty-checks-claim-guard-step-44e).
 
 ## The four things that bit us
 
