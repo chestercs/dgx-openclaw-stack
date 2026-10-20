@@ -105,7 +105,7 @@ The `searxng` plugin ships **bundled-but-default-disabled** in the OpenClaw imag
 
 ### `keep_only` is not an enable flag
 
-SearxNG's `use_default_settings.engines.keep_only:` discards every engine not in the list, but does NOT flip `disabled: false` on the survivors. Engines shipped with `disabled: true` in upstream defaults (Yep, Mwmbl, Mojeek, Qwant, …) need an explicit per-engine override. The pre-2026-10 engine set fell into exactly this trap: Mojeek and Qwant sat in `keep_only` and never ran.
+SearxNG's `use_default_settings.engines.keep_only:` discards every engine not in the list, but does NOT flip `disabled: false` on the survivors. Engines shipped with `disabled: true` in upstream defaults (Yahoo, Yep, Mwmbl, Qwant, …) need an explicit per-engine override. The pre-2026-10 engine set fell into exactly this trap: Mojeek and Qwant sat in `keep_only` and never ran.
 
 ```yaml
 engines:
@@ -114,10 +114,6 @@ engines:
 ```
 
 If you add an engine to `keep_only` and it returns no results, check its default `disabled` / `inactive` flag in the upstream `searx/settings.yml`, then query it alone (`&engines=<name>`) and read `unresponsive_engines` — CAPTCHA / 429 / 403 from your IP looks exactly like "no results" to the agent.
-
-### Cosmetic categories bug
-
-The SearxNG plugin sends the `categories` config as a Python-list literal in POST form-data (`['general', 'news', 'science']`), which SearxNG validates against and warns about — BUT the search still returns results via the fallback default categories; not fatal. If you want a clean log, remove the `categories` field from patch-config.
 
 ## Bridge DNS reachability semantics
 

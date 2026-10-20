@@ -161,41 +161,51 @@ SearxNG has three knobs that matter for this stack. All live in `searxng/setting
 
 ### Which engines run
 
-`searxng/settings/settings.yml` → `use_default_settings.engines.keep_only`. Whatever is in this list stays in the registry; every other engine in the upstream defaults is dropped. The shipped list is the strict privacy posture:
+`searxng/settings/settings.yml` → `use_default_settings.engines.keep_only`. Whatever is in this list stays in the registry; every other engine in the upstream defaults is dropped. The shipped list is the one that scored best on the reference host (Hungarian residential IP, 2026-10-20):
 
 ```yaml
 keep_only:
+  - yahoo            # Bing's index; best engine measured
+  - duckduckgo web   # the plain "duckduckgo" engine answers with a CAPTCHA
+  - privacywall
+  - marginalia
   - yep
-  - mwmbl
-  - duckduckgo
-  - brave
+  - bing news
   - duckduckgo news
+  - yahoo news
   - wikipedia
-  - github
-  - arxiv
+  - github           # only for categories=it
+  - arxiv            # only for categories=science
 ```
 
-Before adding or keeping an engine, check that it actually answers from your IP — a blocked engine produces no error, just missing results:
+Engines get blocked per IP and over time, so measure on your own host before you change the list. `scripts/websearch-bench.py` asks 20 fact questions (10 Hungarian, 10 English, three sets) and counts how often the answer is in the top 5, either through the gateway or per engine:
+
+```bash
+scripts/websearch-bench.py searxng             # what the bot gets
+scripts/websearch-bench.py yahoo 5 searx       # one engine, raw SearxNG JSON
+```
+
+A blocked engine produces no error, just missing results. Check a single engine and the `unresponsive_engines` field:
 
 ```bash
 docker exec ${PROJ}openclaw-cli curl -sS \
-  "http://searxng:8080/search?q=test&format=json&engines=yep" \
+  "http://searxng:8080/search?q=test&format=json&engines=yahoo" \
   | jq '{n: (.results | length), down: .unresponsive_engines}'
 ```
 
-Add `google cse`, `bing`, `yahoo` etc. here if you want broader coverage — know that those engines will then see your query text. On the reference host (Hungarian residential IP, 2026-10) `google cse` gave the best Hungarian results, `bing` / `yahoo` answered but ranked worse, and `google` returned "access denied". Any engine shipped `disabled: true` in the upstream defaults needs an explicit override in the `engines:` block (`google cse` is enabled upstream and needs only the `keep_only` line):
+On the reference host `google`, `qwant` and `brave` were blocked or rate-limited, and `bing` answered with almost nothing. Any engine shipped `disabled: true` in the upstream defaults needs an explicit override in the `engines:` block:
 
 ```yaml
 engines:
-  - name: bing
+  - name: yahoo
     disabled: false
 ```
 
-(Yep and Mwmbl are already enabled this way in the shipped file.)
+`scripts/daily-status.sh` prints which engines answered one Hungarian and one English query each day.
 
 ### Categories and language passed to SearxNG
 
-`patch-config.mjs` step 10 writes only `baseUrl` and an empty `language`, and no `categories` (see the step comment for why). The agent passes `language` / `categories` per query through the tool-call parameters. When it sends no language, SearxNG's `search.default_lang: "auto"` detects it from the query text, so Hungarian queries get Hungarian results and English queries stay English.
+`patch-config.mjs` step 10 writes `baseUrl`, an empty `language` and `categories: "general,news"`. Do not add `science` to the default: it put arXiv papers on top of every answer. The agent can still pass `language` / `categories` per query. When it sends no language, SearxNG's `search.default_lang: "auto"` detects it from the query text.
 
 ### Disabling web search entirely
 
