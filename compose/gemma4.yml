@@ -1,0 +1,39 @@
+# Gemma 4 instead of Nemotron, same service and port. Enable in .env:
+#   COMPOSE_FILE=docker-compose.yml:compose/gemma4.yml
+#   LLM_MODEL_ID=nvidia/Gemma-4-26B-A4B-NVFP4     (MoE, ~52 tok/s)
+#   or LLM_MODEL_ID=nvidia/Gemma-4-31B-IT-NVFP4  (dense, slower)
+# LLM_MODEL_ID has to be in .env: config-init registers that id in OpenClaw.
+#
+# Gemma only thinks when OpenClaw sends chat_template_kwargs.enable_thinking;
+# config-init writes that switch on the model entry for gemma-4 ids. The tool
+# chat template is the repo's (compose/gemma4/), tuned for OpenClaw's tool
+# calls. Measured on vLLM 0.19-0.31 with a patched image; not re-measured on
+# stock v0.32.
+services:
+  vllm-llm:
+    image: ${LLM_IMAGE:-vllm/vllm-openai:v0.32.0}
+    command: >
+      --model ${LLM_MODEL_ID:?set LLM_MODEL_ID in .env}
+      --host 0.0.0.0
+      --port 8004
+      --api-key ${VLLM_API_KEY:-}
+      --quantization modelopt
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.50}
+      --load-format safetensors
+      --kv-cache-dtype fp8
+      --max-model-len ${LLM_MAX_MODEL_LEN:-262144}
+      --max-num-seqs ${LLM_MAX_NUM_SEQS:-2}
+      --max-num-batched-tokens 8192
+      --reasoning-parser gemma4
+      --tool-call-parser gemma4
+      --chat-template /templates/tool_chat_template_gemma4.jinja
+      --enable-auto-tool-choice
+      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-4},"audio":0}'
+      --mm-processor-kwargs '{"max_soft_tokens":280}'
+      --enable-prefix-caching
+      --enable-chunked-prefill
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      - ./compose/gemma4:/templates:ro
+    healthcheck:
+      start_period: 600s

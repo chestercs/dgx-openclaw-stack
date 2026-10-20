@@ -85,7 +85,7 @@ function dreaming(ctx) {
     recencyHalfLifeDays: 14, maxAgeDays: 90,
     // MEMORY.md goes into every session's bootstrap; unbounded promotions grew
     // it to ~12 KB. 80 tokens per promotion halves the upstream growth rate.
-    maxPromotedSnippetTokens: 80,
+    maxPromotedSnippetTokens: env.int('OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS', 80),
   });
   config.merge([...d, 'phases', 'rem'], { enabled: true, lookbackDays: 14, limit: 5, minPatternStrength: 0.6 });
   rotateDreams(ctx);

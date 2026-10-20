@@ -44,13 +44,14 @@ function stt(config) {
     provider: 'openai',
     model: env.str('OPENCLAW_STT_MODEL', 'deepdml/faster-whisper-large-v3-turbo-ct2'),
     baseUrl,
-    // Merged, so extra headers an operator layered on survive a re-run.
-    headers: { ...(prev.headers ?? {}), Authorization: `Bearer ${token}` },
     capabilities: [...new Set([...(prev.capabilities ?? []), 'audio'])],
     ...(language ? { language } : {}),
   };
   if (idx >= 0) config.set(['tools', 'media', 'models', String(idx)], entry, 'Whisper STT');
   else config.set('tools.media.models', [entry, ...models], 'Whisper STT first');
+  // Its own leaf, so the log masks the token and any extra header an
+  // operator layered on the entry survives a re-run.
+  config.set(['tools', 'media', 'models', String(Math.max(idx, 0)), 'headers', 'Authorization'], `Bearer ${token}`);
 }
 
 // The `browser` tool attaches over CDP to the openclaw-browser sidecar, one
@@ -109,8 +110,9 @@ function pythonSandbox(config) {
     url: env.str('PYTHON_SANDBOX_URL', 'http://openclaw-python-sandbox:8094/mcp'),
     connectionTimeoutMs: 10000,
     requestTimeoutMs: 120000,
-    headers: { Authorization: `Bearer ${token}` },
   });
+  // A leaf of its own so the log masks the token.
+  config.set([...p, 'headers', 'Authorization'], `Bearer ${token}`);
 }
 
 // Exec, the agentic-coding shell. Written deterministically so a drifted

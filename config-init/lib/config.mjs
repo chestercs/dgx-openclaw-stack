@@ -12,12 +12,14 @@ const SECRET_KEY = /token|apikey|api_key|secret|password|authorization/i;
 const split = (path) => (Array.isArray(path) ? path : path.split('.'));
 const fmt = (path) => split(path).map((k) => (/^[\w-]+$/.test(k) ? k : JSON.stringify(k))).join('.');
 
+const isSecret = (key, value) => typeof value === 'string' && (SECRET_KEY.test(key) || /token=|Bearer /.test(value));
+
+// Masks secrets at any depth, so logging a whole object (e.g. an MCP
+// server with its headers) never prints a token.
 function show(path, value) {
   const key = split(path).at(-1);
-  if (typeof value === 'string' && (SECRET_KEY.test(key) || /token=|Bearer /.test(value))) {
-    return `<secret, ${value.length} chars>`;
-  }
-  const s = JSON.stringify(value);
+  if (isSecret(key, value)) return `<secret, ${value.length} chars>`;
+  const s = JSON.stringify(value, (k, v) => (isSecret(k, v) ? `<secret, ${v.length} chars>` : v));
   return s === undefined ? '(unset)' : s.length > 120 ? `${s.slice(0, 117)}...` : s;
 }
 

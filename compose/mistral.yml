@@ -1,0 +1,39 @@
+# Mistral Small 4 119B-A6B NVFP4 instead of Nemotron, same service and port.
+# Enable in .env:
+#   COMPOSE_FILE=docker-compose.yml:compose/mistral.yml
+#   LLM_MODEL_ID=mistralai/Mistral-Small-4-119B-2603-NVFP4
+# LLM_MODEL_ID has to be in .env: config-init registers that id in OpenClaw.
+#
+# Measured on the GB10 (vLLM v0.31.0): ~30 tok/s decode, ~1900 tok/s
+# prefill, ~66 GiB of weights, ~10 min to healthy from the USB SSD.
+#   --*-format mistral     the NVFP4 repo ships only Mistral-format files
+#   TRITON_MLA             the FlashAttention / FlashInfer MLA decode kernels
+#                          crash on sm121 (cudaErrorIllegalInstruction)
+#   --reasoning-parser     thinking is switched per request by
+#                          reasoning_effort none | high (config-init sets the
+#                          matching compat on the model entry)
+# No speculative decoding: the EAGLE draft does not load on v0.31 / v0.32.
+services:
+  vllm-llm:
+    image: ${LLM_IMAGE:-vllm/vllm-openai:v0.31.0}
+    command: >
+      --model ${LLM_MODEL_ID:?set LLM_MODEL_ID in .env}
+      --tokenizer-mode mistral
+      --config-format mistral
+      --load-format mistral
+      --host 0.0.0.0
+      --port 8004
+      --api-key ${VLLM_API_KEY:-}
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.65}
+      --max-model-len ${LLM_MAX_MODEL_LEN:-131072}
+      --max-num-seqs ${LLM_MAX_NUM_SEQS:-4}
+      --max-num-batched-tokens 8192
+      --attention-backend TRITON_MLA
+      --tool-call-parser mistral
+      --enable-auto-tool-choice
+      --reasoning-parser mistral
+      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-4}}'
+      --enable-prefix-caching
+      --enable-chunked-prefill
+    healthcheck:
+      start_period: 900s

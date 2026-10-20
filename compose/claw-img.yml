@@ -1,0 +1,39 @@
+# /claw-img, /claw-video, /claw-music: a separate Discord bot with real slash
+# commands that calls the ComfyUI bridge (openclaw-image-comfyui/) directly,
+# no LLM in between. Needs the bridge running and its own bot token.
+# Enable in .env:
+#   COMPOSE_FILE=docker-compose.yml:compose/claw-img.yml
+services:
+  openclaw-claw-img-bot:
+    build: ./openclaw-claw-img-bot
+    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.5.1}
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-claw-img-bot
+    hostname: openclaw-claw-img-bot
+    restart: unless-stopped
+    dns: [8.8.8.8, 1.1.1.1]
+    environment:
+      CLAW_IMG_DISCORD_TOKEN: ${CLAW_IMG_DISCORD_TOKEN:-}
+      CLAW_IMG_GUILD_ID: ${CLAW_IMG_GUILD_ID:-}
+      IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
+      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
+      CLAW_IMG_DEFAULT_WORKFLOW: ${CLAW_IMG_DEFAULT_WORKFLOW:-flux-krea-2k}
+      CLAW_IMG_SFW_WORKFLOW: ${CLAW_IMG_SFW_WORKFLOW:-flux-krea-2k}
+      CLAW_IMG2IMG_DEFAULT_WORKFLOW: ${CLAW_IMG2IMG_DEFAULT_WORKFLOW:-flux-krea-2k-i2i}
+      CLAW_IMG2IMG_SFW_WORKFLOW: ${CLAW_IMG2IMG_SFW_WORKFLOW:-flux-krea-2k-i2i}
+      CLAW_IMG_MAX_BYTES: ${CLAW_IMG_MAX_BYTES:-9437184}
+      CLAW_IMG_TIMEOUT_S: ${CLAW_IMG_TIMEOUT_S:-600}
+      CLAW_VIDEO_TIMEOUT_S: ${CLAW_VIDEO_TIMEOUT_S:-900}
+      CLAW_VIDEO_MAX_SECONDS: ${CLAW_VIDEO_MAX_SECONDS:-10}
+      CLAW_MUSIC_TIMEOUT_S: ${CLAW_MUSIC_TIMEOUT_S:-600}
+      CLAW_MUSIC_MAX_SECONDS: ${CLAW_MUSIC_MAX_SECONDS:-120}
+      TZ: ${TZ:-UTC}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,51 +1,71 @@
-# DGX OpenClaw Stack — local LLM + RAG + agent stack for NVIDIA DGX Spark and
-# ASUS GB10 (Grace-Blackwell, 128 GB unified memory, NVFP4 native).
+# dgx-openclaw-stack: a self-hosted OpenClaw agent on one NVIDIA GB10
+# (DGX Spark / ASUS Ascent GX10).
 #
-# Quick reference:
-#   - First-time setup: `./bootstrap.sh` creates .env, host dirs, rotates secrets
-#   - Day-to-day:       `docker compose up -d` / `docker compose logs -f`
-#   - Step-by-step:     SETUP.md (audience: end-users + sysadmins)
-#   - Design rationale: docs/ARCHITECTURE.md (audience: contributors + curious)
+#   vllm-llm             the chat model (Nemotron 3.5 Super NVFP4), port 8004
+#   vllm-embedding       bge-m3 embeddings for memory search
+#   searxng              web search backend
+#   openclaw-stt-whisper speech-to-text for voice notes
+#   openclaw-config-init writes openclaw.json from .env, then exits
+#   openclaw-gateway     OpenClaw: Web UI, Discord, agents (port 18789)
+#   openclaw-cli         `docker exec openclaw-cli openclaw ...`
+#   profiles: browser (Chromium over CDP), python (code sandbox),
+#             meshcore (LoRa mesh bridge)
 #
-# Services and host ports:
-#   vllm-llm             — Gemma 4 31B IT NVFP4         port 8004 (internal)
-#   vllm-embedding       — BAAI/bge-m3 1024-dim         port 8005 (internal)
-#   searxng              — privacy meta-search          port 8080 (internal)
-#   openclaw-tts-fish    — Fish Audio S2 Pro (multilingual) port 8091 (loopback)
-#   openclaw-stt-whisper — faster-whisper turbo CT2     port 8093 (loopback)
-#   openclaw-gateway     — agent gateway + WebSocket    port 18789 (exposed)
-#   openclaw-config-init — idempotent config patcher    one-shot
-#   openclaw-cli         — always-up exec target        shares gateway namespace
-#
-# Networking model:
-#   - Sibling containers reach each other by compose service name (vllm-llm:8004,
-#     vllm-embedding:8005, searxng:8080, openclaw-tts-fish:8080) on the default
-#     compose bridge network. No host port publishing is required for inter-
-#     service traffic.
-#   - vLLM ports are intentionally NOT published on the host — uncomment the
-#     `127.0.0.1:` bindings only if you need direct debug access, and keep the
-#     bind on loopback (an unauthenticated 0.0.0.0 vLLM endpoint is an open door).
-#   - TTS and STT ports default to loopback (127.0.0.1) for the same reason;
-#     expose on the LAN by setting TTS_*_BIND / STT_WHISPER_BIND=0.0.0.0 in
-#     .env (all three surfaces are Bearer-token-protected).
-#   - Only the gateway (18789) is exposed on 0.0.0.0 by default. Put a reverse
-#     proxy (Nginx Proxy Manager, Caddy, Cloudflare tunnel) in front for public
-#     access over wss://.
+# Optional extras live in compose/ (TTS, the image bot, other models); add
+# them through COMPOSE_FILE in .env. Every knob is documented in
+# .env.example; the design notes are in docs/.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+x-gpu: &gpu
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu]
+
+# Shared by every vLLM service. The GB10 has one unified memory pool, so the
+# GPU share of each server is set per service (--gpu-memory-utilization).
+x-vllm: &vllm
+  restart: unless-stopped
+  ipc: host
+  environment:
+    HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  volumes:
+    - hf-cache:/root/.cache/huggingface
+  deploy: *gpu
+  ulimits:
+    memlock: -1
+    stack: 67108864
+  logging: *logging
+
+# The three OpenClaw containers run the same image on the same state.
+x-openclaw: &openclaw
+  image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-local}
+  volumes:
+    - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+    - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+    # The python sandbox works in this folder too, so code the agent writes
+    # there is visible to both.
+    - ${OPENCLAW_SANDBOX_DIR:-${OPENCLAW_WORKSPACE_DIR}/sandbox}:/home/node/.openclaw/workspace/sandbox
+    # Generated and downloaded media the agent attaches to replies. Kept out
+    # of the config dir so it does not sit next to tokens and survives a
+    # change of OPENCLAW_CONFIG_DIR.
+    - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
+    - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
+  logging: *logging
 
 volumes:
-  # Shared HuggingFace cache volume — both vLLM services pull model weights
-  # into the same cache directory so we never download a given model twice.
-  # Bound to ${VLLM_HF_CACHE_DIR} on the host to survive `docker compose down`
-  # without re-downloading ~16 GB of Gemma + ~1 GB of bge-m3 weights.
-  #
-  # Why the name is env-driven (VLLM_HF_CACHE_VOLUME_NAME):
-  # If you run sibling LLM compose stacks on the same host (e.g. an alternate
-  # quantization for A/B testing, or a separate embedding service), you can
-  # point them all at the same host path via VLLM_HF_CACHE_DIR — Docker will
-  # bind-mount the same directory regardless of the volume label. Setting a
-  # shared VLLM_HF_CACHE_VOLUME_NAME also makes the volume show up under one
-  # consistent label in `docker volume ls`. Default keeps the dgx-openclaw-
-  # prefix so multiple unrelated stacks on the same host don't collide.
+  # Model weights. Bound to a host dir so they survive `down -v` and can be
+  # shared with a sibling stack.
   hf-cache:
     name: ${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}
     driver: local
@@ -53,1245 +73,134 @@ volumes:
       type: none
       device: ${VLLM_HF_CACHE_DIR}
       o: bind
-  # Fish Audio S2 Pro HF cache for openclaw-tts-fish. The ~11 GB s2-pro weights
-  # are baked into the image at build time; this volume is a safety net for any
-  # runtime HF downloads SGLang-Omni does on first synth (tokenizer assets,
-  # codec cache, etc.).
-  tts-fish-hf-cache:
-    name: dgx-openclaw-tts-fish-hf-cache
-  # User-overridable reference voice directory for openclaw-tts-fish. Drop
-  # <name>.wav + <name>.txt files in here to add custom voices the service
-  # can clone (no restart required — the shim resolves voice → file pair at
-  # request time). Ships with the bundled 7-voice library (default_en +
-  # bella/nicole/michael/fenrir/emma + default_hu) seeded from the image's
-  # /app/voices_seed/ on first start.
-  tts-fish-voices:
-    name: dgx-openclaw-tts-fish-voices
-  # CUDA JIT cache for openclaw-tts-fish. The cu130 sgl-kernel wheel ships
-  # sm90/sm100 SASS only; on GB10 (sm_121) every kernel is JIT-compiled from
-  # embedded PTX on first launch. This volume persists the compiled result so
-  # only the FIRST boot pays the multi-minute JIT toll — wiping it brings the
-  # toll back (the container still works, just starts slow once).
-  tts-fish-cuda-jit-cache:
-    name: dgx-openclaw-tts-fish-cuda-jit-cache
-  # Triton's kernel-compile cache (separate from the driver PTX cache above).
-  # Persisting it keeps the first-synthesis latency flat across recreates.
-  tts-fish-triton-cache:
-    name: dgx-openclaw-tts-fish-triton-cache
-  # faster-whisper weight cache for openclaw-stt-whisper. Holds the ~3 GB
-  # large-v3 CT2-quantized weights (or ~1.6 GB turbo) so `docker compose down`
-  # doesn't re-download them on the next boot. No host bind — faster-whisper
-  # manages the HuggingFace cache layout inside the volume itself.
   stt-whisper-hf-cache:
     name: dgx-openclaw-stt-whisper-hf-cache
-  # Per-profile Chromium user-data-dirs for openclaw-browser (only used when
-  # the `browser` Compose profile is active). One subdirectory per onboarded
-  # credential — cookies, localStorage, IndexedDB persist across container
-  # restarts so 1x manual login holds for the full session-cookie lifetime
-  # (~14d GitHub, ~30d Notion, etc.). Treat backups of this volume as
-  # secret-equivalent; the contents include live session tokens.
   browser-storage:
     name: dgx-openclaw-browser-storage
-  # Failure screenshots + HAR files for openclaw-browser. Diagnostic-only;
-  # 100 MB cap, oldest-file sweeper trims hourly. Safe to delete at any time.
   browser-diagnostics:
     name: dgx-openclaw-browser-diagnostics
 
 services:
-  ######################
-  ## vLLM — Gemma 4 26B-A4B MoE (Instruction Tuned), NVFP4 quantization (DEFAULT)
-  #
-  #  Model:  nvidia/Gemma-4-26B-A4B-NVFP4
-  #    - 25.2B total / 3.8B active params per token (128 experts, top-8 routing)
-  #    - NVFP4 quantization (~16.5 GB weights), nvfp4_experts_only modelopt recipe
-  #    - 256K context window, multimodal (text + image, vision tower included)
-  #    - Apache 2.0 license, gated on HF (license-acceptance via HUGGING_FACE_HUB_TOKEN)
-  #    - GB10/Blackwell (sm_120/sm_121) compatible via Marlin MoE backend
-  #
-  #  GB10 benchmark (vLLM, NVFP4 MoE, ai-muninn 2026-04):
-  #    - Decode: ~52 tok/s (1 user) — ~7.5x faster than the 31B dense it replaces.
-  #    - 16.5 GB model + ~3.3 GB FP8 KV per 256K seq → 2 users × 256K fit
-  #      comfortably at LLM_GPU_MEM_UTIL=0.50 (~64 GB cap, ~47 GB KV available).
-  #    - 273 GB/s LPDDR5x bandwidth bottleneck unchanged, but only ~3.8B active
-  #      weights are read per decoded token — that's the speedup.
-  #
-  #  The dense 31B variant runs ALONGSIDE this service as `vllm-llm-dense`
-  #  on port 8005 — separate hostname, separate OpenClaw provider entry
-  #  (vllm-dense). Both backends respond simultaneously; the user picks
-  #  the model from the OpenClaw UI dropdown.
-  #
-  #  Image: vllm/vllm-openai:gemma4-cu130 — official vLLM day-1 Gemma 4 image,
-  #  wrapped in our ./vllm-llm/Dockerfile with a 1-line tool-call-parser regex
-  #  patch (see `vllm-llm.image:` comment below). The base image, CUDA 13,
-  #  Transformers 5.5+, and the gemma4 + NVFP4 (modelopt) kernels apply
-  #  identically to MoE and dense.
-  #
-  #  Key flags:
-  #    --quantization modelopt         : activates NVIDIA Model Optimizer NVFP4 GEMM.
-  #    --moe-backend marlin            : Blackwell SM121 (GB10) MUST use Marlin —
-  #                                      CUTLASS produces NaN scale factors on
-  #                                      the fused 3D expert tensor format that
-  #                                      Gemma 4 MoE ships. Marlin decompresses
-  #                                      FP4→BF16 at inference time, slightly
-  #                                      slower per-expert but functionally
-  #                                      correct. Switch to `cutlass` only on
-  #                                      H100/B200 if a vLLM upgrade fixes SM121.
-  #                                      Override via LLM_MOE_BACKEND in .env.
-  #    --gpu-memory-utilization 0.50   : MoE has a smaller effective working set
-  #                                      than dense (16.5 GB model + ~6.6 GB KV
-  #                                      for 2 × 256K), so 0.50 is the new safe
-  #                                      default. Raise to 0.85 (the verified
-  #                                      52 tok/s tuning point) if the embedding
-  #                                      stack is parked or you want headroom
-  #                                      for prefix-caching across many sessions.
-  #    --kv-cache-dtype fp8            : halves KV cache, lets continuous batching
-  #                                      stretch across more concurrent seqs.
-  #    --max-model-len 262144          : Gemma 4 architecture maximum (256K).
-  #    --max-num-seqs 2                : 2 concurrent users via continuous batching,
-  #                                      each holding 256K context preempt-free at
-  #                                      LLM_GPU_MEM_UTIL=0.50.
-  #    --max-num-batched-tokens 8192   : chunked prefill batch size.
-  #    --enable-prefix-caching         : system prompts de-duplicated across turns.
-  #    --enable-chunked-prefill        : long prompts don't block decode of others.
-  #    --reasoning-parser gemma4       : <|channel>thought reasoning mode.
-  #    --tool-call-parser gemma4       : native tool calls → OpenAI tool_calls JSON.
-  #    --enable-auto-tool-choice       : model decides when to call tools.
-  #    --chat-template .../gemma4.jinja: vLLM repo tool-calling template (shipped in
-  #                                      ./templates/ because the gemma4-cu130 image
-  #                                      doesn't include it). Without this template
-  #                                      the model emits raw "call:name{args}" text
-  #                                      in the content field instead of populating
-  #                                      the OpenAI tool_calls array — OpenClaw would
-  #                                      then not recognize any tool call.
-  #    --limit-mm-per-prompt ...       : multimodal budget per request, no audio. The
-  #                                      budget covers the WHOLE prompt (history too):
-  #                                      a 3-image Discord post on a limit of 2 was
-  #                                      rejected outright. LLM_LIMIT_MM_IMAGES, default 4.
-  #                                      vLLM 0.11+ expects JSON (the older key=value
-  #                                      syntax fails with "cannot be converted to json.loads").
-  #    --mm-processor-kwargs ...       : vision token budget per image (280 is the
-  #                                      sweet spot ≈ 512×512; raise to 560/1120 for
-  #                                      OCR, charts, handwriting at the cost of KV).
-  #    ${LLM_ENFORCE_EAGER:+--enforce-eager} : CUDA graphs ON by default (LLM_ENFORCE_EAGER unset).
-  #                                      Verified 2026-05-08 on GB10 + Marlin SM121 backend +
-  #                                      MoE 26B-A4B: ~10% single-stream gain (22.5 → 24.9 tok/s)
-  #                                      and ~30% 4-paralel-aggregate gain (86 → 112 tok/s) over
-  #                                      eager mode, no hangs across 5K-200K context sweep.
-  #                                      The pre-2026 "GB10 unified-mem CUDA-graphs hangs" gotcha
-  #                                      appears resolved in vLLM 0.19+. Set LLM_ENFORCE_EAGER=1
-  #                                      in .env to force eager (back-compat / rollback path).
-  ######################
+  # Nemotron 3.5 Super 120B-A12B NVFP4 (vision + tools + reasoning). Needs
+  # ~70 GiB of the 128 GB pool at the default share and the GB10 clock cap
+  # (scripts/gb10-clock-cap.service): under sustained load an uncapped box
+  # powers itself off. Other models: compose/gemma4.yml, compose/mistral.yml.
   vllm-llm:
-    # Custom image with a 1-line patch to the Gemma4 tool-call parser regex
-    # (gemma4_tool_parser.py:338) so it accepts colon namespaces in tool
-    # names. Upstream regex `[\w\-\.]` rejects colons; the OpenClaw Discord
-    # plugin uses `discord:add_reaction` (colon-namespaced), unlike every
-    # other plugin which uses `__`. Without this patch, Gemma 4 NVFP4 emits
-    # `<|tool_call>call:discord:add_reaction{...}<tool_call|>` correctly, but
-    # vLLM's parser drops it (regex stops at the second colon) and the
-    # literal envelope leaks into Discord chat as garbage text. Adding ':'
-    # to the char class fixes it transparently.
-    #
-    # Build context (./vllm-llm/) ships a 1-file Dockerfile + patch_parser.py.
-    # `image:` names the resulting local layer so `docker compose build`
-    # caches and `up -d` always uses the patched image. To revert to the
-    # unpatched upstream image (e.g. when this stack switches to a non-Gemma
-    # backend whose parser already handles colons): comment out the `build:`
-    # line and `docker compose pull vllm-llm` will fetch the upstream tag.
-    build:
-      context: ./vllm-llm
-      args:
-        VLLM_BASE_IMAGE: vllm/vllm-openai:gemma4-cu130
-    image: ${CONTAINER_NAME_PREFIX:-dgx-openclaw-}vllm-llm:gemma4-cu130-colonfix
+    <<: *vllm
+    image: ${LLM_IMAGE:-vllm/vllm-openai:v0.32.0}
     container_name: ${CONTAINER_NAME_PREFIX:-}vllm-llm
     hostname: vllm-llm
-    restart: unless-stopped
-    ipc: host
-    tty: true
-    # vLLM OpenAI-compatible API published to the host. `LLM_BIND` controls
-    # which interface the host-side mapping listens on:
-    #   127.0.0.1 (default) — loopback only; in-host curl + sibling containers
-    #   0.0.0.0             — LAN-exposed (requires VLLM_API_KEY for auth);
-    #                         opt-in for multi-host setups, direct workstation
-    #                         clients, etc. The Bearer-token auth is the only
-    #                         barrier to a leaked endpoint, so don't set this
-    #                         if VLLM_API_KEY isn't strong / rotated.
-    # Sibling containers always reach via compose DNS `vllm-llm:8004`;
-    # publishing is purely for external/LAN access.
     ports:
       - "${LLM_BIND:-127.0.0.1}:8004:8004"
-    # MoE default. The 26B-A4B variant routes only ~3.8B params per token via
-    # 128 fine-grained experts (top-8) — ~7.5× faster decode than the 31B dense
-    # NVFP4 it replaces (52 tok/s vs 6.9 tok/s on GB10), 16.5 GB model footprint
-    # leaves plenty of room for 2 × 256K KV at LLM_GPU_MEM_UTIL=0.50.
-    # On Blackwell SM121 (GB10) `--moe-backend marlin` is mandatory: CUTLASS
-    # produces NaN scale factors on the fused 3D expert tensor format. Marlin
-    # decompresses FP4 → BF16 at inference time (slightly slower per-expert,
-    # functionally correct). The dense 31B alternative runs concurrently in
-    # the `vllm-llm-dense` block below on its own port (8005) and hostname
-    # (vllm-llm-dense), no profile-mutex, both reachable simultaneously.
-    # `LLM_MODEL_ID` lets an operator try a different MoE checkpoint (e.g. a
-    # community NVFP4 quantization that ships its own loader patch — see
-    # TROUBLESHOOTING.md "MoE model load KeyError"). Default = the NVIDIA
-    # reference. The patcher swaps the catalog entry and the default model
-    # to any override id. To run Mistral Small 4 here instead, add
-    # docker-compose.mistral.yml to COMPOSE_FILE (it replaces this block).
     command: >
-      --model ${LLM_MODEL_ID:-nvidia/Gemma-4-26B-A4B-NVFP4}
+      --model ${LLM_MODEL_ID:-nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4}
+      --served-model-name ${LLM_MODEL_ID:-nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4}
+      --trust-remote-code
       --host 0.0.0.0
       --port 8004
       --api-key ${VLLM_API_KEY:-}
-      --quantization ${LLM_QUANTIZATION:-modelopt}
-      --moe-backend ${LLM_MOE_BACKEND:-marlin}
-      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.50}
-      -tp 1
-      --load-format safetensors
-      --kv-cache-dtype fp8
-      --max-model-len ${LLM_MAX_MODEL_LEN:-262144}
-      --max-num-seqs ${LLM_MAX_NUM_SEQS:-2}
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.70}
+      --max-model-len ${LLM_MAX_MODEL_LEN:-131072}
+      --max-num-seqs ${LLM_MAX_NUM_SEQS:-4}
       --max-num-batched-tokens 8192
-      --reasoning-parser gemma4
-      --tool-call-parser gemma4
-      --chat-template /templates/tool_chat_template_gemma4.jinja
+      --speculative-config.model ${LLM_DRAFT_MODEL:-nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr}
+      --speculative-config.num-speculative-tokens ${LLM_SPEC_TOKENS:-7}
+      --speculative-config.method dflash
+      --mamba-backend flashinfer
+      --mamba-ssm-cache-dtype float16
+      --enable-mamba-cache-stochastic-rounding
+      --mamba-cache-philox-rounds 5
+      --enable-mamba-shared-prefix-checkpoint
+      --block-size 64
+      --prefix-match-unit 64
+      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-4},"video":0}'
       --enable-auto-tool-choice
-      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-4},"audio":0}'
-      --mm-processor-kwargs '{"max_soft_tokens":280}'
-      --enable-prefix-caching
-      --enable-chunked-prefill
-      ${LLM_ENFORCE_EAGER:+--enforce-eager}
-    environment:
-      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-      # Air-gapped / no-internet deploys: set HF_HUB_OFFLINE=1 (+
-      # TRANSFORMERS_OFFLINE=1) in .env once the model is cached — the HF
-      # client then never dials home (faster boots, no hangs when the
-      # uplink is down). Default 0 = normal online behavior.
-      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
-      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
-      VLLM_API_KEY: ${VLLM_API_KEY:-}
-      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-    volumes:
-      - hf-cache:/root/.cache/huggingface
-      - ./templates:/templates:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    logging:
-      driver: json-file
-      options:
-        max-size: "150m"
-    ulimits:
-      memlock: -1
-      stack: 67108864
+      --tool-call-parser qwen3_coder
+      --reasoning-parser nemotron_v3
+      --default-chat-template-kwargs '{"medium_effort": true}'
+    # medium_effort: full thinking ran 57k-token turns; thinking off looped on
+    # tool-call JSON.
     healthcheck:
-      # vLLM /health returns 200 when the model is loaded and ready.
-      # Cold-start can take 60-120s (safetensors load + NVFP4 kernel JIT).
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8004/health\", timeout=2); sys.exit(0)' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8004/health\", timeout=2)'"]
       interval: 15s
       timeout: 5s
       retries: 20
-      start_period: 180s
+      # First start downloads ~80 GB and compiles kernels.
+      start_period: 1500s
 
-  ######################
-  ## vLLM — Gemma 4 31B IT NVFP4 dense (OPT-IN ALTERNATIVE, profile: dense)
-  #
-  #  The dense 31B variant the stack used through v0.x. Runs ALONGSIDE the MoE
-  #  by default — its own port (8005) and hostname (vllm-llm-dense), separate
-  #  OpenClaw provider entry (vllm-dense). Both are reachable simultaneously,
-  #  so an operator can A/B compare on the fly via the UI's model dropdown.
-  #
-  #  Tuning intent: single-user, 256K context, low-RAM. ~6.9 tok/s decode on
-  #  GB10 (slower than MoE but full architecture context preserved). Default
-  #  LLM_GPU_MEM_UTIL_DENSE=0.30 matches the MoE side, leaving ~26 GB free
-  #  with both backends up (17 GB MoE + 17 GB dense + 14 GB MoE-KV + ~21 GB
-  #  dense-KV + 25 GB everything else ≈ 102 GB / 128 GB on the host).
-  #
-  #  Pick the model in the OpenClaw UI dropdown; both providers are registered
-  #  in the catalog by the patcher (vllm/<MoE> + vllm-dense/<dense>).
-  ######################
-  vllm-llm-dense:
-    build:
-      context: ./vllm-llm
-      args:
-        VLLM_BASE_IMAGE: vllm/vllm-openai:gemma4-cu130
-    image: ${CONTAINER_NAME_PREFIX:-dgx-openclaw-}vllm-llm:gemma4-cu130-colonfix
-    container_name: ${CONTAINER_NAME_PREFIX:-}vllm-llm-dense
-    hostname: vllm-llm-dense
-    restart: unless-stopped
-    ipc: host
-    tty: true
-    # Same LLM_BIND env-knob as the MoE service. Different host port (8005).
-    ports:
-      - "${LLM_BIND:-127.0.0.1}:8005:8005"
+  vllm-embedding:
+    <<: *vllm
+    image: ${EMBED_IMAGE:-vllm/vllm-openai:gemma4-cu130}
+    container_name: ${CONTAINER_NAME_PREFIX:-}vllm-embedding
+    hostname: vllm-embedding
     command: >
-      --model nvidia/Gemma-4-31B-IT-NVFP4
+      BAAI/bge-m3
+      --served-model-name BAAI/bge-m3
+      --runner pooling
       --host 0.0.0.0
       --port 8005
       --api-key ${VLLM_API_KEY:-}
-      --quantization modelopt
-      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL_DENSE:-0.40}
-      -tp 1
-      --load-format safetensors
-      --kv-cache-dtype fp8
-      --max-model-len ${LLM_MAX_MODEL_LEN_DENSE:-262144}
-      --max-num-seqs ${LLM_MAX_NUM_SEQS_DENSE:-1}
-      --max-num-batched-tokens 8192
-      --reasoning-parser gemma4
-      --tool-call-parser gemma4
-      --chat-template /templates/tool_chat_template_gemma4.jinja
-      --enable-auto-tool-choice
-      --limit-mm-per-prompt '{"image":${LLM_LIMIT_MM_IMAGES:-4},"audio":0}'
-      --mm-processor-kwargs '{"max_soft_tokens":280}'
-      --enable-prefix-caching
-      --enable-chunked-prefill
-      --enforce-eager
-    environment:
-      # Dense hardcodes `--enforce-eager` (CUDA graphs OFF). The dense weights
-      # take ~31 GB in unified memory; with CUDA graphs ON the activations +
-      # graph capture overhead consumes another ~6 GB, leaving the 0.30 util
-      # budget with effectively zero KV pool. Eager mode here is the
-      # low-RAM single-user trade-off: ~5% per-token slower but fits
-      # 128K context inside ~7 GB KV. The MoE service runs CUDA graphs ON
-      # via the LLM_ENFORCE_EAGER env knob — only the dense is forced eager.
-      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-      # Air-gapped / no-internet deploys: set HF_HUB_OFFLINE=1 (+
-      # TRANSFORMERS_OFFLINE=1) in .env once the model is cached — the HF
-      # client then never dials home (faster boots, no hangs when the
-      # uplink is down). Default 0 = normal online behavior.
-      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
-      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
-      VLLM_API_KEY: ${VLLM_API_KEY:-}
-      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-    volumes:
-      - hf-cache:/root/.cache/huggingface
-      - ./templates:/templates:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    logging:
-      driver: json-file
-      options:
-        max-size: "150m"
-    ulimits:
-      memlock: -1
-      stack: 67108864
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8005/health\", timeout=2); sys.exit(0)' || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-      start_period: 180s
-
-  ######################
-  ## vLLM — BAAI/bge-m3 multilingual dense embeddings
-  #
-  #  Model:  BAAI/bge-m3 (567M params, BF16 safetensors, ~1.1 GB)
-  #    - Multilingual (100+ languages), trained on MIRACL / Mr.TyDi
-  #    - Dense + sparse (lexical) + ColBERT multi-vector outputs
-  #      (vLLM's OpenAI-compatible endpoint currently returns the dense output;
-  #       that's sufficient for OpenClaw memorySearch)
-  #    - 8K native context — plenty for chapter-length RAG chunks
-  #    - XLMRoberta encoder — natively supported by vLLM `--runner pooling`
-  #    - Cross-lingual retrieval: EN↔HU cosine ≈ 0.88 (production-validated)
-  #
-  #  Why bge-m3 instead of a larger embedding model:
-  #    - MIRACL / Mr.TyDi parity with Qwen3-Embedding-8B at 1/5 the footprint
-  #    - Frees ~5-8 GB unified memory for the LLM KV cache
-  #    - Dense-only output is enough for QMD hybrid retrieval in OpenClaw
-  #
-  #  API: http://vllm-embedding:8005/v1/embeddings (OpenAI-compatible)
-  #     {
-  #       "model": "BAAI/bge-m3",
-  #       "input": "..."
-  #     }
-  #     → 1024-dim dense vector
-  ######################
-  vllm-embedding:
-    image: vllm/vllm-openai:gemma4-cu130
-    container_name: ${CONTAINER_NAME_PREFIX:-}vllm-embedding
-    hostname: vllm-embedding
-    restart: unless-stopped
-    ipc: host
-    tty: true
-    # Uncomment for host debug access:
-    # ports:
-    #   - "127.0.0.1:8005:8005"
-    command: >
-      BAAI/bge-m3
-      --host 0.0.0.0
-      --port 8005
-      --runner pooling
       --gpu-memory-utilization ${EMBED_GPU_MEM_UTIL:-0.03}
-      -tp 1
       --max-model-len ${EMBED_MAX_MODEL_LEN:-8192}
       --max-num-seqs ${EMBED_MAX_NUM_SEQS:-2}
       --enforce-eager
-      --served-model-name BAAI/bge-m3
-    environment:
-      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-      # Air-gapped / no-internet deploys: set HF_HUB_OFFLINE=1 (+
-      # TRANSFORMERS_OFFLINE=1) in .env once the model is cached — the HF
-      # client then never dials home (faster boots, no hangs when the
-      # uplink is down). Default 0 = normal online behavior.
-      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
-      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
-      VLLM_API_KEY: ${VLLM_API_KEY:-}
-      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-    volumes:
-      - hf-cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    logging:
-      driver: json-file
-      options:
-        max-size: "150m"
-    ulimits:
-      memlock: -1
-      stack: 67108864
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request,sys; urllib.request.urlopen(\"http://127.0.0.1:8005/health\", timeout=2); sys.exit(0)' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8005/health\", timeout=2)'"]
       interval: 15s
       timeout: 5s
       retries: 20
       start_period: 90s
 
-  ######################
-  ## SearxNG — self-hosted privacy-first meta-search backend for the OpenClaw
-  ## gateway's native `webSearch` provider.
-  #
-  #  Upstream: https://github.com/searxng/searxng
-  #  OpenClaw provider docs: https://docs.openclaw.ai/tools/searxng-search
-  #
-  #  Why this service: OpenClaw ships a bundled `searxng` plugin that calls a
-  #  SearxNG instance over HTTP JSON (/search?...&format=json). Running our own
-  #  SearxNG locally means search queries never hit a commercial search API
-  #  (no Tavily / Brave Search API / Serper / etc.). With the strict engine set
-  #  in settings/settings.yml, queries also never reach Google, Bing, Yandex,
-  #  Yahoo, or Baidu — only privacy-respecting meta-engines (DuckDuckGo, Brave,
-  #  Mojeek, Qwant, Startpage) and public-knowledge sources (Wikipedia family,
-  #  Reddit, GitHub, arXiv).
-  #
-  #  Note: self-hosting SearxNG only hides the *client* — the query text still
-  #  reaches whichever upstream engines you enable. The privacy win here is the
-  #  strict engine whitelist, not just the container itself.
-  #
-  #  Networking: internal-only. No host port is published. The OpenClaw gateway
-  #  and CLI reach it by compose DNS as `http://searxng:8080`. For debug from
-  #  the host, temporarily uncomment the `127.0.0.1:8888:8080` binding below.
-  #
-  #  Resource footprint: CPU-only, ~50-100 MB RAM idle, short bursts while a
-  #  query fans out to upstream engines. No GPU allocation — irrelevant against
-  #  the LLM footprint.
-  ######################
+  # Engines and why they were picked: searxng/settings/settings.yml.
+  # Scraped engines break as search sites change, so the image is re-pulled
+  # weekly rather than pinned.
   searxng:
     image: searxng/searxng:latest
-    # `:latest` alone never refreshes: the reference host was still running
-    # the 2026.4 image in 2026-10, while upstream had since marked Mojeek and
-    # Startpage inactive and dropped Reddit. Scrapers track search-site
-    # changes, so let `docker compose up -d` re-pull on a schedule. The
-    # container is stateless and boots in seconds, so the recreate a new
-    # image triggers is harmless. `missing` restores pull-once behaviour.
     pull_policy: ${SEARXNG_PULL_POLICY:-weekly}
     container_name: ${CONTAINER_NAME_PREFIX:-}searxng
     hostname: searxng
     restart: unless-stopped
-    # Uncomment for host-side debug access:
-    # ports:
-    #   - "127.0.0.1:8888:8080"
     environment:
-      # Self-reference URL used by SearxNG's OG tags and /config endpoint.
-      # Internal compose-DNS hostname is fine because this service is never
-      # reached from outside the compose network.
       SEARXNG_BASE_URL: http://searxng:8080/
-      # Cookie / CSRF signing key — generated by bootstrap.sh into .env.
-      # SearxNG refuses to start if this stays at the upstream placeholder.
       SEARXNG_SECRET: ${SEARXNG_SECRET:-}
-      # Redundant belt-and-braces: settings.yml also sets limiter: false.
-      SEARXNG_LIMITER: "false"
     volumes:
       - ./searxng/settings:/etc/searxng:ro
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
-      - DAC_OVERRIDE
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    logging: *logging
 
-  ######################
-  ## Fish Audio S2 Pro TTS — OpenAI-compatible /v1/audio/speech (multilingual,
-  ## voice-cloning). Replaces the legacy 3-service Kokoro EN + F5-TTS HU +
-  ## router pipeline with one container.
-  #
-  #  Model: fishaudio/s2-pro (Fish Audio Research License — non-commercial).
-  #  ~11 GB weights (2 safetensors shards + codec.pth + tokenizer) baked into
-  #  the image at build time. 80+ languages from one checkpoint, English and
-  #  Hungarian both supported (HU is Tier 3 — voice cloning with a clean
-  #  reference clip compensates).
-  #
-  #  Loader: SGLang-Omni (sgl-project/sglang-omni). The upstream Docker image
-  #  `frankleeeee/sglang-omni:dev` is amd64-only, so we build a custom image
-  #  on a CUDA 13 devel aarch64 base and let SGLang-Omni compile sgl-kernel
-  #  from source against the cu130 torch wheels. First build is long
-  #  (~15-30 min including model download); subsequent builds hit the layer
-  #  cache. See ./openclaw-tts-fish/README.md for the full rationale.
-  #
-  #  Architecture: two processes inside one container. A FastAPI shim on
-  #  :8080 handles Bearer auth (TTS_API_TOKEN) + voice→references mapping +
-  #  optional leading-silence pad. SGLang-Omni runs as a child process on
-  #  loopback :9090 and emits the native /v1/audio/speech response. The shim
-  #  translates the OpenAI-style `voice` field into SGLang-Omni's
-  #  `references[].audio_path` shape (voice cloning via mounted file paths,
-  #  NOT inline base64).
-  #
-  #  Voice cloning workflow: drop <name>.wav + <name>.txt into
-  #  tts-fish-voices. No restart required — the shim resolves the voice id
-  #  to the file pair at request time.
-  #    docker cp myclone.wav ${CONTAINER_NAME_PREFIX}openclaw-tts-fish:/app/voices/
-  #    docker cp myclone.txt ${CONTAINER_NAME_PREFIX}openclaw-tts-fish:/app/voices/
-  #
-  #  Default voices shipped: default_en (LibriSpeech / LibriVox PD) and
-  #  default_hu (Diana Majlinger / "Egri csillagok", LibriVox PD). Seeded
-  #  from /app/voices_seed/ at first start without overwriting user voices.
-  #
-  #  License caveat: the s2-pro weights are Fish Audio Research License —
-  #  research / non-commercial use only. Wrapper code in
-  #  ./openclaw-tts-fish/server/ is MIT. Commercial deployments need either
-  #  `business@fish.audio` or a swap to a different checkpoint via the
-  #  FISH_REPO build arg.
-  #
-  #  Networking: internal-only by default — the gateway reaches this service
-  #  by compose DNS as `http://openclaw-tts-fish:8080`. Host-side loopback
-  #  publish below for debug. Bearer-auth: TTS_API_TOKEN.
-  #
-  #  Disable: set `profiles: ["never"]` on this service AND leave
-  #  OPENCLAW_TTS_FISH_API_KEY empty in .env. Patcher step 11 is env-gated
-  #  (skipped when the key is unset), so dropping the key cleanly opts out of
-  #  the gateway wiring too.
-  ######################
-  openclaw-tts-fish:
-    build:
-      context: ./openclaw-tts-fish/server
-      args:
-        # Optional — pass through if the operator's HF account is rate-
-        # limited or the model becomes gated. Public access works without it.
-        HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-    image: openclaw-tts-fish:0.2.0
-    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish
-    hostname: openclaw-tts-fish
-    restart: unless-stopped
-    # Boot-order guard — MUST start after vLLM is healthy. SGLang-Omni sizes
-    # its KV pool from the unified memory VISIBLE AT ITS OWN STARTUP
-    # (mem_fraction_static in the s2pro yaml). On a cold boot this service
-    # comes up minutes faster than vLLM's weight load, sizes itself from a
-    # near-empty pool, and vLLM then dies in a crash-loop with "No available
-    # memory for the cache blocks" (observed 2026-06-10 after a hard reset).
-    # Starting after vLLM is healthy makes the sizing deterministic: Fish
-    # always measures the post-vLLM leftover. `required: false` (compose
-    # v2.20+) keeps remote-vLLM deploys working — with vllm-llm parked via
-    # profiles: ["never"], the dependency is simply ignored.
-    depends_on:
-      vllm-llm:
-        condition: service_healthy
-        required: false
-    # Containment — non-negotiable on a shared unified-memory box. An
-    # uncontained engine start (startup JIT + warmup storm on top of an
-    # already-tight pool) once pushed the WHOLE HOST into a reclaim livelock:
-    # userspace frozen (sshd banner timeouts, gateway dark) while kernel ICMP
-    # stayed healthy, for over an hour (2026-06-10). With these caps the
-    # worst case is THIS container OOMing — visible in its own logs — while
-    # vLLM, the gateway and sshd keep breathing.
-    #   mem_limit = memswap_limit  → swap is DENIED to this container
-    #   cpus < host cores          → sshd/vLLM survive the JIT storm
-    mem_limit: ${TTS_FISH_MEM_LIMIT:-26g}
-    memswap_limit: ${TTS_FISH_MEM_LIMIT:-26g}
-    cpus: ${TTS_FISH_CPUS:-12}
-    # Host-side bind for debug access. Default 127.0.0.1 = loopback only.
-    # Set TTS_FISH_BIND=0.0.0.0 in .env to expose on the LAN (Bearer-auth via
-    # TTS_API_TOKEN). Sibling containers (gateway / CLI) always reach this
-    # via bridge DNS regardless of this binding.
-    ports:
-      - "${TTS_FISH_BIND:-127.0.0.1}:${TTS_FISH_PORT:-8091}:8080"
-    environment:
-      # Thread caps — the second half of the containment story. Run-2 autopsy
-      # (2026-06-10): with a correctly capped KV pool and 13.6 GB headroom the
-      # host STILL livelocked during "Loading Fish audio decoder", at load
-      # average ~384 on 20 cores — a thread storm (BLAS/OMP defaults spawn
-      # ncores threads per stage process), not a memory squeeze. The cpu
-      # quota throttles them; these caps stop them from being spawned.
-      OMP_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
-      OPENBLAS_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
-      MKL_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
-      NUMEXPR_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
-      # Bearer token gating every /v1/* request. Required — the shim refuses
-      # to start without it (the s2-pro model is non-commercially licensed
-      # and we don't want anonymous LAN clients on it).
-      TTS_API_TOKEN: ${TTS_API_TOKEN:-}
-      # Voice picked when the gateway doesn't override. Must match a file
-      # pair in /app/voices/ (default_en + default_hu ship by default).
-      TTS_FISH_DEFAULT_VOICE: ${TTS_FISH_DEFAULT_VOICE:-default_en}
-      # Shim-side voice aliases + unknown-voice policy. OpenClaw client paths
-      # pass the agent's voice string RAW (voiceAliases in openclaw.json are
-      # not resolved on the infer/Discord-tool paths — first live test:
-      # Gemma asked for OpenAI's "coral", got a 404, channel got no audio).
-      # The shim ships a built-in map for the 10 OpenAI voice names + the
-      # friendly handles; extend with "name:target,name2:target2". Unknown
-      # voices fall back to the default voice (log-warned) — set
-      # TTS_FISH_UNKNOWN_VOICE_POLICY=reject for the strict 404 behavior.
-      TTS_FISH_VOICE_ALIASES: ${TTS_FISH_VOICE_ALIASES:-}
-      TTS_FISH_UNKNOWN_VOICE_POLICY: ${TTS_FISH_UNKNOWN_VOICE_POLICY:-fallback}
-      # Hungarian autoroute (legacy-router behavior, reborn): S2 Pro clones
-      # the reference clip's ACCENT, so HU text + EN reference = English
-      # accent. Hungarian-looking input (ő/ű, or 3+ accented letters) reroutes
-      # to this voice unless the requested voice is already in
-      # TTS_FISH_HU_VOICES. Empty = off.
-      TTS_FISH_HU_AUTOROUTE_VOICE: ${TTS_FISH_HU_AUTOROUTE_VOICE:-default_hu}
-      TTS_FISH_HU_VOICES: ${TTS_FISH_HU_VOICES:-default_hu}
-      # cuda by default; set cpu for a slow CPU fallback (useful on a remote
-      # vLLM deployment where this host has no GPU).
-      TTS_FISH_DEVICE: ${TTS_FISH_DEVICE:-cuda}
-      # Leading silence (ms) prepended to every WAV reply. Defends against
-      # the Whisper STT onset clip ("Szia" -> "Zia"). 300 ms is empirically
-      # fine for EN + HU. Set 0 to skip (brings back the onset clip on
-      # short HU utterances).
-      TTS_FISH_LEADING_SILENCE_MS: ${TTS_FISH_LEADING_SILENCE_MS:-300}
-      # Deploy-wide sampling baselines — applied by the shim only when a
-      # request omits the field (per-request values win). Empty = ride the
-      # upstream S2 Pro defaults (temperature 0.8 / top_p 0.8 / top_k 30 /
-      # repetition_penalty 1.1 / max_new_tokens 2048 / speed 1.0). See
-      # .env.example for the full table incl. the top_k 1..30 range gotcha.
-      TTS_FISH_TEMPERATURE: ${TTS_FISH_TEMPERATURE:-}
-      TTS_FISH_TOP_P: ${TTS_FISH_TOP_P:-}
-      TTS_FISH_TOP_K: ${TTS_FISH_TOP_K:-}
-      TTS_FISH_REPETITION_PENALTY: ${TTS_FISH_REPETITION_PENALTY:-}
-      TTS_FISH_MAX_NEW_TOKENS: ${TTS_FISH_MAX_NEW_TOKENS:-}
-      TTS_FISH_SPEED: ${TTS_FISH_SPEED:-}
-      TTS_FISH_SEED: ${TTS_FISH_SEED:-}
-      # SGLang-Omni pipeline config. The image default is the GB10-calibrated
-      # yaml (capped KV pool, no startup torch-compile/CUDA-graph capture —
-      # see openclaw-tts-fish/server/configs/s2pro_tts_gb10.yaml for the
-      # rationale per knob). Point at your own yaml for other hardware.
-      FISH_S2PRO_CONFIG: ${FISH_S2PRO_CONFIG:-/opt/configs/s2pro_tts_gb10.yaml}
-      # Engine-ready deadlines. Cold start on GB10 pays a PTX forward-compat
-      # JIT toll (the cu130 sgl-kernel wheel ships sm90/sm100 SASS only) —
-      # the first boot can take WAY longer than a warm one. The JIT result
-      # persists on the tts-fish-cuda-jit-cache volume, so later boots are
-      # minutes, not tens of minutes. Inner (engine) timeout must stay below
-      # the outer (shim) one so the engine's own error surfaces first.
-      SGLANG_OMNI_STARTUP_TIMEOUT: ${SGLANG_OMNI_STARTUP_TIMEOUT:-3000}
-      FISH_ENGINE_READY_DEADLINE_S: ${FISH_ENGINE_READY_DEADLINE_S:-3300}
-      # Persist + upsize the CUDA JIT cache (default 1 GB is too small for
-      # the full sgl-kernel PTX surface; an evicted cache = re-JIT marathon
-      # on every restart).
-      CUDA_CACHE_PATH: /cuda-jit-cache/ComputeCache
-      CUDA_CACHE_MAXSIZE: "4294967296"
-      HF_HUB_DISABLE_PROGRESS_BARS: "1"
-      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-    volumes:
-      - tts-fish-voices:/app/voices
-      - tts-fish-hf-cache:/root/.cache/huggingface
-      - tts-fish-cuda-jit-cache:/cuda-jit-cache
-      # Triton keeps its own kernel-compile cache separate from the driver's
-      # PTX JIT cache; without this mount the first synthesis after every
-      # recreate re-compiles the decode kernels (~1 min extra latency).
-      - tts-fish-triton-cache:/root/.triton
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      # /healthz is always unauth (middleware exempts it by path). Cold start
-      # is long — SGLang-Omni's child process can take several minutes to
-      # load s2-pro weights + JIT-compile kernels on a fresh GPU. start_period
-      # 180s buys a generous grace window before the container is marked
-      # unhealthy and restarted.
-      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/healthz || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 180s
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-
-  ######################
-  ## Whisper STT — faster-whisper turbo CT2, OpenAI-compatible speech-to-text.
-  #
-  #  Endpoints: POST /v1/audio/transcriptions, POST /v1/audio/translations,
-  #             GET /v1/models, GET /health. Served by a ~150 LOC FastAPI
-  #             wrapper on top of faster-whisper (CTranslate2 backend), built
-  #             from `./openclaw-stt-whisper/server/` on a CUDA 13 base. MIT
-  #             wrapper code + MIT Whisper weights.
-  #
-  #  Why self-built instead of `ghcr.io/speaches-ai/speaches`: the upstream
-  #  image's published CUDA variant (12.6.3) ships a CTranslate2 that does
-  #  NOT render tensor-core kernels for Blackwell sm_120 — every low-precision
-  #  compute type (float16 / int8_float16 / int8_bfloat16) is rejected, and
-  #  the float32 fallback runs on CUDA cores at real-time factor ~1× while
-  #  also destabilizing numerically. A CUDA 13 base + cu130 PyTorch wheels +
-  #  current faster-whisper is the proven GB10 path (matches the vllm-llm /
-  #  openclaw-tts-fish wheel pattern). Swap `build:` back to `image:` if the
-  #  speaches upstream ever publishes a Blackwell-tensor-core variant.
-  #
-  #  Model: deepdml/faster-whisper-large-v3-turbo-ct2 (MIT) by default,
-  #  ~1.6 GB VRAM at compute_type=float16, ~8× faster than the vanilla
-  #  large-v3 (4 decoder layers instead of 32). Autodetects language per
-  #  request — no bilingual router needed (unlike TTS). Multilingual EN+HU
-  #  works out of the box. Turbo is the right default for voice-chat latency
-  #  (Fish Audio S2 Pro → LLM → STT roundtrip on Discord voice channels).
-  #
-  #  HU-finetune alternate: STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu
-  #  (Apache-2.0, ~11% CV WER, more robust on noisy / phone-grade HU audio
-  #  per 2026-04-24 GB10 validation). Slower (~3 GB VRAM, full 32-layer
-  #  decoder). Switch if Hungarian transcription accuracy on noisy mic input
-  #  matters more than latency.
-  #
-  #  VRAM-tight fallback: STT_WHISPER_COMPUTE_TYPE=int8_float16 halves VRAM
-  #  (~0.8 GB on turbo) at a 5-10% WER cost.
-  #
-  #  OpenClaw consumption (see patch-config.mjs step 14): wired via
-  #  tools.media.audio.models[] pointing at this service. Used by voice-note
-  #  upload in the Control UI chat (drop a wav/mp3 into the composer), the
-  #  Discord voice-channel transcription, the VoiceCall CLI, and the Talk /
-  #  Voicewake node pipelines. The Control UI realtime mic button is a
-  #  separate path — OpenClaw hardwires speech.ts to the browser's native
-  #  Web Speech API, which does NOT route through this service.
-  #
-  #  GB10 VRAM budget at LLM_GPU_MEM_UTIL=0.68:
-  #    Gemma 4 NVFP4 ~96 GB + bge-m3 ~1.1 GB + Fish S2 Pro ~11 GB + Whisper
-  #    turbo ~1.6 GB ≈ 110 GB used, ~3 GB headroom on the 113 GB effective
-  #    shared pool. Drop ComfyUI / video workloads before heavy TTS+STT use.
-  #
-  #  Networking: internal-only by bridge DNS (`openclaw-stt-whisper:8080`).
-  #  Host-side loopback publish below for debug. Bearer-auth: STT_API_TOKEN.
-  #  Set STT_WHISPER_BIND=0.0.0.0 in .env to expose on the LAN (still token-
-  #  protected). Sibling containers always use bridge DNS regardless.
-  #
-  #  Disable: set `profiles: ["never"]` on this service AND leave STT_API_TOKEN
-  #  empty in .env. Patcher step 14 is env-gated (skipped when the token is
-  #  unset), so dropping the token also cleanly opts out of the gateway wiring.
-  ######################
+  # faster-whisper large-v3-turbo; Hungarian and English are detected per
+  # request. Wired into OpenClaw as the audio model for voice notes.
   openclaw-stt-whisper:
     build: ./openclaw-stt-whisper/server
     image: openclaw-stt-whisper:0.1.0
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-stt-whisper
     hostname: openclaw-stt-whisper
     restart: unless-stopped
-    # Host-side bind for debug access. Default 127.0.0.1 = loopback only (LAN
-    # cannot reach it). Set STT_WHISPER_BIND=0.0.0.0 in .env to expose on the
-    # LAN (Bearer-auth via STT_API_TOKEN). Sibling containers (gateway / CLI)
-    # reach the service via bridge DNS regardless of this binding.
     ports:
       - "${STT_WHISPER_BIND:-127.0.0.1}:${STT_WHISPER_PORT:-8093}:8080"
     environment:
-      # When set, every /v1/* request must include `Authorization: Bearer
-      # <STT_API_TOKEN>`. /health is always unauth so Docker healthchecks
-      # and bridge-DNS probes keep working.
       STT_API_TOKEN: ${STT_API_TOKEN:-}
-      # Default points at the turbo CT2 build (MIT, ~1.6 GB VRAM, ~8× faster
-      # than vanilla large-v3 thanks to a 4-layer pruned decoder). Multilingual
-      # EN+HU works out of the box; pick this when voice-chat latency matters
-      # (Fish Audio S2 Pro → LLM → STT roundtrip on Discord voice channels).
-      # Switch to `Trendency/whisper-large-v3-hu` via STT_WHISPER_MODEL override
-      # in .env if you want the HU-finetune for noisy / phone-grade Hungarian
-      # audio (slower but ~3 percentage points lower HU WER on noisy mic input).
-      # First-boot HF download for turbo is ~1.6 GB; no CT2 conversion required
-      # (deepdml ships pre-converted CT2 weights), cached in the
-      # stt-whisper-hf-cache volume afterwards.
       WHISPER_MODEL: ${STT_WHISPER_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}
       WHISPER_COMPUTE_TYPE: ${STT_WHISPER_COMPUTE_TYPE:-float16}
-      WHISPER_DEVICE: ${STT_WHISPER_DEVICE:-cuda}
-      # Optional language pin. Empty = Whisper autodetects per request (default).
       WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-}
-      HF_HUB_DISABLE_PROGRESS_BARS: "1"
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     volumes:
-      # The wrapper runs as root inside the CUDA base image; HF cache lands
-      # in /root/.cache/huggingface.
       - stt-whisper-hf-cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    deploy: *gpu
     healthcheck:
-      # /health is always unauth (the wrapper's auth middleware exempts it by
-      # path), so a plain curl without Authorization is sufficient. No need
-      # to dance with escaped env vars.
-      # for a $$-escaped env-var dance.
-      #
-      # Cold-start: uvicorn comes up in a few seconds, but the first
-      # transcribe triggers a ~3 GB large-v3 CT2 weights download from
-      # HuggingFace on a fresh volume (5-15 min). The healthcheck itself
-      # doesn't wait on the model load — uvicorn responds to /health
-      # immediately once the app is imported — so 60s start_period is plenty.
-      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 60s
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
+    logging: *logging
 
-  ######################
-  ## Browser automation — Playwright Chromium exposed over Chrome DevTools
-  ## Protocol — OPT-IN (profile=browser).
-  #
-  #  Architecture: one long-lived Chromium per persisted profile (user-data-dir
-  #  on the browser-storage Docker volume) plus one anonymous default profile.
-  #  Each Chromium binds its own remote-debugging port. OpenClaw's built-in
-  #  `browser` tool attaches via browser.profiles.<name>.cdpUrl; no MCP, no
-  #  bespoke tool shim, no custom gateway plugin. See
-  #  docs/reference/browser-automation.md for the full design rationale,
-  #  including why we couldn't use ?profile= query routing (OpenClaw issues
-  #  #4841/#9723/#11926).
-  #
-  #  Why opt-in despite Apache 2.0 + Chromium being free: the Playwright base
-  #  image is ~1.7 GB on aarch64, and one warm Chromium per credential uses
-  #  ~200-400 MB RAM. Users who don't want agent web browsing shouldn't pay
-  #  for that overhead. Activation requires BOTH:
-  #    1. BROWSER_API_TOKEN set in .env (bootstrap.sh handles this).
-  #    2. The `browser` Compose profile active. Either:
-  #         - COMPOSE_PROFILES=browser in .env (preferred), OR
-  #         - --profile browser on the docker compose command line.
-  #
-  #  Networking:
-  #    - 9220:        FastAPI management API + login-helper (operator side).
-  #    - 9222-9241:   Chromium remote-debugging ports (default + 20 named
-  #                   profiles). 9222 = "default" anonymous throwaway profile;
-  #                   9223+ = named profiles in BROWSER_PROFILE_NAMES order.
-  #    - 5901:        noVNC bridge — ALWAYS-ON since v0.7.0. Auth via
-  #                   BROWSER_VNC_PASSWORD; the screen is blank when no
-  #                   profile is in headful mode (login-helper toggle).
-  #    All ports loopback-only by default. The OpenClaw gateway reaches the
-  #    Chromium debug ports via bridge DNS at openclaw-browser:9222-9241.
-  #
-  #  Onboarding a credential (1x per service):
-  #    docker compose --profile browser up -d --build openclaw-browser
-  #    ./bootstrap-browser-login.sh github-user1
-  #    # opens noVNC URL → operator logs in (password+TOTP, NOT passkeys —
-  #    # WebAuthn doesn't work over noVNC by W3C spec) → presses Enter
-  #    # → cookies persist; agent can browser.navigate(profile=...) freely
-  #    #   for the next ~14d (GitHub) / ~30d (Notion) / etc.
-  #
-  #  Disable: leave BROWSER_API_TOKEN empty in .env AND drop `browser` from
-  #  COMPOSE_PROFILES. Patcher step 15 is env-gated (skipped when the token
-  #  is unset), so dropping the token cleanly opts out of gateway wiring.
-  ######################
-  openclaw-browser:
-    profiles: ["browser"]
-    build: ./openclaw-browser/server
-    image: openclaw-browser:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-browser
-    hostname: openclaw-browser
-    restart: unless-stopped
-    # tini handles PID 1 already (set by ENTRYPOINT in Dockerfile); also enable
-    # init: true so docker's signalling is clean across the Chromium subprocess
-    # tree.
-    init: true
-    # Loopback-only host bind for the management API and Chromium debug ports.
-    # Set BROWSER_BIND=0.0.0.0 in .env if you need direct LAN access (you
-    # likely don't — the gateway always uses bridge DNS).
-    ports:
-      - "${BROWSER_BIND:-127.0.0.1}:${BROWSER_API_PORT:-9220}:9220"
-      - "${BROWSER_BIND:-127.0.0.1}:9222-9241:9222-9241"
-      - "${BROWSER_VNC_BIND:-127.0.0.1}:${BROWSER_VNC_PORT:-5901}:5901"
-    environment:
-      # Required. Empty value fails fast at app startup (no anonymous access).
-      BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-}
-      # Required. Persistent password for the always-on noVNC bridge —
-      # bootstrap.sh generates this on first run, rotate-secrets.sh --all
-      # rotates it. Empty / placeholder fails fast at app startup.
-      BROWSER_VNC_PASSWORD: ${BROWSER_VNC_PASSWORD:-}
-      BROWSER_VNC_PORT: ${BROWSER_VNC_PORT:-5901}
-      # Viewport for both Xvfb (headful) and Chromium --window-size. Default
-      # 1920x1080 — full HD. Both values must match across the Xvfb screen
-      # and the Chromium launch flag, otherwise iframe-rect math and
-      # screenshot dimensions go out of sync.
-      BROWSER_VIEWPORT_WIDTH: ${BROWSER_VIEWPORT_WIDTH:-1920}
-      BROWSER_VIEWPORT_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:-1080}
-      # Comma-separated list of named profiles. Maintained by
-      # ./bootstrap-browser-login.sh — manual edits here also work but the
-      # name's port assignment is positional, so don't reorder once profiles
-      # are in active use (it would shuffle each profile's cdpUrl).
-      BROWSER_PROFILE_NAMES: ${BROWSER_PROFILE_NAMES:-}
-      BROWSER_API_PORT: ${BROWSER_API_PORT:-9220}
-      BROWSER_PORT_BASE: ${BROWSER_PORT_BASE:-9222}
-      BROWSER_MAX_PROFILES: ${BROWSER_MAX_PROFILES:-20}
-      BROWSER_RATE_LIMIT_RPS: ${BROWSER_RATE_LIMIT_RPS:-0.5}
-      BROWSER_RATE_LIMIT_BURST: ${BROWSER_RATE_LIMIT_BURST:-5}
-      # Per-action CDP timeout. Bumped 2026-06-08 from 30s → 60s: heavy
-      # JS-driven pages (YouTube, Wowhead, sites with many ad-iframes) blow
-      # past 30s when building the ARIA accessibility tree for a `snapshot`
-      # action — the agent saw "[tools] browser failed: timed out" on a
-      # YouTube `snapshot` even though `open` succeeded and the tab was live.
-      # 60s covers the worst real pages without hanging the agent turn.
-      BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-60000}
-      # Page janitor (2026-06-18). The `browser` tool leaves a tab open after
-      # every screenshot; left unchecked they pile up and ad-heavy ones wedge
-      # connectOverCDP's autoAttach → "external CDP unreachable" (the idokep.hu
-      # screenshot regression). The janitor closes tabs idle past PAGE_TTL_SEC
-      # and caps tabs per profile; CLEAR_SESSION_RESTORE wipes Chrome's tab-
-      # restore state on headless launch so a crash can't resurrect stuck tabs.
-      BROWSER_JANITOR_ENABLED: ${BROWSER_JANITOR_ENABLED:-on}
-      BROWSER_JANITOR_INTERVAL_SEC: ${BROWSER_JANITOR_INTERVAL_SEC:-120}
-      BROWSER_PAGE_TTL_SEC: ${BROWSER_PAGE_TTL_SEC:-600}
-      BROWSER_MAX_PAGES_PER_PROFILE: ${BROWSER_MAX_PAGES_PER_PROFILE:-10}
-      BROWSER_CLEAR_SESSION_RESTORE: ${BROWSER_CLEAR_SESSION_RESTORE:-on}
-      BROWSER_STORAGE_DIR: /storage
-    volumes:
-      - browser-storage:/storage
-      - browser-diagnostics:/diagnostics
-      - ./openclaw-browser/config:/config:ro
-    tmpfs:
-      # Chromium scratches /tmp at modest volume; cap to 512 MB so a runaway
-      # download can't fill the host's tmpfs ceiling.
-      - /tmp:rw,size=512m
-    # Chromium OOMs without /dev/shm headroom under any moderate workload —
-    # the in-process renderer uses shared memory for inter-thread message
-    # passing. 1 GB is the well-trodden default.
-    shm_size: "1gb"
-    security_opt:
-      - no-new-privileges:true
-      # The seccomp profile shipped at openclaw-browser/config/seccomp.json
-      # is a placeholder by default; pull Playwright's upstream profile in to
-      # block unneeded syscalls. Comment this line out to use Docker's
-      # default profile (works fine for most flows; Chromium can SIGKILL on
-      # certain memory patterns under it).
-      # - seccomp=./openclaw-browser/config/seccomp.json
-    cap_drop: [ALL]
-    # CHOWN, SETUID, SETGID, DAC_OVERRIDE: required for Chromium's per-tab
-    # process spawn (drops privileges to a sandbox UID inside the container).
-    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
-    healthcheck:
-      # /healthz is unauthenticated by design; both the Docker probe and
-      # bootstrap-browser-login.sh's preflight rely on it.
-      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:9220/healthz || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-
-  ######################
-  ## Python code-execution sandbox — OPT-IN (profile=python).
-  #
-  #  Self-hosted Python execution environment that the OpenClaw agent reaches
-  #  over MCP (mcp.servers.python_sandbox, transport: streamable-http). One
-  #  long-lived ipykernel per session_id — state (variables, imports, loaded
-  #  CSVs) survives across calls so a multi-step analysis works without
-  #  re-loading the dataset on every tool call. See
-  #  docs/reference/python-sandbox.md for the full design rationale.
-  #
-  #  Why not the OpenClaw native `code_execution` tool: it routes to xAI's
-  #  Responses API (cloud, paid). This stack is self-hosted by design.
-  #  Why not `agents.defaults.sandbox` + the `exec` tool: that controls
-  #  shell-tool execution gateway-wide; flipping it to Python-as-default
-  #  would change behavior for every other tool too. The MCP path is
-  #  Python-specific, scoped, and opt-in.
-  #
-  #  Activation requires BOTH:
-  #    1. PYTHON_SANDBOX_API_TOKEN set in .env (bootstrap.sh handles this).
-  #    2. The `python` Compose profile active. Either:
-  #         - COMPOSE_PROFILES=python in .env (preferred), OR
-  #         - --profile python on the docker compose command line.
-  #
-  #  Networking:
-  #    - 8094 (MCP Streamable-HTTP, Bearer-auth'd).
-  #    Loopback-only by default — the gateway reaches it via bridge DNS at
-  #    openclaw-python-sandbox:8094. No published Chromium-style debug ports.
-  #
-  #  Egress: see PYTHON_SANDBOX_NETWORK in .env.example. Default "none" —
-  #  user code can't reach SearxNG, vLLM, or the LAN. "bridge" is the
-  #  override for use cases that genuinely need outbound HTTP (e.g.,
-  #  scraping a public API the agent has been told to query).
-  #
-  #  Resources: 8 GB RAM + 4 CPU default (PYTHON_SANDBOX_MEMORY_MB,
-  #  PYTHON_SANDBOX_CPUS). On GB10 with the default vLLM profile this
-  #  leaves headroom; tune up if you load multi-GB dataframes.
-  #
-  #  Disable: leave PYTHON_SANDBOX_API_TOKEN empty AND drop `python` from
-  #  COMPOSE_PROFILES. Patcher step 18 is env-gated (skipped when the
-  #  token is unset), so the gateway wiring opts out cleanly.
-  ######################
-  openclaw-python-sandbox:
-    profiles: ["python"]
-    build:
-      context: ./openclaw-python-sandbox/server
-      dockerfile: Dockerfile
-    image: openclaw-python-sandbox:0.1.0
-    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-python-sandbox
-    hostname: openclaw-python-sandbox
-    user: "1000:1000"
-    restart: unless-stopped
-    init: true
-    ports:
-      # Loopback bind so the host-side smoke command (curl /healthz) works
-      # without docker exec gymnastics. The gateway uses bridge DNS, so
-      # publishing isn't strictly required — it's purely operator ergonomics.
-      - "${PYTHON_SANDBOX_BIND:-127.0.0.1}:${PYTHON_SANDBOX_PORT:-8094}:8094"
-      # Preview/hosting port (2026-06-08). An operator (or the agent) can launch
-      # a dev server INSIDE the container bound to 0.0.0.0:8095 — `ng serve
-      # --host 0.0.0.0 --port 8095`, `python -m http.server 8095`, a Go/Java
-      # app, etc. — and reach it on the host's published 8095. nginx then
-      # proxies sandbox.petyuspolisz.com → <host>:8095. Bound to 0.0.0.0 so the
-      # nginx-proxy-manager (running in host-net, pointing its upstream at the
-      # host LAN IP 192.168.111.100:8095) can reach it — a 127.0.0.1-only bind
-      # gives the NPM a 502 because it dials the LAN IP, not loopback. The
-      # public gate is NPM + Cloudflare (SSL), so LAN exposure of the raw
-      # preview port is acceptable in this homelab. Override via env if needed.
-      - "${SANDBOX_PREVIEW_BIND:-0.0.0.0}:${SANDBOX_PREVIEW_PORT:-8095}:8095"
-    environment:
-      # Required. Empty value fails fast at app startup — a token-less
-      # sandbox would let any container on the bridge run arbitrary code.
-      PYTHON_SANDBOX_API_TOKEN: ${PYTHON_SANDBOX_API_TOKEN:-}
-      # Per-execution wall-clock cap. Long-running analyses can bump this;
-      # the kernel is interrupted (not killed) on timeout so subsequent
-      # calls in the same session keep working.
-      PYTHON_SANDBOX_KERNEL_TIMEOUT_S: ${PYTHON_SANDBOX_KERNEL_TIMEOUT_S:-30}
-      # Truncation cap on (stdout + stderr + plot bytes) returned per call.
-      # 10 MB is generous for tool-call payloads; bump if you regularly
-      # send large plots.
-      PYTHON_SANDBOX_MAX_OUTPUT_BYTES: ${PYTHON_SANDBOX_MAX_OUTPUT_BYTES:-10485760}
-      # Idle kernel reaper: shut down kernels not used for this many seconds.
-      # Trades memory for warm-cache convenience; a reaped session loses
-      # state and the next call starts fresh.
-      PYTHON_SANDBOX_IDLE_TTL_S: ${PYTHON_SANDBOX_IDLE_TTL_S:-1800}
-      PYTHON_SANDBOX_REAP_INTERVAL_S: ${PYTHON_SANDBOX_REAP_INTERVAL_S:-300}
-      # Whisper STT bridge for the transcribe_audio MCP tool (2026-06-08).
-      # The token lives ONLY in this server process — kernel_pool.py strips it
-      # from the child kernel env, so user code in python_exec cannot read it
-      # via os.environ. This is the "dedicated tool holds the token" isolation:
-      # the agent downloads media with yt-dlp+ffmpeg in python_exec, then calls
-      # transcribe_audio(path=...) and the server-side handler does the
-      # token-authenticated POST to Whisper. Same token as openclaw-stt-whisper.
-      STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
-      STT_API_TOKEN: ${STT_API_TOKEN:-}
-      STT_MODEL: ${OPENCLAW_STT_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}
-      # Cap on the audio file size transcribe_audio will POST (guards the STT
-      # container from an OOM on a multi-GB file). Default 200 MB.
-      STT_MAX_FILE_BYTES: ${STT_MAX_FILE_BYTES:-209715200}
-      # git_push tool (2026-06-09): the agent can commit+push a local repo to ONE
-      # preconfigured GitHub repo. The PAT lives ONLY here (uvicorn env) — kernel_pool
-      # strips GITHUB_TOKEN from user kernels, and the tool feeds it to git via
-      # GIT_ASKPASS (never argv/.git/config). Set a FINE-GRAINED PAT scoped to the one
-      # repo with Contents:read+write. Empty token → the tool returns "not configured".
-      # GITHUB_REPO is owner/repo; the agent can ONLY push there (cannot target others).
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      GITHUB_REPO: ${GITHUB_REPO:-}
-      # When GITHUB_REPO doesn't exist yet, git_push auto-creates it under the token's
-      # account (a dedicated bot account only needs to hand over a token — no manual repo
-      # creation; needs a classic PAT with `repo` scope, or fine-grained that can create).
-      # This is the visibility of the auto-created repo. Default private; false = public.
-      GITHUB_REPO_PRIVATE: ${GITHUB_REPO_PRIVATE:-true}
-      GIT_DEFAULT_BRANCH: ${GIT_DEFAULT_BRANCH:-main}
-      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-ImbulClaw}
-      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-bot@petyuspolisz.com}
-    volumes:
-      # /workspace is the canonical place for the agent to read/write files.
-      # Bind-mounted from the host so files persist across recreates and so
-      # the operator can drop CSVs in for the agent to analyze.
-      - ${OPENCLAW_WORKSPACE_DIR}/sandbox:/workspace:rw
-      # Shared canvas dir, mounted at the SAME path the gateway sees it
-      # (/home/node/.openclaw/canvas). This lets the agent download media in
-      # python_exec (e.g. yt-dlp → /home/node/.openclaw/canvas/clip.mp3) and
-      # then attach it to Discord via the `upload-file` action using the
-      # IDENTICAL path — the canvas dir is in the discord-friend agent's
-      # media-local-roots, so upload-file is allowed to read it. Without this
-      # shared mount the file would land in /workspace/sandbox, which is
-      # OUTSIDE the agent's media roots → upload-file gets access-denied.
-      # Same path on both sides means one path convention for the agent.
-      # (2026-06-08 — audio/file attachment support.) Host path: see
-      # OPENCLAW_CANVAS_DIR on the gateway service.
-      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas:rw
-    # No `networks:` directive — the sandbox joins the project's default
-    # bridge so the gateway can reach it via DNS at openclaw-python-sandbox.
-    # PYTHON_SANDBOX_NETWORK in .env is a documented placeholder for a
-    # future v0.8.x patch that will offer an `internal: true` network
-    # opt-in; today, egress is controlled by the absence of network-using
-    # libraries in the image plus the kernel's lack of root for raw
-    # sockets. If you need hard network isolation, drop a docker network
-    # rule (`docker network create --internal`) and override at runtime.
-    mem_limit: ${PYTHON_SANDBOX_MEMORY_MB:-8192}m
-    cpus: ${PYTHON_SANDBOX_CPUS:-4}
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8094/healthz || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-
-  ######################
-  ## OpenClaw Config Patcher (init service, idempotent, runs before every `up`)
-  #
-  #  Ensures the local openclaw.json is in the expected state regardless of
-  #  the onboarding wizard's choices or previous manual edits. 23 steps:
-  #
-  #    1. Cleanup: remove legacy `models.providers.vllm.capabilities` (old schema).
-  #    2. Ensure vllm provider core: baseUrl / api / apiKey from .env.
-  #    3. Ensure Gemma 4 NVFP4 entry in the provider's models[] catalog
-  #       (the onboarding wizard does NOT auto-register it — without the entry,
-  #        OpenClaw can't route tool calls to this model).
-  #    4. Ensure memorySearch: provider=openai, model=BAAI/bge-m3,
-  #       remote.baseUrl=http://vllm-embedding:8005/v1/, remote.apiKey=VLLM_API_KEY.
-  #    5. Ensure heartbeat: 30m periodic check-in, includeReasoning=true,
-  #       isolatedSession=true, activeHours (configurable via .env).
-  #    6. Ensure/cleanup dreaming (memory-core plugin): env-gated via
-  #       OPENCLAW_ENABLE_DREAMING=1. Needs OpenClaw image >= 2026.4.15.
-  #    7. Ensure gateway.trustedProxies: loopback + docker bridge CIDR + the
-  #       LAN CIDR from the env (for direct LAN clients bypassing the CDN).
-  #    8. Ensure agents.defaults.llm.idleTimeoutSeconds=300: LLM idle watchdog
-  #       (default 120s too tight for 31B + reasoning + multi-tool-call chains).
-  #    9. Ensure memorySearch hybrid (BM25 + vector) retrieval with MMR re-rank.
-  #       SQLite FTS5 BM25 supplements bge-m3 on exact-keyword / ID / proper-noun
-  #       matches; MMR re-rank widens result diversity. Native OpenClaw feature,
-  #       upgrade-safe, no extra services.
-  #   10. Ensure webSearch provider = searxng + flip the bundled searxng plugin's
-  #       `enabled` flag to true. The plugin ships bundled-but-default-disabled;
-  #       without this step the webSearch tool never lights up at runtime. Also
-  #       wires baseUrl + categories + language for the sibling searxng service.
-  #   11. Ensure messages.tts.providers.openai is wired at the openclaw-tts-fish
-  #       (OpenAI-compat baseUrl override, sanctioned per closed OpenClaw issues
-  #       #13907 / #29224) + voiceAliases for human-readable voice names.
-  #       Env-gated: skipped when OPENCLAW_TTS_FISH_API_KEY is unset, so the
-  #       openai TTS provider stays untouched if the user opts out of TTS.
-  #   12. Mirror gateway.auth.token into gateway.remote.token so the loopback
-  #       CLI can WS-connect without hitting "gateway token mismatch" and
-  #       silently falling back to an embedded runner — a side-car path, not
-  #       the production agent route.
-  #   13. Sync per-agent auth-profiles.json `vllm:default.key` with VLLM_API_KEY.
-  #       The agent runner reads the credential from this per-agent store, NOT
-  #       from models.providers.vllm.apiKey — drift after a .env rotation
-  #       produces HTTP 401 from vLLM even when the config-file apiKey is correct.
-  #   14. Ensure tools.media.audio.enabled=true and upsert a models[] entry
-  #       with provider=openai, baseUrl pointing at openclaw-stt-whisper, the
-  #       configured model id, and a per-entry `headers.Authorization: Bearer
-  #       $STT_API_TOKEN` so the Whisper backend auth does not collide with
-  #       any global models.providers.openai.apiKey. Env-gated: skipped when
-  #       STT_API_TOKEN is unset, so removing the token cleanly opts out of
-  #       the gateway wiring (service block can be parked separately).
-  #   15. Ensure browser.enabled=true and write one browser.profiles.<name>
-  #       entry per registered Chromium profile in openclaw-browser. Default
-  #       profile lands on port BROWSER_PORT_BASE (9222); each name in
-  #       BROWSER_PROFILE_NAMES (comma-separated) gets the next port in
-  #       sequence. Auth is `?token=<BROWSER_API_TOKEN>` in the cdpUrl —
-  #       OpenClaw's cdpUrl config field accepts query tokens and HTTP Basic
-  #       URL auth only, not Authorization headers. Env-gated: skipped when
-  #       BROWSER_API_TOKEN is unset, so leaving the token empty cleanly opts
-  #       out of browser wiring (the openclaw-browser service block is also
-  #       parked behind `profiles: ["browser"]` and stays inactive without
-  #       --profile browser).
-  #   16. Idempotently inject a soft browser-policy block into the workspace
-  #       AGENTS.md (HTML-comment-marked region, deep-merge style). Tells the
-  #       agent: default profile for throwaway browsing, opt-in to the
-  #       credentialed profiles only when the task requires that identity,
-  #       never persist via the default profile. v0.7.0+.
-  #   17. Idempotently inject a browser.act cheatsheet block into the
-  #       workspace AGENTS.md. Smaller open models (Gemma 4 in particular)
-  #       routinely emit the flat {element, text} shape on kind="fill"
-  #       actions; the cheatsheet shows the right nested {fields: [...]}
-  #       shape so the normalizer doesn't reject the call and the agent
-  #       doesn't doom-loop trying to re-emit a broken request. v0.7.1+.
-  #   18. Ensure mcp.servers.python_sandbox is wired at the
-  #       openclaw-python-sandbox service (transport: streamable-http,
-  #       headers Authorization: Bearer $PYTHON_SANDBOX_API_TOKEN). Env-gated:
-  #       when PYTHON_SANDBOX_API_TOKEN is unset, the entry is REMOVED from
-  #       openclaw.json so the gateway doesn't try to dial a parked service
-  #       (the openclaw-python-sandbox block is also parked behind
-  #       `profiles: ["python"]`). v0.8.0+.
-  #   19. Ensure mcp.servers.comfyui_image is wired at the
-  #       openclaw-image-comfyui bridge (transport: streamable-http, headers
-  #       Authorization: Bearer $IMAGE_GEN_API_TOKEN). The bridge lives in a
-  #       SEPARATE compose file (openclaw-image-comfyui/docker-compose.yml,
-  #       opt-in via `--profile image-gen`) joined to this stack's bridge
-  #       via external-network reference. Env-gated: when IMAGE_GEN_API_TOKEN
-  #       is unset, the entry is REMOVED from openclaw.json so the gateway
-  #       doesn't try to dial a parked service. v0.9.0+.
-  #   20. Discord ackReactionScope=off — defends openclaw issue #46024
-  #       stale-queue reaction-cycle bug. Only writes when channels.discord
-  #       is configured AND user hasn't set the field themselves. v0.11.0+.
-  #   21. Discord actions.reactions toggle — default `true`; works with the
-  #       bundled vllm-llm gemma4 colon-namespace parser patch. Env override:
-  #       OPENCLAW_DISCORD_ACTIONS_REACTIONS=false. v0.11.0+.
-  #   22. Discord-routed agent tools.alsoAllow +=
-  #       `group:messaging,browser,tts,canvas` so the message / browser /
-  #       tts / canvas tools aren't catalog-filtered out under the default
-  #       `coding` profile. Walks the top-level bindings[] for the
-  #       channel=discord agentId, preserves operator-added entries.
-  #       v0.11.0+ (default widened from `group:messaging` only in
-  #       v0.11.1+; routing-source bug fixed in v0.11.1 — earlier
-  #       versions read agents.routes[] which doesn't exist in the
-  #       openclaw 2026.4.x schema, so the step was a silent no-op).
-  #   23. Ensure ${OPENCLAW_CONFIG_DIR}/canvas exists for Path A image-gen
-  #       inline rendering. The bridge mirrors generated PNGs there and
-  #       emits `[embed url="/__openclaw__/canvas/<file>"]` shortcodes the
-  #       gateway serves under /__openclaw__/canvas/. Idempotent mkdir,
-  #       not env-gated (an empty dir is harmless when Path A is off).
-  #       v0.11.0+ (was a manual mkdir step before).
-  #   24. Discord progressive streaming — channels.discord.streaming and
-  #       optional draftChunk sub-knobs. Defaults to `partial` (single
-  #       preview message, edit-in-place). v0.11.0+.
-  #   25. Discord-routed agent tools.profile — default `full`. Without an
-  #       explicit profile the agent inherits OpenClaw's non-main default
-  #       `coding`, which excludes browser/tts/canvas. Step writes the
-  #       profile only when undefined (operator-set values preserved).
-  #       v0.11.1+.
-  #   26. Workspace-discord AGENTS.md patcher-managed blocks (cron-tools
-  #       cheatsheet + browser-tools cheatsheet, mirrored from step 17 to
-  #       the discord-friend's separate workspace). Idempotent; skips
-  #       cleanly if the file doesn't exist (pre-onboarding). v0.11.1+.
-  #
-  #  If openclaw.json doesn't exist yet (pre-onboarding state), exits 0 — the
-  #  gateway starts anyway and the onboarding wizard can run interactively.
-  ######################
+  # Writes openclaw.json and the agent workspaces from .env (config-init/),
+  # then exits. Before onboarding there is no openclaw.json and it exits 0;
+  # see SETUP.md for the two-phase first start.
   openclaw-config-init:
-    # Local extension of the upstream image with ffmpeg installed, so the
-    # gateway's Discord text-channel TTS-attachment path
-    # (messages.tts.auto = always) doesn't crash on a missing binary.
-    # The build runs once on this service; openclaw-gateway and openclaw-cli
-    # below reference the same tag and reuse the cached image. See
-    # openclaw-base-ext/Dockerfile for the rationale.
-    image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.1}
+    <<: *openclaw
     build:
       context: ./openclaw-base-ext
       args:
@@ -1299,662 +208,36 @@ services:
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-config-init
     user: "1000:1000"
     restart: "no"
-    environment:
-      VLLM_API_KEY: ${VLLM_API_KEY:-}
-      OPENCLAW_ENABLE_DREAMING: ${OPENCLAW_ENABLE_DREAMING:-0}
-      OPENCLAW_HEARTBEAT_ACTIVE_START: ${OPENCLAW_HEARTBEAT_ACTIVE_START:-09:00}
-      OPENCLAW_HEARTBEAT_ACTIVE_END: ${OPENCLAW_HEARTBEAT_ACTIVE_END:-02:00}
-      OPENCLAW_HEARTBEAT_TZ: ${OPENCLAW_HEARTBEAT_TZ:-UTC}
-      OPENCLAW_HEARTBEAT_TO: ${OPENCLAW_HEARTBEAT_TO:-}
-      OPENCLAW_LAN_CIDR: ${OPENCLAW_LAN_CIDR:-}
-      # Override the in-compose vllm-llm / vllm-embedding DNS targets when the
-      # vLLM stack runs on a different host (remote DGX over LAN, cloud OpenAI-
-      # compatible endpoint, etc.). Defaults preserve the standard in-compose
-      # layout. See docs/CUSTOMIZATION.md → "Run with a remote vLLM backend".
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm-llm:8004/v1/}
-      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://vllm-embedding:8005/v1/}
-      # These five were read by the patcher all along but never declared here —
-      # compose does NOT pass .env into containers implicitly, so operator
-      # overrides of them silently never reached the patcher (fixed 2026-06-10).
-      # Defaults mirror the patcher-side fallbacks so the declared wiring is a
-      # no-op for existing deploys.
-      LLM_DENSE_BASE_URL: ${LLM_DENSE_BASE_URL:-http://vllm-llm-dense:8005/v1/}
-      LLM_MODEL_ID: ${LLM_MODEL_ID:-}
-      LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-131072}
-      # Output token budget per reply (reasoning + answer). Default 8192.
-      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-8192}
-      # How the thinking level reaches the local model (patcher
-      # thinkingCompatFor): auto (by model id) | off | qwen-chat-template.
-      LLM_THINKING_COMPAT: ${LLM_THINKING_COMPAT:-auto}
-      # Sampling temperature on the local model entries (patcher 3c):
-      # auto (0.6 for Nemotron) | <number> | off.
-      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-auto}
-      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-1800}
-      LLM_REASONING_ENABLED: ${LLM_REASONING_ENABLED:-true}
-      # TTS provider wiring. When set, patcher step 11 writes
-      # messages.tts.providers.openai.{baseUrl,apiKey,model,voiceId,voiceAliases}
-      # pointing at the openclaw-tts-fish service (Fish Audio S2 Pro via
-      # SGLang-Omni). Leave empty to opt out — the patcher then leaves the
-      # openai TTS provider untouched (and the fish service block above can be
-      # parked with `profiles: ["never"]`).
-      OPENCLAW_TTS_FISH_API_KEY: ${OPENCLAW_TTS_FISH_API_KEY:-}
-      OPENCLAW_TTS_FISH_URL: ${OPENCLAW_TTS_FISH_URL:-http://openclaw-tts-fish:8080/v1}
-      OPENCLAW_TTS_DEFAULT_VOICE: ${OPENCLAW_TTS_DEFAULT_VOICE:-default_en}
-      # Auto-attach mode for messages.tts (patcher step 11). Default 'always'
-      # speaks every final reply (voice channels, VoiceCall). Discord text-channel
-      # deploys must use 'tagged' — see .env.example notes; the gateway image
-      # lacks ffmpeg and the text-channel attachment pipeline crashes silently
-      # with `[discord] final reply failed: Error: ffmpeg not found` otherwise.
-      OPENCLAW_TTS_AUTO: ${OPENCLAW_TTS_AUTO:-always}
-      # Per-request TTS fetch ceiling (messages.tts.timeoutMs, patcher step
-      # 11). The gateway's generic 30 s default times out on self-hosted Fish
-      # synthesis of anything beyond ~300 chars (~3 s per second of audio on
-      # GB10). SCHEMA HARD CAP: 120000 — higher values crash-loop the gateway
-      # ("Invalid input (maximum: 120000)"); the patcher clamps defensively.
-      OPENCLAW_TTS_TIMEOUT_MS: ${OPENCLAW_TTS_TIMEOUT_MS:-120000}
-      # Discord ackReactionScope (patcher step 20). Defends against upstream
-      # issue #46024 stale-queue reaction-cycle bug. Default 'off' kills the
-      # auto-emoji lifecycle entirely; agent can still emit explicit reactions
-      # via tool call when it actually means to. Override with 'group-mentions'
-      # / 'direct' / 'all' if you want the lifecycle feedback (and accept the
-      # cycling on guild mentions).
-      OPENCLAW_DISCORD_ACK_REACTION_SCOPE: ${OPENCLAW_DISCORD_ACK_REACTION_SCOPE:-off}
-      # Discord actions.reactions (patcher step 21). Default 'true' (enabled).
-      # This stack ships a custom vllm-llm image (./vllm-llm/) with a patch to
-      # the Gemma4 tool-call parser so colon-namespace tools like
-      # `discord:add_reaction` work. Set 'false' if running an unpatched
-      # upstream vllm/vllm-openai image, or to strip reaction permissions
-      # entirely for guild-rule reasons.
-      OPENCLAW_DISCORD_ACTIONS_REACTIONS: ${OPENCLAW_DISCORD_ACTIONS_REACTIONS:-true}
-      # Discord progressive streaming (patcher step 24). Default 'partial' —
-      # single preview message edits in place as tokens arrive. See
-      # .env.example for the full mode/draftChunk explanation. Override or
-      # set to empty string to skip the step entirely.
-      OPENCLAW_DISCORD_STREAMING: ${OPENCLAW_DISCORD_STREAMING:-partial}
-      # Optional draftChunk fine-tune (patcher step 24, sub-knobs). Each is
-      # independently optional; leaving any unset means the patcher leaves
-      # the corresponding field unwritten and OpenClaw uses its docs default
-      # (200 / 800 / "paragraph"). Set MIN_CHARS=100 + BREAK_PREFERENCE=line
-      # for line-grain typing UX. The breakPreference enum is not
-      # exhaustively documented upstream — paragraph / line / sentence are
-      # operator-tested.
-      OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS: ${OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS:-}
-      OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS: ${OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS:-}
-      OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE: ${OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE:-}
-      # Tool-progress display in the streaming preview ("Working...\n- tool:
-      # <name>"). Default unset → upstream default `true` applies. Set to
-      # `false` to suppress the lines entirely (workaround for the Discord
-      # markdown-mangle on tool names like `comfyui_image__generate`).
-      OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS: ${OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS:-}
-      # Discord-routed agent tool profile (patcher step 25). Default `full`
-      # — same effective surface as the main agent (cron, browser,
-      # image_generate, web_search, memory, python_sandbox, tts, canvas,
-      # messaging). The OpenClaw non-main default `coding` excludes
-      # browser/tts/canvas; the bot then replies "I can't navigate the
-      # browser" to screenshot requests and silently drops `[[tts:speak]]`
-      # directives. Set empty to skip the step (preserves whatever's in
-      # openclaw.json). Enum: minimal | coding | messaging | full.
-      OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE: ${OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE:-full}
-      # Deny the broken built-in `video_generate` tool (patcher step 25b).
-      # The coding/full profiles ship OpenClaw's built-in `video_generate`,
-      # which calls an OpenAI Sora endpoint — with no OPENAI_API_KEY it 401s
-      # every time and makes zero video. The Gemma MoE keeps calling it over
-      # the local `comfyui_image__generate_video` (LTX) despite the cheatsheet
-      # (verified 2026-07-04: 16 built-in calls → 16× 401 in one turn).
-      # Default `on` writes `video_generate` into global `tools.deny` (+ the
-      # wildcard-guild policy) so the runtime strips it from the catalog on all
-      # routes. Set `off` only if you configured an OpenAI key and want Sora
-      # back (patcher self-heals the entry). Empty skips the step.
-      OPENCLAW_DENY_OPENAI_VIDEO_TOOL: ${OPENCLAW_DENY_OPENAI_VIDEO_TOOL:-on}
-      # Patcher step 43 (2026.10 defaults). Tool Search off by default: its
-      # nested call wrapper fed MCP image results back as base64 text. The
-      # Discord-agent denylist trims the 113-tool `full` catalog. The system
-      # agent owns Custodian consults. defaultTo stops invented send targets.
-      # LLM_DENSE_ENABLED=off unregisters the profile-gated dense provider.
-      # `${VAR-default}` (no colon) keeps an explicit empty value = skip step.
-      OPENCLAW_TOOL_SEARCH: ${OPENCLAW_TOOL_SEARCH-off}
-      # Step 39b: shared guild sessions must not fold one request into
-      # another's run (an image reply was lost that way); see .env.example.
-      OPENCLAW_DISCORD_QUEUE_MODE: ${OPENCLAW_DISCORD_QUEUE_MODE-followup}
-      OPENCLAW_DISCORD_AGENT_TOOLS_DENY: ${OPENCLAW_DISCORD_AGENT_TOOLS_DENY-}
-      # Discord message split height (step 24b2; default 60, upstream 17).
-      OPENCLAW_DISCORD_MAX_LINES: ${OPENCLAW_DISCORD_MAX_LINES:-}
-      # Media tool groups to hide from the Discord agent (video, music).
-      OPENCLAW_DISCORD_MEDIA_TOOLS_OFF: ${OPENCLAW_DISCORD_MEDIA_TOOLS_OFF:-}
-      OPENCLAW_SYSTEM_AGENT: ${OPENCLAW_SYSTEM_AGENT-main}
-      OPENCLAW_DISCORD_DEFAULT_TO: ${OPENCLAW_DISCORD_DEFAULT_TO:-}
-      # Step 44: always-loaded people/MEMORY.md for the Discord agent.
-      OPENCLAW_DISCORD_PEOPLE_MEMORY: ${OPENCLAW_DISCORD_PEOPLE_MEMORY:-on}
-      OPENCLAW_PEOPLE_DIGEST_NSFW: ${OPENCLAW_PEOPLE_DIGEST_NSFW:-off}
-      OPENCLAW_PEOPLE_DIGEST_EXCLUDE: ${OPENCLAW_PEOPLE_DIGEST_EXCLUDE:-}
-      OPENCLAW_COMMUNITY_SUMMARY: ${OPENCLAW_COMMUNITY_SUMMARY:-on}
-      # Step 44e: claim-guard plugin (unbacked "elmentettem" → one more pass).
-      OPENCLAW_DISCORD_CLAIM_GUARD: ${OPENCLAW_DISCORD_CLAIM_GUARD:-on}
-      # Step 44g: DMs only from people who share a server with the bot.
-      OPENCLAW_DISCORD_DM_GUILD_GATE: ${OPENCLAW_DISCORD_DM_GUILD_GATE:-on}
-      # Step 44f: full-thinking `deep` sub-agent (measured no gain; off).
-      OPENCLAW_DISCORD_DEEP_AGENT: ${OPENCLAW_DISCORD_DEEP_AGENT:-off}
-      LLM_DENSE_ENABLED: ${LLM_DENSE_ENABLED:-on}
-      # MeshCore agent registration (patcher step 42). MESHCORE_ENABLED=on
-      # registers the `meshcore` agents.list entry + seeds its workspace
-      # AGENTS.md; the other knobs tune the agent's id / tool surface /
-      # thinking default. Pair with the openclaw-meshcore-bridge service
-      # (profile: meshcore) — see openclaw-meshcore-bridge/README.md.
-      MESHCORE_ENABLED: ${MESHCORE_ENABLED:-}
-      MESHCORE_AGENT_ID: ${MESHCORE_AGENT_ID:-meshcore}
-      # Set to register a SECOND agent for the shared-channel surface, with
-      # its own workspace and therefore its own memory (see step 42).
-      MESHCORE_CHANNEL_AGENT_ID: ${MESHCORE_CHANNEL_AGENT_ID:-}
-      MESHCORE_AGENT_TOOLS_PROFILE: ${MESHCORE_AGENT_TOOLS_PROFILE:-minimal}
-      MESHCORE_AGENT_ALSO_ALLOW: ${MESHCORE_AGENT_ALSO_ALLOW:-web_search}
-      MESHCORE_AGENT_THINKING: ${MESHCORE_AGENT_THINKING:-off}
-      # Discord-routed agent tools.alsoAllow additions (patcher step 22).
-      # Comma-separated list ADDED on top of the profile. Default
-      # `group:messaging,browser,tts,canvas,cron` — `group:messaging` is
-      # what registers the cron tool-handler on the discord-route runtime
-      # tool-resolver (verified 2026-05-07: removing it breaks `Tool cron
-      # not found` on BOTH DM and guild routes). Yes, the gateway logs
-      # an "unknown entries (group:messaging)" warning on it — that's
-      # upstream-cosmetic, not a real block. `cron` is added explicitly
-      # so the per-route filter sees it. `browser/tts/canvas` are
-      # belt-and-braces if a tighter profile is chosen later. Set empty
-      # to skip the step.
-      OPENCLAW_DISCORD_AGENT_ALSO_ALLOW: ${OPENCLAW_DISCORD_AGENT_ALSO_ALLOW:-group:messaging,browser,tts,canvas,cron}
-      # Discord-friend agent UX cheatsheet blocks in workspace-discord/AGENTS.md
-      # (patcher step XXa/b/c, added 2026-06-06 in response to Reverend Green's
-      # review). Each independently env-gated so the operator can A/B individual
-      # rules without redeploying the patcher.
-      OPENCLAW_DISCORD_AGENT_FORMAT_RULES: ${OPENCLAW_DISCORD_AGENT_FORMAT_RULES:-}
-      OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE: ${OPENCLAW_DISCORD_AGENT_IMAGE_HISTORY_RULE:-}
-      OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET: ${OPENCLAW_DISCORD_AGENT_SKILLS_CHEATSHEET:-}
-      OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION: ${OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION:-}
-      OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET: ${OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET:-}
-      # 2026-06-06 — Active Memory plugin (bundled, default-off). On enable,
-      # injects relevant long-term memory chunks into every reply context on
-      # the discord-friend agent — so the bot "remembers" cross-channel.
-      OPENCLAW_ACTIVE_MEMORY: ${OPENCLAW_ACTIVE_MEMORY:-}
-      # 2026-06-06 — Block F: deep agentic multi-step task decomposition rule
-      # in workspace-discord/AGENTS.md (env-gated, opt-in). Teaches the bot to
-      # chain 5-15+ tool calls on real tasks. Paired with idleTimeout=1800s.
-      OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC: ${OPENCLAW_DISCORD_AGENT_DEEP_AGENTIC:-}
-      # 2026-06-07 — Block G: anti-hallucination honesty rule. Forbids the bot
-      # from inventing "subagent" tool-calls or promising background work the
-      # bot has no runtime to perform. Surfaced after a 01:40 incident where
-      # Gemma 4 fabricated "Code Architect / Asset Designer" subagents and
-      # claimed to "work overnight" — neither is true.
-      OPENCLAW_DISCORD_AGENT_HONESTY: ${OPENCLAW_DISCORD_AGENT_HONESTY:-}
-      # Sender-identity discipline cheatsheet (default on). Guild channels are
-      # multi-user; the agent must key per-user rules (nickname, greeting,
-      # promises) on the CURRENT message's sender_id and never carry one user's
-      # rule onto another. Added after a 2026-06-08 incident where the bot
-      # greeted Yagi with a Nilatah-specific "üdv meleg hercegem" and treated
-      # Yagi as Nilatah. Set to off to remove the block.
-      OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY: ${OPENCLAW_DISCORD_AGENT_SENDER_IDENTITY:-on}
-      # 2026-06-08 — native sub-agent delegation cheatsheet block. The
-      # sessions_spawn/sessions_yield tools ship with the "full" tool profile and the
-      # Gemma 4 MoE drives the spawn→yield→announce protocol correctly (gate-tested:
-      # F(25)=75025 computed in an isolated child sub-agent). This knob writes the
-      # AGENTS.md delegation recipe (WHEN/HOW to delegate heavy multi-step tasks).
-      # Default on; `off` removes the block. NOTE: the 2026.6.1 schema REJECTS an
-      # `agents.defaults.subagents` bounds object (gateway crash-loop) — the patcher
-      # self-heals by removing it. The capability needs no extra config; OpenClaw's
-      # built-in subagent defaults + Discord's ~15-min interaction cap bound it. (A
-      # confirmed-schema bounds step is deferred — see CHANGELOG / docs/reference.)
-      OPENCLAW_DISCORD_AGENT_SUBAGENTS: ${OPENCLAW_DISCORD_AGENT_SUBAGENTS:-on}
-      # Discord-routed agent thinkingDefault (patcher step 25c). Default
-      # `high` (bumped 2026-06-08 from `minimal`) — Gemma 4 NVFP4 on the
-      # `--reasoning-parser gemma4` pipeline benefits from larger thinking
-      # budgets on nuanced Hungarian prompts where tool-discipline matters
-      # (e.g. lyrics search "szám"=song disambiguation). Latency: ~2-3×
-      # slower prefill vs `minimal`, ~10-15s typical. Fall back to `medium`
-      # or `low` if you need snappier replies. Enum: off|minimal|low|medium|
-      # high|xhigh|adaptive|max. Empty disables.
-      OPENCLAW_DISCORD_AGENT_THINKING: ${OPENCLAW_DISCORD_AGENT_THINKING:-high}
-      # Per-guild cron tool allow-list (patcher step 24c). Comma-separated
-      # Discord guild snowflake IDs where the cron tool should be available
-      # on text channels. Without an entry the runtime per-guild policy
-      # filter strips cron from the visible catalog (gateway logs
-      # "shipped core tools but unavailable in the current
-      # runtime/provider/model/config"). Default empty (no guilds get
-      # cron on text channels by default — operator opt-in per guild).
-      OPENCLAW_DISCORD_GUILD_CRON_IDS: ${OPENCLAW_DISCORD_GUILD_CRON_IDS:-}
-      # Discord slash-command authorization mode (patcher step 28). Defends
-      # against issue #19310: native slash commands work in DM via dmPolicy=
-      # "pairing" but get silently blocked on guild channels because the
-      # dual perm check (allowFrom + per-guild users) is empty by default.
-      # `open` (default) writes allowFrom=["*"] + dmPolicy=open + groupPolicy=
-      # open, letting every guild member use slash commands. `allowlist`
-      # skips the step entirely; `owner-only` locks to OPENCLAW_DISCORD_OWNER_IDS.
-      OPENCLAW_DISCORD_AUTHZ: ${OPENCLAW_DISCORD_AUTHZ:-open}
-      OPENCLAW_DISCORD_OWNER_IDS: ${OPENCLAW_DISCORD_OWNER_IDS:-}
-      # Discord voice subsystem (patcher step 29). `stt-tts` (default)
-      # registers /vc join|leave|status and implicitly uses this stack's
-      # self-hosted faster-whisper turbo (port 8093) + Fish Audio S2 Pro
-      # (openclaw-tts-fish, port 8091). Note: upstream OpenClaw 2026.4.22
-      # does NOT ship a real STT→LLM→TTS audio loop on Discord voice channels
-      # yet (issue #49246 still open); /vc join makes the bot SIT in the voice
-      # channel but it won't hear or speak. Set `off` to hide /vc commands
-      # entirely until upstream lands a working loop.
-      OPENCLAW_DISCORD_VOICE: ${OPENCLAW_DISCORD_VOICE:-stt-tts}
-      # Discord thread bindings (patcher step 29). `on` (default) registers
-      # /focus, /unfocus, /agents, /session — lets a thread bind to a
-      # session for context-rail continuation.
-      OPENCLAW_DISCORD_THREAD_BINDINGS: ${OPENCLAW_DISCORD_THREAD_BINDINGS:-on}
-      # Discord guild mention gate (patcher step 30, wildcard `guilds["*"]`
-      # so no operator guild IDs end up in the public repo). `off` (default)
-      # opens the gate everywhere; `on` preserves upstream's mention-
-      # required default. The `/activation` slash is a separate layer (LLM
-      # behavior hint, not a gate toggle) — see CLAUDE.md "Discord mention
-      # gate vs /activation slash".
-      OPENCLAW_DISCORD_REQUIRE_MENTION: ${OPENCLAW_DISCORD_REQUIRE_MENTION:-off}
-      # Image-gen workflow-picker cheatsheet (patcher step 27). When set,
-      # appends a `<!-- patch-config:image-gen-tools:* -->` block to the
-      # discord-friend agent's workspace-discord/AGENTS.md so Gemma surfaces
-      # the v0.11.0 max-quality 4K bundle workflows from prompt context
-      # (without it, agents see workflow names only via list_workflows and
-      # routing degrades to random). Empty = skip the step (use this when
-      # the bundle isn't installed yet — avoids docs that point at
-      # workflows that would fail at ComfyUI's prompt-validate). The same
-      # value is also read by the bridge's app.py to fill the
-      # comfyui_image__generate tool's default `workflow` arg.
-      IMAGE_GEN_DEFAULT_WORKFLOW: ${IMAGE_GEN_DEFAULT_WORKFLOW:-}
-      # LTX-Video 2.3 cheatsheet gate (patcher step 27b, v0.12.0+). When
-      # set to a truthy value, the patcher appends the video workflow
-      # picker block to workspace-discord/AGENTS.md. Same idempotent
-      # marker-block pattern as IMAGE_GEN_DEFAULT_WORKFLOW (step 27);
-      # leave empty before LTX models are installed so the cheatsheet
-      # doesn't point at a tool that errors out on every call.
-      LTX_VIDEO_ENABLED: ${LTX_VIDEO_ENABLED:-}
-      LTX_VIDEO_DEFAULT_LENGTH_FRAMES: ${LTX_VIDEO_DEFAULT_LENGTH_FRAMES:-145}
-      LTX_VIDEO_DEFAULT_FPS: ${LTX_VIDEO_DEFAULT_FPS:-24}
-      LTX_VIDEO_MAX_DURATION_S: ${LTX_VIDEO_MAX_DURATION_S:-10}
-      # vLLM idle watchdog timeout (patcher step 8). Default 600s gives
-      # headroom for slow image-gen workloads (FLUX, 1024×1024 SDXL). Drop
-      # to 300 for fast-model-only deploys.
-      # Default empty for 2026.6.1+ — the patcher skips agents.defaults.llm writes
-      # when this is empty/'skip'/'off' (schema reject on 2026.6.1+). On 2026.4.x
-      # an operator can set a numeric value to restore the legacy 600s ceiling.
-      OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS: ${OPENCLAW_LLM_IDLE_TIMEOUT_SECONDS-}
-      # Per-file char budget for workspace bootstrap files (AGENTS.md,
-      # USER.md, etc.) — written by patcher step 8b into
-      # agents.defaults.bootstrapMaxChars. Upstream SDK default is
-      # 12000; we bump to 20000 so the discord-friend agent's AGENTS.md
-      # (image cheatsheet + video cheatsheet + browser cheatsheet +
-      # cron cheatsheet, ~14k chars combined) fits without truncation.
-      # Without this bump the tail of AGENTS.md gets cut and the agent
-      # never sees the later cheatsheet blocks (verified live 2026-05-14:
-      # video cheatsheet additions were cut → bot defaulted to T2V on
-      # I2V intents).
-      # Default bumped 20000 → 60000 (2026-06-07) once AGENTS.md grew past
-      # 30 KB with Block G honesty + Block F deep-agentic + LTX-video etc.
-      # Plus total-cap raised: per-file 60k, total 80k.
-      OPENCLAW_BOOTSTRAP_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_MAX_CHARS:-60000}
-      OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS: ${OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS:-80000}
-      # Sandbox-browser feature (browser tool target="sandbox"). OFF by default:
-      # this stack runs NO OpenClaw-native sandbox-browser container, so enabling
-      # it gives no working browser — it only injects a sandbox/noVNC hint that
-      # tempts the model to call browser with target="sandbox" → "Sandbox browser
-      # is unavailable". The working browser is the CDP openclaw-browser sidecar
-      # via the default target="host". See patch-config.mjs step 8c (which also
-      # self-heals a stale enabled flag). Set =on ONLY if you run the OpenClaw
-      # sandbox-browser image.
-      OPENCLAW_SANDBOX_BROWSER: ${OPENCLAW_SANDBOX_BROWSER:-off}
-      # Default CDP profile when `browser` tool called without explicit profile.
-      OPENCLAW_BROWSER_DEFAULT_PROFILE: ${OPENCLAW_BROWSER_DEFAULT_PROFILE:-self-hosted}
-      # 2026.6.1 regression-fix: Discord plugin default suppressEmbeds=true
-      # kills auto-embed on every URL. Default off here = explicit `false` in
-      # config = auto-embed restored.
-      OPENCLAW_DISCORD_SUPPRESS_EMBEDS: ${OPENCLAW_DISCORD_SUPPRESS_EMBEDS:-off}
-      # Slash-command + elevated-tool authz wildcards (default "*" = open to
-      # everyone). Narrow these to comma-separated Discord snowflakes (as
-      # STRINGS — JS Number precision rounds 19-digit IDs and the equality
-      # check fails) if you want owner-only command surfaces.
-      OPENCLAW_DISCORD_COMMANDS_ALLOW: ${OPENCLAW_DISCORD_COMMANDS_ALLOW:-*}
-      OPENCLAW_DISCORD_COMMAND_OWNERS: ${OPENCLAW_DISCORD_COMMAND_OWNERS:-*}
-      OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW: ${OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW:-*}
-      # commands.bash — the `!<cmd>` Discord shell directive (patcher step 8f₂),
-      # enabler for `!~/.openclaw/bin/img`. ⚠ ALL-OR-NOTHING arbitrary shell:
-      # whoever is in OPENCLAW_DISCORD_COMMAND_OWNERS above can run ANY command
-      # in the gateway container, not just image-gen — so set that to a short,
-      # fully-trusted snowflake list (NOT the `*` default) whenever this is on.
-      # Schema-gate: empty = leave config as-is, on = enable, off = self-heal
-      # remove. When on AND IMAGE_GEN_API_TOKEN is set, the patcher also writes
-      # the `!img` script to ~/.openclaw/bin/img. See .env.example.
-      OPENCLAW_COMMANDS_BASH: ${OPENCLAW_COMMANDS_BASH:-}
-      # tools.agentToAgent — cross-agent messaging surface (sessions_send to a
-      # DIFFERENT agent id, e.g. discord-friend → main). Distinct from sub-agent
-      # SPAWN (same agent, no config). Schema captured from the live 2026.6.1 WebGUI
-      # (the schema oracle): { enabled, allow:[agentId|"*"] }. Default on, allow "*"
-      # (any configured agent). off/0/false → patcher removes the block.
-      OPENCLAW_TOOLS_AGENT_TO_AGENT: ${OPENCLAW_TOOLS_AGENT_TO_AGENT:-on}
-      OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW: ${OPENCLAW_TOOLS_AGENT_TO_AGENT_ALLOW:-*}
-      # Agentic capability toggles (schema captured from the 2026.6.1 WebGUI):
-      #   PLAN_TOOL → tools.experimental.planTool (experimental update_plan; multi-step
-      #     work tracking). LOOP_DETECTION → tools.loopDetection.enabled (repetitive
-      #     tool-call circuit breaker; autonomy safety for long agentic/sub-agent chains).
-      # Both default on; off/0/false → patcher removes the key. (Footguns codeMode /
-      # exec-full are intentionally NOT wired — they'd break or endanger the bot.)
-      OPENCLAW_TOOLS_PLAN_TOOL: ${OPENCLAW_TOOLS_PLAN_TOOL:-on}
-      OPENCLAW_TOOLS_LOOP_DETECTION: ${OPENCLAW_TOOLS_LOOP_DETECTION:-on}
-      # STT provider wiring (step 14). When STT_API_TOKEN is set, the patcher
-      # writes a tools.media.audio.models[] entry with provider=openai,
-      # baseUrl=$OPENCLAW_STT_BASE_URL, model=$OPENCLAW_STT_MODEL, and a
-      # per-entry Authorization Bearer header carrying STT_API_TOKEN (so it
-      # doesn't collide with any global openai apiKey). Leave STT_API_TOKEN
-      # empty to opt out — the patcher skips step 14 cleanly.
-      STT_API_TOKEN: ${STT_API_TOKEN:-}
-      OPENCLAW_STT_BASE_URL: ${OPENCLAW_STT_BASE_URL:-http://openclaw-stt-whisper:8080/v1}
-      OPENCLAW_STT_MODEL: ${OPENCLAW_STT_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}
-      OPENCLAW_STT_LANGUAGE: ${OPENCLAW_STT_LANGUAGE:-}
-      # Discord voice-controlled agent (opt-in). The patcher does not create
-      # channels.discord.* automatically yet — the schema is user-driven via
-      # `openclaw channels add --channel discord --token $DISCORD_BOT_TOKEN`
-      # and `openclaw agents bind` to an isolated agent. These vars are
-      # plumbed so a future patcher step can reference them and so the
-      # setup runbook in docs/CUSTOMIZATION.md can use `docker exec`
-      # `env`-sourced commands.
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
-      DISCORD_AGENT_NAME: ${DISCORD_AGENT_NAME:-discord-voice}
-      DISCORD_AUTOJOIN_GUILD_ID: ${DISCORD_AUTOJOIN_GUILD_ID:-}
-      DISCORD_AUTOJOIN_VOICE_CHANNEL_ID: ${DISCORD_AUTOJOIN_VOICE_CHANNEL_ID:-}
-      # Browser-automation provider wiring (step 15). When BROWSER_API_TOKEN
-      # is set, the patcher writes browser.enabled=true and emits one
-      # browser.profiles.<name>.cdpUrl per registered profile in
-      # BROWSER_PROFILE_NAMES (default profile + named ones). Empty token
-      # opts out — the patcher leaves browser.* untouched.
-      BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-}
-      BROWSER_PROFILE_NAMES: ${BROWSER_PROFILE_NAMES:-}
-      BROWSER_CDP_HOST: ${BROWSER_CDP_HOST:-http://openclaw-browser}
-      BROWSER_PORT_BASE: ${BROWSER_PORT_BASE:-9222}
-      # Python sandbox MCP wiring (step 18). When PYTHON_SANDBOX_API_TOKEN
-      # is set, the patcher writes mcp.servers.python_sandbox pointing at
-      # the openclaw-python-sandbox service (transport: streamable-http).
-      # Empty token opts out — the patcher removes the entry from
-      # openclaw.json so the gateway doesn't try to dial a parked service.
-      PYTHON_SANDBOX_API_TOKEN: ${PYTHON_SANDBOX_API_TOKEN:-}
-      PYTHON_SANDBOX_URL: ${PYTHON_SANDBOX_URL:-http://openclaw-python-sandbox:8094/mcp}
-      # Image-generation bridge MCP wiring (step 19). When IMAGE_GEN_API_TOKEN
-      # is set, the patcher writes mcp.servers.comfyui_image pointing at the
-      # openclaw-image-comfyui service (transport: streamable-http). The
-      # bridge runs in a SEPARATE compose file
-      # (openclaw-image-comfyui/docker-compose.yml) joined to this stack's
-      # bridge via an external-network reference, so bridge DNS resolves
-      # `openclaw-image-comfyui:9095` once both composes are up. Empty token
-      # opts out — patcher removes the entry from openclaw.json.
-      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
-      IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
-      # MCP client request timeout the patcher writes into
-      # mcp.servers.comfyui_image.requestTimeoutMs (step 19). This is how long
-      # the gateway waits for one tool call (e.g. generate_video) before
-      # `-32001 Request timed out`. MUST be >= the bridge's own per-call budget
-      # (IMAGE_GEN_TIMEOUT_S in the bridge compose, default 900s) or the client
-      # gives up mid-render and the user sees a phantom timeout (verified
-      # 2026-07-04: both were 600s and a slow FullHD render tripped them in
-      # lockstep). Default 960000 (16 min) sits just above the 900s bridge
-      # budget so the bridge's own timeout wins and returns a clean error.
-      IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS: ${IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS:-960000}
-      # ── Workspace docs mode (skills vs AGENTS.md blocks) ───────────────────
-      # `skills` (default): tool recipes live in on-demand workspace skill
-      # files; AGENTS.md keeps only policy/persona + a short router. Cuts the
-      # discord bootstrap prefill by ~20 KB. `agentsmd`: legacy all-in-
-      # AGENTS.md layout (rollback path if the model ignores skill bodies).
-      OPENCLAW_AGENT_DOCS_MODE: ${OPENCLAW_AGENT_DOCS_MODE:-skills}
-      # Thread-per-task policy block: coding / long tasks spawn into their own
-      # Discord thread (sessions_spawn thread:true) instead of camping on the
-      # main channel. Default on; off removes the block.
-      OPENCLAW_DISCORD_AGENT_THREAD_TASKS: ${OPENCLAW_DISCORD_AGENT_THREAD_TASKS:-on}
-      # ── Agentic coding: exec + approvals (patcher steps 31-33) ─────────────
-      # tools.exec posture: security=allowlist + ask=on-miss + strictInlineEval
-      # + safeBins + workspace-scoped applyPatch. Known-safe commands (seeded
-      # by step 32) run without friction; anything unlisted becomes an approval
-      # prompt on Discord (step 33). `off` removes tools.exec (upstream
-      # default-deny applies again).
-      OPENCLAW_TOOLS_EXEC: ${OPENCLAW_TOOLS_EXEC:-on}
-      # `full` removes the approval gate: every exec command runs immediately,
-      # no allowlist, no approval DM. Homelab opt-in — any sender the bot
-      # listens to can run arbitrary commands in the gateway container. The
-      # default posture stays allowlist+ask; see .env.example before flipping.
-      OPENCLAW_EXEC_SECURITY: ${OPENCLAW_EXEC_SECURITY:-allowlist}
-      OPENCLAW_EXEC_TIMEOUT_SEC: ${OPENCLAW_EXEC_TIMEOUT_SEC:-1800}
-      OPENCLAW_EXEC_SAFE_BINS: ${OPENCLAW_EXEC_SAFE_BINS:-}
-      # Seed ~/.openclaw/exec-approvals.json with a developer-toolchain
-      # allowlist (git/npm/node/python3/...) for the Discord-routed agent.
-      # Strictly additive — learned allow-always entries are NEVER touched.
-      OPENCLAW_EXEC_APPROVALS_SEED: ${OPENCLAW_EXEC_APPROVALS_SEED:-on}
-      # Exec approval prompts on Discord (buttons + /approve <id> ...), routed
-      # to the approvers' DMs. Approver chain: OPENCLAW_EXEC_APPROVERS →
-      # OPENCLAW_DISCORD_OWNER_IDS → concrete OPENCLAW_DISCORD_COMMAND_OWNERS.
-      # Never "*" — without a concrete snowflake the step skips with a warning.
-      OPENCLAW_DISCORD_EXEC_APPROVALS: ${OPENCLAW_DISCORD_EXEC_APPROVALS:-on}
-      OPENCLAW_EXEC_APPROVERS: ${OPENCLAW_EXEC_APPROVERS:-}
-      # ── Sub-agent bounds (patcher step 5b) — KNOWN-CRASHER GATE ───────────
-      # `agents.defaults.subagents` crash-looped the 2026.6.1 gateway when
-      # hand-written (2026-06-08). Upstream docs now document the path; flip to
-      # `on` ONLY after validating the schema on your live gateway (WebGUI
-      # oracle → see docs/reference/agentic-coding.md). Anything but `on`
-      # keeps the proven self-heal removal.
-      OPENCLAW_SUBAGENTS_BOUNDS: ${OPENCLAW_SUBAGENTS_BOUNDS:-off}
-      OPENCLAW_SUBAGENTS_MAX_SPAWN_DEPTH: ${OPENCLAW_SUBAGENTS_MAX_SPAWN_DEPTH:-}
-      OPENCLAW_SUBAGENTS_MAX_CHILDREN: ${OPENCLAW_SUBAGENTS_MAX_CHILDREN:-}
-      OPENCLAW_SUBAGENTS_MAX_CONCURRENT: ${OPENCLAW_SUBAGENTS_MAX_CONCURRENT:-}
-      OPENCLAW_SUBAGENTS_RUN_TIMEOUT_SECONDS: ${OPENCLAW_SUBAGENTS_RUN_TIMEOUT_SECONDS:-}
-      OPENCLAW_SUBAGENTS_ANNOUNCE_TIMEOUT_MS: ${OPENCLAW_SUBAGENTS_ANNOUNCE_TIMEOUT_MS:-}
-      OPENCLAW_SUBAGENTS_ARCHIVE_AFTER_MINUTES: ${OPENCLAW_SUBAGENTS_ARCHIVE_AFTER_MINUTES:-}
-      OPENCLAW_SUBAGENTS_DELEGATION_MODE: ${OPENCLAW_SUBAGENTS_DELEGATION_MODE:-}
-      # ── Long-run hardening (patcher steps 8h/8i/8j) ────────────────────────
-      # Loop-detection threshold relax for long builds (repeated `npm run
-      # build` is legitimate, not a loop). Empty = upstream defaults.
-      OPENCLAW_TOOLS_LOOP_DETECTION_HISTORY_SIZE: ${OPENCLAW_TOOLS_LOOP_DETECTION_HISTORY_SIZE:-}
-      OPENCLAW_TOOLS_LOOP_DETECTION_WARNING_THRESHOLD: ${OPENCLAW_TOOLS_LOOP_DETECTION_WARNING_THRESHOLD:-}
-      OPENCLAW_TOOLS_LOOP_DETECTION_CRITICAL_THRESHOLD: ${OPENCLAW_TOOLS_LOOP_DETECTION_CRITICAL_THRESHOLD:-}
-      # agents.defaults.timeoutSeconds / contextTokens / contextPruning —
-      # agents.defaults family (two crash-loop precedents): empty = skip,
-      # value = write, off = self-heal removal. Validate via the WebGUI
-      # oracle before first enable. Suggested: TIMEOUT=1800 (match
-      # LLM_REQUEST_TIMEOUT_SECONDS), CONTEXT_TOKENS=$LLM_CONTEXT_WINDOW,
-      # PRUNING_MODE=cache-ttl for multi-hour tool-heavy coding runs.
-      OPENCLAW_AGENT_TIMEOUT_SECONDS: ${OPENCLAW_AGENT_TIMEOUT_SECONDS:-}
-      OPENCLAW_AGENT_CONTEXT_TOKENS: ${OPENCLAW_AGENT_CONTEXT_TOKENS:-}
-      OPENCLAW_AGENT_CONTEXT_PRUNING_MODE: ${OPENCLAW_AGENT_CONTEXT_PRUNING_MODE:-}
-      OPENCLAW_AGENT_CONTEXT_PRUNING_TTL: ${OPENCLAW_AGENT_CONTEXT_PRUNING_TTL:-}
-      # channels.discord.mentionAliases (patcher step 40) — restart-proof
-      # real @mentions: "Handle=snowflake,Other=snowflake". Without it the
-      # bot's `@SomeUser` only becomes a real pinging mention if that user
-      # has spoken since the gateway last started (in-memory directory).
-      OPENCLAW_DISCORD_MENTION_ALIASES: ${OPENCLAW_DISCORD_MENTION_ALIASES:-}
-      # channels.discord.allowBots (patcher step 41) — opt-in bot-to-bot
-      # chat. "mentions" = react to bot messages that mention this bot
-      # (recommended); "true" = all bot messages; empty = upstream default
-      # (drop every bot-authored message). Upstream botLoopProtection
-      # auto-enables with it (20 events/60s per bot pair, 60s cooldown).
-      OPENCLAW_DISCORD_ALLOW_BOTS: ${OPENCLAW_DISCORD_ALLOW_BOTS:-}
-      # Per-channel always-on gate (patcher step 30b) — comma-separated
-      # channel IDs where the bot responds without a mention. Pair with
-      # OPENCLAW_DISCORD_REQUIRE_MENTION=on so everywhere else stays
-      # mention-gated (a globally open gate floods the LLM and lets the
-      # bot chime into every channel of every server).
-      OPENCLAW_DISCORD_ALWAYS_CHANNELS: ${OPENCLAW_DISCORD_ALWAYS_CHANNELS:-}
-      # diagnostics.stuckSessionAbortMs (patcher step 8k) — the stuck-session
-      # watchdog must outlast the 30-min MCP tool ceiling, or >6-min video
-      # renders get their run aborted mid-flight (mp4 finishes, nobody
-      # delivers it, channel wedges on the orphaned session lock). Default
-      # 2100000 (35 min); "off" restores the upstream 360s behaviour.
-      OPENCLAW_STUCK_SESSION_ABORT_MS: ${OPENCLAW_STUCK_SESSION_ABORT_MS:-}
-      # ── Thread-bound task sessions (patcher steps 29c/29d) ────────────────
-      # Lifetime tuning for Discord thread bindings (empty = upstream
-      # defaults: idle 24h, max-age disabled). Suggested for thread-per-task
-      # coding: IDLE_HOURS=48, MAX_AGE_HOURS=336.
-      OPENCLAW_DISCORD_THREAD_IDLE_HOURS: ${OPENCLAW_DISCORD_THREAD_IDLE_HOURS:-}
-      OPENCLAW_DISCORD_THREAD_MAX_AGE_HOURS: ${OPENCLAW_DISCORD_THREAD_MAX_AGE_HOURS:-}
-      # session.threadBindings spawn knobs — unverified schema on 2026.6.1,
-      # gated off; `on` writes spawnSessions=true + defaultSpawnContext.
-      OPENCLAW_SESSION_THREAD_SPAWN: ${OPENCLAW_SESSION_THREAD_SPAWN:-}
-      OPENCLAW_SESSION_THREAD_SPAWN_CONTEXT: ${OPENCLAW_SESSION_THREAD_SPAWN_CONTEXT:-isolated}
-      # ── Workboard plugin (patcher step 34) — tri-state ─────────────────────
-      # `on` enables /workboard create|list|show|dispatch (card-based long-task
-      # tracking); explicit `off` scrubs; empty = no-op. Flip to `on` after the
-      # schema-gate run (docs/reference/agentic-coding.md).
-      OPENCLAW_WORKBOARD: ${OPENCLAW_WORKBOARD:-}
-      # ── Bot polish (patcher steps 35-39) ───────────────────────────────────
-      # Emoji status lifecycle on the inbound message (queued→thinking→tool→
-      # done/error). Different pipeline from ackReactionScope (#46024 — that
-      # stays off); kill switch here if reaction-cycling ever reappears.
-      OPENCLAW_STATUS_REACTIONS: ${OPENCLAW_STATUS_REACTIONS:-on}
-      OPENCLAW_STATUS_REACTIONS_EMOJIS: ${OPENCLAW_STATUS_REACTIONS_EMOJIS:-}
-      # Presence mirrors runtime health (healthy/degraded/exhausted texts).
-      OPENCLAW_DISCORD_AUTO_PRESENCE: ${OPENCLAW_DISCORD_AUTO_PRESENCE:-on}
-      OPENCLAW_DISCORD_AUTO_PRESENCE_HEALTHY_TEXT: ${OPENCLAW_DISCORD_AUTO_PRESENCE_HEALTHY_TEXT:-}
-      OPENCLAW_DISCORD_AUTO_PRESENCE_DEGRADED_TEXT: ${OPENCLAW_DISCORD_AUTO_PRESENCE_DEGRADED_TEXT:-}
-      OPENCLAW_DISCORD_AUTO_PRESENCE_EXHAUSTED_TEXT: ${OPENCLAW_DISCORD_AUTO_PRESENCE_EXHAUSTED_TEXT:-}
-      # Native reply threading: the first message of a run replies to the
-      # triggering message (multi-user guild channels: which answer belongs
-      # to which question). Enum: off | first | all | batched.
-      # `${VAR-default}` (no colon) so an explicitly EMPTY .env value passes
-      # through and skips the step (the `:-` form would swallow it).
-      OPENCLAW_DISCORD_REPLY_TO_MODE: ${OPENCLAW_DISCORD_REPLY_TO_MODE-first}
-      # Short-lived follow-up memory — the bot notices promised work /
-      # check-in opportunities and resurfaces them via heartbeat.
-      OPENCLAW_COMMITMENTS: ${OPENCLAW_COMMITMENTS:-on}
-      OPENCLAW_COMMITMENTS_MAX_PER_DAY: ${OPENCLAW_COMMITMENTS_MAX_PER_DAY:-3}
-      # Mid-run steering: follow-up messages inject at the next model boundary
-      # instead of waiting for the run to end. Enum: steer | followup |
-      # collect | interrupt. (Upstream docs are self-contradictory on the
-      # default, so we pin it.) `${VAR-default}` (no colon): empty = skip.
-      OPENCLAW_MESSAGES_QUEUE_MODE: ${OPENCLAW_MESSAGES_QUEUE_MODE-steer}
-      # Dreaming deep-phase promotion cap (tokens per snippet promoted into
-      # MEMORY.md — which is injected into EVERY session). Default 80 halves
-      # the upstream 160 to slow MEMORY.md growth.
-      OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS: ${OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS:-}
-      # DREAMS.md size-triggered rotation threshold (bytes; 0 disables).
-      # Past this the patcher archives the diary into memory/dreams-archive/
-      # (stays memory-searchable) and dreaming recreates it on the next run.
-      OPENCLAW_DREAMS_ROTATE_BYTES: ${OPENCLAW_DREAMS_ROTATE_BYTES:-32768}
-      # wss:// URL that `openclaw qr` puts into Companion / mobile setup codes
-      # (patcher step 45). Empty = no-op, `off` = remove.
-      OPENCLAW_DEVICE_PAIR_PUBLIC_URL: ${OPENCLAW_DEVICE_PAIR_PUBLIC_URL:-}
-      # Comma list of node commands admitted beyond the platform default
-      # (patcher step 46). Empty = no-op, `off` = remove.
-      OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW: ${OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW:-}
-      # Valheim builder (patcher step 47): the DevBridge MCP server on the
-      # gaming PC and the Discord channels its agent answers in. URL + token
-      # empty = no-op; VALHEIM_MCP=off removes the wiring.
-      VALHEIM_MCP: ${VALHEIM_MCP:-}
-      VALHEIM_MCP_URL: ${VALHEIM_MCP_URL:-}
-      VALHEIM_MCP_TOKEN: ${VALHEIM_MCP_TOKEN:-}
-      VALHEIM_MCP_REQUEST_TIMEOUT_MS: ${VALHEIM_MCP_REQUEST_TIMEOUT_MS:-}
-      VALHEIM_AGENT_ID: ${VALHEIM_AGENT_ID:-}
-      VALHEIM_AGENT_CHANNELS: ${VALHEIM_AGENT_CHANNELS:-}
-      VALHEIM_AGENT_TOOLS_DENY: ${VALHEIM_AGENT_TOOLS_DENY:-}
-      VALHEIM_AGENT_TOOLS: ${VALHEIM_AGENT_TOOLS:-}
-      VALHEIM_AGENT_THINKING: ${VALHEIM_AGENT_THINKING:-}
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
-      # Workspace mount — patcher step 16 writes a soft policy block into
-      # AGENTS.md (browser-profile use guidance). Same path the gateway
-      # mounts the workspace at, so the markdown lands where the agent
-      # reads it.
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
       - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
-      - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
-      - ./patch-config.mjs:/opt/patch-config.mjs:ro
-    entrypoint: ["node", "/opt/patch-config.mjs"]
+      - ./config-init:/opt/config-init:ro
+    entrypoint: ["node", "/opt/config-init/patch-config.mjs"]
 
-  ######################
-  ## OpenClaw Gateway — TypeScript app, Web UI + WebSocket RPC (port 18789)
-  #
-  #  Backend for the Chrome UI (app.openclaw.ai, or self-hosted behind a
-  #  reverse proxy at e.g. https://claw.your-domain.com) and the `openclaw`
-  #  CLI. Speaks to the Gemma 4 model via the OpenAI-compat API served by
-  #  vllm-llm.
-  ######################
   openclaw-gateway:
-    # Reuses the openclaw-base-ext image built above (config-init service
-    # owns the build context). If you bumped OPENCLAW_IMAGE_REF in .env to
-    # pull a newer upstream openclaw release, run
-    # `docker compose build --no-cache openclaw-config-init` to rebuild
-    # the local extension on top of the new base — gateway and cli pick
-    # up the new tag automatically on the next `up -d --force-recreate`.
-    image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.1}
+    <<: *openclaw
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-gateway
-    # Explicit public DNS — the Docker daemon's default 127.0.0.11 forwarder
-    # works for `curl` but the Node.js DNS-resolver retry strategy used by
-    # `npm install` (during plugin install via `openclaw plugins install`)
-    # hits EAI_AGAIN on it (verified 2026-06-07 during 2026.6.1 upgrade
-    # attempt — the gateway curl reached registry.npmjs.org with HTTP 200
-    # while npm errored EAI_AGAIN on the same hostname). Forcing 8.8.8.8 /
-    # 1.1.1.1 on the gateway container also fixes openclaw-cli which shares
-    # this network namespace via network_mode: service:openclaw-gateway.
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+    restart: unless-stopped
+    init: true
+    # npm (plugin installs) hits EAI_AGAIN on Docker's embedded resolver;
+    # the cli and meshcore containers share this network namespace.
+    dns: [8.8.8.8, 1.1.1.1]
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
-      - "${OPENCLAW_GATEWAY_CONTROL_PORT:-18790}:18790"
     environment:
       HOME: /home/node
-      TERM: xterm-256color
+      TZ: ${TZ:-UTC}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
-      OPENAI_API_KEY: ${VLLM_API_KEY:-}
-      # Default targets the in-compose vllm-llm. Override OPENAI_BASE_URL in
-      # .env to point at a remote vLLM (DGX over LAN, vLLM on a separate box)
-      # or a cloud OpenAI-compatible endpoint (Bedrock proxy, OpenRouter, ...).
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://vllm-llm:8004/v1}
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
+      # The container restarts on its own (restart: unless-stopped); a second
+      # in-process respawn would race it.
       OPENCLAW_NO_RESPAWN: "1"
-      # Bridge auth token, exposed inside the gateway container so the
-      # `!~/.openclaw/bin/img` bash command (LLM-bypass image gen — the only
-      # reliable way past Gemma's RLHF for adult prompts) can hit the bridge
-      # MCP without the secret being committed in the script. The command is
-      # gated to a trusted snowflake list via `commands.ownerAllowFrom`
-      # (OPENCLAW_DISCORD_COMMAND_OWNERS) — note `commands.bash` is all-or-
-      # nothing arbitrary shell, so those users get full container shell.
-      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
-      # The `!img` script reaches the bridge at this URL (defaults to the
-      # in-compose bridge over bridge DNS; mirror IMAGE_GEN_URL on config-init).
-      IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
-      # `!img` attachment delivery. When the runtime doesn't hand the bash
-      # directive a channel id, the script falls back to uploading the PNG to
-      # this fixed-channel Discord webhook (https://discord.com/api/webhooks/…).
-      # Empty → the script uses the auto-embedded public link instead.
-      IMG_DISCORD_WEBHOOK_URL: ${IMG_DISCORD_WEBHOOK_URL:-}
-      # Max bytes the `!img` script will upload as a Discord attachment before
-      # falling back to a link (default ~9 MiB, safe under the 10 MiB
-      # non-boosted cap; raise on a boosted/Nitro server).
-      IMG_DISCORD_MAX_BYTES: ${IMG_DISCORD_MAX_BYTES:-9437184}
-      # Default workflow for the `!img` script when no --nsfw/--sfw flag is
-      # given (the short `!img <prompt>` form). Empty → flux-krea-2k (SFW). Set
-      # to flux-krea-2k-adult on a private adult deploy so a bare prompt is
-      # NSFW. DISTINCT from IMAGE_GEN_DEFAULT_WORKFLOW (that one is the bridge's
-      # default for the LLM-driven comfyui_image__generate tool).
-      IMG_DEFAULT_WORKFLOW: ${IMG_DEFAULT_WORKFLOW:-}
-      # MCP request-timeout ceiling. Upstream @modelcontextprotocol/sdk
-      # hardcodes a 60 s default for client.request() and OpenClaw's
-      # runtime calls callTool without a per-server override, so any
-      # tool taking longer than 60 s surfaces a spurious MCP timeout
-      # error to the agent (LTX cold-cache ~130 s, FLUX cold ~90 s,
-      # 4K video renders can run minutes). The openclaw-base-ext
-      # Dockerfile sed-patches the SDK constant so it reads this env;
-      # default 30 minutes. Bump for routine 4K / long-form video.
-      MCP_REQUEST_TIMEOUT_MS: ${MCP_REQUEST_TIMEOUT_MS:-1800000}
-      TZ: ${TZ:-UTC}
-    volumes:
-      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
-      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
-      # Canvas = generated media (images, video, music, downloads) that the
-      # agent attaches with MEDIA: lines. OPENCLAW_CANVAS_DIR keeps it outside
-      # the config dir, so it does not sit next to tokens and auth profiles and
-      # does not move when an upgrade switches OPENCLAW_CONFIG_DIR to a state
-      # copy. Every service that touches it (config-init, gateway, cli,
-      # python-sandbox, the image bridge) must mount the same host dir.
-      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
-      # Inbound media = files users send in (Discord attachments). Same idea:
-      # OPENCLAW_MEDIA_INBOUND_DIR keeps uploads out of the config dir; the
-      # image bridge mounts the same dir read-only for image-to-image input.
-      - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
     command: ["node", "dist/index.js", "gateway", "--bind", "${OPENCLAW_GATEWAY_BIND:-lan}", "--port", "18789"]
-    init: true
-    restart: unless-stopped
     depends_on:
       openclaw-config-init:
         condition: service_completed_successfully
@@ -1967,288 +250,142 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      # Current upstream runs Doctor before binding HTTP on retained state.
       start_period: 120s
 
-  ######################
-  ## OpenClaw CLI — always-up container, reached via `docker exec openclaw-cli ...`
-  #
-  #  Shares the gateway's network namespace (network_mode: service:openclaw-gateway),
-  #  so the CLI can reach the gateway on 127.0.0.1:18789 and the vLLM services on
-  #  their compose DNS names (vllm-llm, vllm-embedding) with zero extra config.
-  ######################
+  # Shares the gateway's network namespace, so `openclaw` here talks to the
+  # gateway on loopback. Recreate it whenever the gateway is recreated;
+  # scripts/netns-dependents-up.sh --watch does that automatically.
   openclaw-cli:
-    # Same as openclaw-gateway above — reuses the openclaw-base-ext image
-    # built by config-init, no separate build context here.
-    image: openclaw-base-ext:${OPENCLAW_BASE_EXT_VERSION:-0.11.1}
+    <<: *openclaw
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-cli
     network_mode: "service:openclaw-gateway"
-    # Local memory/config administration must verify the running state owner.
     pid: "service:openclaw-gateway"
-    cap_drop:
-      - NET_RAW
-      - NET_ADMIN
-    security_opt:
-      - no-new-privileges:true
+    init: true
+    stdin_open: true
+    tty: true
+    cap_drop: [NET_RAW, NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
     environment:
       HOME: /home/node
-      TERM: xterm-256color
-      # NOTE: OPENCLAW_GATEWAY_TOKEN is intentionally NOT set on the CLI.
-      # The CLI prefers the env token over `gateway.remote.token` when both
-      # are present, so passing a stale .env value (rotated by bootstrap.sh
-      # before the onboarding wizard ran) caused the CLI's WS connect to
-      # fail with `unauthorized: gateway token mismatch` — the wizard had
-      # written a different token into config.gateway.auth.token (also used
-      # by the Chrome extension and any remote client). Leaving this var
-      # unset makes the CLI fall through to the config token, which step 12
-      # of patch-config.mjs keeps in lockstep with auth.token.
-      # When the CLI's WS connect to the gateway fails (e.g. gateway.remote.token
-      # drift), `openclaw agent` silently falls back to an embedded runner that
-      # dials vLLM directly. The embedded path reads OPENAI_API_KEY from the
-      # container env — without this line it was unset, producing HTTP 401
-      # against an `--api-key`-protected vLLM. Mirror the gateway's wiring.
-      OPENAI_API_KEY: ${VLLM_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://vllm-llm:8004/v1}
+      TZ: ${TZ:-UTC}
       BROWSER: echo
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       OPENCLAW_NO_RESPAWN: "1"
-      # Mirror gateway's MCP request-timeout override so
-      # `docker exec openclaw-cli openclaw agent ...` calls pick up
-      # the same long-call tolerance. See gateway service comment.
-      MCP_REQUEST_TIMEOUT_MS: ${MCP_REQUEST_TIMEOUT_MS:-1800000}
-      TZ: ${TZ:-UTC}
-      # Plumbed so the Discord-voice setup runbook can reference them inside
-      # the CLI container without re-entering the bot token. Empty by default
-      # — `openclaw channels add --channel discord --token "$DISCORD_BOT_TOKEN"`
-      # becomes a no-op when unset (the user hasn't opted in yet).
+      # Read by `openclaw channels add --channel discord` during setup.
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
-      DISCORD_AGENT_NAME: ${DISCORD_AGENT_NAME:-discord-voice}
-      DISCORD_AUTOJOIN_GUILD_ID: ${DISCORD_AUTOJOIN_GUILD_ID:-}
-      DISCORD_AUTOJOIN_VOICE_CHANNEL_ID: ${DISCORD_AUTOJOIN_VOICE_CHANNEL_ID:-}
-    volumes:
-      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
-      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
-      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas
-      - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
-    stdin_open: true
-    tty: true
-    init: true
-    # Compose's `entrypoint:` overrides the Dockerfile ENTRYPOINT, so we
-    # chain through /opt/patch-mcp-timeout.sh explicitly here — otherwise
-    # the CLI's embedded-runner MCP path keeps the unpatched 60s SDK
-    # timeout. The script exec's "$@" after patching, so the sleep
-    # behaviour is preserved.
-    entrypoint: ["/opt/patch-mcp-timeout.sh", "/bin/sh", "-c", "exec sleep infinity"]
+    command: ["sleep", "infinity"]
     depends_on:
       - openclaw-gateway
 
-  ######################
-  ## claw-img bot — standalone /claw-img Discord slash command (opt-in)
-  #
-  #  A tiny discord.py bot exposing a REAL /claw-img slash command that calls
-  #  the comfyui_image bridge DIRECTLY — no LLM (so Gemma's RLHF never refuses
-  #  adult prompts), no approval gate, no commands.bash. Uploads the result as
-  #  a true Discord attachment. Uses its OWN bot token (a second Discord app)
-  #  so it never collides with the OpenClaw bot's gateway connection.
-  #
-  #  Opt-in:
-  #    docker compose --profile claw-img up -d --build openclaw-claw-img-bot
-  #  Needs IMAGE_GEN_API_TOKEN (bridge auth) + the openclaw-image-comfyui bridge
-  #  up on this network. See openclaw-claw-img-bot/README.md for the Discord
-  #  app / token / invite steps.
-  ######################
-  openclaw-claw-img-bot:
-    profiles: ["claw-img"]
-    build:
-      context: ./openclaw-claw-img-bot
-    image: openclaw-claw-img-bot:${CLAW_IMG_BOT_VERSION:-0.5.1}
-    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-claw-img-bot
-    hostname: openclaw-claw-img-bot
+  # Chromium with persistent, named login profiles, driven over CDP.
+  # Log a profile in once with ./bootstrap-browser-login.sh <profile>
+  # (password + TOTP; passkeys do not work over noVNC).
+  # Details: docs/reference/browser-automation.md
+  openclaw-browser:
+    profiles: ["browser"]
+    build: ./openclaw-browser/server
+    image: openclaw-browser:0.1.0
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-browser
+    hostname: openclaw-browser
     restart: unless-stopped
-    # Outbound to Discord's gateway needs working DNS; mirror the gateway's
-    # explicit resolvers (the daemon's 127.0.0.11 forwarder has tripped clients
-    # before — cheap insurance).
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+    init: true
+    ports:
+      - "${BROWSER_BIND:-127.0.0.1}:${BROWSER_API_PORT:-9220}:9220"
+      - "${BROWSER_BIND:-127.0.0.1}:9222-9241:9222-9241"
+      - "${BROWSER_VNC_BIND:-127.0.0.1}:${BROWSER_VNC_PORT:-5901}:5901"
     environment:
-      CLAW_IMG_DISCORD_TOKEN: ${CLAW_IMG_DISCORD_TOKEN:-}
-      # Guild id → instant slash-command registration (global takes ~1h).
-      CLAW_IMG_GUILD_ID: ${CLAW_IMG_GUILD_ID:-}
-      # Reach the bridge over compose DNS (it joins this network from its own
-      # compose file). Same token the gateway uses to call the bridge.
-      IMAGE_GEN_URL: ${IMAGE_GEN_URL:-http://openclaw-image-comfyui:9095/mcp}
-      IMAGE_GEN_API_TOKEN: ${IMAGE_GEN_API_TOKEN:-}
-      # NSFW-by-default: set CLAW_IMG_DEFAULT_WORKFLOW=flux-krea-2k-adult; the
-      # slash `safe:true` option forces CLAW_IMG_SFW_WORKFLOW for that one call.
-      CLAW_IMG_DEFAULT_WORKFLOW: ${CLAW_IMG_DEFAULT_WORKFLOW:-flux-krea-2k}
-      CLAW_IMG_SFW_WORKFLOW: ${CLAW_IMG_SFW_WORKFLOW:-flux-krea-2k}
-      # /claw-img-to-img (img2img) — separate workflow knobs so i2i can be
-      # NSFW-by-default independently of /claw-img (set =flux-krea-2k-i2i-adult);
-      # the slash `safe:true` option forces CLAW_IMG2IMG_SFW_WORKFLOW per call.
-      CLAW_IMG2IMG_DEFAULT_WORKFLOW: ${CLAW_IMG2IMG_DEFAULT_WORKFLOW:-flux-krea-2k-i2i}
-      CLAW_IMG2IMG_SFW_WORKFLOW: ${CLAW_IMG2IMG_SFW_WORKFLOW:-flux-krea-2k-i2i}
-      CLAW_IMG_MAX_BYTES: ${CLAW_IMG_MAX_BYTES:-9437184}
-      CLAW_IMG_TIMEOUT_S: ${CLAW_IMG_TIMEOUT_S:-600}
-      # /claw-video (LTX-Video) — slower renders + bigger mp4; own timeout and a
-      # duration cap (the bridge also enforces LTX_VIDEO_MAX_DURATION_S).
-      CLAW_VIDEO_TIMEOUT_S: ${CLAW_VIDEO_TIMEOUT_S:-900}
-      CLAW_VIDEO_MAX_SECONDS: ${CLAW_VIDEO_MAX_SECONDS:-10}
-      # /claw-music (ACE-Step v1.5 turbo) — text→music. The bridge enforces
-      # the hard duration cap via ACE_MUSIC_MAX_SECONDS; this is the bot-side
-      # clamp shown to users.
-      CLAW_MUSIC_TIMEOUT_S: ${CLAW_MUSIC_TIMEOUT_S:-600}
-      CLAW_MUSIC_MAX_SECONDS: ${CLAW_MUSIC_MAX_SECONDS:-120}
-      TZ: ${TZ:-UTC}
+      BROWSER_API_TOKEN: ${BROWSER_API_TOKEN:-}
+      BROWSER_VNC_PASSWORD: ${BROWSER_VNC_PASSWORD:-}
+      BROWSER_PROFILE_NAMES: ${BROWSER_PROFILE_NAMES:-}
+      BROWSER_DEFAULT_TIMEOUT_MS: ${BROWSER_DEFAULT_TIMEOUT_MS:-60000}
+      BROWSER_STORAGE_DIR: /storage
+    volumes:
+      - browser-storage:/storage
+      - browser-diagnostics:/diagnostics
+      - ./openclaw-browser/config:/config:ro
+    tmpfs: ["/tmp:rw,size=512m"]
+    shm_size: "1gb"
+    security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
-    security_opt:
-      - "no-new-privileges:true"
-    # discord.py + aiohttp, no models. Bumped 512m→768m for the transient spike
-    # when decoding a /claw-video mp4 from base64. mem_limit == memswap_limit =
-    # swap-denied containment, per the stack convention.
-    mem_limit: 768m
-    memswap_limit: 768m
-    cpus: 1
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:9220/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging: *logging
 
-  ######################
-  ## MeshCore LoRa bridge — talk to the agent over an off-grid mesh (opt-in)
-  #
-  #  A pure-Python bridge between a MeshCore companion radio (USB serial —
-  #  e.g. a LilyGO T-Echo flashed with the "Companion Radio USB" firmware)
-  #  and a dedicated `meshcore` OpenClaw agent. Inbound LoRa DMs from
-  #  allowlisted contacts run one agent turn each; replies are markdown-
-  #  stripped, chunked to LoRa-sized parts, and radioed back.
-  #
-  #  Holds ONE persistent operator-role WS connection to the gateway — the
-  #  per-call `openclaw agent` path pays ~25-45s of WS session setup every
-  #  time (openclaw-internals.md "CLI overhead"); the persistent connection
-  #  pays it once at boot, so a mesh turn costs ~LLM decode + LoRa airtime.
-  #
-  #  Opt-in (two gates, same posture as the browser/python profiles):
-  #    1. MESHCORE_ENABLED=on in .env → patcher step 42 registers the
-  #       `meshcore` agent + seeds its workspace AGENTS.md.
-  #    2. docker compose --profile meshcore up -d --build openclaw-meshcore-bridge
-  #  See openclaw-meshcore-bridge/README.md + docs/reference/meshcore-bridge.md.
-  ######################
+  # Python over MCP with one persistent kernel per session, plus yt-dlp,
+  # ffmpeg and a token-isolated transcription tool.
+  # Details: docs/reference/python-sandbox.md
+  openclaw-python-sandbox:
+    profiles: ["python"]
+    build: ./openclaw-python-sandbox/server
+    image: openclaw-python-sandbox:0.1.0
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-python-sandbox
+    hostname: openclaw-python-sandbox
+    user: "1000:1000"
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${PYTHON_SANDBOX_BIND:-127.0.0.1}:${PYTHON_SANDBOX_PORT:-8094}:8094"
+      # Static preview server for web projects the agent builds.
+      - "${SANDBOX_PREVIEW_BIND:-0.0.0.0}:${SANDBOX_PREVIEW_PORT:-8095}:8095"
+    environment:
+      PYTHON_SANDBOX_API_TOKEN: ${PYTHON_SANDBOX_API_TOKEN:-}
+      PYTHON_SANDBOX_KERNEL_TIMEOUT_S: ${PYTHON_SANDBOX_KERNEL_TIMEOUT_S:-30}
+      STT_BASE_URL: http://openclaw-stt-whisper:8080/v1
+      STT_API_TOKEN: ${STT_API_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-openclaw-bot}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-openclaw-bot@localhost}
+    volumes:
+      - ${OPENCLAW_SANDBOX_DIR:-${OPENCLAW_WORKSPACE_DIR}/sandbox}:/workspace:rw
+      - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas:rw
+    mem_limit: ${PYTHON_SANDBOX_MEMORY_MB:-8192}m
+    cpus: ${PYTHON_SANDBOX_CPUS:-4}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8094/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *logging
+
+  # LoRa mesh access to the agent through a USB MeshCore companion radio.
+  # Runs in the gateway's network namespace to reach its WebSocket on
+  # loopback. Details: docs/reference/meshcore-bridge.md
   openclaw-meshcore-bridge:
     profiles: ["meshcore"]
-    build:
-      context: ./openclaw-meshcore-bridge
+    build: ./openclaw-meshcore-bridge
     image: openclaw-meshcore-bridge:${MESHCORE_BRIDGE_VERSION:-0.1.1}
     container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-meshcore-bridge
-    # Shares the gateway's network namespace (same pattern as openclaw-cli)
-    # so the WS connect originates from 127.0.0.1. This is AUTH-CRITICAL,
-    # not cosmetic: the gateway grants a shared-token client its declared
-    # operator scopes only on local-direct (loopback) connections — from a
-    # bridge-network or LAN address the granted scope set is empty (remote
-    # clients are expected to device-pair) and every `agent` call dies with
-    # "missing scope: operator.write". Verified against the live 2026.4.15
-    # gateway. Corollary: recreate this container together with the gateway
-    # (see patterns.md → "openclaw-cli network-namespace dependency").
     network_mode: "service:openclaw-gateway"
     restart: unless-stopped
-    # uid 1000 = the OpenClaw image's `node` user, which owns the ro-mounted
-    # config volume — openclaw.json is chmod 600, and with cap_drop: [ALL]
-    # even root can't bypass that (no CAP_DAC_OVERRIDE; verified on first
-    # deploy: Errno 13 → empty token → the gateway demanded device pairing).
-    # group_add dialout covers the passed-through serial node (root:dialout
-    # 660 on the host, gid 20 in both debian-slim and Ubuntu hosts).
     user: "1000:1000"
-    group_add:
-      - dialout
-    # Prefer a stable by-id alias, or by-path for a fixed USB port when the
-    # bootloader and application expose different product names. Raw ttyACMn
-    # numbering can change. Long syntax also supports colons in by-path names.
+    group_add: [dialout]
     devices:
       - source: ${MESHCORE_SERIAL_DEVICE:-/dev/ttyACM0}
         target: /dev/meshcore
         permissions: rwm
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # Gateway WS on loopback (shared netns — see network_mode above). The
-      # auth token is auto-read from the ro-mounted openclaw.json
-      # (gateway.remote.token — the one WS clients actually need; the .env
-      # OPENCLAW_GATEWAY_TOKEN is NOT it, see openclaw-internals.md
-      # credential store #2). MESHCORE_GATEWAY_TOKEN overrides for a split
-      # deploy — but note the loopback scope-grant constraint above.
-      MESHCORE_GATEWAY_WS_URL: ${MESHCORE_GATEWAY_WS_URL:-ws://127.0.0.1:18789}
-      MESHCORE_GATEWAY_TOKEN: ${MESHCORE_GATEWAY_TOKEN:-}
-      MESHCORE_GW_CONNECT_TIMEOUT_S: ${MESHCORE_GW_CONNECT_TIMEOUT_S:-60}
-      MESHCORE_GW_PING_TIMEOUT_S: ${MESHCORE_GW_PING_TIMEOUT_S:-60}
-      MESHCORE_AGENT_ID: ${MESHCORE_AGENT_ID:-meshcore}
-      # Dedicated agent for the channel surface. A session key isolates
-      # conversation history but NOT memory (memory store + workspace are
-      # per-agent), so two agents is what actually keeps private DM material
-      # out of a shared room. Patcher step 42 registers whichever are set.
-      MESHCORE_CHANNEL_AGENT_ID: ${MESHCORE_CHANNEL_AGENT_ID:-}
-      MESHCORE_SERIAL_BAUD: ${MESHCORE_SERIAL_BAUD:-115200}
-      # Pubkey-prefix allowlist — the mesh is a PUBLIC radio and this agent
-      # has tools; empty default means every inbound DM is ignored (logged
-      # with the sender prefix so admitting someone is a copy-paste).
-      MESHCORE_ALLOWED_PUBKEYS: ${MESHCORE_ALLOWED_PUBKEYS:-}
-      MESHCORE_ALLOW_ALL: ${MESHCORE_ALLOW_ALL:-off}
-      # Map several radios onto ONE conversation, so the same person can write
-      # from a handheld and continue from another node:
-      #   label:prefix,prefix;label2:prefix
-      # Ungrouped contacts keep their own rail. The channel always has its own.
-      MESHCORE_DM_SESSION_GROUPS: ${MESHCORE_DM_SESSION_GROUPS:-}
-      # Per-surface system-prompt add-ons (passed as the agent RPC's
-      # extraSystemPrompt). The channel default also nudges the agent away
-      # from repeating private details into a room several people read —
-      # sessions are separate, but agent MEMORY is shared; see
-      # docs/reference/meshcore-bridge.md for hard isolation.
-      MESHCORE_DM_EXTRA_PROMPT: ${MESHCORE_DM_EXTRA_PROMPT:-}
-      MESHCORE_CHANNEL_EXTRA_PROMPT: ${MESHCORE_CHANNEL_EXTRA_PROMPT:-}
-      # Optional shared-channel surface, OFF unless MESHCORE_CHANNEL_IDX is
-      # set. WEAKER THAN DMs BY PROTOCOL: channel messages carry no sender
-      # public key, so the allowlist above cannot gate them — the only gate
-      # is the 16-byte channel secret, and every member reads the agent's
-      # replies too. The bridge provisions the ONE configured slot on boot
-      # (idempotent, never touches other slots) and only answers messages
-      # starting with MESHCORE_CHANNEL_TRIGGER, so it stays out of
-      # human-to-human chatter. Join other devices with the derived key, not
-      # the password (MeshCore shares raw 16-byte keys, not passphrases).
-      MESHCORE_CHANNEL_IDX: ${MESHCORE_CHANNEL_IDX:-}
-      MESHCORE_CHANNEL_NAME: ${MESHCORE_CHANNEL_NAME:-}
-      MESHCORE_CHANNEL_PASSWORD: ${MESHCORE_CHANNEL_PASSWORD:-}
-      MESHCORE_CHANNEL_SECRET: ${MESHCORE_CHANNEL_SECRET:-}
-      MESHCORE_CHANNEL_TRIGGER: ${MESHCORE_CHANNEL_TRIGGER:-?}
-      # Reply budget: chunk size × auto-sent chunks; the tail waits for /more.
-      MESHCORE_CHUNK_CHARS: ${MESHCORE_CHUNK_CHARS:-130}
-      MESHCORE_AUTO_CHUNKS: ${MESHCORE_AUTO_CHUNKS:-3}
-      MESHCORE_MAX_REPLY_CHARS: ${MESHCORE_MAX_REPLY_CHARS:-3900}
-      MESHCORE_SEND_GAP_S: ${MESHCORE_SEND_GAP_S:-3}
-      MESHCORE_ACK_AFTER_S: ${MESHCORE_ACK_AFTER_S:-25}
-      MESHCORE_AGENT_TIMEOUT_S: ${MESHCORE_AGENT_TIMEOUT_S:-180}
-      # DM delivery: wait for the recipient ACK, retry, and reset a stale
-      # route to flood after MESHCORE_FLOOD_AFTER attempts — that reset is
-      # what heals a multi-hop path through a repeater. Plain sends only
-      # confirm queueing, not arrival.
-      MESHCORE_DM_DELIVERY_ACK: ${MESHCORE_DM_DELIVERY_ACK:-on}
-      MESHCORE_DM_MAX_ATTEMPTS: ${MESHCORE_DM_MAX_ATTEMPTS:-3}
-      MESHCORE_FLOOD_AFTER: ${MESHCORE_FLOOD_AFTER:-2}
-      MESHCORE_DM_ACK_MIN_TIMEOUT_S: ${MESHCORE_DM_ACK_MIN_TIMEOUT_S:-12}
-      MESHCORE_LOG_LEVEL: ${MESHCORE_LOG_LEVEL:-INFO}
       TZ: ${TZ:-UTC}
+      MESHCORE_GATEWAY_WS_URL: ${MESHCORE_GATEWAY_WS_URL:-ws://127.0.0.1:18789}
     volumes:
-      # ro token read — nothing in the bridge writes OpenClaw state.
       - ${OPENCLAW_CONFIG_DIR}:/openclaw-config:ro
     depends_on:
       openclaw-gateway:
         condition: service_healthy
     cap_drop: [ALL]
-    security_opt:
-      - "no-new-privileges:true"
-    # Tiny footprint: asyncio + pyserial + one WS connection, no models.
+    security_opt: ["no-new-privileges:true"]
     mem_limit: 256m
     memswap_limit: 256m
     cpus: 0.5
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging

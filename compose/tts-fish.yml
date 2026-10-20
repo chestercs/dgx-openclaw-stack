@@ -1,0 +1,75 @@
+# Text-to-speech: Fish Audio S2 Pro (80+ languages, Hungarian and English,
+# voice cloning from reference clips), served by SGLang-Omni behind an
+# OpenAI-compatible shim. Research licence: non-commercial use only.
+# Enable in .env, together with OPENCLAW_TTS_FISH_API_KEY (config-init then
+# wires OpenClaw's TTS to it):
+#   COMPOSE_FILE=docker-compose.yml:compose/tts-fish.yml
+#
+# It does not fit next to Nemotron on the 128 GB pool; run it with a smaller
+# model (compose/gemma4.yml). Details: openclaw-tts-fish/README.md
+services:
+  openclaw-tts-fish:
+    build:
+      context: ./openclaw-tts-fish/server
+      args:
+        HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    image: openclaw-tts-fish:0.2.0
+    container_name: ${CONTAINER_NAME_PREFIX:-}openclaw-tts-fish
+    hostname: openclaw-tts-fish
+    restart: unless-stopped
+    # Load after the LLM so both do not size their memory against the same
+    # free pool at once (that livelocked the box).
+    depends_on:
+      vllm-llm:
+        condition: service_healthy
+    mem_limit: ${TTS_FISH_MEM_LIMIT:-26g}
+    memswap_limit: ${TTS_FISH_MEM_LIMIT:-26g}
+    cpus: ${TTS_FISH_CPUS:-12}
+    ports:
+      - "${TTS_FISH_BIND:-127.0.0.1}:${TTS_FISH_PORT:-8091}:8080"
+    environment:
+      OMP_NUM_THREADS: ${TTS_FISH_OMP_THREADS:-4}
+      TTS_API_TOKEN: ${OPENCLAW_TTS_FISH_API_KEY:-}
+      TTS_FISH_DEFAULT_VOICE: ${TTS_FISH_DEFAULT_VOICE:-default_en}
+      TTS_FISH_VOICE_ALIASES: ${TTS_FISH_VOICE_ALIASES:-}
+      TTS_FISH_HU_AUTOROUTE_VOICE: ${TTS_FISH_HU_AUTOROUTE_VOICE:-default_hu}
+      # Silence before speech: Whisper clipped the first syllable without it.
+      TTS_FISH_LEADING_SILENCE_MS: ${TTS_FISH_LEADING_SILENCE_MS:-300}
+      FISH_S2PRO_CONFIG: ${FISH_S2PRO_CONFIG:-/opt/configs/s2pro_tts_gb10.yaml}
+      SGLANG_OMNI_STARTUP_TIMEOUT: ${SGLANG_OMNI_STARTUP_TIMEOUT:-3000}
+      CUDA_CACHE_PATH: /cuda-jit-cache/ComputeCache
+      CUDA_CACHE_MAXSIZE: "4294967296"
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - tts-fish-voices:/app/voices
+      - tts-fish-hf-cache:/root/.cache/huggingface
+      - tts-fish-cuda-jit-cache:/cuda-jit-cache
+      - tts-fish-triton-cache:/root/.triton
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # First start compiles kernels for sm_121 (cached afterwards).
+      start_period: 3300s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+
+volumes:
+  tts-fish-hf-cache:
+    name: dgx-openclaw-tts-fish-hf-cache
+  tts-fish-voices:
+    name: dgx-openclaw-tts-fish-voices
+  tts-fish-cuda-jit-cache:
+    name: dgx-openclaw-tts-fish-cuda-jit-cache
+  tts-fish-triton-cache:
+    name: dgx-openclaw-tts-fish-triton-cache
