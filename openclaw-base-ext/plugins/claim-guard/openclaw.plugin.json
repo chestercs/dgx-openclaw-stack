@@ -1,7 +1,7 @@
 {
   "id": "claim-guard",
   "name": "Claim Guard",
-  "description": "Asks the discord-friend agent for one more model pass when its answer claims a save, look-up or reminder that no tool call in the run backs.",
+  "description": "The model checks each discord-friend answer against the run's tool calls and flags unverified facts; a mismatch gets one more model pass.",
   "categories": ["other"],
   "activation": { "onStartup": true },
   "configSchema": { "type": "object", "additionalProperties": false }

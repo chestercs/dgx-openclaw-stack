@@ -29,6 +29,10 @@
 //     file is backed up first. Read cursors are committed here, so a run
 //     that never reaches `apply` re-reads the same window next night.
 //
+//   history --channel <id> [--author <name|id>] [--grep <text>] [--limit 20] [--days N] [--before <msg id>]
+//     The bot's channel-history search: pages back, keeps embed text, one
+//     compact line per match, and states the scanned range (see history()).
+//
 //   note --id <discord id> --name <name> --text <fact> [--temp|--durable] [--replace <part>]
 //   forget --id <discord id> (--match <part> | --all)
 //     The bot's "remember this" path. Gemma editing the shared file itself
@@ -117,15 +121,21 @@ function selfId() {
 }
 
 // Text of a message: its content, else its embeds (log bots post embeds).
+// A slash-command reply names who ran the command only in its interaction
+// metadata (a RuinBot win embed says "kapta …", the winner is the user who
+// ran /ruin), so that is appended.
 function messageText(m) {
   const own = String(m.content || '').trim();
-  if (own) return own;
-  return (m.embeds || []).map((e) => [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`)]
+  const text = own || (m.embeds || []).map((e) => [e.title, e.description, ...(e.fields || []).map((f) => `${f.name}: ${f.value}`)]
     .filter(Boolean).join(' ')).join(' ').trim();
+  const ia = m.interaction_metadata ?? m.interaction;
+  const by = ia?.user?.global_name || ia?.user?.username;
+  return by && text ? `${text} [/${ia.name || 'parancs'} — ${by}]` : text;
 }
 
 const VOICE_RE = /<@!?(\d+)>\*{0,2}\s+(joined|left|switched)\s+voice channel/i;
 const hhmm = (iso) => new Date(iso).toLocaleTimeString('hu-HU', { timeZone: 'Europe/Budapest', hour: '2-digit', minute: '2-digit' });
+const ymd = (iso) => new Date(iso).toLocaleDateString('sv-SE', { timeZone: 'Europe/Budapest' }); // YYYY-MM-DD, Budapest
 
 const snowflakeAt = (ms) => ((BigInt(ms) - DISCORD_EPOCH) << 22n).toString();
 const maxId = (a, b) => (BigInt(a) > BigInt(b) ? a : b);
@@ -141,14 +151,35 @@ async function resolveGuilds(spec) {
     }
     return ids.map((id) => ({ id, name: null }));
   }
-  const cfg = JSON.parse(fs.readFileSync(path.join(HOME, 'openclaw.json'), 'utf8'));
-  const token = cfg.channels?.discord?.token;
-  if (typeof token !== 'string' || !token || token.startsWith('${')) {
-    throw new Error('--guild all needs a literal channels.discord.token in openclaw.json; pass guild ids instead');
-  }
+  const token = discordToken();
+  if (!token) throw new Error('--guild all needs a literal channels.discord.token in openclaw.json; pass guild ids instead');
   const res = await fetch('https://discord.com/api/v10/users/@me/guilds?limit=200', { headers: { Authorization: `Bot ${token}` } });
   if (!res.ok) throw new Error(`Discord guild list: HTTP ${res.status}`);
   return (await res.json()).map((g) => ({ id: g.id, name: g.name }));
+}
+
+// The bot token from openclaw.json, or null when it is a ${VAR} reference.
+function discordToken() {
+  try {
+    const token = JSON.parse(fs.readFileSync(path.join(HOME, 'openclaw.json'), 'utf8')).channels?.discord?.token;
+    return typeof token === 'string' && token && !token.startsWith('${') ? token : null;
+  } catch { return null; }
+}
+
+// One page of a channel, newest first. Discord REST takes well under a second;
+// each `openclaw message read` spawns a CLI (~15 s), the fallback when the
+// token is not in the file.
+async function readPage(channel, before) {
+  const token = discordToken();
+  if (token) {
+    const q = new URLSearchParams({ limit: '100', ...(before ? { before } : {}) });
+    const res = await fetch(`https://discord.com/api/v10/channels/${channel}/messages?${q}`, { headers: { Authorization: `Bot ${token}` } });
+    if (!res.ok) throw new Error(`Discord channel read: HTTP ${res.status}`);
+    return res.json();
+  }
+  const argv = ['message', 'read', '--channel', 'discord', '--target', `channel:${channel}`, '--limit', '100'];
+  if (before) argv.push('--before', before);
+  return firstArray(openclaw(argv)) || [];
 }
 
 async function collect(opt) {
@@ -494,16 +525,65 @@ function apply(opt) {
   console.log(`APPLIED: ${live.length} → ${next.length} karakter, ${headings(live).length} → ${headings(next).length} szekció`);
 }
 
+// history: the bot's channel-history search. On 2026-10-19 it read 50-100
+// raw messages per `message read` (122-197 KB of JSON, truncated before it
+// saw the RuinBot posts), paged with an `offset` the tool does not have, and
+// then invented a reason for finding nothing. This walks back with --before,
+// keeps embeds (bot posts are often embed-only), filters, and always says how
+// far back it looked, so "not found" comes with its real scope.
+async function history(opt) {
+  const channel = String(opt.channel || '').match(/\d{15,22}/)?.[0];
+  if (!channel) throw new Error('history needs --channel <channel id>');
+  const limit = Math.min(Number(opt.limit) || 20, 100);
+  const pages = Math.min(Number(opt.pages) || 10, 50);
+  const cutoff = opt.days !== undefined ? Date.now() - Number(opt.days) * 86400e3 : null;
+  const author = opt.author === undefined ? null : String(opt.author).toLowerCase();
+  const grep = opt.grep === undefined ? null : String(opt.grep).toLowerCase();
+  const self = selfId();
+  let before = opt.before ? String(opt.before) : null;
+  const hits = [];
+  let scanned = 0, oldest = null, newest = null, end = 'page limit';
+  outer: for (let page = 0; page < pages; page++) {
+    let msgs;
+    try { msgs = await readPage(channel, before); } catch (err) { end = `read failed: ${err.message.split('\n')[0]}`; break; }
+    if (msgs.length === 0) { end = 'start of channel'; break; }
+    msgs.sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1)); // newest first
+    for (const m of msgs) {
+      if (cutoff !== null && Date.parse(m.timestamp) < cutoff) { end = `--days ${opt.days}`; break outer; }
+      scanned++;
+      newest ??= m.timestamp;
+      oldest = m.timestamp;
+      before = m.id;
+      const who = m.author?.global_name || m.author?.username || '?';
+      if (author && !(m.author?.id === author || who.toLowerCase().includes(author) || String(m.author?.username).toLowerCase().includes(author))) continue;
+      const text = messageText(m).replace(/\s+/g, ' ').trim();
+      if (grep && !text.toLowerCase().includes(grep)) continue;
+      if (!text && !(m.attachments || []).length) continue;
+      const tag = m.author?.id === self ? ' (te)' : m.author?.bot ? ' (bot)' : '';
+      const att = (m.attachments || []).length ? ` [+${m.attachments.length} csatolmány]` : '';
+      hits.push(`${ymd(m.timestamp)} ${hhmm(m.timestamp)} ${who}${tag} <@${m.author?.id}>: ${text.length > 300 ? text.slice(0, 297) + '…' : text}${att} (id ${m.id})`);
+      if (hits.length >= limit) { end = `--limit ${limit}`; break outer; }
+    }
+  }
+  const span = scanned ? `${ymd(oldest)} ${hhmm(oldest)} – ${ymd(newest)} ${hhmm(newest)}` : 'nothing';
+  console.log(`# history channel ${channel}: ${hits.length} match(es) in ${scanned} messages scanned (${span}); stopped at: ${end}`);
+  if (hits.length === 0) console.log('No match in the scanned range. Say exactly that range; to look further back run again with --before ' + (before ?? '<id>') + '.');
+  for (const h of hits) console.log(h);
+  if (hits.length && before) console.log(`# older: --before ${before}`);
+}
+
 const opt = args(process.argv.slice(2));
 const cmd = opt._[0];
 try {
   if (cmd === 'collect') await collect(opt);
+  else if (cmd === 'history') await history(opt);
   else if (cmd === 'apply') apply(opt);
   else if (cmd === 'note') note(opt);
   else if (cmd === 'forget') forget(opt);
   else {
     console.error('usage: people-digest.mjs collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24 | --from <date> [--to <date>] | --last-days N] [--exclude a,b] [--max-chars 60000] | apply [--no-change]\n' +
-      '       | note --id <id> --name <name> --text <fact> [--temp|--durable] [--replace <part>] | forget --id <id> (--match <part> | --all)');
+      '       | note --id <id> --name <name> --text <fact> [--temp|--durable] [--replace <part>] | forget --id <id> (--match <part> | --all)\n' +
+      '       | history --channel <id> [--author <name|id>] [--grep <text>] [--limit 20] [--days N] [--pages 10] [--before <msg id>]');
     process.exitCode = 2;
   }
 } catch (err) {

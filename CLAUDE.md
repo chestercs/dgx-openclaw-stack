@@ -246,7 +246,12 @@ file before changing the area.
   (`api.runtime.llm.complete`) which actions the answer claims, checks them
   against the run's successful tool calls, and requests one more model pass.
   Do not go back to matching claim words with regexes (it missed
-  "jegyeztem"). `before_agent_finalize` does not touch Discord streaming.
+  "jegyeztem"). A second, parallel question rates the answer's statements
+  and flags specific, uncommon world facts stated without any look-up. Keep
+  the two questions separate: merged, the fact rules leaked into the action
+  verdicts. Channel-history questions go to
+  `people-digest.mjs history` (Discord REST, embeds, scanned range), not to
+  raw `message read`. `before_agent_finalize` does not touch Discord streaming.
   Audit `logs/claim-guard.jsonl` (outcomes `none` / `revise` / `resolved` /
   `unresolved` / `judge_failed`). `openclaw plugins reload` cannot replace it
   while a run holds the old instance; rebuild the image and recreate.

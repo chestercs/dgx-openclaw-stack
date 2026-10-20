@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — claim-guard checks unverified facts; channel-history command
+
+- **claim-guard** asks a second question in parallel: the model rates each
+  statement of the answer (about the world or the conversation, specific,
+  common knowledge, hedged), and the code flags a specific, uncommon,
+  unhedged world fact when nothing was looked up in the run. The revision
+  asks the bot to look it up, or to say it answers from memory. One prompt
+  for actions and facts scored 36-38/42 (fact rules leaked into the action
+  list); asking the model to list only "uncommon facts" made it list every
+  sentence. Rated statements plus separate prompts: 42/42 twice, 14/14 on
+  held-out wording, median ~2 s. The judge's JSON is now read with a
+  balanced-brace scan: Nemotron sometimes closes with one brace too many.
+- **`people-digest.mjs history --channel <id> [--author] [--grep] [--days]`**:
+  the bot's channel-history search. Pages back through Discord REST (~1 s a
+  page, the `openclaw message read` fallback takes ~15 s), keeps embed text,
+  and prints one line per match plus the scanned range, so "not found"
+  comes with its real scope. The tool-policy core now sends history
+  questions there first. Asked who won the last /ruin, it finds the answer in
+  3 s; on 2026-10-19 the bot had read truncated 197 KB pages and invented a
+  reason for finding nothing.
+- `messageText` appends the user who ran a slash command
+  (`[/ruin — Name]`): a RuinBot win embed names the winner only in its
+  interaction metadata. The nightly digest sees it too.
+
 ### Added — style line in people-memory
 
 - The nightly people-memory recipe keeps one `- (stílus) …` line per member

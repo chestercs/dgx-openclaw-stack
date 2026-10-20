@@ -165,6 +165,19 @@ Hungarian ~250-word answers per setting: 38 foreign-script characters at 1.0,
 2 at 0.6. The patcher (step 3c, `LLM_TEMPERATURE=auto`) writes 0.6 on Nemotron
 entries. The entry hot-reloads; no vLLM restart is needed.
 
+Tried on top of 0.6 the same night (12 Hungarian answers per setting, thinking
+off, misspelled or non-Hungarian words counted by a judge pass):
+
+| Setting | Foreign-script chars | Flagged words / 100 |
+|---|---|---|
+| top_p 0.95 (model default, kept) | 2 | 2.3 |
+| top_p 0.9 | 5 | 2.95 |
+| min_p 0.05 | — | — |
+
+`min_p` (and `logit_bias`) are rejected with HTTP 400 while speculative
+decoding is on ("not yet supported with speculative decoding"), so it would
+cost the DFlash draft. top_p 0.9 was no better.
+
 ## Standalone variants (port 8004 mutex — only one at a time)
 
 Under `llm/` there's an intentional pattern: several Gemma 4 variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.
