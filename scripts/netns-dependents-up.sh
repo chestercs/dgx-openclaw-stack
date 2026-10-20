@@ -10,37 +10,72 @@
 # retry that failure. openclaw-cli has no restart policy at all. Seen on
 # 2026-10-19: both were down after a reboot until started by hand.
 #
-# Run from cron:  @reboot /path/to/repo/scripts/netns-dependents-up.sh
-# Safe to run any time; it only starts or recreates what is not running.
+# The same breakage follows every gateway recreate or restart: a sharer that
+# is not recreated with it keeps running inside the old, now-dead namespace
+# (no network at all, and "running" in docker ps). The meshcore bridge hit
+# this on each gateway recreate on 2026-10-20.
+#
+# Two modes:
+#   netns-dependents-up.sh          one pass, then exit
+#   netns-dependents-up.sh --watch  one pass, then one more after every
+#                                   gateway container start (docker events)
+# Run the watcher from cron; flock keeps it to one copy and the */5 line
+# brings it back if docker events ever ends (daemon restart):
+#   @reboot     /path/to/repo/scripts/netns-dependents-up.sh --watch
+#   */5 * * * * /path/to/repo/scripts/netns-dependents-up.sh --watch
+# Safe to run any time; it only starts or recreates what is not attached.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 SERVICES=${NETNS_SERVICES:-"openclaw-cli openclaw-meshcore-bridge"}
 PROFILES=${NETNS_PROFILES:-"--profile meshcore"}
 log() { echo "$(date '+%F %T') netns-dependents: $*"; }
+started_ns() { date -d "$(docker inspect -f '{{.State.StartedAt}}' "$1")" +%s%N; }
 
-gw=$(docker compose ps -q openclaw-gateway 2>/dev/null)
-for _ in $(seq 1 120); do
-  [ -n "$gw" ] && [ "$(docker inspect -f '{{.State.Health.Status}}' "$gw" 2>/dev/null)" = healthy ] && break
-  sleep 5; gw=$(docker compose ps -q openclaw-gateway 2>/dev/null)
-done
-[ -z "$gw" ] && { log "gateway not found, giving up"; exit 1; }
-gw_id=$(docker inspect -f '{{.Id}}' "$gw")
+reconcile() {
+  local gw gw_id gw_start svc cid ns
+  gw=$(docker compose ps -q openclaw-gateway 2>/dev/null)
+  for _ in $(seq 1 120); do
+    [ -n "$gw" ] && [ "$(docker inspect -f '{{.State.Health.Status}}' "$gw" 2>/dev/null)" = healthy ] && break
+    sleep 5; gw=$(docker compose ps -q openclaw-gateway 2>/dev/null)
+  done
+  [ -z "$gw" ] && { log "gateway not found, giving up"; return 1; }
+  gw_id=$(docker inspect -f '{{.Id}}' "$gw")
+  gw_start=$(started_ns "$gw")
 
-for svc in $SERVICES; do
-  # shellcheck disable=SC2086
-  cid=$(docker compose $PROFILES ps -a -q "$svc" 2>/dev/null)
-  [ -z "$cid" ] && { log "$svc: no container (profile off?), skipped"; continue; }
-  ns=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid")
-  # A sharer can keep running after the gateway was recreated, inside the
-  # old, now-dead namespace (no network at all), so check that first.
-  if [ "$(docker inspect -f '{{.State.Running}}' "$cid")" = true ] && [ "$ns" = "container:$gw_id" ]; then
-    log "$svc: running"; continue
-  fi
-  if [ "$ns" = "container:$gw_id" ]; then
-    docker start "$cid" >/dev/null && log "$svc: started"
-  else
-    # Points at an old gateway container: a plain start can never succeed.
+  for svc in $SERVICES; do
     # shellcheck disable=SC2086
-    docker compose $PROFILES up -d --no-deps --force-recreate "$svc" >/dev/null 2>&1 && log "$svc: recreated (stale namespace)"
-  fi
-done
+    cid=$(docker compose $PROFILES ps -a -q "$svc" 2>/dev/null)
+    [ -z "$cid" ] && { log "$svc: no container (profile off?), skipped"; continue; }
+    ns=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid")
+    if [ "$ns" != "container:$gw_id" ]; then
+      # Points at an old gateway container: a plain start can never succeed.
+      # shellcheck disable=SC2086
+      docker compose $PROFILES up -d --no-deps --force-recreate "$svc" >/dev/null 2>&1 \
+        && log "$svc: recreated (stale namespace)" || log "$svc: recreate failed"
+    elif [ "$(docker inspect -f '{{.State.Running}}' "$cid")" != true ]; then
+      docker start "$cid" >/dev/null && log "$svc: started"
+    elif [ "$(started_ns "$cid")" -lt "$gw_start" ]; then
+      # Same gateway container, but it restarted after this one joined.
+      docker restart "$cid" >/dev/null && log "$svc: restarted (gateway restarted after it)"
+    else
+      log "$svc: running"
+    fi
+  done
+}
+
+if [ "${1:-}" != --watch ]; then
+  reconcile
+  exit
+fi
+
+exec 9>"${NETNS_LOCK:-/tmp/netns-dependents.lock}"
+flock -n 9 || exit 0
+log "watcher started"
+reconcile
+docker events --filter type=container --filter event=start \
+  --filter label=com.docker.compose.service=openclaw-gateway --format '{{.Actor.ID}}' |
+  while read -r _; do
+    log "gateway started"
+    reconcile
+  done
+log "watcher ended (docker events stopped)"

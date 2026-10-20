@@ -86,11 +86,18 @@ Symptom: `openclaw agent` prints `Gateway agent failed; falling back to embedded
 - `depends_on:` does NOT trigger the CLI recreate automatically — this is a network-namespace dependency, not a startup-order one, and Compose doesn't track it.
 - Verify after the recreate: `docker inspect openclaw-cli --format '{{.HostConfig.NetworkMode}}'` should match `docker inspect openclaw-gateway --format '{{.Id}}'`.
 - The same holds for `openclaw-meshcore-bridge`. Recreate it too (`--profile meshcore`), or the next start fails with "joining network namespace of container: No such container".
-- **After a host reboot** the daemon starts containers in no set order. A namespace sharer that comes up before the gateway fails once and is not retried, and `openclaw-cli` has no restart policy. `scripts/netns-dependents-up.sh` waits for a healthy gateway, then starts both, recreating any that point at an old gateway. Run it from cron:
+- **After a host reboot** the daemon starts containers in no set order. A namespace sharer that comes up before the gateway fails once and is not retried, and `openclaw-cli` has no restart policy.
+- **After a gateway restart or recreate** a sharer that was not recreated with it keeps running in the old namespace, with no network, and still shows as "Up".
+- `scripts/netns-dependents-up.sh --watch` covers all three cases. It does one pass, then another after every gateway container start (`docker events`). Each pass waits for a healthy gateway, then starts a stopped sharer, restarts one that started before the gateway, and recreates one that points at an old gateway container. `flock` keeps it to one copy; run it from cron so it also comes back after a reboot or a daemon restart:
 
   ```bash
-  ( crontab -l 2>/dev/null; echo "@reboot $PWD/scripts/netns-dependents-up.sh >> $HOME/netns-dependents.log 2>&1" ) | crontab -
+  S=$PWD/scripts/netns-dependents-up.sh
+  ( crontab -l 2>/dev/null | grep -v netns-dependents-up.sh
+    echo "@reboot $S --watch >> $HOME/netns-dependents.log 2>&1"
+    echo "*/5 * * * * $S --watch >> $HOME/netns-dependents.log 2>&1" ) | crontab -
   ```
+
+  Verified on GB10 on 2026-10-20: after `docker restart openclaw-gateway` the watcher restarted the bridge and started the CLI; after a `--force-recreate` of the gateway alone it recreated both. The bridge logged `handshake ok` each time.
 
 ## SearxNG bundled-but-default-disabled gotcha
 

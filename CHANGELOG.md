@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — namespace sharers reattach themselves after a gateway restart
+
+- **`scripts/netns-dependents-up.sh --watch`** follows `docker events` and
+  reattaches `openclaw-cli` and `openclaw-meshcore-bridge` after every
+  gateway container start: it starts a stopped sharer, restarts one that
+  started before the gateway (`docker restart` of the gateway), and recreates
+  one that points at a replaced gateway container. Before, the bridge stayed
+  in the dead namespace after each gateway recreate until it was recreated by
+  hand. The cron lines are now `@reboot … --watch` and `*/5 … --watch`
+  (`flock` keeps one copy). See `docs/reference/patterns.md`.
+
 ### Added — Discord DMs only from people who share a server with the bot
 
 - **`dm-guild-gate` plugin** (patcher step 44g,
