@@ -78,7 +78,10 @@ function discordAgentsMd(config, ws) {
   block(md, 'discord-thread-tasks');
   block(md, 'discord-skills-discoverability', routerVars());
 
-  for (const name of ['cron-reminders', 'browser-automation', 'media-downloads', 'weather-forecast', 'coding-projects']) put(ws, name);
+  for (const name of ['cron-reminders', 'browser-automation', 'media-downloads', 'weather-forecast']) put(ws, name);
+  // Where web apps built in the sandbox are reachable (the sandbox's preview
+  // port, usually behind a reverse proxy).
+  put(ws, 'coding-projects', { SANDBOX_PUBLIC_URL: env.str('OPENCLAW_SANDBOX_PUBLIC_URL', 'http://localhost:8095').replace(/\/$/, '') });
   // Points at workboard tools that exist only with the plugin enabled.
   if (env.bool('OPENCLAW_WORKBOARD', false)) put(ws, 'long-task-workboard');
   else removeSkill(ws, 'long-task-workboard');
