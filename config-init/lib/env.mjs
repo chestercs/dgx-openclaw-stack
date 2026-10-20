@@ -49,6 +49,13 @@ export function oneOf(name, choices, def) {
   return v;
 }
 
+// The media groups (image, video, music) the bot has no tools for. Off by
+// default: they need the ComfyUI bridge. "none" turns them all on.
+export function mediaOff() {
+  return list('OPENCLAW_DISCORD_MEDIA_TOOLS_OFF', ['image', 'video', 'music'])
+    .map((g) => g.toLowerCase()).filter((g) => g !== 'none');
+}
+
 // Discord snowflakes as strings (19-digit IDs lose precision as numbers).
 export const ids = (name) => list(name).filter((s) => /^\d{15,22}$/.test(s));
 

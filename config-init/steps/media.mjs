@@ -14,7 +14,7 @@ import * as env from '../lib/env.mjs';
 import { template, upsertBlock, skill, removeSkill, removeFile } from '../lib/files.mjs';
 
 const GROUPS = ['image', 'video', 'music'];
-export const mediaOn = (group) => !env.list('OPENCLAW_DISCORD_MEDIA_TOOLS_OFF').map((g) => g.toLowerCase()).includes(group);
+export const mediaOn = (group) => !env.mediaOff().includes(group);
 
 const DESC = {
   'image-generation': 'Image generation with the comfyui_image__generate tool — workflow choice (SFW/adult), resolution recipes (2K/FullHD/portrait/square), the display_markdown delivery contract.',

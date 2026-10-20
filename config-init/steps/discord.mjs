@@ -126,7 +126,7 @@ export default function discord({ config }) {
   // bot get through. Written every run because a drifted value is invisible
   // (`/activation always` is only a prompt hint and cannot open a closed
   // gate). guilds.<id> entries win over "*" and stay the operator's.
-  const gate = env.bool('OPENCLAW_DISCORD_REQUIRE_MENTION', false);
+  const gate = env.bool('OPENCLAW_DISCORD_REQUIRE_MENTION', true);
   config.set([...D, 'guilds', '*', 'requireMention'], gate);
 
   // Channels where the bot reads everything despite a closed gate. Once a

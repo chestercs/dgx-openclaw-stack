@@ -96,7 +96,7 @@ function discordAgent(config) {
   // The list replaces the default; `off` skips it. Additive: operator
   // entries stay, and dropping a name here does not take it off the agent.
   const deny = env.raw('OPENCLAW_DISCORD_AGENT_TOOLS_DENY')?.toLowerCase() === 'off' ? [] : env.list('OPENCLAW_DISCORD_AGENT_TOOLS_DENY', DISCORD_DENY);
-  const mediaOff = new Set(env.list('OPENCLAW_DISCORD_MEDIA_TOOLS_OFF').map((g) => g.toLowerCase()));
+  const mediaOff = new Set(env.mediaOff());
   const offTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => mediaOff.has(g)).flatMap(([, t]) => t);
   const onTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => !mediaOff.has(g)).flatMap(([, t]) => t);
 
