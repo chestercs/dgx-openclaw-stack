@@ -233,6 +233,10 @@ services:
       TZ: ${TZ:-UTC}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      # openclaw.json refers to these by name (env SecretRefs, config-init/
+      # lib/secrets.mjs) instead of holding the values.
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
+      OPENCLAW_TTS_FISH_API_KEY: ${OPENCLAW_TTS_FISH_API_KEY:-}
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       # The container restarts on its own (restart: unless-stopped); a second
       # in-process respawn would race it.
