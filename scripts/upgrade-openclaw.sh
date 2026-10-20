@@ -298,7 +298,7 @@ if (( ${#migration_versions[@]} )); then
     python3 scripts/archive-imported-cron-logs.py "$upgrade_dir/state" "$upgrade_dir/retired-imported-cron-logs"
 fi
 run_stage_doctor
-stage_run --entrypoint node openclaw-config-init /opt/patch-config.mjs
+stage_run --entrypoint node openclaw-config-init /opt/config-init/patch-config.mjs
 # Admit the exact patched state before replacing the running deployment.
 # Config validation alone cannot detect conflicting retired state files.
 run_stage_doctor
