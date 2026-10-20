@@ -4694,7 +4694,9 @@ const SKILL_ROUTER_BODY =
   'This file is in front of you in every conversation — that is why it sticks. A non-personal fact → `memory/<topic>.md`. Say "Megjegyeztem" ONLY after an `OK:` output. ' +
   '**memory READ — "emlékszel / múltkor / mit mondtam / mit beszéltünk" → `memory_search` first** (name + topic in the query), not from your head. ' +
   '**When someone asks about THEMSELVES ("mit csinálok most", "hol vagyok", "mit tudsz rólam") → the answer is in `people/MEMORY.md`, in the section of the sender\'s ID**: ' +
-  'tell them that (the `(ideiglenes, date)` line is their current state). The question is about THEM — not about you, and not about the channel\'s earlier messages or tasks.\n';
+  'tell them that (the `(ideiglenes, date)` line is their current state). The question is about THEM — not about you, and not about the channel\'s earlier messages or tasks. ' +
+  'The sender\'s `(stílus)` line says how they talk and what tone works with them: match your tone and length to it without mentioning it ' +
+  '(never quote it, never tell someone what their style line says).\n';
 
 // Replaces the 8.2 KB TOOL_ORCHESTRATION block in skills mode: only the
 // DECISION-TIME policies stay always-injected; the per-domain recipes move
@@ -5801,8 +5803,9 @@ const PEOPLE_MEMORY_SEED =
   '# Emberek — tartós tények a guild tagjairól\n\n' +
   '<!-- This file is loaded into EVERY Discord conversation. You (the bot) keep it.\n' +
   '     Here: lasting personal facts, requests, nicknames, preferences — one `## Name (<@ID>)` section per member, lines in Hungarian.\n' +
-  '     Keep it tight: max ~8 lines per member, max ~6000 characters in all. REPLACE an outdated line, do not pile up.\n' +
+  '     Keep it tight: max ~8 lines per member, max ~8000 characters in all. REPLACE an outdated line, do not pile up.\n' +
   '     A temporary state (e.g. „épp iszogat, este jön”) gets a date: `- (ideiglenes, YYYY-MM-DD) …` — the nightly job drops it once stale.\n' +
+  '     A `- (stílus) …` line (one per member, written by the nightly job) says how they talk and what tone works with them.\n' +
   '     Not here: conversation summaries (those go under memory/).\n' +
   '     Write ONLY like this (exec): `node /opt/people-digest.mjs note --id <ID> --name "<name>" --text "<fact>" [--temp]` — never by hand. -->\n';
 // OPENCLAW_PEOPLE_DIGEST_NSFW=on adds `--nsfw` to the collect step: NSFW
@@ -5819,6 +5822,11 @@ const PEOPLE_MEMORY_SKILL_BODY =
   'pets, city, family role (e.g. has a child), own project, favourite things, a nickname they accept, a running joke.\n' +
   '   🚨 NOT here: politics, religion, health, sexuality, finances, conflicts/insults, a one-off mood, ironic exaggeration, ' +
   'claims about someone else, exact address/phone/employer name. Unsure → leave it out. Max 3 new lines per person per night.\n' +
+  '   - **Style:** one `- (stílus) …` line per person who wrote enough to show a pattern (roughly 10+ messages): how they talk and ' +
+  'what tone works with them — humour (szárkasztikus, abszurd, szóviccek…), register (laza, káromkodós, udvarias), short quips or ' +
+  'long explanations, emoji/GIF use, what they like to banter about, how they talk to the bot. Describe a pattern seen in SEVERAL ' +
+  'messages, never one message. No verdicts on character or intelligence, no psychologising, nothing from the 🚨 list. Max ~25 words. ' +
+  'An existing `(stílus)` line is REPLACED only when the new picture clearly differs; never a second one. It does not count toward the 3 lines.\n' +
   '   - `## (bot) …` sections are other bots (e.g. a Markov chat bot): NEVER a person, NEVER a `##` section of their own, no facts from their ' +
   'text. Use them only as context for what the humans said to them (e.g. a running joke with the bot).\n' +
   '   - `## Voice-aktivitás` is the voice log of that day: record at most a lasting HABIT (e.g. "Esténként 21 után szokott voice-ban lenni."), ' +
@@ -5828,7 +5836,7 @@ const PEOPLE_MEMORY_SKILL_BODY =
   '   - an `(ideiglenes, <date>)` line: DELETE it if the date is older than 2 days or the person has said something else since; otherwise keep it;\n' +
   '   - empty or duplicate `##` headers (the same name/ID twice) → merge them into one;\n' +
   '   - a new person → a new `## Name (<@ID>)` section at the end of the file, the ID from the digest header; add a missing `(<@ID>)` to an existing header;\n' +
-  '   - one fact = one short line, written in Hungarian, in the third person (e.g. "Szegeden lakik."); keep the whole file under 6000 characters.\n' +
+  '   - one fact = one short line, written in Hungarian, in the third person (e.g. "Szegeden lakik."); keep the whole file under 8000 characters.\n' +
   '5. `exec`: `node /opt/people-digest.mjs apply` → `APPLIED` = done. `REJECTED: <reason>` → fix the proposal by the reason, write it again, ' +
   'run it again (max 2 attempts). Nothing new: `node /opt/people-digest.mjs apply --no-change`.\n' +
   '6. Your reply is one line: how many people got new lines. Send NO message to anyone.\n';

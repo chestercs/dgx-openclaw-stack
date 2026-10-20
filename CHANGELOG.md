@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — style line in people-memory
+
+- The nightly people-memory recipe keeps one `- (stílus) …` line per member
+  who wrote enough to show a pattern: humour, register, short or long
+  messages, emoji use, what they banter about, how they talk to the bot.
+  Patterns from several messages only, no verdicts on character, nothing
+  from the excluded topics; an existing line is replaced, never doubled.
+  The people-context plugin already prepends the sender's lines, so the bot
+  sees it every turn; AGENTS.md tells it to match its tone without
+  mentioning the line. File target raised from 6000 to 8000 characters
+  (the apply gate's hard cap stays 12000).
+
 ### Added — claim-guard plugin
 
 - **`openclaw-base-ext/plugins/claim-guard`** + patcher step 44e
