@@ -7,7 +7,8 @@
 # missed one lets the test write to the live state.
 set -eu
 NAME=$1; SRC=${2:-}
-STACK=${STACK:-/home/chestercs/Docker/dgx-openclaw-stack}
+# The stack checkout whose compose file and .env are used (required).
+STACK=${STACK:?set STACK to the stack checkout, e.g. STACK=~/dgx-openclaw-stack}
 LIVE=$(grep '^OPENCLAW_CONFIG_DIR=' $STACK/.env | cut -d= -f2 | tr -d '"')
 OUT=$HOME/pc-harness/$NAME
 [ -d "$OUT" ] && docker run --rm -v $HOME/pc-harness:/h alpine rm -rf "/h/$NAME"

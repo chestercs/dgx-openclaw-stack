@@ -4,493 +4,332 @@ Guidance for Claude Code (and other coding agents) working on this repository.
 
 ## What this repo is
 
-A single-file Docker Compose stack that brings up a self-hosted, OpenAI-compatible LLM
-(Gemma 4 26B-A4B MoE NVFP4 on `vllm-llm:8004` and Gemma 4 31B IT NVFP4 dense on
-`vllm-llm-dense:8005` running side by side; pick either via the OpenClaw UI), a
-multilingual embedding service (bge-m3), the OpenClaw agent gateway, a privacy-first
-SearxNG meta-search backend, a multilingual TTS surface (Fish Audio S2 Pro on
-`openclaw-tts-fish:8080`, served by SGLang-Omni, 80+ languages including EN+HU with
-voice cloning from mounted reference clips), and a Whisper STT backend
-(`faster-whisper` turbo CT2, EN + HU autodetect). Calibrated for NVIDIA GB10
-(DGX Spark / ASUS Ascent), portable to other hardware via documented `.env` overrides.
+A Docker Compose stack that runs a self-hosted OpenClaw agent on one NVIDIA GB10
+(DGX Spark / ASUS Ascent GX10): a local LLM (Nemotron 3.5 Super 120B-A12B NVFP4 on
+`vllm-llm:8004`), bge-m3 embeddings for memory search, SearxNG web search, Whisper
+speech-to-text, and the OpenClaw gateway with a Discord bot. Other models, TTS and the
+media tools are optional compose files. The defaults are calibrated for the GB10 and
+can be moved to other hardware through `.env`.
 
-The repo's value proposition is the **wiring**, not any individual component:
+The value is the **wiring**, not any single component:
 
-- Model + embedding + gateway + memory + web search + TTS/STT + browser + image-gen
-  are pre-integrated and survive upgrade cycles.
-- An idempotent config patcher (`patch-config.mjs`) keeps `openclaw.json` in a
-  deterministic, production-ready state across re-runs of the onboarding wizard.
-- A bootstrap script (`bootstrap.sh`) handles secret rotation, host paths, and
-  prerequisite checks non-destructively.
+- Model, embeddings, gateway, memory, web search, STT, browser and sandbox are
+  pre-integrated and survive OpenClaw upgrades.
+- `config-init/` brings `openclaw.json` and the agent workspaces to the desired state
+  from `.env` on every `docker compose up`, and a re-run changes nothing.
+- `bootstrap.sh` fills secrets, host paths and prerequisites without overwriting real
+  values.
+
+How the parts fit together: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Every
+`.env` knob: [`docs/reference/configuration.md`](docs/reference/configuration.md).
 
 ## Repo layout
 
 ```
-docker-compose.yml             # default + opt-in profiles (browser, python, dense)
-patch-config.mjs               # idempotent openclaw.json patcher (init container)
-bootstrap.sh                   # first-time setup: secrets, .env, host dirs
-bootstrap-browser-login.sh     # 1x OAuth onboarding helper (noVNC)
-rotate-secrets.sh              # rotate gateway / service tokens
-.env.example                   # tunables, every knob commented
-templates/                     # vLLM tool-calling chat template (gemma4)
-searxng/settings/              # SearxNG override settings (privacy posture)
-openclaw-tts-fish/             # Fish Audio S2 Pro (Research License, non-commercial)
-                               #   SGLang-Omni serving fishaudio/s2-pro on CUDA 13
-openclaw-stt-whisper/          # faster-whisper turbo CT2 (CUDA 13)
-openclaw-browser/              # Playwright Chromium over CDP       — profile=browser
-openclaw-python-sandbox/       # Python MCP exec sandbox
-openclaw-image-comfyui/        # ComfyUI MCP bridge (separate compose)
-openclaw-base-ext/             # local extension layer for the openclaw image
-vllm-llm/                      # vllm-openai image with Gemma4 parser patch
-docs/                          # ARCHITECTURE / CUSTOMIZATION / TROUBLESHOOTING
-  reference/                   # deeper reference — see docs/reference/README.md
-SETUP.md                       # end-user first-boot walkthrough
-README.md                      # audience-facing pitch + quickstart
-CHANGELOG.md                   # release notes
+docker-compose.yml          # the stack; profiles: browser, python, meshcore
+compose/                    # optional files added via COMPOSE_FILE:
+                            #   gemma4.yml (+ gemma4/ chat template), mistral.yml,
+                            #   tts-fish.yml, claw-img.yml
+config-init/                # writes openclaw.json + workspaces (openclaw-config-init)
+  patch-config.mjs          #   entry: runs the steps in order
+  steps/                    #   models, memory, gateway, tools, discord, agents,
+                            #   workspaces, media, plugins
+  lib/                      #   env.mjs (typed knobs), config.mjs (logged writes,
+                            #   secret masking), files.mjs (marker blocks, skills,
+                            #   templates), secrets.mjs (env SecretRefs)
+  templates/                #   prompt text: discord/AGENTS.d blocks, router
+                            #   fragments, skills, agent seeds
+  test/                     #   run a patcher on a copy of live state and diff
+openclaw-base-ext/          # upstream OpenClaw image + ffmpeg/git/curl,
+                            #   people-digest.mjs and the local plugins:
+  plugins/                  #   people-context, claim-guard, dm-guild-gate,
+                            #   mcp-image-saver
+openclaw-stt-whisper/       # faster-whisper turbo (CUDA 13)
+openclaw-browser/           # Chromium over CDP                  profile=browser
+openclaw-python-sandbox/    # Python MCP sandbox                 profile=python
+openclaw-meshcore-bridge/   # LoRa mesh bridge                   profile=meshcore
+openclaw-tts-fish/          # Fish Audio S2 Pro TTS (compose/tts-fish.yml)
+openclaw-image-comfyui/     # ComfyUI image/video/music MCP bridge (own compose)
+openclaw-claw-img-bot/      # /claw-img Discord bot (compose/claw-img.yml)
+openclaw-host-client/       # CLI container on the operator's PC for a remote gateway
+searxng/settings/           # SearxNG engine set and privacy settings
+scripts/                    # host-side ops: GB10 clock cap, thermguard, memguard,
+                            #   llm-ensure, netns watcher, daily status, upgrade,
+                            #   web search bench, resharding, LTX install, benches
+bootstrap.sh                # first-time setup: secrets, .env, host dirs
+bootstrap-browser-login.sh  # one-time login of a browser profile (noVNC)
+rotate-secrets.sh           # rotate the generated secrets
+.env.example                # the ~25 settings a typical install sets
+docs/                       # ARCHITECTURE, CUSTOMIZATION, TROUBLESHOOTING,
+                            #   OPENCLAW_UPGRADE, discord-bot-setup
+  reference/                #   depth per area; index in reference/README.md
+  archive/                  #   superseded material and the old changelog
+SETUP.md                    # first-boot walkthrough
+README.md                   # pitch + quickstart
+CHANGELOG.md                # release notes
 ```
 
 ## Working principles
 
-### Patcher is the source of truth, not openclaw.json
+### config-init is the source of truth, not openclaw.json
 
-Never tell users to hand-edit `openclaw.json`. The `openclaw-config-init` container runs
-`patch-config.mjs` before every `up` and re-applies the desired state. If a change
-should persist, add or modify a step in `patch-config.mjs` (deep-merge style — read
-existing values, only write when they differ, log every change).
+Never tell users to hand-edit `openclaw.json`. The `openclaw-config-init` container
+runs `config-init/patch-config.mjs` before every `up` and re-applies the desired state.
+A change that should persist goes into the matching `config-init/steps/<area>.mjs`,
+through the `Config` helpers in `lib/config.mjs` (compare first, write only on a
+difference, one `[patch-config]` log line per change, secrets masked). Prompt text goes
+into `config-init/templates/`, not into JavaScript strings.
 
-The patcher's contract:
+The contract:
 
-- Skip cleanly (`exit 0`) when `openclaw.json` doesn't exist (pre-onboarding fresh
-  install).
-- Never overwrite user-managed fields (custom `agents.list[]` entries, channel
-  credentials, etc.).
-- Always log a `[patch-config]` line for each change so users can audit what shifted.
+- No `openclaw.json` yet (before onboarding): exit 0.
+- Write the current OpenClaw schema (2026.10: keyed `agents.entries`, `memory.search`,
+  `tts`, `tools.media.models`, `exec.mode`). A config that still has `agents.list`
+  makes config-init stop and ask for `openclaw doctor --fix`.
+- Never touch what the operator owns: their own agents, channel credentials, text
+  outside the `<!-- patch-config:<id>:start/end -->` marker blocks in `AGENTS.md`.
+  Skill files (`skills/<name>/SKILL.md`) are wholly config-init-owned; agent seeds
+  are written once and then belong to the operator.
+- Names and IDs in prompts come from `.env` (`OPENCLAW_DISCORD_MEMBER_NAMES`, ...),
+  so the public templates carry none.
+- Credentials go in through `secret()` (`lib/secrets.mjs`) where the field takes a
+  SecretRef: `openclaw.json` then holds `{ source: "env", id: NAME }` and the gateway
+  resolves it from its own environment. A new key handled this way must also be passed
+  in the gateway's `environment:` in `docker-compose.yml`. The OpenClaw secret store is
+  not an option: only a process in the gateway's PID namespace may write it, and
+  config-init runs beside the old gateway during a recreate.
 
 ### Two-phase fresh-install onboarding
 
-A brand-new install always proceeds in two phases:
-
-1. `docker compose up -d` starts every service. The patcher skips because
-   `openclaw.json` doesn't exist yet, so the gateway crash-loops with `Missing config.
-   Run openclaw setup …`. **This is the intended state**, not a bug.
-2. The user completes onboarding (Chrome extension wizard,
-   `openclaw onboard --non-interactive …`, or `openclaw setup`), which writes
-   `openclaw.json` to the config volume.
+1. `docker compose up -d` starts every service. config-init exits 0 because
+   `openclaw.json` does not exist yet, so the gateway crash-loops with
+   `Missing config. Run openclaw setup …`. **This is the intended state.**
+2. The operator onboards (`openclaw onboard --non-interactive …` or `openclaw setup`),
+   which writes `openclaw.json`.
 3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`
-   re-runs the patcher against the now-existing config; the gateway picks up the
-   patched file and goes healthy.
+   applies the desired state and the gateway goes healthy.
 
-Don't try to "fix" the crash-loop in step 1 by patching defaults into a freshly created
-`openclaw.json` — the OpenClaw security model requires explicit onboarding so the
-operator chooses the gateway token and pairs the UI before the gateway accepts
-connections. Skipping that step would weaken the auth defaults.
+Do not "fix" step 1 by writing a default `openclaw.json`: onboarding is where the
+operator chooses the gateway token and pairs the UI.
 
-### Defaults assume GB10, but env overrides keep the repo portable
+### Defaults assume GB10, `.env` keeps it portable
 
-The reference profile targets a 128 GB GB10 box. Three documented portability paths via
-`.env` overrides:
-
-- **Different NVIDIA GPU**: change `--model` / `LLM_GPU_MEM_UTIL` / `LLM_MAX_NUM_SEQS`
-  in `.env`, swap the vLLM image if not Blackwell.
-- **Remote vLLM backend** (gateway local, LLM elsewhere): set `OPENAI_BASE_URL` +
-  `LLM_BASE_URL` + `EMBED_BASE_URL` in `.env`, add `profiles: ["never"]` to the local
-  `vllm-llm` / `vllm-embedding` services. See `docs/CUSTOMIZATION.md` → "Run with a
-  remote vLLM backend".
-- **Cloud LLM endpoint** (Bedrock proxy, OpenRouter, …): same as the remote-vLLM path,
-  but the URLs point at a cloud service.
-
-When adding new tunables, follow the existing pattern: `${VAR:-sensible_default}` in
-compose, `process.env.VAR || 'sensible_default'` in the patcher, and a `.env.example`
-entry with a one-paragraph comment explaining the trade-off.
+New tunables follow one pattern: `${VAR:-default}` in compose, an `env.*` reader with
+a default in config-init (`lib/env.mjs`: `on/off`, empty = default), and a row in
+`docs/reference/configuration.md`. `.env.example` lists only what a typical install
+sets; do not grow it with every knob. Another model is a file in `compose/` plus
+`LLM_MODEL_ID`; a remote or cloud backend is `LLM_BASE_URL` / `EMBED_BASE_URL` (see
+`docs/CUSTOMIZATION.md`).
 
 ### Comments earn their place
 
-Inline comments in this repo follow a high bar — they explain *why* (a constraint, a
-non-obvious gotcha, a benchmark number, an OpenClaw-specific behavior), not *what*.
-The compose file and patcher are heavily commented for end users; the goal is that
-someone debugging at 2am can understand each block without leaving the file.
-
-When you add a step to the patcher or a service to the compose file, write a comment
-that helps that 2am debugger. When in doubt, model your comment on the surrounding
-ones — they're the standard.
+Comments explain *why*: a constraint, a measured number, an OpenClaw behaviour that
+is not obvious. Not *what*, and not history. Someone debugging at 2am should
+understand a block without leaving the file. Model new comments on the surrounding
+ones.
 
 ### Verify before declaring done
 
-A change that touches the patcher or compose file isn't complete until:
+A change to config-init or compose is not done until:
 
-1. `node --check patch-config.mjs` passes.
-2. `docker compose config` parses cleanly with a representative `.env`.
-3. (For non-trivial changes) bring the stack up on a test host, run
-   `openclaw memory status`, `openclaw agent --agent main --message "…"`, and
-   `curl <gateway>/healthz`.
+1. `node --check` passes on every config-init file.
+2. `docker compose config` parses with a representative `.env` (and the profiles and
+   `compose/` files the change touches).
+3. The test harness (`config-init/test/`) runs the new config-init on a copy of the
+   live state and the diff against the current one shows only the intended changes.
+4. For non-trivial changes: the stack comes up on a test host, `curl <gateway>/healthz`
+   is ok, and a real agent turn (`openclaw agent …`, or a Discord turn for
+   Discord-only hooks) behaves.
 
-The repo's quality bar is "real verification on a real host," not "syntax-checks
-only."
+The bar is "real verification on a real host", not "syntax checks only".
 
-### Documentation language: English for anything public
+### English for anything public
 
-Every file that lands in this public repo — `README.md`, `SETUP.md`, `CLAUDE.md`,
-`CHANGELOG.md`, `CONTRIBUTING.md`, everything under `docs/`, `.github/*`, compose /
-patcher inline comments, commit messages, PR and issue templates, GitHub Release notes
-— is written in English. This is a hard rule, not a preference: the repo targets a
-global audience, and mixing languages splits the readership.
-
-If you're importing or adapting material from a non-English source (a private
-knowledge base, a Hungarian research note, a vendor doc), translate it before
-committing.
+Every tracked file (docs, compose and code comments, templates' instructions, commit
+messages, PR and issue templates, release notes) is in English. Hungarian appears only
+where it is data: example user phrases the bot must recognise, and the language the bot
+answers in. Translate imported material before committing.
 
 ## Things to avoid
 
-- **Don't bypass the patcher** by writing to `openclaw.json` directly from a script or
-  service entrypoint. The patcher's deep-merge style survives OpenClaw schema
-  migrations.
-- **Don't add new services without thinking about the bridge network.** All services
-  on the default compose bridge can reach each other by service name. New services
-  that need LAN exposure should publish ports explicitly; new internal services should
-  not.
-- **Don't add backwards-compatibility shims for old OpenClaw versions** unless you're
-  sure the older version is in active use. The repo tracks the latest stable OpenClaw
-  image.
-- **Don't ship interactive prompts in scripts that could be CI-driven.** `bootstrap.sh`
-  prompts for secrets but also accepts pre-set `.env` values and skips. New scripts
-  should follow the same pattern.
-- **Don't generate URLs you haven't verified.** Broken links in `docs/CUSTOMIZATION.md`
-  are worse than no link at all.
+- **Writing `openclaw.json` from anywhere but config-init** (a script, an entrypoint).
+- **Patching OpenClaw's bundled files.** The image adds tools and plugins only; plugins
+  use the plugin SDK and load through `plugins.load.paths`. Find a hook or a
+  documented config key instead.
+- **Registering a `reply_payload_sending` or `message_sending` hook.** Any such hook
+  turns off Discord preview streaming for every Discord turn.
+- **Unbounded or guessed keys under `agents.defaults.*`.** An unknown key or an
+  out-of-range value fails validation and the gateway crash-loops. Gate new keys on a
+  knob (empty = skip, `off` = remove) and check the schema first (set it in the Web UI,
+  save, read the persisted JSON).
+- **New services without thinking about the bridge network.** Every service on the
+  compose bridge reaches the others by name. Publish ports only for LAN-facing services,
+  and bind them to `127.0.0.1` by default.
+- **Commenting out services.** Use a profile or a `compose/` file.
+- **Backwards-compatibility shims for old OpenClaw versions.** The repo tracks the
+  release pinned in `OPENCLAW_IMAGE_REF`.
+- **Interactive prompts in scripts that could run in CI.** Accept pre-set `.env`
+  values and skip, like `bootstrap.sh`.
+- **URLs you have not verified.**
 
 ## Useful one-liners
 
-These snippets assume `${PROJ}` holds the container-name prefix (default `dgx-`, set
-via `CONTAINER_NAME_PREFIX` in `.env`). Source it once per shell:
+Container names have an optional prefix (`CONTAINER_NAME_PREFIX`, empty by default):
 
 ```bash
 PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
-PROJ=${PROJ:-dgx-}
-```
 
-```bash
-# Re-run the patcher against the live openclaw.json
-docker exec ${PROJ}openclaw-config-init node /opt/patch-config.mjs
+# Apply the desired state to the live config (config-init exits after the run).
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 
-# Inspect the live openclaw.json
-cat $OPENCLAW_CONFIG_DIR/openclaw.json | \
-  jq '.models.providers.vllm, .agents.defaults.memorySearch, .plugins.entries.searxng.config.webSearch'
+# Inspect parts of the live config (SecretRef'd keys show as env references).
+jq '.models.providers.vllm.models, .memory.search.model, .plugins.entries.searxng.config.webSearch' \
+  "$(grep '^OPENCLAW_CONFIG_DIR=' .env | cut -d= -f2)/openclaw.json"
 
-# Test SearxNG JSON API from inside the gateway namespace
-docker exec ${PROJ}openclaw-cli curl -sS "http://searxng:8080/search?q=test&format=json" | jq '.results | length'
+# SearxNG from inside the gateway namespace.
+docker exec ${PROJ}openclaw-cli curl -sS "http://searxng:8080/search?q=test&format=json" \
+  | jq '.results | length, .unresponsive_engines'
 
-# Memory hybrid search smoke test
+# Memory search.
 docker exec ${PROJ}openclaw-cli openclaw memory status --deep
 docker exec ${PROJ}openclaw-cli openclaw memory search "your query"
 
-# Multi-tool agent run via the gateway. Always use --timeout 600 for tool-using
-# examples; the default 60s trips on cold cache. See docs/reference/llm-stack.md.
+# A tool-using agent turn. Always --timeout 600: the default 60 s trips on a cold cache.
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message "Use web_search to find …" --thinking off --json --timeout 600
 ```
 
-## Implementation gotchas — quick index
+Do not `jq` whole `tools.*` or `mcp.*` subtrees into a log or a chat: per-entry
+`headers.Authorization` values sit there.
 
-Every non-obvious bit that bit somebody once and ended up shaping the design has been
-moved to a focused reference doc. The bullets below are the index — read the linked
-file before changing the area.
+## Gotchas by area
 
-**Network / Docker patterns** → [`docs/reference/patterns.md`](docs/reference/patterns.md)
+Read the linked doc before changing the area.
 
-- Container name prefix is configurable (`CONTAINER_NAME_PREFIX`, default `dgx-`);
-  bridge DNS resolution is independent of `container_name`.
-- `openclaw-cli` shares the gateway's network namespace via `network_mode:
-  "service:openclaw-gateway"` — recreate the CLI in the same `docker compose up
-  --force-recreate` as the gateway, or the CLI ends up in a dead namespace.
-- `profiles: ["never"]` parks a service without removing the documentation. Don't
-  comment out service blocks.
-- Volume bind mounts run as UID/GID `1000:1000` (OpenClaw image's `node` user); the
-  host dirs must be writable by that UID.
-- SearxNG `use_default_settings.engines.keep_only` is a registry filter, not an
-  enable flag — engines shipped `disabled: true` need an explicit per-engine override.
-- `bootstrap.sh`'s `upsert_env` is regex-gated (`^CHANGE_ME`), so re-runs never
-  overwrite real values.
-- HF cache volume label is configurable (`VLLM_HF_CACHE_VOLUME_NAME`) for sibling-
-  stack sharing.
-
-**OpenClaw internals** → [`docs/reference/openclaw-internals.md`](docs/reference/openclaw-internals.md)
-
-- 3-store credential layout: keys live in the per-agent auth-profile store, not in
-  `openclaw.json`'s plaintext `apiKey` field. Patcher step 13 syncs them.
-- `OPENCLAW_LAN_CIDR` controls `gateway.trustedProxies` — add your LAN range when
-  clients hit the gateway directly (not via reverse proxy).
-- `restart: unless-stopped` × `OPENCLAW_NO_RESPAWN=1` — keep both in sync.
-- `NODE_COMPILE_CACHE` lives inside the config volume to survive `down`.
-- Heartbeat fires from `~/.openclaw/workspace/HEARTBEAT.md`; empty file → skipped.
-- `memorySearch.sources` defaults to `workspace/memory/*.md`; embedding dimension is
-  fixed when the first chunk is indexed.
-- The patcher writes baseUrls with trailing slashes (`v1/`); `OPENAI_BASE_URL` does
-  NOT take a trailing slash.
-- 2026.10 gotchas: bundles are `.mjs` (a `--include='*.js'` grep in a runtime
-  patch silently matches nothing); unset `tools.toolSearch` means "on" (patcher
-  43a turns it off); the `cron` tool is now `automations` (`cron` stays an
-  alias); `agents.defaults.model` may be a bare string. Measure the Discord
-  agent's real catalog with `gateway call tools.effective` before adding tools.
-- Root `MEMORY.md` is never injected into group/channel sessions (privacy
-  filter), so guild-channel long-term memory lives in
-  `workspace-discord/people/MEMORY.md`, loaded via the `bootstrap-extra-files`
-  hook (step 44) and fed by the nightly people-memory job. Verify what a
-  session really loads with `systemPromptReport.injectedWorkspaceFiles` in
-  `openclaw agent --json` output. The bot writes it only through
-  `/opt/people-digest.mjs note|forget` (its own `edit`/`write` clobbered the
-  file), and the `people-context` plugin (step 44c, a `before_prompt_build`
-  hook) prepends the sender's section per turn. `openclaw agent` has no
-  sender, so test that hook on a real Discord turn (`finalPromptText` in
-  the agent sqlite `trajectory_runtime_events`).
-- False "I saved / checked it" claims are caught by the `claim-guard`
-  plugin (step 44e): its `before_agent_finalize` hook asks the host model
-  (`api.runtime.llm.complete`) which actions the answer claims, checks them
-  against the run's successful tool calls, and requests one more model pass.
-  Do not go back to matching claim words with regexes (it missed
-  "jegyeztem"). A second, parallel question rates the answer's statements
-  and flags specific, uncommon world facts stated without any look-up. Keep
-  the two questions separate: merged, the fact rules leaked into the action
-  verdicts. Channel-history questions go to
-  `people-digest.mjs history` (Discord REST, embeds, scanned range), not to
-  raw `message read`. `before_agent_finalize` does not touch Discord streaming.
-  Audit `logs/claim-guard.jsonl` (outcomes `none` / `revise` / `resolved` /
-  `unresolved` / `judge_failed`). `openclaw plugins reload` cannot replace it
-  while a run holds the old instance; rebuild the image and recreate.
-- Discord DMs are answered only for people who share a server with the
-  bot: the `dm-guild-gate` plugin (step 44g, a `before_dispatch` hook)
-  asks the Discord API per sender (cached) and ends a stranger's turn with
-  `{ handled: true }`. `dmPolicy` has no such mode. Audit
+- **Docker and networking** → [`docs/reference/patterns.md`](docs/reference/patterns.md).
+  `openclaw-cli` and `openclaw-meshcore-bridge` share the gateway's network namespace;
+  a recreated gateway leaves them in a dead namespace, so recreate them together, and
+  run `scripts/netns-dependents-up.sh --watch` from cron for reboots. Bind mounts must
+  be writable by UID 1000. The gateway uses public DNS (`dns:`) because npm hit
+  `EAI_AGAIN` on Docker's resolver.
+- **OpenClaw schema and internals** → [`docs/reference/openclaw-internals.md`](docs/reference/openclaw-internals.md).
+  Agents are keyed under `agents.entries.<id>`; `agents.defaults.model` may be a bare
+  string. The per-agent `agents/<id>/agent/models.json` caches providers and the image
+  tool reads it: after a `baseUrl` change, delete it so it regenerates. The `cron` tool
+  is now `automations` (`cron` stays an alias). Unset `tools.toolSearch` means "on";
+  config-init turns it off. Measure an agent's real tool catalog with
+  `gateway call tools.effective` before adding tools. `OPENCLAW_LAN_CIDR` feeds
+  `gateway.trustedProxies`. `restart: unless-stopped` and `OPENCLAW_NO_RESPAWN=1` go
+  together.
+- **Plugins** → the header comment of each `openclaw-base-ext/plugins/*/index.js` and
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Non-bundled plugins need
+  `hooks.allowConversationAccess` for conversation hooks. A load path missing from the
+  image fails the gateway's plugin scan (config-init removes it). `openclaw plugins
+  reload` cannot replace a plugin while a run holds it: rebuild the image and recreate.
+- **Memory** → [`docs/reference/discord-config.md`](docs/reference/discord-config.md).
+  The root `MEMORY.md` is never injected into group/channel sessions, so guild
+  long-term memory is `workspace-discord/people/MEMORY.md`, loaded by the
+  `bootstrap-extra-files` hook. The bot writes it only through
+  `/opt/people-digest.mjs note|forget` (people-context blocks direct edits; its own
+  `write` once replaced the whole file). Check what a session really loads with
+  `systemPromptReport.injectedWorkspaceFiles` in `openclaw agent --json`. `openclaw
+  agent` has no sender, so test people-context on a real Discord turn. The embedding
+  dimension is fixed when the first chunk is indexed; an upgrade or rollback can lose
+  the index metadata (`openclaw memory index --force`).
+- **claim-guard** (`before_agent_finalize`): the host model judges which actions the
+  answer claims and checks them against the run's successful tool calls; a second,
+  separate question flags uncommon facts stated without a look-up. Keep the two
+  questions separate (merged, the fact rules leaked into the action verdicts) and do
+  not go back to claim-word regexes (they missed "jegyeztem"). Active Memory recall
+  runs are skipped. Audit `logs/claim-guard.jsonl` (`none` / `revise` / `resolved` /
+  `unresolved` / `judge_failed`).
+- **dm-guild-gate** (`before_dispatch`): a DM is answered only when the sender shares a
+  guild with the bot (Discord REST, cached); `dmPolicy` has no such mode. Audit
   `logs/dm-guild-gate.jsonl`.
-- Registering ANY `reply_payload_sending` / `message_sending` plugin hook
-  turns off Discord draft-preview streaming for every Discord turn (the
-  plugin checks `hasHooks(...)` globally). That is why generated-image
-  buttons were not shipped. Attachments come from `MEDIA:` reply lines instead.
-- `openclaw-base-ext` is the local image extension layer (adds `ffmpeg`); rebuild
-  with `docker compose build --no-cache openclaw-config-init` when bumping
-  `OPENCLAW_IMAGE_REF`.
-- Per-agent `~/.openclaw/agents/<id>/agent/models.json` is a stale-prone cache of
-  `models.providers.*` — the image / vision tool reads from it, not from live
-  config. When you change a provider's `baseUrl` (or a service like the historical
-  `vllm-llm-proxy` is removed), delete `agents/*/agent/models.json` so the next
-  agent run regenerates it from current config. Text generation is unaffected
-  (it reads `models.providers` directly).
-
-**LLM stack (vLLM + Gemma 4 NVFP4)** → [`docs/reference/llm-stack.md`](docs/reference/llm-stack.md)
-
-- Two backends side-by-side: MoE 26B-A4B on port 8004 (default), dense 31B-IT on port
-  8005 (opt-in via `profiles: ["dense"]`).
-- vLLM tool-call template ships in `templates/`, not in the image; bind-mounted at
-  `/templates:ro` with `--chat-template /templates/tool_chat_template_gemma4.jinja`.
-- HuggingFace token is exposed under both `HUGGING_FACE_HUB_TOKEN` and `HF_TOKEN`.
-- vLLM ports are NOT published by default (sibling containers reach via bridge DNS);
-  enable host debug access by uncommenting `127.0.0.1:8004:8004`.
-- Multi-step tool-call runs need `--timeout 600` — default 60s trips on cold cache.
-  Always document tool-using examples with `--timeout 600`.
-- Mistral Small 4 119B-A6B NVFP4 is an opt-in swap of the `vllm-llm` service
-  (`docker-compose.mistral.yml` in `COMPOSE_FILE` + `LLM_MODEL_ID`). It
-  needs `TRITON_MLA` on GB10 and ~78 GiB of the pool. The EAGLE draft does
-  not load on vLLM 0.31/0.32.
-- Nemotron 3.5 Super 120B-A12B VL NVFP4 is the second opt-in swap
-  (`docker-compose.nemotron.yml` + `LLM_MODEL_ID`), the reference host's
-  Discord model since 2026-10-19 (the most factual on the eval). It needs
-  `--default-chat-template-kwargs '{"medium_effort": true}'` (full thinking ran
-  57k-token turns, off looped on tool JSON), ~70 GiB at util 0.70 (no ComfyUI
-  beside it), and the GB10 clock cap.
-- A local model only thinks if its catalog entry has the right `compat`
-  (Gemma: `thinkingFormat: "qwen-chat-template"`, Mistral:
-  `supportsReasoningEffort`). The patcher writes it (`LLM_THINKING_COMPAT`).
-  Without it OpenClaw sends no thinking control at all. Verify with
-  `usage.reasoningTokens` on `model.completed` events in the agent sqlite.
-
-**GB10 power, thermals, firmware** → [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md)
-
-- Under sustained load the box hard-powers-off with no journal entry at acpitz
-  ~94 °C, far below the 104.8 °C ACPI trip. The fix is a GPU clock cap
-  (`scripts/gb10-clock-cap.service`, `nvidia-smi -lgc 300,2200`; `-pl` is
-  N/A on GB10). `scripts/gb10-thermguard.sh` is the backstop. Watch the
-  hottest acpitz zone, which reads 8–15 °C above nvidia-smi.
-- After such a crash the GPU can stick at 611 MHz / ~10 W with no throttle
-  reason (PD wedge). Only a cold drain clears it: PSU out of wall and box,
-  hold power 30 s.
-- On the unified pool a model load can livelock the host (no OOM kill, no
-  SSH). Huge checkpoint shards are one cause (vLLM keeps a shard mapped until
-  it is fully loaded); `scripts/reshard-safetensors.py` splits them.
-  `scripts/gb10-memguard.sh` kills trial models early.
-
-**TTS surface (Fish Audio S2 Pro + SGLang-Omni)** → [`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md)
-
-- ONE container with two processes: a FastAPI shim on `:8080` (auth +
-  voice→references mapping + onset silence pad) wrapping the SGLang-Omni
-  native HTTP server on loopback `:9090`. Replaces the legacy 3-service
-  Kokoro EN + F5-TTS HU + router pipeline (whose reference doc is now
-  SUPERSEDED — see [`docs/reference/tts-stack.md`](docs/reference/tts-stack.md)).
-- Loader is `sgl-project/sglang-omni`, NOT the legacy `fishaudio/fish-speech`
-  `tools/api_server.py` (which targets the 1.x LLaMA2 arch and does NOT load
-  the s2-pro Qwen3-omni checkpoint).
-- Upstream `lmsysorg/sglang-omni:dev` is amd64-only — we build a custom
-  image on `nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04`. Two aarch64 wheel
-  traps shaped the Dockerfile: PyPI's `sgl_kernel` aarch64 wheel is a CUDA 12
-  build (dlopen fails on `libnvrtc.so.12` in a cu13 image — use the `+cu130`
-  wheel from the sgl-project/whl GitHub releases) and PyPI torch aarch64
-  wheels are CPU-only (the omni resolve silently swaps cu130 torch out —
-  pinned + re-pinned + build-asserted via `direct_url.json`).
-- sm_121 runs the cu130 sgl-kernel via PTX forward-compat JIT (wheel ships
-  sm90/sm100 SASS only). First boot pays a multi-minute JIT toll; the cache
-  persists on `tts-fish-cuda-jit-cache` (CUDA_CACHE_MAXSIZE raised to 4 GB).
-- SGLang-Omni's upstream pipeline defaults assume a dedicated GPU
-  (`mem_fraction_static: 0.85` sized from memory-visible-at-startup, startup
-  torch-compile + CUDA-graph capture). On the shared unified pool that
-  wedged the host (swap thrash, frozen userspace). The image defaults to the
-  GB10-calibrated `configs/s2pro_tts_gb10.yaml` via `FISH_S2PRO_CONFIG` —
-  re-diff it against upstream when bumping the sglang-omni clone.
-- Voice cloning is via mounted file paths, **NOT inline base64** (SGLang-Omni
-  upstream schema accepts `references[].audio_path`). The shim resolves the
-  OpenAI-style `voice` field to `/app/voices/<voice>.{wav,txt}` at request
-  time. `docker cp <name>.{wav,txt}` adds a voice without restart.
-- License: **Fish Audio Research License — non-commercial**. The image bake
-  downloads `fishaudio/s2-pro` weights (~11 GB) and constitutes acceptance.
-  Wrapper code in `openclaw-tts-fish/server/` is MIT.
-- Patcher step 11 writes three things: top-level
-  `messages.tts.{enabled,auto,mode}`, `providers.openai`, and `voiceAliases`.
-  Without the top-level switches, voice surfaces silently treat TTS as off.
-- Web chat UI uses the browser's native `speechSynthesis` and does NOT call
-  the shim (upstream OpenClaw limitation).
-- `TTS_FISH_LEADING_SILENCE_MS=300` defends against the Whisper STT onset
-  clip ("Szia" → "Zia"). Done in-process via soundfile + numpy WAV splice,
-  no ffmpeg shell-out in the hot path.
-
-**STT (Whisper turbo)** → [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md)
-
-- One service (`openclaw-stt-whisper`), self-built CUDA 13 image, ~150 LOC
-  FastAPI wrapper around `faster-whisper`. Default model is
-  `deepdml/faster-whisper-large-v3-turbo-ct2` (~8× faster than vanilla
-  large-v3, pruned 4-layer decoder, ~1.6 GB VRAM). Swap to
-  `Trendency/whisper-large-v3-hu` via `STT_WHISPER_MODEL` for the HU finetune
-  (slower, higher accuracy on noisy HU mic input).
-- Wired via `tools.media.audio.models[]` (NOT `messages.stt` — that schema
-  name doesn't exist in OpenClaw). Auth lives in per-entry
-  `headers.Authorization`.
-- Whisper autodetects language per request — no router needed.
-
-**Browser automation** → [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md)
-
-- CDP-attach via `browser.profiles.<name>.cdpUrl`, port-per-profile, query-string
-  token (`?token=…` — OpenClaw's cdpUrl field accepts that or HTTP Basic, NOT
-  Authorization headers).
-- WebAuthn / passkeys do NOT work over the noVNC login helper (origin-bound).
-  Document this on any onboarding flow.
-
-**Image-gen bridge** → [`docs/reference/image-comfyui-bridge.md`](docs/reference/image-comfyui-bridge.md)
-
-- Separate compose file, joined to the main stack's bridge via `external: true`.
-- Host-gateway hop to the operator's existing ComfyUI (no shared external network
-  needed).
-- Model-agnostic — the repo ships NO model weights; workflows use
-  `"REPLACE_ME.safetensors"` placeholders.
-- Chat-side inline image render is blocked at the browser security layer (markdown
-  sanitizer + cross-origin Basic auth). Recommended UX: user opens the
-  `display_markdown` URL in a new tab. Same-origin canvas path is the workaround.
-
-**Discord integration** → [`docs/reference/discord-config.md`](docs/reference/discord-config.md)
-(operator config / patcher overrides) and [`docs/reference/discord-text-agent.md`](docs/reference/discord-text-agent.md)
-(agent design) / [`docs/reference/discord-voice-agent.md`](docs/reference/discord-voice-agent.md) (voice)
-
-- The patcher writes Discord-related fields across steps 20-39. All env-gated. The
-  "At a glance" table in `discord-config.md` lists every override, the default value,
-  and the env knob that disables it / restores vanilla upstream behaviour.
-- Override categories: bug workarounds (20, 21), UX improvements for slow LLMs (24),
-  capability widening for the Discord-routed agent (22, 25), doc-side cheatsheets
-  (26, 27), homelab policy choices (28, 29, 30), agentic coding (31-34), bot polish
-  (35-39).
-- Two layers that are easy to conflate: `channels.discord.guilds["*"].requireMention`
-  is the **gate** (config); `/activation mention|always` is the **LLM behaviour hint**
-  inside the gate. See `discord-config.md` → "Discord mention gate vs `/activation`
-  slash" before debugging *"slash doesn't behave like I thought"*.
-
-**Agentic coding (exec / approvals / long tasks / skills)** → [`docs/reference/agentic-coding.md`](docs/reference/agentic-coding.md)
-
-- Exec is a 3-layer surface: `tools.exec` policy (step 31, deterministic write —
-  a drifted `security: "full"` cannot survive a recreate), the
-  `exec-approvals.json` allowlist file (step 32 — strictly additive, learned
-  `/approve … allow-always` grants must NEVER be clobbered), and Discord
-  approval routing (step 33 — refuses wildcard approvers).
-- The `agents.defaults.*` family has crash-looped the gateway twice
-  (`agents.defaults.llm`, hand-written `agents.defaults.subagents`). Every new
-  key in that family ships schema-gated: empty env = skip, `on`/value = write,
-  `off` = self-heal removal. Validate via the WebGUI oracle (set in GUI → Save
-  → read persisted JSON via SSH) BEFORE enabling on a live host — see the
-  schema-gate runbook in `agentic-coding.md`.
-- `OPENCLAW_AGENT_DOCS_MODE=skills` (default) puts tool recipes in workspace
-  skill files; AGENTS.md keeps policy/persona only. Skill files are 100%
-  patcher-owned (operator edits overwritten); AGENTS.md marker blocks remain
-  the shared-ownership surface. `agentsmd` is the frozen-legacy rollback
-  layout — don't add new content to the legacy block constants.
-- "Work on it for a day" = `subagents.runTimeoutSeconds: 0` (step 5b, gated) +
-  thread-per-task (`sessions_spawn {thread:true}`) + queue.mode=steer for
-  mid-run redirects. The honesty rule: background work may only be promised
-  when a spawn actually happened (runId exists).
+- **LLM stack** → [`docs/reference/llm-stack.md`](docs/reference/llm-stack.md).
+  vLLM serves one model id; `LLM_MODEL_ID` must match the compose file in use, and
+  config-init drops every other `vllm/...` entry. A local model only thinks when its
+  catalog entry has the right `compat` (`LLM_THINKING_COMPAT`, auto by model id).
+  Nemotron needs `--default-chat-template-kwargs '{"medium_effort": true}'` (full
+  thinking ran 57k-token turns, off looped on tool JSON) and temperature 0.6 for
+  Hungarian. Mistral Small 4 needs `TRITON_MLA` on GB10 and its EAGLE draft does not
+  load on vLLM 0.31/0.32.
+- **GB10 power, thermals, memory** → [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md).
+  Under sustained load the box powers off with no journal entry at acpitz ~94 °C;
+  the fix is the clock cap (`scripts/gb10-clock-cap.service`, `-pl` is N/A on GB10)
+  with `scripts/gb10-thermguard.sh` as backstop. A 611 MHz / ~10 W stuck GPU after a
+  crash needs a cold drain. A model load can livelock the unified pool (no OOM kill,
+  no SSH): `scripts/gb10-memguard.sh`, `scripts/gb10-resilience-setup.sh`,
+  `scripts/reshard-safetensors.py`; `scripts/llm-ensure.sh` restarts `vllm-llm` after
+  a guard killed it. Do not start two big GPU services sizing memory at the same time.
+- **Discord** → [`docs/reference/discord-config.md`](docs/reference/discord-config.md),
+  [`discord-text-agent.md`](docs/reference/discord-text-agent.md).
+  `guilds["*"].requireMention` is the gate; `/activation` is only a prompt hint inside
+  it. Once a guild entry has a `channels` map, an unlisted channel is silent, so a
+  `"*"` fallback is written with it. Snowflakes stay strings; owners are written
+  `discord:<id>` and the heartbeat target `user:<id>`, or the DM finds no route.
+- **Agentic coding** → [`docs/reference/agentic-coding.md`](docs/reference/agentic-coding.md).
+  `OPENCLAW_EXEC_SECURITY=allowlist` (exec mode `ask`, approvals as Discord DMs) or
+  `full` (no gate at all). Approvers are never `"*"`. AGENTS.md holds policy and the
+  skill router only; recipes are skills. The bootstrap caps (`bootstrapMaxChars`)
+  cut a file silently past the limit.
+- **Web search** → [`searxng/settings/settings.yml`](searxng/settings/settings.yml).
+  `keep_only` is a registry filter, not an enable flag. Scraped engines rot silently
+  (fewer results, no error); re-measure with `scripts/websearch-bench.py` before
+  changing the engine list.
+- **STT / TTS** → [`docs/reference/stt-stack.md`](docs/reference/stt-stack.md),
+  [`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md). Whisper is wired via
+  `tools.media.models[]` with the Bearer in the entry's own headers. Fish TTS is off by
+  default: it does not fit beside Nemotron, and its licence is non-commercial.
+- **Browser** → [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md).
+  One CDP port per profile, token in the query string; passkeys do not work over
+  noVNC; `sandbox.browser` stays off or the model targets a sandbox that does not run.
+- **Image / video / music** → [`docs/reference/image-comfyui-bridge.md`](docs/reference/image-comfyui-bridge.md).
+  Separate compose joined to this stack's network; the repo ships no weights. The MCP
+  `requestTimeoutMs` must outlast the bridge's render budget.
+  `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` takes groups off the Discord agent when ComfyUI
+  has no room next to the LLM.
 
 ## Verification recipes
 
-These cover cases that have actually broken in practice. Run the relevant ones before
-declaring a non-trivial change done.
-
 ```bash
-# 1. Syntax checks
-node --check patch-config.mjs
+# 1. Syntax and compose
+for f in config-init/patch-config.mjs config-init/lib/*.mjs config-init/steps/*.mjs; do
+  node --check "$f" || echo "FAIL $f"
+done
 docker compose --env-file .env config --services
-docker compose --env-file .env --profile hu config --services
-docker compose --env-file .env --profile browser config --services
+docker compose --env-file .env --profile browser --profile python --profile meshcore config --services
+# compose/ files need LLM_MODEL_ID set (they refuse to start without it)
+docker compose --env-file .env -f docker-compose.yml -f compose/gemma4.yml config --services
 
-# 2. End-to-end on a test host (after `docker compose up -d` and onboarding)
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+# 2. config-init on a copy of the live state (on the Docker host). run.sh copies
+# what config-init reads into $HOME/pc-harness/<name>/state, redirects every mount
+# there, runs config-init and logs to log.txt. STACK = the checkout to use.
+STACK=/path/to/current-checkout bash config-init/test/run.sh before
+STACK=/path/to/changed-checkout bash config-init/test/run.sh after
+cp config-init/test/diff.mjs "$HOME/pc-harness/"   # diff.sh runs it from there
+bash config-init/test/diff.sh before after         # config paths + files that differ
+# A second run on "after" must log "already in the desired state".
 
-curl -sS http://127.0.0.1:18789/healthz                # → {"ok":true,"status":"live"}
-
-docker exec ${PROJ}openclaw-cli openclaw memory status --deep \
-  | grep -E "Provider|Vector dims|Embeddings"          # all "ready", dims = 1024 for bge-m3
-
-docker exec ${PROJ}openclaw-cli sh -c \
-  'curl -sS "http://searxng:8080/search?q=docker&format=json"' \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print('results:', len(d['results']))"
-
+# 3. End to end on a test host (after `up -d` and onboarding)
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
+curl -sS http://127.0.0.1:18789/healthz                       # {"ok":true,...}
+docker exec ${PROJ}openclaw-cli openclaw memory status --deep  # provider ready, dims 1024
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message "Use web_search to find the title of docker.com. Reply TITLE: <title>" \
-  --thinking off --json --timeout 600 \
-  | jq '.toolSummary, .finalAssistantVisibleText'
-
-# 3. Hybrid memory smoke
-docker exec ${PROJ}openclaw-cli sh -c \
-  'mkdir -p ~/.openclaw/workspace/memory && \
-   echo "Gemma 4 26B-A4B MoE NVFP4 runs at ~52 tok/s on GB10." > ~/.openclaw/workspace/memory/test.md'
-docker exec ${PROJ}openclaw-cli openclaw memory index --force
-docker exec ${PROJ}openclaw-cli openclaw memory search "How fast is Gemma on GB10?"
-
-# 4. Agentic-coding / skills smoke (after the 2026-06-10 upgrade)
-# Skills materialized + AGENTS.md slimmed (skills mode):
+  --thinking off --json --timeout 600 | jq '.toolSummary, .finalAssistantVisibleText'
+# Discord agent: skills and AGENTS.md size
 docker exec ${PROJ}openclaw-gateway sh -lc \
-  'ls /home/node/.openclaw/workspace-discord/skills/ && wc -c /home/node/.openclaw/workspace-discord/AGENTS.md'
-# exec-approvals contract: a learned allow-always entry must survive a patcher re-run
-docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/exec-approvals.json | jq '.agents'
-docker compose run --rm openclaw-config-init
-docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/exec-approvals.json | jq '.agents'
-# Schema-gated keys (subagents bounds, 8i/8j, 29d, workboard): follow the
-# schema-gate runbook in docs/reference/agentic-coding.md — one knob per
-# recreate, healthz watch, rollback = knob off + force-recreate.
+  'ls ~/.openclaw/workspace-discord/skills/ && wc -c ~/.openclaw/workspace-discord/AGENTS.md'
 ```
 
 ## When in doubt
 
-- For runtime / config questions, read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-  first.
-- For "how do I change X" questions, read
-  [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md).
-- For deeper reference material (3-store credential layout, patcher step-by-step,
-  Discord override table, LLM/TTS research, reusable Docker patterns), read
-  [`docs/reference/`](docs/reference/) — start with
-  [`docs/reference/README.md`](docs/reference/README.md) for the index.
-- For OpenClaw-specific behaviour (CLI flags, plugin schema, gateway protocol), check
-  the upstream docs at <https://docs.openclaw.ai/>.
-- For vLLM-specific questions (chat template, tool parser, NVFP4 kernels), check the
-  upstream vLLM repo and the gemma4 image notes.
-- For hardware tuning, the GB10 numbers in `README.md` and `.env.example` are
-  measured, not theoretical — they're a useful baseline when adapting to other GPUs.
+- How it fits together: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- How to change something: [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md).
+- What a knob does: [`docs/reference/configuration.md`](docs/reference/configuration.md).
+- Depth per area: [`docs/reference/README.md`](docs/reference/README.md).
+- Upgrading OpenClaw: [`docs/OPENCLAW_UPGRADE.md`](docs/OPENCLAW_UPGRADE.md).
+- OpenClaw behaviour (CLI flags, plugin SDK, schema): <https://docs.openclaw.ai/>.
+- The GB10 numbers in the compose comments and the reference docs are measured; use
+  them as the baseline when adapting to other hardware.

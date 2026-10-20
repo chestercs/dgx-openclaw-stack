@@ -34,6 +34,20 @@ function botToken(cfg) {
   return process.env.DISCORD_BOT_TOKEN || null;
 }
 
+// The bot's own user ID: tagging the bot is how people talk to it, so its
+// own mention is left out of the "Tagged" line.
+let selfId;
+async function botUserId(token) {
+  if (selfId !== undefined) return selfId;
+  try {
+    const res = await fetch(`${API}/users/@me`, { headers: { Authorization: `Bot ${token}` } });
+    selfId = res.ok ? (await res.json()).id : null;
+  } catch {
+    selfId = null;
+  }
+  return selfId;
+}
+
 // The mentions of one message: [{ id, label }], label as the reader saw it.
 async function fetchMentions(token, channelId, messageId) {
   const ac = new AbortController();
@@ -44,7 +58,9 @@ async function fetchMentions(token, channelId, messageId) {
     });
     if (!res.ok) return [];
     const msg = await res.json();
-    return (msg.mentions ?? []).map((u) => ({ id: u.id, label: u.member?.nick || u.global_name || u.username }));
+    const self = await botUserId(token);
+    return (msg.mentions ?? []).filter((u) => u.id !== self)
+      .map((u) => ({ id: u.id, label: u.member?.nick || u.global_name || u.username }));
   } catch {
     return [];
   } finally {

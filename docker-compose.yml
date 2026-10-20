@@ -15,6 +15,10 @@
 # them through COMPOSE_FILE in .env. Every knob is documented in
 # .env.example; the design notes are in docs/.
 
+# The project name fixes the network name (<name>_default) that the separate
+# ComfyUI bridge compose (openclaw-image-comfyui/) joins.
+name: ${COMPOSE_PROJECT_NAME:-dgx-openclaw}
+
 x-logging: &logging
   driver: json-file
   options:

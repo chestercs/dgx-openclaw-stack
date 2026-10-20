@@ -1,7 +1,7 @@
 {
   "id": "people-context",
   "name": "People Context",
-  "description": "Prepends the Discord sender's people/MEMORY.md section to each turn of the discord-friend agent.",
+  "description": "Tells the discord-friend agent who is tagged in a message (with IDs) and adds the people/MEMORY.md lines of the sender and the tagged people.",
   "categories": ["other"],
   "activation": { "onStartup": true },
   "configSchema": { "type": "object", "additionalProperties": false }

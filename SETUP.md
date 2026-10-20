@@ -1,32 +1,38 @@
-# Setup — DGX OpenClaw Stack
+# Setup
 
-This guide walks you from a fresh DGX Spark / ASUS GB10 box to a running agent, step by step.
+This guide takes a fresh GB10 box (DGX Spark / ASUS Ascent GX10) to a running
+agent. Most of the time goes into the first model download (~80 GB for the
+default model).
 
-**Time budget**: ~20–30 minutes end-to-end on a first install (most of it the initial model download). Subsequent `docker compose up -d` cycles complete in under two minutes once weights are cached.
+For "how do I change X", see [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md).
+For every `.env` knob, see
+[`docs/reference/configuration.md`](docs/reference/configuration.md). When
+something breaks, see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
-**Audience**: end-users and sysadmins setting up the stack for the first time. For "how do I customize X" go to [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md); for design rationale go to [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). If something is wrong, jump straight to [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+The commands below use the default container names (`CONTAINER_NAME_PREFIX`
+empty). If you set a prefix, put it in front of every name in `docker exec`.
+Run all commands from the repository folder on the host.
 
----
+## 1. Prerequisites
 
-## 0. Host prerequisites
+- **OS:** Ubuntu 24.04 on ARM64 (the DGX OS the box ships with).
+- **Docker Engine** with the Compose v2 plugin.
+- **NVIDIA Container Toolkit**, registered as a Docker runtime.
+- **Disk:** about 150 GB free on the drive that holds `VLLM_HF_CACHE_DIR` and
+  Docker's images. The Nemotron weights and their drafter are ~80 GB. The
+  vLLM, OpenClaw, Whisper and browser images, bge-m3 and the Whisper model
+  take the rest. An extra model file (Gemma, Mistral) or the Fish TTS needs
+  room of its own.
 
-On the GB10 host you need:
-
-- **Ubuntu 24.04** (shipped with both DGX Spark and ASUS GB10) or similar ARM64 Linux.
-- **Docker Engine 24.0+** with the Compose v2 plugin.
-- **NVIDIA Container Toolkit** configured as a Docker runtime.
-- ~25 GB free disk space for model weights + container images.
-
-Verify:
+Check:
 
 ```bash
-docker --version                               # 24.0+
-docker compose version                         # v2.20+
-docker info | grep -i 'runtimes.*nvidia'       # should show nvidia
-nvidia-smi                                     # should list the GB10 GPU
+docker compose version
+docker info | grep -i 'runtimes.*nvidia'   # must list nvidia
+nvidia-smi                                 # must show the GB10
 ```
 
-If `docker info` doesn't show the nvidia runtime:
+If `docker info` does not list the nvidia runtime:
 
 ```bash
 sudo apt install -y nvidia-container-toolkit
@@ -34,336 +40,345 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-## 1. HuggingFace account + model access
+### Install the GPU clock cap (GB10)
 
-The Gemma 4 NVFP4 weights are gated. You need to:
+Under sustained LLM load, an uncapped GB10 can power itself off at about
+94 °C, with nothing in the journal. Locking the GPU clock at 2200 MHz stops
+this, and decode speed stays the same. The clock lock is lost on reboot, so
+install it as a systemd unit:
 
-1. Create (or log into) your HuggingFace account.
-2. Accept the Gemma 4 MoE license at: https://huggingface.co/nvidia/Gemma-4-26B-A4B-NVFP4
-   (Optional for the dense 31B alternative: https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4 — the same token covers both.)
-3. Create a read-scope access token at: https://huggingface.co/settings/tokens
+```bash
+sudo cp scripts/gb10-clock-cap.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now gb10-clock-cap
+```
 
-Keep that `hf_...` token handy — you'll paste it into `.env` in step 3.
+To undo it: `sudo systemctl disable --now gb10-clock-cap`. If the box still
+shuts down, lower the cap in the unit to 2100, then 2000. Background:
+[`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md).
 
-The bge-m3 embedding model is **not** gated; no extra steps needed.
+Recommended as well: run `sudo bash scripts/gb10-resilience-setup.sh` once.
+It turns on the SysRq keys, a hardware watchdog and an OOM shield for sshd,
+and keeps 1 GiB free for the kernel. These keep the box reachable if the
+unified memory pool ever fills up. The undo steps are at the end of the
+script.
 
-## 2. Clone the repo
+## 2. HuggingFace access
+
+The model weights download from HuggingFace on first start. Create a token
+with read access at <https://huggingface.co/settings/tokens>. Then open each
+model page you will use (`https://huggingface.co/<model id>`) and accept its
+licence if the page asks you to:
+
+| Backend | Model ids |
+|---|---|
+| Nemotron (default) | `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` and its drafter `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr` |
+| Gemma 4 (`compose/gemma4.yml`) | `nvidia/Gemma-4-26B-A4B-NVFP4` (MoE) or `nvidia/Gemma-4-31B-IT-NVFP4` (dense) |
+| Mistral Small 4 (`compose/mistral.yml`) | `mistralai/Mistral-Small-4-119B-2603-NVFP4` |
+| Fish TTS (`compose/tts-fish.yml`) | `fishaudio/s2-pro`, downloaded while the image builds. Research licence, non-commercial only |
+
+bge-m3 and the Whisper model need no licence step. The same token is used for
+them.
+
+## 3. Clone and bootstrap
 
 ```bash
 git clone https://github.com/chestercs/dgx-openclaw-stack.git
 cd dgx-openclaw-stack
-```
-
-## 3. Run the bootstrap script
-
-```bash
 ./bootstrap.sh
 ```
 
-The script is **non-destructive**: it asks, it never overwrites, it can be re-run safely. It will:
+`bootstrap.sh`:
 
-1. Check prerequisites (`docker`, `docker compose`, `nvidia` runtime).
-2. Create `.env` from `.env.example` if one doesn't exist yet.
-3. Generate strong random secrets for `VLLM_API_KEY`, `OPENCLAW_GATEWAY_TOKEN`, and `SEARXNG_SECRET` — only if they still hold the shipped placeholder values.
-4. Prompt for your `HUGGING_FACE_HUB_TOKEN`.
-5. Prompt for three host paths (defaults: `/opt/dgx-openclaw/{hf-cache,openclaw-config,workspace}`) and create them if they don't exist.
+1. checks for docker, the compose plugin, openssl and the NVIDIA runtime;
+2. copies `.env.example` to `.env` (mode 600) if there is no `.env` yet;
+3. fills every `CHANGE_ME` secret with a random value;
+4. asks for `HUGGING_FACE_HUB_TOKEN`;
+5. creates the host folders named in `.env` (`/srv/openclaw/...` by default).
 
-At the end it prints your next command.
+It is safe to run again. A value is only replaced while it still holds the
+`CHANGE_ME` placeholder. Without a terminal (CI) it asks nothing, so set
+`HUGGING_FACE_HUB_TOKEN` in `.env` first. The OpenClaw containers run as UID
+1000, so the host folders must be writable by that user. If bootstrap cannot
+create a folder, it prints the `sudo mkdir` / `chown` command to run.
 
-### What if I want to edit `.env` manually?
+Then open `.env` and look at least at these:
 
-You can. Skip the bootstrap and do:
+- `OPENCLAW_HEARTBEAT_TZ` and `TZ`: your time zone, for heartbeat hours and
+  nightly jobs.
+- `OPENCLAW_LAN_CIDR`: your LAN range, if clients reach the gateway directly
+  rather than through a reverse proxy.
+- `COMPOSE_PROFILES`: `browser,python` by default. Remove what you do not
+  want. Add `meshcore` only with the radio plugged in.
+- The paths: `VLLM_HF_CACHE_DIR` needs the disk space from step 1.
+
+To rotate secrets later, use `./rotate-secrets.sh` (`--help` lists what it
+covers).
+
+## 4. Choose the backend
+
+Nemotron 3.5 Super is the default, and it needs no `.env` change. To use
+another model, set both lines in `.env`:
 
 ```bash
-cp .env.example .env
-chmod 600 .env
-$EDITOR .env
+# Gemma 4 MoE (or nvidia/Gemma-4-31B-IT-NVFP4 for the dense model)
+COMPOSE_FILE=docker-compose.yml:compose/gemma4.yml
+LLM_MODEL_ID=nvidia/Gemma-4-26B-A4B-NVFP4
+
+# or Mistral Small 4
+COMPOSE_FILE=docker-compose.yml:compose/mistral.yml
+LLM_MODEL_ID=mistralai/Mistral-Small-4-119B-2603-NVFP4
 ```
 
-Every variable is commented in-line in `.env.example`.
+The compose file changes the `vllm-llm` command, and `LLM_MODEL_ID` tells
+config-init which id to register in OpenClaw. Leave one of them out and you
+get a compose error (no id) or a model that answers 404 (wrong id). The
+measured numbers and the trade-offs are in the
+[README](README.md#hardware-and-measured-numbers) and
+[`docs/reference/llm-stack.md`](docs/reference/llm-stack.md).
 
-## 4. Review the tunables
+If you switch models on an install that is already running, run
+`docker compose up -d`, then clear OpenClaw's per-agent model cache. The image
+tool reads the cache, not the live config:
 
-Before the first `docker compose up`, open `.env` and check:
+```bash
+docker exec openclaw-gateway sh -c 'rm -f /home/node/.openclaw/agents/*/agent/models.json'
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+```
 
-- `LLM_GPU_MEM_UTIL`: defaults to `0.68`. Keep as-is if you want the embedding stack alongside. Raise to `0.85` if you remove the embedding service.
-- `OPENCLAW_HEARTBEAT_TZ`: default `UTC`. Set to your local zone (e.g. `America/Los_Angeles`) so the agent's active-hours window and dreaming schedule match your daily rhythm.
-- `OPENCLAW_LAN_CIDR`: if you plan to hit the gateway directly from your LAN (not through a reverse proxy), fill this in (e.g. `192.168.1.0/24`).
-- `OPENCLAW_ENABLE_DREAMING`: leave at `0` unless your OpenClaw image is `2026.4.15` or newer.
+## 5. Onboarding
 
-## 5. Start the stack (phase 1)
+### Phase 1: first start
 
 ```bash
 docker compose up -d
-docker compose logs -f
+docker compose logs -f vllm-llm
 ```
 
-Expected timeline on a cold start (no cached weights yet):
+What to expect:
 
-- `openclaw-config-init` — runs in ~1–2 seconds. On a fresh install it logs
-  *"openclaw.json not found — skipping (run onboarding first)"* and exits `0`.
-  This is expected.
-- `searxng` — ~5–10 seconds to boot on first image pull, then instant.
-- `vllm-embedding` — ~1–2 minutes after pulling image, first boot only (bge-m3 is tiny).
-- `vllm-llm` — 5–15 minutes the first time (safetensors download + NVFP4 kernel JIT). Subsequent boots: ~3–4 minutes.
-- `openclaw-gateway` — **will crash-loop with** `Missing config. Run openclaw setup …`
-  on a fresh install. This is expected — the gateway requires an `openclaw.json`,
-  which step 6 below creates via onboarding. After onboarding, restart
-  `openclaw-config-init` + `openclaw-gateway` + `openclaw-cli` together (phase 2).
-- `openclaw-cli` — always-up utility container, ready immediately.
+- `vllm-llm` downloads the weights and compiles kernels. Its health check
+  allows 25 minutes for that. The gateway starts only after both vLLM servers
+  report healthy, so `docker compose up -d` can wait a long time. If the
+  download takes longer than the health check allows, compose reports
+  `vllm-llm` as unhealthy. Let the download finish (watch the log), then run
+  `docker compose up -d` again.
+- `vllm-embedding`, `searxng` and `openclaw-stt-whisper` come up within a few
+  minutes.
+- `openclaw-config-init` logs that `openclaw.json` does not exist yet, then
+  exits 0.
+- `openclaw-gateway` keeps restarting with `Missing config. Run openclaw
+  setup …`. **This is expected.** OpenClaw does not accept connections until
+  someone has onboarded it on purpose and chosen the gateway token.
+  Config-init does not create `openclaw.json` on its own, because that would
+  skip this step.
 
-Service status:
+### Phase 2: create openclaw.json
+
+Run the OpenClaw onboarding in the CLI container. The interactive wizard:
 
 ```bash
-docker compose ps
-# vllm-* should be `Up (healthy)`; openclaw-gateway is `Restarting`
-# until you complete onboarding.
+docker exec -it openclaw-cli openclaw onboard
 ```
 
-> **Why the crash-loop is intentional.** The OpenClaw security model requires
-> explicit onboarding (you choose the gateway token and pair the UI) before
-> the gateway will accept connections. The patcher honors this: it skips
-> cleanly when `openclaw.json` doesn't exist yet, then writes the wired-up
-> configuration once onboarding has created the file.
-
-## 6. Onboarding — pair the Chrome extension (UI) (phase 2a)
-
-Install the official OpenClaw Chrome extension. After install:
-
-1. Click the extension icon → **Add gateway**.
-2. Paste the gateway URL: `ws://<your-host-ip>:18789` (use `wss://your-domain` if you've already put a reverse proxy in front).
-3. Paste your `OPENCLAW_GATEWAY_TOKEN` (from `.env`) as the token.
-4. The extension's onboarding wizard launches. Pick:
-   - **Provider**: vLLM (OpenAI-compatible).
-   - **Model**: `nvidia/Gemma-4-26B-A4B-NVFP4` (the patcher will register this anyway in phase 2b alongside the dense 31B alternative; if the wizard offers a different default, pick whatever and the patcher will fix it).
-   - **Tool calling**: enabled.
-   - **Memory search**: enabled, `BAAI/bge-m3`.
-
-Onboarding writes `openclaw.json` to your `OPENCLAW_CONFIG_DIR` and the
-gateway stays alive. The wizard's wiring choices may not be production-ready
-on their own — the next step ensures they are.
-
-Headless alternative (no Chrome extension): inside the gateway container,
-`openclaw onboard --non-interactive --token "$OPENCLAW_GATEWAY_TOKEN"` writes
-the same `openclaw.json` non-interactively.
-
-## 6b. Re-run the patcher (phase 2b)
+Or headless, with the values from `.env`:
 
 ```bash
-docker compose up -d --force-recreate \
-  openclaw-config-init openclaw-gateway openclaw-cli
+val() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
+docker exec -e OPENCLAW_GATEWAY_TOKEN="$(val OPENCLAW_GATEWAY_TOKEN)" openclaw-cli \
+  openclaw onboard \
+  --non-interactive --accept-risk \
+  --mode local --flow manual \
+  --auth-choice vllm \
+  --custom-base-url http://vllm-llm:8004/v1 \
+  --custom-api-key "$(val VLLM_API_KEY)" \
+  --custom-model-id "$(val LLM_MODEL_ID)" \
+  --custom-compatibility openai \
+  --gateway-bind lan --gateway-port 18789 \
+  --gateway-auth token \
+  --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
+  --skip-daemon --skip-search --skip-skills --skip-channels --skip-ui --skip-health
 ```
 
-The `openclaw-config-init` container now finds `openclaw.json` and applies the
-27+ patcher steps (vllm provider wiring, hybrid memory + MMR, SearxNG
-enablement, dreaming, trustedProxies, TTS provider, STT provider, MCP wiring
-for python-sandbox and image-comfyui, browser CDP profiles, 11 Discord
-overrides — see `patch-config.mjs` for the indexed list).
-You'll see `[patch-config]` lines for each change. The gateway restarts and
-picks up the patched config.
+What you choose for the model and search does not need to be exact.
+Config-init writes the provider, the model entry, memory search and web search
+in the next step. What matters is the gateway token: use
+`OPENCLAW_GATEWAY_TOKEN` from `.env`.
 
-> **Why all three together.** `openclaw-cli` shares the gateway's network
-> namespace (`network_mode: "service:openclaw-gateway"`). If you recreate the
-> gateway alone, the still-running CLI ends up pointing at a dead namespace
-> and silently loses connectivity. Always recreate the trio together.
-
-## 7. First conversation & sanity checks
-
-The shell snippets below use `${PROJ}` for the container-name prefix — default `dgx-` (set via `CONTAINER_NAME_PREFIX` in `.env`; set it empty for bare names like `openclaw-gateway`). Source it once:
+### Phase 3: let config-init wire it
 
 ```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
-PROJ=${PROJ:-dgx-}
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+docker compose logs openclaw-config-init
 ```
 
-### Required: confirm the trio is healthy
+Config-init now finds `openclaw.json` and writes the stack's settings. It logs
+one `[patch-config]` line for each change, with tokens masked. It runs again
+on every `docker compose up`, so for a lasting change, edit `.env` rather than
+`openclaw.json` (see
+[`docs/reference/configuration.md`](docs/reference/configuration.md)).
+
+Always recreate those three services together. `openclaw-cli` shares the
+gateway's network namespace. If the gateway is recreated on its own, the CLI
+is left in a dead namespace with no network.
+
+### Open the Web UI
+
+Open `http://<host>:18789` and sign in with the gateway token. A new browser
+or client may first show "pairing required". Approve it from the CLI:
 
 ```bash
-curl -sS http://127.0.0.1:18789/healthz                 # → {"ok":true,"status":"live"}
-docker exec ${PROJ}openclaw-cli openclaw memory status --deep
-# Embeddings ready, Vector ready (dims 1024 for bge-m3).
+docker exec openclaw-cli openclaw devices list --timeout 60000
+docker exec openclaw-cli openclaw devices approve <request-id> --timeout 60000
 ```
 
-If either command fails or returns the wrong shape, stop here and check [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+For access from outside your LAN, put a reverse proxy with TLS in front of
+port 18789. If the proxy forwards plain `ws://` to the gateway on a private
+address, set `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1`. If clients reach the
+gateway directly, set `OPENCLAW_LAN_CIDR`. Recreate the three services after
+either change.
 
-### Recommended: smoke-test each capability end-to-end
-
-Open the Chrome extension and try these in a single chat session:
-
-| Capability | What to ask | What you should see |
-|---|---|---|
-| **Tool calling** | "What's the current time in UTC?" | The agent calls `get_time` and answers with a real timestamp (not "I don't have access"). |
-| **Image input** | Drag an image into the chat and ask "What's in this picture?" | A description. Vision prefill adds ~1–2 s and ~280 tokens per image. |
-| **Memory recall** | First turn: "Remember my favorite color is ultramarine." Open a *new* chat, ask: "What's my favorite color?" | The new session calls `memory_search` and recovers `ultramarine`. |
-| **Web search** | "Use the `web_search` tool to find the current prime minister of Hungary, then cite the source URL." | The agent calls `web_search`, hits the bundled SearxNG, and answers with a URL. |
-| **Voice-note STT** | Drop a short wav/mp3/m4a into the chat composer and send with any message. | OpenClaw's `tools.media.audio` pipeline POSTs the file to Whisper, substitutes the transcript into the message body, and the agent replies based on the transcribed content. |
-
-Smaller models occasionally skip tool calls on conversational prompts — naming the tool in the question makes the call deterministic during smoke-testing.
-
-Spot-check SearxNG directly:
+## 6. Sanity checks
 
 ```bash
-docker exec ${PROJ}openclaw-cli curl -s 'http://searxng:8080/search?q=test&format=json' | head
-# Should return a JSON blob with a non-empty `results` array.
+# Gateway
+curl -sS http://127.0.0.1:18789/healthz          # {"ok":true,"status":"live"}
+
+# Memory search: embeddings ready, 1024 dimensions (bge-m3)
+docker exec openclaw-cli openclaw memory status --deep
+
+# Web search through OpenClaw, as the agent sees it
+docker exec openclaw-cli openclaw infer web search \
+  --provider searxng --query "docker compose" --limit 3 --json
+
+# One agent turn with a tool call. Tool runs need --timeout 600; the
+# default 60 s is too short on a cold cache.
+docker exec openclaw-cli openclaw agent --agent main \
+  --message "Use web_search to find the title of docker.com. Reply TITLE: <title>" \
+  --thinking off --json --timeout 600
+
+# Speech-to-text backend
+curl -sS http://127.0.0.1:8093/health
 ```
 
-Spot-check the Whisper STT backend directly:
+`scripts/websearch-bench.py searxng` measures search quality with 20 fact
+questions (Hungarian and English). It is useful after you change the engines
+in `searxng/settings/settings.yml`.
 
-```bash
-STT_KEY=$(grep '^STT_API_TOKEN=' .env | cut -d= -f2-)
-curl -s http://127.0.0.1:8093/health | jq .
-# → {"status": "healthy", ...}
+## 7. Optional services
 
-# Hungarian autodetect on a short sample (drop in your own HU wav/mp3):
-curl -sS -X POST http://127.0.0.1:8093/v1/audio/transcriptions \
-  -H "Authorization: Bearer $STT_KEY" \
-  -F file=@/path/to/hu_sample.wav \
-  -F model=deepdml/faster-whisper-large-v3-turbo-ct2 \
-  -F response_format=verbose_json | jq '.language, .text'
-# → "hu" + accurate transcript
-```
-
-Spot-check the Fish Audio TTS backend directly:
-
-```bash
-TTS_KEY=$(grep '^TTS_API_TOKEN=' .env | cut -d= -f2-)
-curl -s http://127.0.0.1:8091/healthz | jq .
-# → {"status": "ok", "engine_ready": true,
-#    "voices_available": ["bella","default_en","default_hu","emma","fenrir","michael","nicole"], ...}
-# NOTE: the FIRST boot on GB10 can take 10-30+ minutes (one-time PTX JIT
-# toll, cached on the tts-fish-cuda-jit-cache volume afterwards).
-
-# English smoke (writes a WAV to /tmp/test_en.wav):
-curl -sS -X POST http://127.0.0.1:8091/v1/audio/speech \
-  -H "Authorization: Bearer $TTS_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Hello world, this is a test.","voice":"default_en"}' \
-  --output /tmp/test_en.wav
-# Hungarian smoke:
-curl -sS -X POST http://127.0.0.1:8091/v1/audio/speech \
-  -H "Authorization: Bearer $TTS_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Szia, ez egy teszt.","voice":"default_hu"}' \
-  --output /tmp/test_hu.wav
-file /tmp/test_en.wav /tmp/test_hu.wav  # → RIFF (little-endian) data, WAVE audio
-```
-
-### Add a custom voice (any language)
-
-Voice cloning happens at request time — no fine-tune, no rebuild:
-
-```bash
-# 1. Prepare a 10-30 s mono WAV + a verbatim transcript:
-#       myclone.wav   (16-bit PCM mono, no music/noise/echo)
-#       myclone.txt   (exactly what was said in myclone.wav)
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
-docker cp myclone.wav ${PROJ}openclaw-tts-fish:/app/voices/
-docker cp myclone.txt ${PROJ}openclaw-tts-fish:/app/voices/
-
-# 2. Use it (no restart needed):
-curl -sS -X POST http://127.0.0.1:8091/v1/audio/speech \
-  -H "Authorization: Bearer $TTS_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Sample text.","voice":"myclone"}' \
-  --output /tmp/clone.wav
-```
-
-## 8. (Optional) Enable browser automation
-
-If you want the agent to reach login-gated, JS-heavy sites (private GitHub
-wikis, private Notion pages, MediaWiki instances, Patreon archives), the
-`openclaw-browser` service is the path. Re-running `bootstrap.sh` now
-prompts you to opt in; if you said "no" earlier and changed your mind, the
-manual path is:
-
-```bash
-# 1. Generate the two browser secrets if they aren't already in .env
-#    (bootstrap.sh did this if you ran it):
-grep '^BROWSER_API_TOKEN=' .env || \
-  echo "BROWSER_API_TOKEN=$(openssl rand -base64 48 | tr -d '\n')" >> .env
-grep '^BROWSER_VNC_PASSWORD=' .env || \
-  echo "BROWSER_VNC_PASSWORD=$(openssl rand -base64 24 | tr -d '\n=+/' | head -c 32)" >> .env
-
-# 2. Add 'browser' to the active profile set:
-#    Either add `COMPOSE_PROFILES=browser` to .env, or pass --profile browser
-#    on every compose command.
-
-# 3. Build + start the service (~1.7 GB image on first build):
-docker compose --profile browser up -d --build openclaw-browser
-```
-
-Once the service is up, onboard each credential **once** via the noVNC
-helper. The bridge is always-on (since v0.7.0) — the persistent password
-in `BROWSER_VNC_PASSWORD` lets you peek any time the container is up:
-
-```bash
-./bootstrap-browser-login.sh github-user1
-```
-
-The script prints a noVNC URL and (when you're SSH'd in) the autossh
-tunnel recipe to expose it on your laptop. Open the URL, log in to the
-target service with **password + TOTP / SMS OTP / magic link**, hit Enter
-in the terminal — cookies persist for the rest of the upstream session
-(~14d GitHub, ~30d Notion, etc.).
-
-**Limitations to know about:**
-
-- Passkeys (FIDO2/WebAuthn, including Apple Keychain, Windows Hello,
-  Google Password Manager, USB YubiKey) **don't work** over noVNC by W3C
-  origin-bound spec. Use password+TOTP for the noVNC flow, or a
-  long-lived API token (PAT, integration token, service account) and
-  bypass the browser entirely.
-- Vanilla Playwright Chromium has `navigator.webdriver=true`, so
-  Cloudflare-fronted hostile sites will block. The boundary, the
-  rationale, and the optional Patchright swap are documented in
+- **Discord bot.** Create the bot and invite it as described in
+  [`docs/discord-bot-setup.md`](docs/discord-bot-setup.md). Put the token in
+  `DISCORD_BOT_TOKEN` and your user ID in `OPENCLAW_DISCORD_COMMAND_OWNERS`,
+  recreate the three services, then run
+  `docker exec openclaw-cli openclaw channels add --channel discord`. Recreate
+  the three services once more, so that config-init writes the Discord
+  settings. The bot answers only when it is tagged or replied to, and accepts
+  DMs only from people who share a server with it. Every override and the
+  knob that changes it:
+  [`docs/reference/discord-config.md`](docs/reference/discord-config.md).
+- **Browser logins** (profile `browser`). Log a profile in once with
+  `./bootstrap-browser-login.sh <profile>`. It prints a noVNC URL. Sign in with
+  a password plus TOTP, SMS or a magic link. Passkeys do not work over noVNC.
+  Extra profiles go in `BROWSER_PROFILE_NAMES`. Details:
   [`docs/reference/browser-automation.md`](docs/reference/browser-automation.md).
+- **Python sandbox** (profile `python`). Works once its token is set
+  (bootstrap does that). For web apps the agent builds, set
+  `OPENCLAW_SANDBOX_PUBLIC_URL`. For the `git_push` tool, set `GITHUB_TOKEN`.
+  Details: [`docs/reference/python-sandbox.md`](docs/reference/python-sandbox.md).
+- **MeshCore radio** (profile `meshcore`). Plug in the companion radio, then
+  set `MESHCORE_ENABLED=on`, `MESHCORE_SERIAL_DEVICE` (a `/dev/serial/by-id/`
+  path) and `MESHCORE_ALLOWED_PUBKEYS`. Details:
+  [`docs/reference/meshcore-bridge.md`](docs/reference/meshcore-bridge.md).
+- **Text-to-speech** (`compose/tts-fish.yml`). Add the file to `COMPOSE_FILE`
+  and set `OPENCLAW_TTS_FISH_API_KEY`. The first build and boot take a long
+  time, because kernels are compiled for the GB10. It does not fit next to
+  Nemotron, so pair it with a Gemma model. The Fish Audio Research License
+  allows non-commercial use only. Details:
+  [`openclaw-tts-fish/README.md`](openclaw-tts-fish/README.md).
+- **Image, video and music** (ComfyUI bridge). See
+  [`openclaw-image-comfyui/README.md`](openclaw-image-comfyui/README.md),
+  then set `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` to the groups that stay off
+  (`none` turns all of them on). `compose/claw-img.yml` adds the separate
+  slash-command bot.
 
-After onboarding, the agent can reach authenticated content via
-`browser.navigate(url=..., profile="github-user1")`. Re-run the same
-helper script when GitHub's 28-day 2FA window or Notion's ~30-day
-session expires.
+## 8. Daily operation
 
-## 9. (Optional) Reverse proxy + TLS
-
-For remote access over `wss://`, put any reverse proxy in front of port `18789`. A common setup:
-
-- **Nginx Proxy Manager** container on host networking (easiest).
-- **Caddy** with automatic Let's Encrypt.
-- **Cloudflared tunnel** for no-open-ports public access.
-
-If the proxy terminates TLS and talks plain `ws://` to the gateway on the private network, keep `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1` in `.env`.
-
-If the proxy sits on the **host network** and sends `X-Forwarded-For`, you're covered by the default `gateway.trustedProxies` (the `172.16.0.0/12` docker-bridge range already includes the gateway's bridge IP).
-
-If you hit the gateway **directly from your LAN**, add your LAN CIDR via `OPENCLAW_LAN_CIDR=192.168.1.0/24` (or whatever) and re-run `docker compose up -d`. The patcher will update `trustedProxies`.
-
-## 10. (Optional) Daily operations
-
-- **Stop everything**: `docker compose down` (keeps volumes + config).
-- **Restart a single non-gateway service**: `docker compose up -d --force-recreate vllm-llm`.
-- **Restart the gateway** — always recreate the trio so `openclaw-cli` doesn't end up in a dead namespace:
-  ```bash
-  docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
-  ```
-- **Pull newer images**: `docker compose pull && docker compose up -d`.
-- **View gateway logs**: `docker compose logs -f openclaw-gateway`.
-- **Enter the CLI container**: `docker exec -it ${PROJ}openclaw-cli openclaw`.
-- **Back up memory** (do this regularly!): `tar czf openclaw-$(date +%F).tar.gz -C $OPENCLAW_CONFIG_DIR .`.
-
-## 11. Uninstall
+Whenever the gateway restarts, restart the three OpenClaw services together:
 
 ```bash
-docker compose down -v                           # containers + non-bind volumes
-rm -rf /opt/dgx-openclaw/                        # host data (IRREVERSIBLE)
-docker image prune                               # optional: reclaim image space
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+docker compose logs -f openclaw-gateway
 ```
 
-Note: the HF cache volume is a host bind-mount (default `/opt/dgx-openclaw/hf-cache`)
-and survives `down -v`. Removing the host directory above wipes the cached
-~16 GB of model weights — a fresh `up` will re-download them.
+`docker compose down` stops everything and keeps all state.
 
-Your `.env` is kept. Delete it only when you're sure you're done.
+### Host cron jobs
 
----
+Add these to the host user's crontab (`crontab -e`), with the real path to the
+repository:
 
-Still stuck? → [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md). Want to swap models or add your own agents? → [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md).
+```cron
+# Re-attach openclaw-cli and the meshcore bridge to the gateway's network
+# namespace after a reboot or a gateway restart.
+@reboot     /path/to/repo/scripts/netns-dependents-up.sh --watch
+*/5 * * * * /path/to/repo/scripts/netns-dependents-up.sh --watch
+
+# GB10 thermal backstop: kills the LLM containers at 93 °C and restarts them
+# once the box has cooled down. Install the clock cap first; this is the
+# backstop, not the fix.
+@reboot     /path/to/repo/scripts/gb10-thermguard.sh >/dev/null 2>&1
+*/5 * * * * /path/to/repo/scripts/gb10-thermguard.sh >/dev/null 2>&1
+
+# Brings vllm-llm back after a guard killed it (a killed container counts as
+# stopped by hand, so its restart policy does not apply).
+@reboot     /path/to/repo/scripts/llm-ensure.sh boot
+*/5 * * * * /path/to/repo/scripts/llm-ensure.sh
+
+# One short health block per day in ~/daily-status/ (counts and statuses
+# only, never message text).
+15 9 * * *  /path/to/repo/scripts/daily-status.sh >/dev/null 2>&1
+```
+
+The watchers hold a lock, so the `*/5` lines only bring one back if it has
+died. When you try a large new model, also run `scripts/gb10-memguard.sh`
+the same way (`@reboot` plus `*/5`). It kills the model container before the
+memory pool runs dry, because the GB10 stalls instead of OOM-killing. If you
+set `CONTAINER_NAME_PREFIX`, pass the prefixed names through the scripts'
+variables (`WATCH`, `TARGETS`, `GATEWAY`); each script's header lists them.
+
+### Backups
+
+Everything OpenClaw keeps (config, sessions, agent memory, workspaces) is
+under `OPENCLAW_CONFIG_DIR`. Back it up regularly, for example:
+
+```bash
+dir=$(grep '^OPENCLAW_CONFIG_DIR=' .env | cut -d= -f2-)
+sudo tar czf "openclaw-$(date +%F).tar.gz" -C "$dir" .
+```
+
+### Upgrades
+
+Upgrade OpenClaw with `scripts/upgrade-openclaw.sh` (`--prepare <version>`,
+then `--apply <version>`), not with `openclaw update` inside the container. It
+builds the new image next to the running one, migrates a copy of the state,
+and keeps the old one for rollback. Details:
+[`docs/OPENCLAW_UPGRADE.md`](docs/OPENCLAW_UPGRADE.md).
+
+SearxNG's image is pulled again weekly (`SEARXNG_PULL_POLICY`), because
+scraped engines break as search sites change. The vLLM images are fixed tags
+in the compose files; change them there or through `LLM_IMAGE` / `EMBED_IMAGE`.
+
+## 9. Uninstall
+
+```bash
+docker compose down -v --rmi all     # containers, named volumes, images
+```
+
+This keeps the host folders from `.env`: `OPENCLAW_CONFIG_DIR`, the canvas,
+inbound media and sandbox folders, and `VLLM_HF_CACHE_DIR` (the model
+weights). Delete them by hand only when you are sure. Deleting
+`OPENCLAW_CONFIG_DIR` cannot be undone, and deleting the weights means the
+next install downloads them again. If you installed the clock cap, the
+resilience setup or the cron jobs, remove those too:
+`sudo systemctl disable --now gb10-clock-cap`, the undo line at the end of
+`scripts/gb10-resilience-setup.sh`, and `crontab -e`.
