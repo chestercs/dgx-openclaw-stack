@@ -1,8 +1,8 @@
 # GB10 power, thermals and firmware
 
-> Field notes from an ASUS Ascent GX10 (GB10) running 120B-class models 24/7,
-> 2026-10-19. Community findings are marked as such; NVIDIA publishes no
-> official guidance on clock caps for GB10.
+> Field notes from an ASUS Ascent GX10 (GB10) running 120B-class models 24/7
+> (measured on firmware v0106). Community findings are marked as such; NVIDIA
+> publishes no official guidance on clock caps for GB10.
 
 GB10 boxes are desktop machines: one 240 W USB-C PSU, a small heatsink, and
 one 121 GiB unified memory pool shared by the GPU and the OS. A stack that
@@ -44,8 +44,12 @@ sample before the second one was hottest-acpitz 94 °C, nvidia-smi 86 °C, ~80 W
 - It polls the GPU sensor and the hottest acpitz zone every 2 s.
 - At 93 °C it SIGKILLs the LLM containers.
 - It restarts them once the box has stayed below 75 °C for 2 minutes.
-- An earlier version (97 °C, 5 s polling, `docker stop -t 10`) did not get
-  there in time.
+- 97 °C with 5 s polling and `docker stop -t 10` was too late: the box
+  powered off first.
+- A killed container counts as manually stopped, so `restart:
+  unless-stopped` does not bring it back;
+  [`scripts/llm-ensure.sh`](../../scripts/llm-ensure.sh) (from cron) starts
+  `vllm-llm` again once thermguard releases it.
 
 **Other community mitigations** (unverified here):
 - airflow and orientation (stand it up, do not stack units);
@@ -136,6 +140,13 @@ temperature down.
 **Backstop: [`scripts/gb10-memguard.sh`](../../scripts/gb10-memguard.sh).** It
 SIGKILLs the listed trial-model containers when `MemAvailable` stays under
 6 GiB for two samples (2 s apart), while docker still answers.
+
+**Keep the box reachable:**
+[`scripts/gb10-resilience-setup.sh`](../../scripts/gb10-resilience-setup.sh)
+(run once as root) reserves 1 GiB for the kernel, drops page cache before
+swapping, enables the SBSA hardware watchdog and all SysRq keys, and keeps
+`sshd` away from the OOM killer, so a full pool ends in an OOM kill or a
+reboot instead of a hang.
 
 ## Sources
 

@@ -39,11 +39,10 @@ paid on every invocation ([`openclaw-internals.md`](./openclaw-internals.md)
 keeps the connection open, so session setup is paid once at container boot.
 A mesh turn then costs ≈ LLM decode + LoRa airtime.
 
-Two auth details that bite (both verified against the live 2026.4.15
-gateway during bridge development):
+Two auth details that bite:
 
 1. **Token**: WS clients authenticate with **`gateway.remote.token`**
-   (mirrored from `gateway.auth.token` by patcher step 12) — NOT the `.env`
+   (mirrored from `gateway.auth.token` by `config-init/steps/gateway.mjs`) — NOT the `.env`
    `OPENCLAW_GATEWAY_TOKEN`. The bridge auto-reads the right one from the
    ro-mounted OpenClaw config dir; no operator copying.
 2. **Scopes are loopback-gated**: a shared-token client is granted its
@@ -78,18 +77,20 @@ Protocol facts the bridge relies on (extracted from the gateway bundle's
   `agent:<agentId>:<rest>`. A bare key is NOT auto-scoped to the requested
   agent: `resolveAgentIdFromSessionKey()` defaults it to `main`, and the run
   is then rejected with `invalid agent params: agent "meshcore" does not
-  match session key agent "main"` (hit live on first end-to-end test,
-  2026-08-03).
+  match session key agent "main"`.
 
 ### Dedicated agent, not main
 
 Same isolation argument as the Discord agent: the radio persona (max ~2
 sentences, plain text, no tool marathons) is enforced in
 `workspace-meshcore/AGENTS.md` and must not leak into main's or
-discord-friend's behavior. Patcher **step 42** owns the registration —
-there's no channel-onboarding CLI for MeshCore, so unlike Discord the
-`agents.list[]` entry comes from the patcher (env-gated by
-`MESHCORE_ENABLED=on`; write-if-absent, operator edits survive).
+discord-friend's behavior. `config-init/steps/agents.mjs` owns the
+registration: there's no channel-onboarding CLI for MeshCore, so unlike
+Discord the `agents.entries.<id>` entry comes from config-init (gated by
+`MESHCORE_ENABLED=on`). The entry is created if absent; its tool profile,
+extra tools and thinking level follow the `MESHCORE_AGENT_*` knobs on every
+run; the `AGENTS.md` seed (`config-init/templates/agents/meshcore-*.md`) is
+written once and then belongs to the operator.
 
 `thinkingDefault: off` is deliberate: reasoning tokens multiply decode time
 and the mesh user is staring at an e-ink screen.
@@ -148,7 +149,7 @@ isolation the Discord agent gets:
 | Persona | private 1:1 contract | group-channel contract (lighter tone) |
 | Session | `agent:<dm-id>:meshcore-<peer>-g<n>` | `agent:<chan-id>:meshcore-chan<idx>-g<n>` |
 
-Patcher step 42 registers whichever agents are configured, creates each
+`config-init/steps/agents.mjs` registers whichever agents are configured, creates each
 workspace plus its `memory/` dir (that dir is what makes the isolation real on
 disk — it's what the per-agent `memorySearch` sources glob reads), and seeds a
 matching `AGENTS.md` **if absent**, so operator edits survive.
@@ -208,7 +209,7 @@ Two mitigations ship on by default:
 - **One slot only.** The bridge watches and provisions exactly the configured
   index; every other slot (the `Public` channel, the operator's own channels)
   is untouched. Provisioning is idempotent — it compares name + secret and
-  writes only on drift, the same desired-state posture `patch-config.mjs`
+  writes only on drift, the same desired-state posture config-init
   uses for `openclaw.json`, so a replaced radio self-heals on next boot.
 
 **Joining other devices — read this before choosing a key.** MeshCore shares
@@ -224,8 +225,7 @@ only scheme many handheld firmwares support: their "edit channel" screen
 offers a name field and nothing else, so they derive the key from the name.
 **On such a mesh the channel name IS the shared secret** — a separate
 password cannot be expressed, so put the secret in the name (e.g.
-`ai-4f2a9c`) if you want one. Verified against a T-Deck build on 2026-08-03:
-setting a password-derived key on the radio while the handheld derived from
+`ai-4f2a9c`) if you want one. On a T-Deck build, setting a password-derived key on the radio while the handheld derived from
 the name produced two different keys and **total silence** — packets arrive,
 fail to decrypt, get dropped, and the channel looks empty. Options (1)/(2)
 are for meshes where every device can import a raw key.
@@ -350,8 +350,9 @@ docker logs openclaw-meshcore-bridge --tail 50        # rx/tx, allowlist hits
 docker logs openclaw-meshcore-bridge 2>&1 | grep -i "handshake ok"  # WS auth OK?
 ```
 
-- `gateway connect rejected` → token drift: is patcher step 12 applied?
-  (`gateway.remote.token` must equal `gateway.auth.token`.)
+- `gateway connect rejected` → token drift: `gateway.remote.token` must
+  equal `gateway.auth.token`; a config-init run (`docker compose run --rm
+  openclaw-config-init`) re-mirrors it.
 - `no contact for prefix` → the companion node hasn't seen the handheld's
   advert yet; send an advert from the handheld and retry.
 - Serial connect timeout → wrong firmware (standalone instead of companion)

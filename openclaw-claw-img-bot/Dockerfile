@@ -1,7 +1,7 @@
 # Tiny standalone Discord bot exposing the /claw-img slash command.
 # Calls the comfyui_image bridge directly (no LLM, no approval gate) and
 # uploads the result as a true Discord attachment. See ./README.md and
-# docs/reference/image-comfyui-bridge.md.
+# openclaw-image-comfyui/README.md.
 FROM python:3.12-slim
 
 # discord.py 2.x ships app_commands (slash) + bundles aiohttp, which we reuse

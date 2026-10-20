@@ -1,5 +1,8 @@
 # Host CLI client for a remote OpenClaw Gateway
 
+Status: optional; runs on the operator's workstation as its own Compose project
+(`openclaw-host-client/compose.yml`), not on the stack host.
+
 This independent Compose project keeps an OpenClaw CLI container running on the
 operator's machine. The Gateway, model, agent execution, memory, and conversation
 history stay on the DGX. It needs Docker Desktop with Linux containers; it does

@@ -1,413 +1,309 @@
-# Discord patcher overrides — operator configuration reference
+# Discord configuration reference
 
-This stack writes Discord-specific configuration into `openclaw.json` through
-the idempotent `patch-config.mjs`. The defaults assume a single-operator
-homelab deploy: open access, full tool surface, partial streaming. **None of
-the overrides are mandatory** — every step is env-gated, and disabling a step
-restores the upstream OpenClaw default.
+`openclaw-config-init` (`config-init/`) writes the Discord settings into
+`openclaw.json` and the Discord agent's workspace on every `docker compose up`.
+The defaults suit a small community server run by one operator: open access for
+members, a mention gate, partial streaming, a wide tool surface for the bot.
+Every setting below has a `.env` knob; the default of each knob is in
+[`configuration.md`](./configuration.md#discord-channel).
 
-Sibling docs that go deep on *how* the bot behaves, not just *what* the
-patcher writes:
+Nothing in `config-init/steps/discord.mjs` runs until onboarding
+(`openclaw channels add --channel discord`) has created an enabled
+`channels.discord` block. The bot token and the accounts in that block belong
+to the operator and are never touched.
 
-- [`discord-text-agent.md`](./discord-text-agent.md) — text-channel agent
-  design (mention-pill, `tools.profile`, `message` tool, ackReaction cycle bug,
-  progressive streaming UX, TTS opt-in).
-- [`discord-voice-agent.md`](./discord-voice-agent.md) — voice-channel
-  deployment, isolation design, threat model, DAVE encryption.
+Config-init writes desired state: most keys below are set on every run, so a
+hand edit in `openclaw.json` is overwritten on the next `up`. Change the knob
+instead. The few keys that are written only when unset are marked "if unset".
 
-If you only want to know *which knob to flip to disable an override*, scroll
-to the "At a glance" table below.
+Sibling docs:
 
-## At a glance — every override and its escape hatch
+- [`discord-text-agent.md`](./discord-text-agent.md): how the text-channel bot
+  works (flow, tool catalog, reactions, streaming, TTS opt-in).
+- [`discord-voice-agent.md`](./discord-voice-agent.md): `/vc` voice, isolation,
+  threat model, DAVE encryption.
 
-Each row maps one `patch-config.mjs` step to its `.env` knob and to the
-upstream behaviour you get when you disable the step. **Setting the knob to
-the empty string disables the step entirely** (the patcher leaves the field
-unset, OpenClaw's docs default applies); some knobs also accept a value that
-replicates upstream defaults without disabling the step.
+## At a glance
 
-| Step | What it writes | Env knob | Default | Disable / vanilla |
-|---|---|---|---|---|
-| 20 | `channels.discord.ackReactionScope = "off"` — defends against upstream auto-ack cycle bug ([#46024](https://github.com/openclaw/openclaw/issues/46024)). | `OPENCLAW_DISCORD_ACK_REACTION_SCOPE` | `off` | Set to `own` / `all` / `group-mentions` / `allowlist` to re-enable auto-ack. Vanilla upstream default is `off` too, so this row is belt-and-braces. |
-| 21 | `channels.discord.actions.reactions = true` — keeps the reaction tool in the agent's catalog. Needs the local `vllm-llm` Gemma4 parser patch ([`vllm-llm/Dockerfile`](../../vllm-llm/Dockerfile)). | `OPENCLAW_DISCORD_ACTIONS_REACTIONS` | `true` | Set to `false` when running unpatched upstream `vllm/vllm-openai` (colon-namespace tool names get rejected by the parser; reactions break). |
-| 22 | Discord-routed agent `tools.alsoAllow += ["browser", "tts", "canvas", "cron"]`. Belt-and-braces with step 25. | `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW` | `browser,tts,canvas,cron` | Empty string disables the step. Stricter list (e.g. `cron`) for a narrower bot. |
-| 24 | `channels.discord.streaming = "partial"` + optional `draftChunk` sub-knobs. Without this, a 500-token reply on Gemma 4 produces ~80s of silence. | `OPENCLAW_DISCORD_STREAMING` | `partial` | `off` to restore vanilla atomic delivery. `block` / `progress` for alternative cadences. Empty string skips the step. Detail: [`discord-text-agent.md` → Progressive streaming](./discord-text-agent.md#progressive-streaming-channelsdiscordstreaming). |
-| 24 (sub) | `draftChunk.minChars` / `_MAX_CHARS` / `_BREAK_PREFERENCE`. | `OPENCLAW_DISCORD_DRAFTCHUNK_*` | unset (OpenClaw docs default: 200 / 800 / `paragraph`) | Each knob is independently optional. |
-| 24 (sub) | `streaming.preview.toolProgress`. | `OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS` | unset (upstream default `true`) | Set to `false` to suppress mid-stream tool-name lines (workaround for Discord italic-mangling of `__` names). |
-| 25 | Discord-routed agent `tools.profile = "full"`. Without this the agent inherits the global `coding` default, which excludes `browser`, `tts`, `canvas`. | `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE` | `full` | Set to `coding` / `messaging` / `minimal` for a narrower bot. Empty string disables the step (operator picks). |
-| 25c | Discord-routed agent reasoning preset. | `OPENCLAW_DISCORD_AGENT_THINKING` | `high` (bumped 2026-06-08 — at `minimal` Gemma 4 skips tool calls on nuanced prompts) | Set to `medium` / `low` for snappier replies, `off` to disable reasoning. Empty string disables the step. |
-| 26 | `<!-- patch-config:cron-tools:* -->` and `<!-- patch-config:browser-tools:* -->` cheatsheet blocks in `workspace-discord/AGENTS.md`. Doc-side fix because Gemma 4 doesn't surface tools from the catalog alone. | (no env knob) | always on when file exists | Delete the marked block by hand if you don't want it. The patcher won't rewrite it once removed inside the markers. |
-| 27 | `<!-- patch-config:image-gen-tools:* -->` workflow-picker block in `workspace-discord/AGENTS.md`. Tells the agent which workflow to pass for SFW / adult / fast / etc. | `IMAGE_GEN_DEFAULT_WORKFLOW` (presence) | written iff env is set | Unset `IMAGE_GEN_DEFAULT_WORKFLOW` to skip. |
-| 28 | `channels.discord.{allowFrom, dmPolicy, groupPolicy}` — opens guild access for the bot (homelab default). Without this, slash commands work in DM but fail in guild ([#19310](https://github.com/openclaw/openclaw/issues/19310)). | `OPENCLAW_DISCORD_AUTHZ` | `open` | `allowlist` to skip the step entirely and keep upstream's locked-down default. `owner-only` to lock to `OPENCLAW_DISCORD_OWNER_IDS` snowflakes. |
-| 29 | `channels.discord.voice.enabled` + `channels.discord.threadBindings.enabled`. Without this, `/vc`, `/focus`, `/agents`, `/session` slash commands don't even register in Discord's autocomplete. | `OPENCLAW_DISCORD_VOICE` / `OPENCLAW_DISCORD_THREAD_BINDINGS` | `stt-tts` / `on` | Set either to `off` to disable that feature gate. |
-| 30 | `channels.discord.guilds["*"].requireMention = false` — opens the message gate for every guild the bot joins. Without this, the bot only replies to explicit mentions. | `OPENCLAW_DISCORD_REQUIRE_MENTION` | `off` | Set to `on` to restore upstream mention-required default. See "Discord mention gate vs `/activation` slash" below. |
-| 29c | `channels.discord.threadBindings.{idleHours, maxAgeHours}` — binding lifetimes for thread-per-task coding sessions. | `OPENCLAW_DISCORD_THREAD_IDLE_HOURS` / `_MAX_AGE_HOURS` | unset (upstream: 24h idle, max-age disabled) | Each independently optional. Suggested for thread-per-task: 48 / 336. |
-| 29d | `session.threadBindings.{spawnSessions, defaultSpawnContext}` — lets `sessions_spawn {thread:true}` mint thread-bound sessions. **Schema-gated** (unverified on 2026.6.1). | `OPENCLAW_SESSION_THREAD_SPAWN` | unset (no-op) | `on` writes, `off` self-heals (removes), empty leaves operator values alone. |
-| 31 | `tools.exec` — `security=allowlist` + `ask=on-miss` + `strictInlineEval` + `safeBins` + workspace-scoped `applyPatch`. The agentic-coding shell surface. | `OPENCLAW_TOOLS_EXEC` (+ `_TIMEOUT_SEC`, `_SAFE_BINS`) | `on` | `off` removes `tools.exec` → upstream default-deny (the bot can't shell). Detail: [`agentic-coding.md`](./agentic-coding.md). |
-| 32 | Seeds `~/.openclaw/exec-approvals.json` (defaults + dev-toolchain allowlist for the Discord agent). Strictly additive — learned `/approve … allow-always` grants are never touched. | `OPENCLAW_EXEC_APPROVALS_SEED` | `on` | `off` skips seeding (never deletes the file). |
-| 33 | `channels.discord.execApprovals = {enabled, approvers, target:"dm"}` — unlisted exec commands arrive as approval prompts in approver DMs. | `OPENCLAW_DISCORD_EXEC_APPROVALS` (+ `OPENCLAW_EXEC_APPROVERS`) | `on` | `off` removes the block. With no concrete approver snowflake anywhere, the step skips loudly. |
-| 34 | `plugins.entries.workboard.enabled = true` — `/workboard create\|list\|show\|dispatch` card tracking for long tasks. | `OPENCLAW_WORKBOARD` | unset (no-op) | Tri-state: `on` enables, explicit `off` scrubs, empty leaves config alone. |
-| 35 | `messages.statusReactions` — run-state emoji lifecycle (queued→thinking→tool→done/error) on the inbound message. Different pipeline from step 20's ackReaction (#46024 defense stays in place). | `OPENCLAW_STATUS_REACTIONS` (+ `_EMOJIS` JSON) | `on` | `off` removes the block — also the kill switch if reaction-cycling ever reappears. |
-| 36 | `channels.discord.autoPresence` — bot presence mirrors runtime health (healthy/degraded/exhausted). | `OPENCLAW_DISCORD_AUTO_PRESENCE` (+ 3 text knobs) | `on` | `off` removes the block (static presence). |
-| 37 | `channels.discord.replyToMode = "first"` — first message of a run is a native reply to the triggering message. | `OPENCLAW_DISCORD_REPLY_TO_MODE` | `first` | `off` restores flat delivery (also the upstream default). `all` / `batched` for heavier threading. Empty skips. |
-| 38 | `commitments = {enabled:true, maxPerDay:3}` — the bot notices promised work / check-in opportunities and resurfaces them via heartbeat. | `OPENCLAW_COMMITMENTS` (+ `_MAX_PER_DAY`) | `on` | `off` removes the block (upstream default: disabled). |
-| 39 | `messages.queue.mode = "steer"` — mid-run follow-ups inject at the next model boundary instead of queueing until the run ends. | `OPENCLAW_MESSAGES_QUEUE_MODE` | `steer` | Set `followup` / `collect` / `interrupt`, or empty to skip (upstream docs are self-contradictory on the default, hence the pin). |
-| 44 | Always-loaded `workspace-discord/people/MEMORY.md` (durable facts about guild members) via the `bootstrap-extra-files` hook, plus the `people-memory` skill for the nightly job. See "Long-term memory in guild channels" below. | `OPENCLAW_DISCORD_PEOPLE_MEMORY` | `on` | `off` removes the hook path and the skill; the file stays on disk. |
-| 44 (sub) | The nightly digest also reads NSFW channels. | `OPENCLAW_PEOPLE_DIGEST_NSFW` | `off` | `on` adds `--nsfw` to the skill's collect step. The file reaches every channel's prompt, so what is learnt in an NSFW channel surfaces everywhere. |
-| 44c | `people-context` plugin: a `before_prompt_build` hook prepends the sender's people-file lines (and those of tagged members) to each turn. | follows `OPENCLAW_DISCORD_PEOPLE_MEMORY` | `on` | `off` removes the load path and the plugin entry. |
-| 44d | `community-summary` skill: every 3 days a job writes a summary of the guilds' messages under `memory/community/`, found later through `memory_search`. | `OPENCLAW_COMMUNITY_SUMMARY` | `on` | `off` removes the skill (the job, if created, then fails loudly). |
-| 44e | `claim-guard` plugin: a `before_agent_finalize` hook checks the final answer's action claims and uncommon facts against the run's tool calls and asks for one more pass on a mismatch. See "Honesty checks" below. | `OPENCLAW_DISCORD_CLAIM_GUARD` | `on` | `off` removes the load path and the plugin entry. |
-| 44 (sub) | Channels the digest never reads (nightly job and community summaries), e.g. a feed of game patch notes. | `OPENCLAW_PEOPLE_DIGEST_EXCLUDE` | empty | Comma-separated channel IDs or names; written into both skills' collect command as `--exclude`. |
-| 44g | `dm-guild-gate` plugin: a `before_dispatch` hook answers a Discord DM only when the sender shares a server with the bot; anyone else gets no reply and no model call. See "DMs only from server members" below. | `OPENCLAW_DISCORD_DM_GUILD_GATE` | `on` | `off` removes the load path and the plugin entry (step 28's open DMs apply again). |
-| 44f | `deep` sub-agent: the same model with full thinking (`chat_template_kwargs`), spawnable by the Discord agent. | `OPENCLAW_DISCORD_DEEP_AGENT` | `off` | `on` adds the agent and the delegation hint; `off` removes both. |
-| X | `plugins.entries.active-memory` — deep recall sub-agent in `escalate` mode (runs only when the message asks about the past). | `OPENCLAW_ACTIVE_MEMORY` | unset (no-op) | `on` writes, `off` removes the entry, empty leaves config alone. |
-| docs | `OPENCLAW_AGENT_DOCS_MODE` — recipe placement: on-demand workspace **skills** (default, ~20 KB lighter bootstrap) vs legacy always-injected AGENTS.md blocks. | `OPENCLAW_AGENT_DOCS_MODE` | `skills` | `agentsmd` restores the legacy layout and removes the skill files (rollback path). |
-| docs | `<!-- patch-config:discord-thread-tasks:* -->` policy block — coding / long tasks spawn into their own Discord thread. | `OPENCLAW_DISCORD_AGENT_THREAD_TASKS` | `on` | `off` removes the block. |
+Modules are under `config-init/steps/`. Templates are under
+`config-init/templates/`.
 
-`patch-config.mjs`'s top docblock has the full per-step rationale; the env
-knobs in `.env.example` have a one-paragraph trade-off comment each. Anything
-this stack writes goes through user-managed protection: if you hand-set the
-field in `openclaw.json`, the patcher leaves it alone — except where the row
-above says otherwise (step 31 is deliberately deterministic so a drifted
-`security: "full"` can't survive a recreate).
+### Channel and commands (`discord.mjs`)
 
-## How much do we override upstream?
+| Setting | Knob | Why |
+|---|---|---|
+| `channels.discord.suppressEmbeds = false` | `OPENCLAW_DISCORD_SUPPRESS_EMBEDS` | Without an explicit `false` the plugin suppresses every embed, so no image, video or link unfurls. |
+| `commands.allowFrom.discord` | `OPENCLAW_DISCORD_COMMANDS_ALLOW` | The guild slash gate. Unset upstream, so every guild slash command answers "not authorized" ([#19310](https://github.com/openclaw/openclaw/issues/19310)). |
+| `commands.ownerAllowFrom` (`discord:<id>`) | `OPENCLAW_DISCORD_COMMAND_OWNERS` | Owner commands. Written channel-scoped: a bare snowflake reads as a channel target. |
+| `tools.elevated.allowFrom.discord` | `OPENCLAW_TOOLS_ELEVATED_DISCORD_ALLOW` | Who may use elevated tools from Discord. |
+| `allowFrom`, `dmPolicy`, `groupPolicy` | `OPENCLAW_DISCORD_AUTHZ`, `OPENCLAW_DISCORD_OWNER_IDS` | Access posture: `open`, `pairing`, `owner-only`, `allowlist`. See [Slash-command authorization](#slash-command-authorization). |
+| `guilds["*"].requireMention` | `OPENCLAW_DISCORD_REQUIRE_MENTION` | The mention gate for every guild. See [Mention gate](#mention-gate-vs-activation). |
+| `guilds["*"].channels` | `OPENCLAW_DISCORD_ALWAYS_CHANNELS` | Channels the bot reads in full despite the gate, plus a `*` fallback that mirrors the gate. |
+| `ackReactionScope` (if unset) | `OPENCLAW_DISCORD_ACK_REACTION_SCOPE` | Auto-ack reactions off: a stale reaction queue replays them on session resume and the bot cycles emojis ([#46024](https://github.com/openclaw/openclaw/issues/46024)). |
+| `actions.reactions` | `OPENCLAW_DISCORD_ACTIONS_REACTIONS` | The agent's own reaction action. |
+| `streaming.mode`, `streaming.preview.toolProgress` | `OPENCLAW_DISCORD_STREAMING`, `OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS` | Partial streaming: a placeholder edited as tokens arrive. Posted at once, a long answer is a minute of silence. |
+| `maxLinesPerMessage` | `OPENCLAW_DISCORD_MAX_LINES` | At the upstream 17 lines a code answer came out as six messages. |
+| `replyToMode` | `OPENCLAW_DISCORD_REPLY_TO_MODE` | `first`: the first message of a run is a native reply, so in a busy channel it is clear which question it answers. |
+| `voice.enabled` (if unset) | `OPENCLAW_DISCORD_VOICE` | Registers `/vc`. See [Voice](#voice). |
+| `threadBindings.*` | `OPENCLAW_DISCORD_THREAD_BINDINGS`, `_THREAD_IDLE_HOURS`, `_THREAD_MAX_AGE_HOURS` | Registers `/focus`, `/unfocus`, `/agents`, `/session`; `enabled` only if unset. |
+| `execApprovals` | `OPENCLAW_DISCORD_EXEC_APPROVALS`, `OPENCLAW_EXEC_APPROVERS` | Exec approval prompts as DMs with buttons. Approvers are never `*`. Removed when `OPENCLAW_TOOLS_EXEC=off`. |
+| `autoPresence` | `OPENCLAW_DISCORD_AUTO_PRESENCE` (+ three text knobs) | Presence mirrors runtime health. |
+| `mentionAliases` | `OPENCLAW_DISCORD_MENTION_ALIASES` | Outbound `@handle` becomes a real mention; the plugin's fallback directory is empty right after a restart. |
+| `allowBots` | `OPENCLAW_DISCORD_ALLOW_BOTS` | Lets other bots in (for example only when they tag this one). |
+| `defaultTo` | `OPENCLAW_DISCORD_DEFAULT_TO` | Target for sends that name none; without it cron and heartbeat turns invented targets. |
+| `tools.deny += video_generate` (global) | `OPENCLAW_DENY_OPENAI_VIDEO_TOOL` | The built-in tool calls OpenAI Sora and fails without a key. A global deny covers guild routes too. |
+| `commands.bash` removed | (none) | No shell directive on Discord. |
 
-Categorised by *why*, so you can decide which to keep and which to revert:
+### Runs, queueing, heartbeat (`gateway.mjs`)
 
-- **Workarounds for upstream bugs** — steps 20 (reaction cycle bug #46024),
-  21 (Gemma 4 colon-namespace parser, see `vllm-llm/Dockerfile`). Keep these
-  unless you're running unpatched upstream images.
-- **UX improvements that suit slow LLMs** — step 24 (progressive streaming).
-  Without it, a 6 tok/s backend produces ~80s of Discord silence per reply.
-  Keep it on Gemma 4 / dense backends; consider `off` on cloud-fast backends.
-- **Capability widening for the Discord-routed agent** — steps 22 + 25.
-  Vanilla upstream gives the agent the `coding` profile, which excludes
-  `browser`, `tts`, `canvas`. Disable both if you want a narrower bot.
-- **Cheatsheet docs that compensate for Gemma 4's tool-discovery weakness** —
-  steps 26 + 27. Doc-side patches, not behavioural overrides.
-- **Policy choices that reflect single-operator homelab posture** — steps 28,
-  29, 30. These open access in ways that wouldn't fit a shared / multi-tenant
-  / public deploy. Revert with `OPENCLAW_DISCORD_AUTHZ=allowlist`,
-  `OPENCLAW_DISCORD_REQUIRE_MENTION=on`, `OPENCLAW_DISCORD_VOICE=off`,
-  `OPENCLAW_DISCORD_THREAD_BINDINGS=off`.
+| Setting | Knob | Why |
+|---|---|---|
+| `messages.queue.byChannel.discord` | `OPENCLAW_DISCORD_QUEUE_MODE` | `followup`: a guild channel is one shared session, and `steer` merged a second user's request into the first one's run. |
+| `messages.queue.mode` | `OPENCLAW_MESSAGES_QUEUE_MODE` | Other surfaces: `steer` folds a mid-run message into the running turn. |
+| `messages.statusReactions` | `OPENCLAW_STATUS_REACTIONS` | Run-state emoji on the user's message, the first sign a slow model is working. Driven by the run lifecycle, not the ack queue. |
+| `agents.defaults.heartbeat.{target,to}` | `OPENCLAW_HEARTBEAT_TO` | Heartbeat DMs the owner. See [Heartbeat](#heartbeat). |
+| `session.threadBindings.{spawnSessions,defaultSpawnContext}` | `OPENCLAW_SESSION_THREAD_SPAWN` | `sessions_spawn {thread:true}` may create a thread-bound session. |
 
-## Returning to a fully vanilla Discord deployment
+### The Discord agent (`agents.mjs`, `memory.mjs`)
 
-If you want every Discord-related override disabled and OpenClaw's upstream
-defaults to apply, set in `.env`:
+These apply to every agent a catch-all Discord binding routes to (no peer,
+guild or role scope). A channel-scoped agent such as the Valheim builder keeps
+its own settings.
+
+| Setting | Knob | Why |
+|---|---|---|
+| `tools.profile` | `OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE` | `full`. Without it the agent inherits `coding`, which has no browser, tts or canvas. |
+| `tools.alsoAllow` | `OPENCLAW_DISCORD_AGENT_ALSO_ALLOW` | On guild channels `cron` drops out of the catalog even under `full`. Additive. |
+| `tools.deny` | `OPENCLAW_DISCORD_AGENT_TOOLS_DENY` | Operator and desktop tools the persona never needs; a smaller catalog means better tool choice. Additive. |
+| `tools.deny += comfyui_image__*` | `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` | Media groups ComfyUI does not run. The same knob removes their skills (`media.mjs`) and writes an "off" line in the router (`workspaces.mjs`), so the bot says the tool is off instead of calling it. |
+| `thinkingDefault` | `OPENCLAW_DISCORD_AGENT_THINKING` | `high`; at `minimal` the model skipped tool calls and claimed it could not search. |
+| `deep` sub-agent | `OPENCLAW_DISCORD_DEEP_AGENT`, `_DEEP_AGENT_ID` | Same model with full thinking, spawnable by the Discord agent. Off by default (40/40 against 39/40 at 2-2.5x the time). |
+| `plugins.entries.active-memory` (`memory.mjs`) | `OPENCLAW_ACTIVE_MEMORY` | Recall before every reply of `discord-friend` (mode `always`, 30 s, thinking off). |
+
+### Plugins and hooks (`plugins.mjs`)
+
+Discord-only plugins are wired only while `channels.discord` exists. Their code
+ships in `openclaw-base-ext/plugins/` and is mounted at `/opt/openclaw-plugins/`.
+None registers a reply hook (`reply_payload_sending` / `message_sending`): any
+such hook turns off Discord preview streaming for every Discord turn.
+
+| Setting | Knob | Why |
+|---|---|---|
+| `hooks.internal.entries.bootstrap-extra-files.paths += people/MEMORY.md` | `OPENCLAW_DISCORD_PEOPLE_MEMORY` | Guild long-term memory. See [Long-term memory](#long-term-memory-in-guild-channels). |
+| `people-context` plugin | follows `OPENCLAW_DISCORD_PEOPLE_MEMORY` | Mention IDs and the sender's people-file lines on each turn. |
+| `claim-guard` plugin | `OPENCLAW_DISCORD_CLAIM_GUARD` | See [Honesty checks](#honesty-checks-claim-guard). |
+| `dm-guild-gate` plugin | `OPENCLAW_DISCORD_DM_GUILD_GATE` | See [DMs only from server members](#dms-only-from-server-members-dm-guild-gate). |
+| `plugins.entries.workboard` | `OPENCLAW_WORKBOARD` | `/workboard` card board for long tasks; `workspaces.mjs` writes its skill. |
+
+### Prompt text (`workspaces.mjs`)
+
+| What | Knob | Why |
+|---|---|---|
+| Marker blocks in `workspace-discord/AGENTS.md`: format rules, deep-agentic, honesty, sender identity, sub-agent delegation, tool policy, thread tasks, skill router | `OPENCLAW_DISCORD_MEMBER_NAMES`, `OPENCLAW_DISCORD_ADMIN_NAME`, `OPENCLAW_DISCORD_ADMIN_ID` | Text from `templates/discord/AGENTS.d/`. Names come from `.env`, so the repo carries none. Text outside the markers is the operator's. |
+| Skills: `cron-reminders`, `browser-automation`, `media-downloads`, `weather-forecast`, `coding-projects` | `OPENCLAW_SANDBOX_PUBLIC_URL` (coding) | Tool recipes the bot reads on demand; one router line each keeps AGENTS.md at ~29 KB. Skill files are wholly config-init's. |
+| Skills: `people-memory`, `community-summary` | `OPENCLAW_PEOPLE_DIGEST_NSFW`, `OPENCLAW_PEOPLE_DIGEST_EXCLUDE`, `OPENCLAW_COMMUNITY_SUMMARY` | Recipes for the two cron jobs below. |
+| `people/MEMORY.md` seed (written once) | `OPENCLAW_DISCORD_PEOPLE_MEMORY` | The file then belongs to the bot. |
+
+Media skills (image, image-to-image, video, music) and the top-level `tts`
+block come from `media.mjs`; see `openclaw-image-comfyui/README.md` and
+`openclaw-tts-fish/README.md`.
+
+## Narrowing toward upstream defaults
+
+For a stricter bot, or one that behaves close to a plain
+`openclaw channels add --channel discord` install, set in `.env`:
 
 ```bash
-OPENCLAW_DISCORD_ACK_REACTION_SCOPE=          # both stack and upstream default to off
-OPENCLAW_DISCORD_ACTIONS_REACTIONS=           # upstream default applies
-OPENCLAW_DISCORD_AGENT_ALSO_ALLOW=            # empty — disables step 22
-OPENCLAW_DISCORD_STREAMING=off                # restore atomic delivery
-OPENCLAW_DISCORD_DRAFTCHUNK_MIN_CHARS=
-OPENCLAW_DISCORD_DRAFTCHUNK_MAX_CHARS=
-OPENCLAW_DISCORD_DRAFTCHUNK_BREAK_PREFERENCE=
-OPENCLAW_DISCORD_STREAMING_PREVIEW_TOOL_PROGRESS=
-OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE=         # empty — disables step 25
-OPENCLAW_DISCORD_AGENT_THINKING=              # empty — disables step 25c
-OPENCLAW_DISCORD_AUTHZ=allowlist              # skip step 28, keep upstream lockdown
-OPENCLAW_DISCORD_REQUIRE_MENTION=on           # skip step 30, keep mention gate
+OPENCLAW_DISCORD_AUTHZ=allowlist          # keep upstream access settings
+OPENCLAW_DISCORD_REQUIRE_MENTION=on       # mention gate (also the stack default)
+OPENCLAW_DISCORD_STREAMING=off            # atomic delivery
+OPENCLAW_DISCORD_REPLY_TO_MODE=off        # flat delivery
+OPENCLAW_DISCORD_MAX_LINES=off            # leave maxLinesPerMessage alone
 OPENCLAW_DISCORD_VOICE=off
 OPENCLAW_DISCORD_THREAD_BINDINGS=off
-OPENCLAW_TOOLS_EXEC=off                       # remove tools.exec (upstream default-deny)
-OPENCLAW_DISCORD_EXEC_APPROVALS=off
-OPENCLAW_STATUS_REACTIONS=off
 OPENCLAW_DISCORD_AUTO_PRESENCE=off
-OPENCLAW_DISCORD_REPLY_TO_MODE=               # empty — skip step 37
-OPENCLAW_COMMITMENTS=off
-OPENCLAW_MESSAGES_QUEUE_MODE=                 # empty — skip step 39
-OPENCLAW_DISCORD_AGENT_THREAD_TASKS=off
+OPENCLAW_STATUS_REACTIONS=off
+OPENCLAW_TOOLS_EXEC=off                   # removes tools.exec and Discord approvals
+OPENCLAW_DISCORD_AGENT_TOOLS_PROFILE=off  # profile not written
+OPENCLAW_DISCORD_AGENT_ALSO_ALLOW=off
+OPENCLAW_DISCORD_AGENT_TOOLS_DENY=off
+OPENCLAW_DISCORD_AGENT_THINKING=off
+OPENCLAW_ACTIVE_MEMORY=off
+OPENCLAW_DISCORD_PEOPLE_MEMORY=off
+OPENCLAW_DISCORD_CLAIM_GUARD=off
+OPENCLAW_DISCORD_DM_GUILD_GATE=off
 ```
 
-Then force-recreate:
+Then recreate the config-init chain:
 
 ```bash
 docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
 ```
 
-You'll now have a Discord deployment that behaves exactly like an out-of-the-
-box `openclaw channels add --channel discord …` install — except for the
-cheatsheet blocks in `workspace-discord/AGENTS.md` (delete those by hand if
-they bother you) and the `vllm-llm` reaction-parser fix (which sits in the
-image layer, not in `openclaw.json`).
+`suppressEmbeds`, the command allowlists and `actions.reactions` are always
+written; set their knobs to the values you want. The `off` knobs for the agent
+settings stop writing them but do not remove values an earlier run wrote, and
+the AGENTS.md marker blocks stay until you delete them by hand.
 
-## Discord slash-command authorization (issue #19310 dual perm check)
+## Slash-command authorization
 
-OpenClaw's Discord channel runs slash commands through a **dual perm check**
-that is hostile to the default config:
+OpenClaw checks a guild slash command against two lists: the global
+`channels.discord.allowFrom` and the guild's `users`. With the upstream
+`groupPolicy: "allowlist"` and an empty `users` array every guild slash command
+is blocked. Discord shows the rejection as an ephemeral *"You are not
+authorized to use this command"* to the invoker only, so there is no
+server-side log line. Symptom: `/activation`, `/discord input:` and similar work
+in a DM and fail in a guild ([#19310](https://github.com/openclaw/openclaw/issues/19310)).
 
-1. Global `channels.discord.allowFrom` allowlist, AND
-2. Per-guild `channels.discord.guilds.<gid>.users` array.
+Slash commands are worth having in guilds: Discord acks the interaction at
+once, so the user sees "thinking..." instead of dead air while the model
+prefills.
 
-Both must match. The default `dmPolicy: "pairing"` implicitly satisfies the
-first for DM contexts after the user pairs once, but guild contexts have no
-equivalent fallback — the `groupPolicy: "allowlist"` default plus an empty
-`users` array silently blocks every slash invocation. Discord renders the
-gateway's rejection as an ephemeral *"You are not authorized to use this
-command"* visible only to the invoker, so the operator never sees a
-server-side log line they can grep for.
+`OPENCLAW_DISCORD_AUTHZ`:
 
-Symptom: `/discord input: hello`, `/talkvoice input: hello`, `/activation
-mode: always` work in DM, fail in guild. Confirmed in upstream [issue
-#19310](https://github.com/openclaw/openclaw/issues/19310) (*"[Bug] Discord
-Slash Commands Require Owner Configuration in Channels Despite Pairing"*);
-upstream's stance is *"operator must hand-edit allowFrom + per-channel
-users"*, no CLI shortcut.
+- **`open`**: `allowFrom = ["*"]`, `dmPolicy = "open"`, `groupPolicy = "open"`.
+  The guild member list is the trusted population. `dm-guild-gate` then limits
+  DMs to people who share a server with the bot.
+- **`pairing`**: `allowFrom = ["*"]`, `dmPolicy = "pairing"` (a DM stranger needs
+  owner approval), `groupPolicy = "disabled"` (the handshake does not work in
+  group DMs).
+- **`owner-only`**: `allowFrom` = `OPENCLAW_DISCORD_OWNER_IDS`, both policies
+  `allowlist`. Without valid snowflakes config-init leaves authz as it is
+  rather than lock everyone out.
+- **`allowlist`**: config-init leaves these three keys alone.
 
-The native slash UX is materially better than `@`-mention text on this stack
-— Discord renders an immediate ack-dot *"thinking…"* indicator the moment the
-interaction is received, so the user never sees the dead-air gap that text-
-mention paths suffer from while the agent prefills (~1-5s) and generates
-(6-50 tok/s depending on backend). Operators want slash on every channel,
-not only DM.
-
-**Patcher step 28** fixes this by writing open-guild defaults: `allowFrom =
-["*"]`, `dmPolicy = "open"`, `groupPolicy = "open"`. Each field is
-user-managed-protected (only written when undefined), so hand-set operator
-values survive.
-
-`OPENCLAW_DISCORD_AUTHZ` accepts three modes:
-
-- **`open` (default)** — write the open-guild defaults above. Right for
-  single-operator homelab where the guild member list is the trusted
-  population.
-- **`allowlist`** — skip the step entirely, preserve upstream defaults. Right
-  for shared / multi-tenant / public guild deploys where you genuinely want
-  per-user gating.
-- **`owner-only`** — lock to `OPENCLAW_DISCORD_OWNER_IDS` snowflakes. Writes
-  `allowFrom = [<ids>]` and both policies to `allowlist`.
-
-When debugging a *"slash works in DM, fails in guild"* report, check the
-live config:
+Check the live values:
 
 ```bash
 cat $OPENCLAW_CONFIG_DIR/openclaw.json | \
-  jq '.channels.discord | {allowFrom, dmPolicy, groupPolicy}'
+  jq '.channels.discord | {allowFrom, dmPolicy, groupPolicy}, .commands.allowFrom'
 ```
 
-If any of those fields is undefined, step 28 either didn't run
-(`OPENCLAW_DISCORD_AUTHZ=allowlist`) or pre-existed in `openclaw.json`
-(user-managed protection respected an explicit value).
+## Slash-command buckets
 
-## Discord slash-command matrix and the two feature gates
+A slash command's availability depends on its bucket:
 
-OpenClaw splits its Discord slash surface across three buckets, and a slash
-command's availability depends on which bucket it falls in:
+1. **Always on** (`commands.native` / `commands.text`): `/help`, `/commands`,
+   `/status`, `/whoami`, `/tools`, `/tasks`, `/context`, `/usage`, `/model`,
+   `/models`, `/think`, `/fast`, `/reasoning`, `/verbose`, `/queue`, `/steer`,
+   `/skill <name>`, `/new`, `/reset`, `/stop`, `/compact`, `/export-session`,
+   `/btw`, `/trace`, `/subagents`, `/kill`, `/send`, `/approve`,
+   `/activation mention|always`, `/tts`, `/voice`, `/talkvoice`, `/dreaming`,
+   `/pair`, `/restart`, plus bundled-plugin commands such as `/discord input:`.
+2. **Owner only** (`commands.ownerAllowFrom` plus a `commands.<feature>` flag):
+   `/config` (`commands.config`), `/mcp` (`commands.mcp`), `/plugins`
+   (`commands.plugins`), `/debug` (`commands.debug`), `/diagnostics`,
+   `/export-trajectory`. Config-init enables none of these flags, and it
+   removes `commands.bash` (`/bash` and the `!cmd` shorthand) on every run.
+3. **Discord-feature gated** (`channels.discord.<feature>.enabled`): `/vc
+   join|leave|status` (`voice`), `/focus`, `/unfocus`, `/agents`,
+   `/session idle|max-age` (`threadBindings`). Without the flag these commands
+   do not even appear in Discord's autocomplete.
 
-1. **Always-on** (gated by `commands.native` / `commands.text` globally —
-   both default to enabled on this stack): `/help`, `/commands`, `/status`,
-   `/whoami` (alias `/id`), `/tools`, `/tasks`, `/context`, `/usage`,
-   `/model`, `/models`, `/think`, `/fast`, `/reasoning`, `/verbose`,
-   `/queue`, `/steer`, `/skill <name>`, `/new`, `/reset`, `/stop`,
-   `/compact`, `/export-session`, `/btw`, `/trace`, `/dock-discord`,
-   `/dock-slack`, `/dock-telegram`, `/dock-mattermost`, `/subagents`,
-   `/acp`, `/kill`, `/send`, `/approve`, `/activation mention|always`,
-   `/tts`, `/voice`, `/talkvoice`, `/dreaming`, `/pair`, `/restart`. Plus
-   the bundled-plugin natives `/discord input:` and `/codex …`.
+The list reflects the OpenClaw release current when it was written; `/commands`
+on the live bot is authoritative.
 
-2. **Owner-only** (gated by `commands.<feature>` flags and
-   `commands.ownerAllowFrom` snowflake list): `/config show|get|set|unset`
-   (needs `commands.config: true`), `/mcp ...` (`commands.mcp: true`),
-   `/plugins inspect|enable|disable` (`commands.plugins: true`), `/debug
-   show|set|unset` (`commands.debug: true`), `/bash <cmd>` plus `!cmd`
-   shorthand (`commands.bash: true`), `/diagnostics`,
-   `/export-trajectory`. On this stack `commands.bash: true` is on for the
-   owner snowflake (the `!~/.openclaw/bin/img` bypass for image-gen — see
-   [`img-bash-command.md`](./img-bash-command.md)); the others stay off
-   until you explicitly enable them.
+### Voice
 
-3. **Discord-feature-gated** (gated by `channels.discord.<feature>.enabled`):
-   `/vc join|leave|status` (needs `channels.discord.voice.enabled: true`);
-   `/focus`, `/unfocus`, `/agents`, `/session idle <duration|off>`,
-   `/session max-age <duration|off>` (need
-   `channels.discord.threadBindings.enabled: true`). **Patcher step 29
-   enables both by default** — without it these slash commands don't even
-   register in Discord's autocomplete.
-
-### Voice modes
-
-`OPENCLAW_DISCORD_VOICE` accepts `stt-tts` (default), `agent-proxy`, `bidi`,
-or `off`. **`stt-tts` is the only mode that works on this stack out of the
-box** because the realtime alternatives need an OpenAI Realtime or
-equivalent provider that the bundle doesn't ship. `stt-tts` chains the
-self-hosted faster-whisper (port 8093) for STT and the openclaw-tts-router
-(port 8090) for TTS — both already configured by patcher steps 11 and 14.
-When a user runs `/vc join` in a Discord voice channel, the bot connects
-with Connect + Speak permissions and runs the loop:
-hear → Whisper → agent → Kokoro/F5-TTS → speak. Higher latency than realtime
-but fully offline. Detail in [`discord-voice-agent.md`](./discord-voice-agent.md).
+`OPENCLAW_DISCORD_VOICE` is `stt-tts` or `off`. With no `voice.realtime` block
+the plugin runs batch STT and TTS: this stack's Whisper service and the Fish
+TTS shim. The realtime modes need provider credentials the stack does not ship.
+Fish TTS is optional (`compose/tts-fish.yml`, off on the reference host), so
+`/vc` needs it added before the bot can speak. Details:
+[`discord-voice-agent.md`](./discord-voice-agent.md).
 
 ### Thread bindings
 
-Thread bindings are opt-in per-thread, not automatic per agent. After step 29
-enables them, the operator creates a thread in a guild channel, types
-`/focus <agent-or-target>`, and from that point follow-up messages in the
-thread route to the bound session. `/unfocus` releases the binding;
-`/session idle 30m` auto-releases after inactivity; `/session max-age 4h`
-hard-expires regardless. `/agents` shows current bindings. Useful when you
-want one Discord channel to host multiple parallel agent conversations
-(e.g. a research session in thread A, a coding session in thread B).
+Bindings are per thread. Create a thread, run `/focus <agent-or-target>`, and
+follow-up messages in it go to the bound session. `/unfocus` releases it,
+`/session idle 30m` releases it after inactivity, `/session max-age 4h` expires
+it regardless, `/agents` lists bindings. Upstream unfocuses after 24 h idle;
+raise `OPENCLAW_DISCORD_THREAD_IDLE_HOURS` for coding threads revisited the
+next day.
 
-## Discord mention gate (config) vs `/activation` slash (LLM behavior hint)
+## Mention gate vs `/activation`
 
-Two independent layers in the upstream Discord plugin that are easy to
-conflate. They look like the same thing from the operator's point of view
-but they're not, and getting them mixed up leads to misdiagnosing slash-
-command behaviour as a bug.
+Two separate layers that are easy to mix up.
 
-### Layer 1 — the gate
+**The gate (config).** Whether a guild message reaches the agent at all is
+decided by `requireMention`: the channel entry first, then the guild entry, then
+the `guilds["*"]` wildcard, and `true` when none is set. The plugin's guild
+lookup tries the guild ID, then its slug, then `"*"`, so the wildcard covers
+every guild without putting snowflakes in the repo. An operator's
+`guilds.<id>` entry wins over the wildcard.
 
-Whether a guild message reaches the agent at all is decided by
-`resolveDiscordShouldRequireMention` in the bundled
-`extensions/discord/allow-list-CuKLSnAf.js`:
+`OPENCLAW_DISCORD_REQUIRE_MENTION=on` (the default) writes
+`guilds["*"].requireMention = true` on every run, because a drifted value is
+invisible. With the gate closed, a message gets through when it @mentions the
+bot (a real `<@ID>` mention from Discord's picker, not typed text) or replies to
+one of the bot's messages; a reply counts as an implicit mention. `off` opens
+the gate in every guild.
 
-```js
-function resolveDiscordShouldRequireMention(params) {
-  if (!params.isGuildMessage) return false;
-  if (params.isAutoThreadOwnedByBot ?? isDiscordAutoThreadOwnedByBot(params)) return false;
-  return params.channelConfig?.requireMention ?? params.guildInfo?.requireMention ?? true;
-}
-```
+`OPENCLAW_DISCORD_ALWAYS_CHANNELS` lists channels the bot reads in full anyway.
+Once a guild entry has a `channels` map, an unlisted channel resolves to
+`allowed: false`, which silences it completely, mentions included. Config-init
+therefore always writes a `channels["*"]` entry that mirrors the gate next to
+the listed channels. `off` removes the map.
 
-Pure config-driven: `channels.discord.guilds.<id>.requireMention` (or the
-wildcard `"*"` entry, see below). There is no session-store input, no
-slash-command input. Whoever the operator is, this is the operator's gate.
+**The hint (`/activation`).** `/activation mention|always` stores the session's
+group-activation mode, which only changes a line in the model's system intro:
+`always` says the agent sees every group message and may stay silent;
+`mention` says it is invoked only when mentioned. It cannot open a closed gate.
+Upstream closed [#22172](https://github.com/openclaw/openclaw/issues/22172)
+("/activation ignored") as working as designed.
 
-### Layer 2 — the LLM behavior hint
-
-`/activation mention|always` writes `sessionEntry.groupActivation = mode`
-via `handleActivationCommand` in `commands-handlers.runtime-DfQhZZft.js`.
-That value is consumed by `buildGroupIntro` in `get-reply-CwuPJWAe.js` as
-an LLM-facing system-intro line:
-
-- `always` → *"Activation: always-on (you receive every group message)."*
-  plus a silent-token instruction so the LLM can opt out of replying to
-  messages that aren't for it.
-- `mention` → *"Activation: trigger-only (you are invoked only when
-  explicitly mentioned; recent context may be included)."* No silent-token
-  instruction because in `mention` mode the gate is supposed to be doing
-  the filtering, so the LLM never sees non-mention messages in the first
-  place.
-
-So the slash assumes the operator has set the gate appropriately and tells
-the LLM how to behave within that gate. **It is not a runtime gate toggle
-and was never designed to be one** — upstream [issue
-#22172](https://github.com/openclaw/openclaw/issues/22172) (*"/activation
-ignored"*) was closed as "not planned" because the slash is working as
-designed; the reporter assumed it controlled the gate.
-
-### Wildcard `"*"` in `guilds` is the public-repo-safe gate setting
-
-The bundled `resolveDiscordGuildEntry` tries id-match → slug-match →
-`entries["*"]` fallback, so writing
-`channels.discord.guilds["*"].requireMention = false` opens the gate for
-every guild the bot joins without committing any snowflakes. Per-guild
-overrides still win — an explicit
-`channels.discord.guilds.<id>.requireMention = true` set by the operator
-beats the wildcard, so you can keep the open default and selectively
-silence a noisy guild.
-
-**Patcher step 30** writes the wildcard by default.
-`OPENCLAW_DISCORD_REQUIRE_MENTION`:
-
-- **`off` (default)** — write `guilds["*"].requireMention = false`. Bot's
-  gate is open in every guild. LLM gets the `always`-mode intro line
-  whenever the operator invokes `/activation always` (or by default on the
-  first turn after the system-intro flag is set), with the silent-token
-  instruction so it can be selective. Matches the rest of this stack's
-  wide-open homelab defaults (open-guild authz, voice + threadBindings on,
-  slash UX everywhere).
-- **`on`** — skip the step, preserve upstream mention-required default.
-  Gate stays closed; only mention/reply messages reach the agent;
-  `/activation mention` is then consistent with what the gate actually
-  does. Use on shared / multi-tenant / public deploys.
-
-The env value IS the desired `requireMention` posture. User-managed
-protection: the patcher only writes when `guilds["*"].requireMention` is
-undefined; if you hand-set the wildcard entry (or any specific guild
-entry), the operator value survives.
-
-### Debugging the most common confusion
-
-When a user reports *"I set `/activation mention` but the bot still replies
-to everything,"* that's not a bug. They have the gate open (step 30
-default) and the slash is purely the LLM behavior hint. Either close the
-gate at the config level:
-
-```bash
-# Persistent — survives gateway restart
-echo 'OPENCLAW_DISCORD_REQUIRE_MENTION=on' >> .env
-docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
-
-# OR hot-reload
-docker exec <PROJ>openclaw-cli openclaw config set \
-  channels.discord.guilds.\"*\".requireMention true
-```
-
-Or accept that with the gate open the bot will see, and may decide to
-reply to, any message the LLM finds worth replying to.
-
-Don't try to "fix" this by patching the bundled plugin to make the slash
-flip the gate — that fork would break on every image upgrade, and the
-upstream design intentionally separates operator config from in-session
-behavior hints.
+So *"I ran `/activation always` and the bot still ignores unmentioned
+messages"* is expected. Open the gate in config instead, for one channel
+(`OPENCLAW_DISCORD_ALWAYS_CHANNELS`) or for all (`OPENCLAW_DISCORD_REQUIRE_MENTION=off`),
+then recreate the config-init chain. Do not patch the plugin to make the slash
+command flip the gate; that fork breaks on every image upgrade.
 
 ## Long-term memory in guild channels
 
-OpenClaw keeps the root `MEMORY.md` out of group and channel sessions
-(privacy filter in the workspace bootstrap), and deterministic trigger recall
-only reads that curated tier. A guild bot therefore has no automatic
-long-term memory where it is used most; notes under `memory/` are reachable
-only when the model decides to call `memory_search`, which Gemma rarely does.
-The stack closes the gap in three layers:
+OpenClaw keeps the root `MEMORY.md` out of group and channel sessions (a
+privacy filter in the workspace bootstrap), and its trigger recall only reads
+that tier. A guild bot therefore has no automatic long-term memory where it is
+used most. The stack closes the gap in layers:
 
-1. **People file (step 44).** `workspace-discord/people/MEMORY.md` is
-   injected into every Discord session by the bundled `bootstrap-extra-files`
-   hook. That filter only matches the root path, so the extra file reaches
-   channels, groups and DMs; cron and sub-agent sessions still drop it.
-   The skill router tells the bot to record "remember this" facts there,
-   one `## Name (<@ID>)` section per person, through
-   `node /opt/people-digest.mjs note --id <ID> --name <name> --text <fact> [--temp]`
-   (and `forget --id <ID> --match <part>`), not by editing the file. When
-   Gemma edited the file itself, an `edit` aimed at a section that did not
-   exist yet failed, and the fallback `write` replaced every section. Each
-   command first heals the file from `~/.openclaw/people-digest/last-good.md`
-   if something dropped a section or a permanent rule. The file costs prompt
-   tokens on every turn, so its header asks the bot to stay under ~8000
-   characters (the nightly gate refuses anything past 12000).
-   Each member may also carry one `- (stílus) …` line, written by the
-   nightly job: how they talk and what tone works with them, described as a
-   pattern ("short, ironic, answers in English when joking"), never as a
-   verdict on their character. AGENTS.md tells the bot to match that tone
-   without quoting the line back.
-   Being in the system prompt was not enough for Gemma. Asked "mit csinálok
-   most?" right after a thread task in the same channel, it answered about
-   the task. Step 44c therefore loads the `people-context` plugin
-   (`/opt/openclaw-plugins/people-context`, via `plugins.load.paths` with
-   `hooks.allowConversationAccess`). Its `before_prompt_build` hook reads
-   `ctx.senderId` and prepends that person's lines, plus those of people
-   tagged in the message, to the turn. The gateway logs a "can't verify where
-   this plugin came from" warning for any `load.paths` plugin; it still
-   loads. Check it with `openclaw plugins inspect people-context --runtime
-   --json` (`typedHooks` lists `before_prompt_build`).
-2. **Nightly people-memory job.** It learns from ordinary channel traffic,
-   not only from direct requests. `/opt/people-digest.mjs` (baked into
-   `openclaw-base-ext`) pre-digests the guild's new messages per author and
-   uses per-channel cursors. `--guild all` reads every server the bot is in.
-   It drops only its own bot (feedback loop) and, unless
+1. **People file.** `workspace-discord/people/MEMORY.md` is injected into every
+   Discord session by the bundled `bootstrap-extra-files` hook
+   (`plugins.mjs`). The privacy filter only matches the root path, so the file
+   reaches channels, groups and DMs; cron and sub-agent sessions still drop it.
+   It has one `## Name (<@ID>)` section per person. The bot records facts only
+   through `node /opt/people-digest.mjs note --id <ID> --name <name> --text <fact> [--temp]`
+   and `forget --id <ID> --match <part>`: when the model edited the file
+   itself, a failed `edit` fell back to a `write` that replaced every section.
+   The `people-context` plugin refuses direct edits of the file. Each command
+   first heals the file from `~/.openclaw/people-digest/last-good.md` if a
+   section or a permanent rule went missing. The file costs prompt tokens on
+   every turn, so its header asks for under ~8000 characters (the nightly gate
+   refuses anything past 12000). A member may also have one `- (stílus) …`
+   line, written by the nightly job: how they talk and what tone works,
+   described as a pattern, never as a verdict on their character.
+2. **people-context plugin.** Being in the system prompt was not enough: asked
+   "what am I doing now?" right after a task in the same channel, the model
+   answered about the task. Its `before_prompt_build` hook prepends the
+   sender's lines, and those of people tagged in the message, to the turn. The
+   Discord plugin turns `<@ID>` into `@Name` before any hook sees the message,
+   so for a message with an `@` the plugin reads its mention list from the
+   Discord API (one GET with the bot token) and adds a
+   `@Name = <@ID>` line, which lets the bot tag those people back. The gateway
+   logs a "can't verify where this plugin came from" warning for any
+   `load.paths` plugin; it still loads. Check it with
+   `openclaw plugins inspect people-context --runtime --json`.
+3. **Nightly people-memory job.** It learns from ordinary channel traffic.
+   `/opt/people-digest.mjs` (baked into `openclaw-base-ext`) digests the new
+   messages per author with per-channel cursors; `--guild all` reads every
+   server the bot is in. It drops its own bot's lines and, unless
    `OPENCLAW_PEOPLE_DIGEST_NSFW=on`, NSFW channels. Other bots stay, marked
-   `(bot)`, because members talk to them; their lines are context, not facts.
-   Voice-log lines in `*log` channels are folded into one activity summary
-   per member (`PEOPLE_DIGEST_LOGS=off` skips those channels instead).
-   The agent proposes a new file as `people/MEMORY.next.md`.
+   `(bot)`, as context rather than facts. Voice-log lines in `*log` channels
+   are folded into one activity summary per member (`PEOPLE_DIGEST_LOGS=off`
+   skips those channels). The agent proposes `people/MEMORY.next.md`;
    `people-digest.mjs apply` swaps it in only when no person section vanished,
-   no "végleges szabály" (permanent rule) line was lost and the file did not
-   shrink below 70 %. Backups land in `~/.openclaw/people-digest/history/`.
-   The skill excludes sensitive categories (politics, religion, health,
-   sexuality, finances). Create the job once per install:
+   no permanent-rule line was lost and the file did not shrink below 70 %.
+   Backups land in `~/.openclaw/people-digest/history/`. The skill excludes
+   sensitive categories (politics, religion, health, sexuality, finances).
+   Create the job once per install:
 
    ```bash
    docker exec ${PROJ}openclaw-gateway openclaw cron add \
@@ -419,15 +315,14 @@ The stack closes the gap in three layers:
    ```
 
    `--tools exec,read,write` keeps the job from posting anywhere. Collecting
-   ~30 channels takes about 4-5 minutes, because each `openclaw message read`
-   call costs a CLI round trip.
-3. **Community summaries (step 44d).** The people file holds facts about
-   people, not what was talked about. Every 3 days a `community-summary` job
-   writes one summary of all guilds' messages to
-   `workspace-discord/memory/community/<from>_<to>.md`. The bge-m3 memory
-   index picks it up, so "what did we talk about in August?" is answered
-   through `memory_search` without growing any prompt. The collect step runs
-   windowed (`--last-days 3`, or `--from/--to` for a backfill), so the
+   ~30 channels takes 4-5 minutes, because each `openclaw message read` call
+   is a CLI round trip.
+4. **Community summaries.** The people file holds facts about people, not what
+   was talked about. Every 3 days a `community-summary` job writes one summary
+   of all guilds' messages to `workspace-discord/memory/community/<from>_<to>.md`.
+   The bge-m3 memory index picks it up, so "what did we talk about in August?"
+   is answered through `memory_search` without growing any prompt. The collect
+   step is windowed (`--last-days 3`, or `--from/--to` for a backfill), so the
    nightly cursors stay untouched. Create the job once:
 
    ```bash
@@ -440,47 +335,43 @@ The stack closes the gap in three layers:
    ```
 
    The skill always collects `--guild all` and keeps health, sexual and
-   financial details out of the summary.
+   financial details out. For older history, run the recipe once per
+   week-long window with `--from/--to`, one turn at a time, and rerun a turn
+   that comes back with a timeout or error. `OPENCLAW_PEOPLE_DIGEST_EXCLUDE`
+   keeps channels (for example a feed of game patch notes) out of both jobs.
+5. **Channel history on demand.** "Who won the last /ruin?" is in no summary.
+   The skill router points the bot at
+   `node /opt/people-digest.mjs history --channel <id> [--author <name|id>] [--grep <text>] [--limit 20] [--days N] [--before <msg id>]`.
+   It pages back through Discord REST (about 1 s per 100 messages; it falls
+   back to `openclaw message read` when no bot token is readable), keeps embed
+   text, appends the slash-command caller as `[/command — Name]`, prints local
+   dates and always states the scanned range. Raw `message read` pages were
+   120-200 KB, got truncated in the tool result, and the bot then made up a
+   reason for not finding the message.
+6. **Active Memory.** `OPENCLAW_ACTIVE_MEMORY=on` runs a recall sub-agent before
+   every reply of `discord-friend` (`memory.mjs`: mode `always`, 30 s timeout,
+   thinking off). The upstream `escalate` mode runs only on recall intent, and
+   its intent detector has no Hungarian patterns, so it never fired.
 
-   For older history, run the same recipe once per week-long window with
-   `--from/--to` dates, one turn at a time. Treat a turn that comes back with
-   a timeout or error text as failed and run it again.
-4. **Channel history on demand.** "Who won the last /ruin?" or "what did X
-   say yesterday?" is not in any summary. The skill router points the bot at
-   `node /opt/people-digest.mjs history --channel <id> [--author <name|id>]
-   [--grep <text>] [--limit 20] [--days N] [--before <msg id>]`. It pages
-   back through Discord REST (about 1 s per 100 messages; it falls back to
-   `openclaw message read` when no bot token is readable), keeps embed text
-   ("name: value | name: value", invisible spacer fields dropped), appends
-   the slash-command user as `[/command — Name]` (bot answers to a slash
-   command carry the caller only in their interaction metadata), prints
-   Budapest-time dates, and always states the scanned range. Raw
-   `message read` pages were 120-200 KB, got truncated in the tool result,
-   and the bot then made up a reason for not finding the message.
-5. **Active Memory escalation.** With `OPENCLAW_ACTIVE_MEMORY=on`, a blocking
-   recall sub-agent searches memory before the reply, but only when the
-   message asks about the past. Upstream's intent detector has no Hungarian
-   patterns; `openclaw-base-ext` patch 4 adds them.
+Dreaming storage is `separate` (`memory.mjs`). The inline mode wrote sleep-phase
+blocks into the daily notes, and on a group bot those blocks were session
+metadata that outranked real notes in `memory_search`.
 
-Dreaming storage is `separate` (step 6). The inline mode wrote
-`## Light Sleep` blocks into the daily notes, and on a group bot those blocks
-were session-metadata noise that outranked real notes in `memory_search`.
+## DMs only from server members (dm-guild-gate)
 
-## DMs only from server members (dm-guild-gate, step 44g)
-
-Step 28 sets `dmPolicy: "open"` so members can DM the bot without a pairing
-round. That also lets a stranger who finds the bot's profile talk to it.
-`dmPolicy` has four modes (`pairing`, `allowlist`, `open`, `disabled`) and
-none of them means "people who share a server with me"; `allowlist` would
-need every member's ID in the config by hand.
+`OPENCLAW_DISCORD_AUTHZ=open` sets `dmPolicy: "open"` so members can DM the bot
+without a pairing round. That also lets a stranger who finds the bot's profile
+talk to it. `dmPolicy` has four modes (`pairing`, `allowlist`, `open`,
+`disabled`) and none means "people who share a server with me"; `allowlist`
+would need every member's ID by hand.
 
 The `dm-guild-gate` plugin decides per message. Its `before_dispatch` hook
-sees `channel`, `isGroup` and `senderId`. For a Discord DM it asks the
-Discord REST API with the bot token whether the sender is a member of any
-guild the bot is in (`GET /guilds/{guild}/members/{user}`: 200 = member,
-404 code 10007 = not a member, 10013 = no such user; no privileged intent
-needed). A non-member's turn ends with `{ handled: true }`: no model call,
-no reply, no reaction. It is not a reply hook, so preview streaming stays on.
+sees `channel`, `isGroup` and `senderId`. For a Discord DM it asks the Discord
+REST API with the bot token whether the sender is a member of any guild the bot
+is in (`GET /guilds/{guild}/members/{user}`: 200 = member, 404 code 10007 = not
+a member, 10013 = no such user; no privileged intent needed). A non-member's
+turn ends with `{ handled: true }`: no model call, no reply, no reaction. It is
+not a reply hook, so preview streaming stays on.
 
 - Cache: members 6 h, non-members 10 min (someone who just joined gets in
   soon).
@@ -494,51 +385,48 @@ no reply, no reaction. It is not a reply hook, so preview streaming stays on.
   (`allow` / `block` / `error_allow`) and how it was decided.
 
 Slash commands sent in a DM take the native command path, not
-`before_dispatch`; step 28's authorization still governs those.
+`before_dispatch`; the authz settings above govern those.
 
-## Honesty checks (claim-guard, step 44e)
+## Honesty checks (claim-guard)
 
-Prompt rules did not stop the bot from saying it had done things it had
-not: on 2026-10-19 it told a member "I saved it to memory" in a turn with no
-write call, and when it could not find an old message it invented a reason
-("messages are deleted after 30 seconds"). Word lists did not work either: a
-regex for claim words missed "jegyeztem" on its first live test. The
-`claim-guard` plugin (`openclaw-base-ext/plugins/claim-guard`) asks the
-model itself, through the documented `api.runtime.llm.complete` plugin API,
-with thinking off:
+Prompt rules did not stop the bot from saying it had done things it had not:
+it told a member "I saved it to memory" in a turn with no write call, and when
+it could not find an old message it invented a reason ("messages are deleted
+after 30 seconds"). Word lists did not work either: a regex for claim words
+missed "jegyeztem" on its first live test. The `claim-guard` plugin
+(`openclaw-base-ext/plugins/claim-guard`) asks the model itself, through the
+documented `api.runtime.llm.complete` plugin API, with thinking off:
 
 1. `after_tool_call` records which tools succeeded in the run.
 2. `before_agent_finalize` sends the final answer to two judge prompts in
    parallel (~2 s together on the reference host):
    - **Actions.** List every action the answer says was done, each with a
-     type (`saved`, `searched`, `read`, `sent`, `reminder`, `ran_code`).
-     The plugin code, not the model, then checks each type against the
-     successful tools.
-   - **Facts.** Rate each statement: is it about the world, the
-     conversation or an opinion; is it specific; is it common knowledge;
-     is it hedged. The code flags a specific, uncommon, unhedged world fact
-     only when no search or fetch tool ran.
-   Keep the two prompts separate. Merged into one, the fact rules leaked
-   into the action verdicts (36-38 of 42 cases instead of 42).
-3. On a mismatch the hook returns `revise` with `maxAttempts: 1`: one more
-   model pass that either does the action / the look-up, or says plainly
-   that it was not done or that the fact is from memory.
+     type (`saved`, `searched`, `read`, `sent`, `reminder`, `ran_code`). The
+     plugin code, not the model, then checks each type against the successful
+     tools.
+   - **Facts.** Rate each statement: about the world, the conversation or an
+     opinion; specific or not; common knowledge or not; hedged or not. The code
+     flags a specific, uncommon, unhedged world fact only when no search or
+     fetch tool ran.
 
-It covers the `discord-friend` agent only (`CLAIM_GUARD_AGENTS` overrides
-the list). The judge's JSON is read with a balanced-brace parser, because
-Nemotron sometimes closes one brace too many. Measured on 42 held-in and 14
-held-out cases: all correct. Live, "what is the Hungarian title of *The
-Fighter*?" went fact → revise → `web_search` → the right title. A test
-message that told the bot to say it had saved something without saving it
-got a revise and then "I did not save it"; when the bot really wrote the
-note, the guard stayed quiet (`none`).
+   Keep the two prompts separate. Merged into one, the fact rules leaked into
+   the action verdicts (36-38 of 42 cases right instead of 42).
+3. On a mismatch the hook returns `revise` with `maxAttempts: 1`: one more
+   model pass that either does the action or the look-up, or says plainly that
+   it was not done or that the fact is from memory.
+
+It covers the `discord-friend` agent only (`CLAIM_GUARD_AGENTS` overrides the
+list) and skips Active Memory's recall runs, which run under the same agent
+before the real turn. The judge's JSON is read with a balanced-brace parser,
+because Nemotron sometimes closes one brace too many. Measured on 42 held-in and
+14 held-out cases: all correct.
 
 What it does not catch: a successful tool result that the bot then misreads
 (it once merged a detail from a neighbouring line of a `history` result into
 its answer). The tool ran, so the claim is backed.
 
-Audit the log, which holds structure only (time, session, tools, verdict
-kind, outcome, latency), never message text:
+Audit the log, which holds structure only (time, session, tools, verdict kind,
+outcome, latency), never message text:
 
 ```bash
 docker exec ${PROJ}openclaw-gateway sh -c \
@@ -548,30 +436,36 @@ docker exec ${PROJ}openclaw-gateway sh -c \
 Outcomes: `none` (nothing to fix), `revise` (a second pass was requested),
 `resolved` (the second pass fixed it), `unresolved` (still wrong after it),
 `judge_failed` (judge timeout or unreadable JSON; the answer goes out
-unchanged). `openclaw plugins reload` cannot swap the plugin while a run
-holds the old instance; after changing it, rebuild `openclaw-base-ext` and
-recreate the gateway.
+unchanged). `openclaw plugins reload` cannot swap the plugin while a run holds
+the old instance; after changing it, rebuild `openclaw-base-ext` and recreate
+the gateway.
 
 The skill router backs this with principle-based rules, not trigger words:
 look up a doubtful fact before stating it, never refuse a search, and claim
-"saved" or "read" only after a successful tool call. With temperature 0.6
-and 1.0, 12 honesty traps came out 24 of 24 honest each, so the sampling
-change in [`llm-stack.md`](./llm-stack.md#sampling-temperature) was for the
-Hungarian text, not for honesty.
+"saved" or "read" only after a successful tool call. At temperature 0.6 and 1.0
+alike, 12 honesty traps came out 24 of 24 honest, so the lower temperature
+(`LLM_TEMPERATURE`, see [`configuration.md`](./configuration.md#llm--embeddings))
+is for clean Hungarian text, not for honesty.
+
+## Heartbeat
+
+The heartbeat runs every 30 minutes in an isolated session inside the
+`OPENCLAW_HEARTBEAT_ACTIVE_START`/`_END` window and fires from
+`HEARTBEAT.md` (an empty file skips it). Its default `owner` target finds no
+DM on Discord: the plugin reads the bare owner snowflake as a channel, and
+every poll skips with `reason=no-route`. `gateway.mjs` therefore sets
+`target: "discord"` and `to: "user:<id>"` on `agents.defaults.heartbeat`, with
+the first ID in `OPENCLAW_DISCORD_COMMAND_OWNERS` unless `OPENCLAW_HEARTBEAT_TO`
+names another. It sits on the defaults because a per-agent heartbeat block
+turns the heartbeat off for every other agent. `OPENCLAW_HEARTBEAT_TO=off`
+leaves delivery to OpenClaw.
 
 ## Related docs
 
-- [`discord-text-agent.md`](./discord-text-agent.md) — text-channel agent
-  design (mention pill, `tools.profile`, `message` tool, ackReaction cycle,
-  progressive streaming, TTS opt-in).
-- [`discord-voice-agent.md`](./discord-voice-agent.md) — voice-channel
-  deployment, isolation, threat model.
-- [`img-bash-command.md`](./img-bash-command.md) — the `!~/.openclaw/bin/img`
-  Discord bash bypass for image-gen.
-- [`chat-surface-capability-matrix.md`](./chat-surface-capability-matrix.md)
-  — what renders where (Discord text vs voice vs web chat).
-- `patch-config.mjs` (top docblock) — numbered rationale for every step,
-  including the 11 Discord-related ones (20, 21, 22, 24, 25, 25c, 26, 27,
-  28, 29, 30).
-- Upstream OpenClaw Discord docs (authoritative):
-  <https://docs.openclaw.ai/channels/discord>.
+- [`configuration.md`](./configuration.md): every knob and its default.
+- [`discord-text-agent.md`](./discord-text-agent.md): text-channel agent.
+- [`discord-voice-agent.md`](./discord-voice-agent.md): voice-channel agent.
+- [`agentic-coding.md`](./agentic-coding.md): exec, approvals, long tasks.
+- `config-init/steps/discord.mjs` and its siblings: the code, with the reason
+  for each setting next to it.
+- Upstream OpenClaw Discord docs: <https://docs.openclaw.ai/channels/discord>.

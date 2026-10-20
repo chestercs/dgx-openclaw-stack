@@ -14,10 +14,9 @@ for the manual OAuth onboarding flow. It does not implement any of the
 browser-control tools itself — those live in OpenClaw, which speaks raw
 CDP to the per-profile Chromium ports.
 
-It is not an MCP server. OpenClaw has no MCP integration as of the latest
-stable image, so the integration path is OpenClaw's native `browser` tool
-plus a remote-attach Chromium. We do not implement Playwright tools
-ourselves; the gateway-side code does.
+It is not an MCP server. The integration path is OpenClaw's native
+`browser` tool plus a remote-attach Chromium. We do not implement
+Playwright tools ourselves; the gateway-side code does.
 
 It is not a stealth scraper. The Chromium is vanilla Playwright with
 `navigator.webdriver=true`; user-owned authenticated accounts (GitHub,
@@ -29,21 +28,14 @@ on first request. Patchright is documented as a Phase 2 swap if needed.
 
 Three integration paths were considered.
 
-**MCP** was the original framing in the wishlist. At v0.7.0 design time
-(2026-04-25) the OpenClaw config schema had no slot for MCP servers (no
-`plugins.entries.mcp.*`, no `tools.mcp.servers[]`). Adding one would
-have required either a custom upstream plugin maintained against every
-OpenClaw release, or a wrapper that re-implements every browser tool the
-agent needs. Both expanded the surface area we own. Rejected.
-
-Native MCP client support landed in OpenClaw shortly after — `mcp.servers.<name>`
-with stdio / SSE-HTTP / Streamable-HTTP transports (verified 2026-04-26).
-Net new tool wiring (e.g. the v0.8.0+ Python sandbox) defaults to MCP.
-The browser stack stays on CDP-attach because the constraint was
-port-per-profile routing (issues #4841 / #9723 / #11926) and CDP
-Bearer-token semantics — neither problem is solved by switching transport.
-If a future structural reason emerges (multi-host browser pool, per-tool
-allow-list shape change), MCP is now a viable alternative.
+**MCP.** OpenClaw has a native MCP client (`mcp.servers.<name>`, stdio /
+SSE-HTTP / Streamable-HTTP), and newer tool wiring such as the Python
+sandbox uses it. An MCP browser server would have to re-implement every
+browser tool the agent needs, which is surface area we would own. The
+real constraints, port-per-profile routing (issues #4841 / #9723 /
+#11926) and CDP token semantics, are not solved by switching transport.
+If a structural reason emerges (multi-host browser pool, per-tool
+allow-list shape change), MCP is a viable alternative.
 
 **Bespoke HTTP tool adapter (SearxNG-style)** would mean a FastAPI
 service exposing routes like `POST /v1/fetch` that the agent calls via
@@ -74,12 +66,18 @@ The natural way to satisfy that is one Chromium per profile, each on its
 own port. We allocate ports deterministically:
 
 - 9220 — FastAPI management API (no Chromium here).
-- 9222 — `default` anonymous throwaway profile.
+- 9222 — the anonymous throwaway profile (`default` in the sidecar,
+  `self-hosted` in OpenClaw, and the tool's default profile).
 - 9223–9241 — named profiles in `BROWSER_PROFILE_NAMES` order.
 
-The patcher (step 15) writes `browser.profiles.<name>.cdpUrl =
+`config-init/steps/tools.mjs` writes `browser.profiles.<name>.cdpUrl =
 http://openclaw-browser:<port>?token=<BROWSER_API_TOKEN>` for each
-registered profile. The agent calls `browser.navigate(url=...,
+profile, but only while the `browser` compose profile is on and the token
+is set. It also exempts the `openclaw-browser` hostname from the
+gateway's SSRF guard (`browser.ssrfPolicy.allowedHostnames`), which
+otherwise blocks a private-network CDP host, and keeps OpenClaw's own
+sandbox browser off (`OPENCLAW_SANDBOX_BROWSER`): no such container runs
+here, and with it on the model targets `sandbox` and fails. The agent calls `browser.navigate(url=...,
 profile="github-user1")` and OpenClaw resolves that to the matching
 cdpUrl and connects directly to port 9223.
 
@@ -119,7 +117,7 @@ the root cause of multiple Chromium credential-theft CVEs.
 
 ## Always-on noVNC bridge
 
-Since v0.7.0 the VNC stack is part of the container's normal lifecycle:
+The VNC stack is part of the container's normal lifecycle:
 Xvfb + x11vnc + websockify spin up at app startup, persist for the
 container's lifetime, and authenticate via `BROWSER_VNC_PASSWORD` (set
 by `bootstrap.sh`, rotated by `rotate-secrets.sh --all`). Anyone with
@@ -133,13 +131,6 @@ curl -fsS -H "Authorization: Bearer $BROWSER_API_TOKEN" \
 Outside an active login-helper session the screen is blank — no headful
 Chromium is attached to the bridge's Xvfb display. To peek at a
 profile's view, push it into headful mode (next section).
-
-Earlier revisions (≤ v0.6.x) span the VNC chain up only for the
-duration of a login-helper session, with a freshly-generated OTP each
-time. The OTP-per-session UX was awkward (copy a fresh password every
-onboarding round, no peeking-at-the-agent without spinning the helper)
-and the persistent password matches how `BROWSER_API_TOKEN` already
-works.
 
 ### Effective entropy
 
@@ -177,10 +168,11 @@ re-auth. The flow ships as `bootstrap-browser-login.sh <profile-name>`:
    Chromium headless on the same `--user-data-dir`. The VNC bridge
    stays running — only the headful Chromium is replaced.
 6. The script appends the profile name to `BROWSER_PROFILE_NAMES` in
-   `.env` and runs `docker compose run --rm openclaw-config-init` so
-   patcher step 15 writes the new `browser.profiles.<n>.cdpUrl` entry
-   (and step 16 idempotently appends the soft-policy block to the
-   workspace `AGENTS.md`).
+   `.env` and runs `docker compose run --rm openclaw-config-init`, which
+   writes the new `browser.profiles.<n>.cdpUrl` entry
+   (`config-init/steps/tools.mjs`) and refreshes the `browser-policy`
+   block in the main workspace `AGENTS.md`
+   (`config-init/steps/workspaces.mjs`).
 
 After this, the agent can call `browser.navigate(url=...,
 profile="<n>")` and the warm Chromium serves authenticated content —
@@ -302,7 +294,7 @@ Phase 2 hardening options documented but not shipped:
 | Chromium + 1 GitHub-style page | — | 300–500 MB |
 | Chromium + 1 heavy SPA (Figma, Google Docs) | — | 600 MB – 1.2 GB |
 
-Default `BROWSER_MAX_PROFILES=20` × ~250 MB ≈ ~5 GB at idle worst
+Default `BROWSER_MAX_PROFILES=20` (read by `openclaw-browser/server/supervise.py`) × ~250 MB ≈ ~5 GB at idle worst
 case. Realistic operator workload (default + 3–4 named profiles) is
 ~1.2 GB. GB10 free unified memory budget is ~96 GB after the rest of
 the stack — non-issue.
@@ -336,25 +328,24 @@ update the import in `supervise.py`, rebuild. Document in
 `browser.act` routes to different action handlers by `kind`, and each
 handler has its own parameter shape — flat `{ref}` for `click`, flat
 `{text}` for `type`, but nested `{fields: [{ref, type, value}]}` for
-`fill`. Smaller open models (Gemma 4 in particular) routinely call
+`fill`. Open models routinely call
 `fill` with the flat `{element, text}` they used for `click`, get back
 `"fill requires fields"` from the normalizer
 (`extensions/browser/src/browser/routes/agent.act.normalize.ts:217`),
 retry the same broken shape, fill the context with normalizer errors,
 and eventually doom-loop into an apology and a "give up" suggestion.
 
-Patcher step 17 (added in v0.7.1) writes a small cheatsheet block into
-the workspace `AGENTS.md` showing the right shape for `fill` / `click`
-/ `type` next to a labelled wrong shape, plus a one-line recovery hint
-("if you see `fill requires fields`, re-emit with `fields: [...]`"). It
-sits next to the browser-profile policy block from step 16, in the file
-every agent session reads at startup. Idempotent block markers so
-re-runs don't duplicate it; cap on length is intentional (a full schema
-dump would push out other context every session).
-
-If you swap to a larger / better-tuned model and want to drop the
-cheatsheet, comment out step 17 in `patch-config.mjs` — the existing
-block in `AGENTS.md` stays, but won't be re-added on fresh installs.
+The `browser-automation` skill
+(`config-init/templates/skills/browser-automation.md`, written into the
+main and the Discord workspace by `config-init/steps/workspaces.mjs`)
+shows the right shape for `fill` / `click` / `type` next to a labelled
+wrong shape, plus a recovery hint ("if you see `fill requires fields`,
+re-emit with `fields: [...]`"). As a skill it costs one line in the
+prompt; the body loads when the model reaches for the browser. The soft
+profile policy (credentialed profiles are opt-in) is the separate
+`browser-policy` block in the main workspace `AGENTS.md`. Skill files are
+rewritten on every config-init run, so edit the template, not the
+workspace copy.
 
 ## Known limitations and Phase 2 candidates
 

@@ -2,8 +2,10 @@
 
 Self-hosted Python execution backend that the OpenClaw agent reaches over
 MCP. Persistent ipykernel per session, batteries-included data-science
-stack (pandas, numpy, matplotlib `Agg`, scikit-learn, scipy), Bearer-auth.
-Ships in v0.8.0+ as the opt-in `--profile python` service.
+stack (pandas, numpy, matplotlib, scikit-learn, scipy) plus `yt-dlp` and
+`ffmpeg`, Bearer-auth. Optional: compose profile `python` plus
+`PYTHON_SANDBOX_API_TOKEN`. Knob defaults:
+[`configuration.md`](./configuration.md#python-sandbox).
 
 ## Why this design
 
@@ -32,15 +34,27 @@ reduce, then plot) re-loads the dataset every call.
 
 ### MCP server we own — what we shipped
 
-OpenClaw added native MCP client support (post-v0.7.0). Config:
-`mcp.servers.<name>` with stdio / SSE-HTTP / Streamable-HTTP transports.
-Verified against `docs.openclaw.ai/cli/mcp` on 2026-04-26.
+OpenClaw has a native MCP client: `mcp.servers.<name>` with stdio /
+SSE-HTTP / Streamable-HTTP transports.
 
 We ship `openclaw-python-sandbox` as a sibling docker service, expose
-an MCP Streamable-HTTP endpoint at `/mcp`, and the patcher (step 18)
-wires it into `mcp.servers.python_sandbox`. Two tools surface to the
-agent: `python_exec` and `python_session_reset`. The OpenClaw gateway
-auto-discovers the tools via `tools/list` on connect.
+an MCP Streamable-HTTP endpoint at `/mcp`, and
+`config-init/steps/tools.mjs` wires it into `mcp.servers.python_sandbox`
+with `requestTimeoutMs: 120000` (the MCP SDK's own 60 s was too short for
+downloads). The OpenClaw gateway discovers the tools via `tools/list` on
+connect:
+
+- `python_exec` and `python_session_reset`: the kernel.
+- `transcribe_audio`: sends a file from `/workspace` to the Whisper
+  service. The STT token stays in the server process; the kernel never
+  sees it.
+- `git_push`: pushes a `/workspace` repo to GitHub with `GITHUB_TOKEN`,
+  again kept out of the kernel. A classic token with `repo` scope also lets
+  it create a missing repo.
+
+Port 8095 is a static preview port for web apps the agent builds; the
+`coding-projects` skill tells users the app is at
+`OPENCLAW_SANDBOX_PUBLIC_URL`.
 
 This is opt-in (Compose profile `python` + a non-empty
 `PYTHON_SANDBOX_API_TOKEN`), Python-specific, and orthogonal to every
@@ -145,14 +159,11 @@ to keep the namespace flat and unambiguous. So the agent sees:
 - `python_sandbox__python_exec`
 - `python_sandbox__python_session_reset`
 
-**Refer to the tools by the prefixed name in agent prompts.** Verified
-on GB10 with Gemma 4 31B NVFP4 (2026-04-26): a prompt asking for
-"the python_exec tool" without the `python_sandbox__` prefix produced
-no tool call at all (the model returned an unrelated reply, no
-failures logged). The prefixed form `python_sandbox__python_exec`
-worked first try with `--thinking medium`. If you write higher-level
-tooling that constructs prompts for this sandbox, always use the
-prefixed name.
+**Refer to the tools by the prefixed name in agent prompts.** A prompt
+asking for "the python_exec tool" without the `python_sandbox__` prefix
+has produced no tool call at all (an unrelated reply, no error logged),
+while the prefixed form worked first try. If you write tooling that
+constructs prompts for this sandbox, always use the prefixed name.
 
 ## Threat model
 
@@ -182,14 +193,11 @@ What we explicitly do **not** ship:
   user-space syscall interceptor) blocks most introspection-driven
   escape chains, at ~30% latency overhead. Add it if your threat model
   is multi-tenant.
-- **No hard network egress block.** `PYTHON_SANDBOX_NETWORK=none` is a
-  documented placeholder for a future v0.8.x patch that will attach the
-  service to an `internal: true` docker network. Today, egress is
-  implicitly limited by the absence of network-using libraries in the
-  image plus the kernel's lack of root for raw sockets — but `urllib`,
-  `http.client`, and `socket` all work as long as the agent's code
-  doesn't need elevated privileges. If you need to *enforce* no-egress,
-  attach the container to a `--internal` network at runtime.
+- **No network egress block.** The service sits on the default compose
+  bridge, so `urllib`, `http.client`, `socket` and `yt-dlp` reach the
+  internet; media downloads depend on that. If you need to *enforce*
+  no-egress, attach the container to an `internal: true` network (and
+  lose `yt-dlp`).
 - **No persistent identity tracking across sessions.** Sessions are
   identified by an arbitrary string the agent picks. Two agents using
   the same `session_id` see each other's state — this is by design (a
@@ -200,7 +208,7 @@ What we explicitly do **not** ship:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `PYTHON_SANDBOX_API_TOKEN` | (empty) | Bearer token. Empty = service stays parked AND patcher step 18 cleans the entry from openclaw.json. |
+| `PYTHON_SANDBOX_API_TOKEN` | (empty) | Bearer token. Empty (or the `python` profile off) = config-init removes `mcp.servers.python_sandbox`, so the gateway does not dial a parked service. |
 | `PYTHON_SANDBOX_PORT` | `8094` | Container port for the MCP endpoint. |
 | `PYTHON_SANDBOX_BIND` | `127.0.0.1` | Host bind for the published port. |
 | `PYTHON_SANDBOX_KERNEL_TIMEOUT_S` | `30` | Per-execution wall-clock cap; kernel gets `interrupt_kernel` on exceed (not killed). |
@@ -209,7 +217,13 @@ What we explicitly do **not** ship:
 | `PYTHON_SANDBOX_REAP_INTERVAL_S` | `300` | Reaper sweep frequency. |
 | `PYTHON_SANDBOX_MEMORY_MB` | `8192` | docker `mem_limit` for the container (covers all kernels combined). |
 | `PYTHON_SANDBOX_CPUS` | `4` | docker `cpus` quota. |
-| `PYTHON_SANDBOX_URL` | `http://openclaw-python-sandbox:8094/mcp` | What the patcher writes into `mcp.servers.python_sandbox.url`. Override only if you're routing through a different bridge alias. |
+| `PYTHON_SANDBOX_URL` | `http://openclaw-python-sandbox:8094/mcp` | What config-init writes into `mcp.servers.python_sandbox.url`. Override only if you're routing through a different bridge alias. |
+
+`PYTHON_SANDBOX_MAX_OUTPUT_BYTES`, `PYTHON_SANDBOX_IDLE_TTL_S` and
+`PYTHON_SANDBOX_REAP_INTERVAL_S` are read by the server but not passed by
+`docker-compose.yml`; add them to the service's `environment` to change them.
+The GitHub and preview knobs are in
+[`configuration.md`](./configuration.md#python-sandbox).
 
 ## Known limits
 
@@ -220,8 +234,9 @@ What we explicitly do **not** ship:
   `result.plots[]` via iopub `display_data`. To trigger publication,
   let the figure be the last expression of a cell (e.g. `fig` on its
   own line) or call `display(fig)` explicitly.
-- **No `pip install` at runtime by design.** No egress + no root means
-  the kernel can't bring in new packages. To add a library, edit
+- **No `pip install` at runtime by design.** The kernel runs as UID 1000
+  without root, and the tool description tells the model install will
+  fail. To add a library, edit
   `openclaw-python-sandbox/server/requirements.txt` and rebuild the
   image.
 - **One `execute_request` per session at a time.** Per-session async
@@ -229,8 +244,8 @@ What we explicitly do **not** ship:
   crossed iopub messages.
 - **Kernel state ≠ filesystem state.** The kernel's variables live in
   process memory and disappear on `python_session_reset` or container
-  restart. Files in `/workspace` (bind from
-  `${OPENCLAW_WORKSPACE_DIR}/sandbox/`) survive both.
+  restart. Files in `/workspace` (bind from `OPENCLAW_SANDBOX_DIR`,
+  default `${OPENCLAW_WORKSPACE_DIR}/sandbox`) survive both.
 - **Plot size cap.** Large matplotlib figures (>10 MB base64) hit
   `PYTHON_SANDBOX_MAX_OUTPUT_BYTES` truncation. Save to file instead
   for big visualizations: `plt.savefig('/workspace/foo.png')` then
@@ -240,7 +255,7 @@ What we explicitly do **not** ship:
 
 ```bash
 # Stack is up with the python profile active. Substitute PROJ as in CLAUDE.md.
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
 TOKEN=$(grep '^PYTHON_SANDBOX_API_TOKEN=' .env | cut -d= -f2-)
 
 # 1. Healthz
@@ -276,10 +291,8 @@ curl -sS -X POST http://127.0.0.1:8094/mcp \
   | jq -r '.result.content[0].text' | jq .stdout
 # → "42\n"
 
-# 5. Agent end-to-end via gateway. NOTE: refer to the tool by its
-#    prefixed name (python_sandbox__python_exec). Without the prefix,
-#    Gemma 4 NVFP4 silently fails to call the tool — see "Tool name
-#    prefix" above.
+# 5. Agent end-to-end via gateway. Refer to the tool by its prefixed
+#    name (python_sandbox__python_exec); see "Tool name prefix" above.
 docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   --message 'Call python_sandbox__python_exec with code="print(2**128)". Reply with the printed value prefixed by VAL:' \
   --thinking medium --json --timeout 180 \
@@ -295,5 +308,7 @@ docker exec ${PROJ}openclaw-cli openclaw agent --agent main \
   subsystem" subsection — design rationale at the stack level.
 - [`../TROUBLESHOOTING.md`](../TROUBLESHOOTING.md) → entries for kernel
   timeouts, MCP-not-registered, OOM-killed kernels.
-- [`./openclaw-internals.md`](./openclaw-internals.md) → MCP client
-  semantics in the gateway, full patcher step list.
+- [`./configuration.md`](./configuration.md#python-sandbox) → every
+  sandbox knob with its default.
+- [`../../openclaw-python-sandbox/README.md`](../../openclaw-python-sandbox/README.md)
+  → building and running the service standalone.

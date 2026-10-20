@@ -23,7 +23,7 @@ body:
     attributes:
       label: Proposed solution
       description: |
-        How would the change look in `docker-compose.yml`, `patch-config.mjs`,
+        How would the change look in `docker-compose.yml`, `config-init/`,
         or the docs? A rough sketch is fine.
     validations:
       required: true

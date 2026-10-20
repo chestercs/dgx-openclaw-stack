@@ -1,5 +1,9 @@
 # `openclaw-claw-img-bot` — standalone `/claw-img` Discord slash command
 
+Status: optional; off on the reference host. Enabled by adding
+`compose/claw-img.yml` to `COMPOSE_FILE`; needs the
+[`openclaw-image-comfyui`](../openclaw-image-comfyui/README.md) bridge running.
+
 A small Discord bot that exposes real **`/claw-img`** (text→image),
 **`/claw-img-to-img`** (img2img), **`/claw-video`** (LTX-Video), and
 **`/claw-music`** (ACE-Step text→music) slash commands and generates media
@@ -16,19 +20,16 @@ by a music gen.
 
 ## Why this exists
 
-OpenClaw's own command surface can't do this on the current build:
-
-- Every slash/`@mention` message routes through the agent LLM, whose RLHF
-  refuses adult prompts.
-- The only LLM-bypass path (`commands.bash` → `!`/`​/bash`) is arbitrary-shell,
-  approval-gated, and not a real Discord slash command (it doesn't appear in
-  Discord's `/` autocomplete and triggers DM approval prompts).
+OpenClaw's own command surface can't do this: every slash or `@mention`
+message routes through the agent LLM, which refuses adult prompts and can
+rewrite the prompt. This stack does not enable OpenClaw's `commands.bash`
+shell bypass either.
 
 This bot sidesteps all of it: the slash command runs deterministic code, calls
 the bridge MCP endpoint, and uploads the rendered PNG as a **true Discord
 attachment**. No LLM, no approval, no shell.
 
-It is **opt-in** behind the `claw-img` compose profile and uses its **own**
+It is **opt-in** (`compose/claw-img.yml`) and uses its **own**
 Discord application/token (a second bot user), so it never conflicts with the
 OpenClaw bot's gateway connection.
 
@@ -47,9 +48,10 @@ OpenClaw bot's gateway connection.
    **instantly** (global registration takes ~1 h).
 4. Make sure `IMAGE_GEN_API_TOKEN` is set (same token the bridge uses) and the
    `openclaw-image-comfyui` bridge is up on the stack network.
-5. Start it:
+5. Add the compose file in `.env` and start it:
    ```bash
-   docker compose --profile claw-img up -d --build openclaw-claw-img-bot
+   # .env: COMPOSE_FILE=docker-compose.yml:compose/claw-img.yml
+   docker compose up -d --build openclaw-claw-img-bot
    ```
 
 ## Usage
@@ -80,7 +82,7 @@ both commands.
 ```
 
 - **`image`** — the source picture to transform *(required)*; the bot reads the
-  attachment and passes it to the bridge's `generate_i2i` as base64 (KozelBot
+  attachment and passes it to the bridge's `generate_i2i` as base64 (this bot's
   uploads don't reach the bridge media dir, so the filesystem-path route isn't
   available).
 - **`prompt`** — how to change it / the target look *(required)*.
@@ -129,8 +131,8 @@ both commands.
 - Returns one MP3 as a Discord attachment. The bridge runs the validated
   ACE-Step graph directly (not via the image/video workflow loader). Default
   variant is set by the bridge env (`ACE_MUSIC_UNET` / `ACE_MUSIC_CLIP2` /
-  `ACE_MUSIC_STEPS` — on this deploy the XL-SFT 4B + qwen-4B + 50 steps
-  quality tier).
+  `ACE_MUSIC_STEPS` / `ACE_MUSIC_CFG`; the compose defaults are the turbo
+  model at 8 steps; turbo wants CFG 1, the 50-step base/SFT models CFG 6).
 
 ### Utility commands (public replies)
 
@@ -149,8 +151,8 @@ the next gen reloads its model cold.
   workflow per call.
 - `width`/`height` override the `resolution` preset.
 - Anyone who can use slash commands in the guild can run it. Because the bot
-  only generates images (no shell, no LLM), opening it to everyone is safe —
-  unlike `commands.bash`. Restrict per-command in *Server Settings →
+  only generates media (no shell, no LLM), opening it to everyone is safe.
+  Restrict per-command in *Server Settings →
   Integrations* if you want.
 
 ## Env vars
@@ -169,3 +171,6 @@ the next gen reloads its model cold.
 | `CLAW_MUSIC_MAX_SECONDS` | `120` | `/claw-music` max clip length (bot-side clamp). |
 | `CLAW_IMG_MAX_BYTES` | `9437184` | Max attachment size before link fallback. |
 | `CLAW_IMG_TIMEOUT_S` | `600` | Per-render bridge timeout. |
+| `CLAW_VIDEO_TIMEOUT_S` | `900` | `/claw-video` render timeout (an LTX cold cache takes 3-10 min). |
+| `CLAW_VIDEO_MAX_SECONDS` | `10` | `/claw-video` max clip length. |
+| `CLAW_IMG_BOT_VERSION` | `0.5.1` | Image tag. |

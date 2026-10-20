@@ -1,90 +1,46 @@
-# LLM stack — Gemma 4 + bge-m3 embedding
+# LLM backends
 
-> Reference material: model choices, variants, and the rationale behind them.
+> Reference material: which model runs, how to swap it, and the numbers behind
+> the choice. Knob defaults are in [configuration.md](configuration.md).
 
-## Active LLM (unified OpenClaw stack, 2026-05 onward)
+The stack has one chat model service, `vllm-llm` (hostname `vllm-llm`, port 8004,
+OpenClaw provider `vllm`), and one embedding service, `vllm-embedding` (bge-m3,
+port 8005). `config-init/steps/models.mjs` registers exactly one `vllm/...` model:
+the id in `LLM_MODEL_ID`. Every other `vllm/` entry is removed, because a stale one
+shows up in the model picker and answers 404.
 
-Primary: `llm/dgx-openclaw-stack/docker-compose.yml` — TWO concurrent in-stack services running side by side, no profile-mutex:
-- `vllm-llm` (MoE) on hostname `vllm-llm`, port 8004, OpenClaw provider id `vllm`
-- `vllm-llm-dense` on hostname `vllm-llm-dense`, port 8005, OpenClaw provider id `vllm-dense`
+A swap replaces the `vllm-llm` command through a file in `compose/`, under the same
+service name, hostname and port:
 
-Both reachable simultaneously; the UI picks the active model.
-
-**MoE default** (`vllm-llm` service):
-- Image: `vllm/vllm-openai:gemma4-cu130` + 1-line tool-call-parser regex patch (`./vllm-llm/Dockerfile`)
-- Model: `nvidia/Gemma-4-26B-A4B-NVFP4` — 25.2B total / 3.8B active per token, 128 experts top-8
-- Quantization: NVFP4 via NVIDIA Model Optimizer `nvfp4_experts_only` recipe (~16.5 GB weights)
-- MoE backend: Marlin (mandatory on Blackwell SM121 — CUTLASS NaNs on the fused 3D expert format)
-- Port: 8004
-- Decode: ~52 tok/s on GB10 (verified ai-muninn 2026-04, ~7.5× faster than the dense 31B it replaces)
-- Vision tower included; same `gemma4` parser + `tool_chat_template_gemma4.jinja` as dense
-
-**Dense concurrent** (`vllm-llm-dense`, runs alongside MoE, port 8005, no profile):
-- Same image, same chat template, same parsers
-- Model: `nvidia/Gemma-4-31B-IT-NVFP4` — 31.3B dense in NVFP4 (~17 GB weights)
-- Decode: ~6.9 tok/s on GB10
-- Tuned for low-RAM single-user 256K (`LLM_GPU_MEM_UTIL_DENSE=0.30`, `LLM_MAX_NUM_SEQS_DENSE=1`)
-- Hostname `vllm-llm-dense`, separate OpenClaw provider id `vllm-dense` (`baseUrl: http://vllm-llm-dense:8005/v1/`)
-- Together both backends ≈ 76 GB host RAM use, leaving 50+ GB free
-
-Both are registered in the OpenClaw catalog by `patch-config.mjs` (`LLM_MODEL_ENTRIES[]` array). The active model is picked via the OpenClaw UI's model dropdown — the schema doesn't expose a writable `agents.defaults.llm.model` field, so the patcher only ensures the entries exist; it doesn't pin a default.
-
-## Mistral Small 4 backend (opt-in override, 2026-10)
-
-`docker-compose.mistral.yml` swaps the `vllm-llm` service to
-`mistralai/Mistral-Small-4-119B-2603-NVFP4` under the same service name,
-hostname and port. Enable it with both `.env` lines:
-
-```
-COMPOSE_FILE=docker-compose.yml:docker-compose.mistral.yml
-LLM_MODEL_ID=mistralai/Mistral-Small-4-119B-2603-NVFP4
-```
-
-The patcher then replaces the Gemma catalog entry and moves the default,
-image and utility model references (and `modelPolicy.allow`) to the Mistral id.
-After a swap, delete `agents/*/agent/models.json` (stale provider cache, see
-openclaw-internals).
-
-- Model: 119B total / ~6.5B active per token (128 experts, 4 active), MLA
-  attention, 256K context, text + image input, Apache 2.0.
-- Image: upstream `vllm/vllm-openai:v0.31.0` (multi-arch, CUDA 13.0, FlashInfer
-  kernels for sm121a). No patches.
-- Mistral-format checkpoint (no HF `config.json`):
-  `--tokenizer-mode/--config-format/--load-format mistral`.
-- `--attention-backend TRITON_MLA`: the FlashAttention / FlashInfer MLA decode
-  kernels are sm100 builds and crash on GB10.
-- Thinking is per request via `reasoning_effort` `none` | `high`. OpenClaw only
-  sends it when the catalog entry has `compat.supportsReasoningEffort`. The
-  patcher writes that for Mistral ids (see "Thinking switch" below).
-- No speculative decoding. The official EAGLE draft does not load on vLLM
-  v0.31.0 / v0.32.0, and the published GB10 EAGLE run reached the same
-  ~29.5 tok/s.
-
-Measured on GB10 (vLLM v0.31.0, 2026-10-18):
-
-| | Mistral Small 4 NVFP4 | Gemma 4 26B-A4B NVFP4 |
+| Backend | How to enable | Notes |
 |---|---|---|
-| Weights | 66 GiB | ~16.5 GiB |
-| vLLM process at the stack default | ~78 GiB (util 0.65) | ~36 GiB (util 0.30) |
-| Decode, 1 stream | 29.6 tok/s | ~25–52 tok/s (see above) |
-| Decode, 4 streams | 75 tok/s total, 19 each | — |
-| Prefill | ~1900 tok/s (99k tokens in 52 s) | — |
-| Cold start to healthy | ~9.5 min (450 s weight load from USB SSD) | ~3 min |
-| Repo eval, thinking on | 11/12 | 9.5/12 |
-| Repo eval, thinking off | 8/12 | 7/12 |
+| Nemotron 3.5 Super 120B-A12B NVFP4 | default (`docker-compose.yml`) | Reference host's Discord model |
+| Gemma 4 26B-A4B NVFP4 (MoE) or 31B-IT NVFP4 (dense) | `COMPOSE_FILE=docker-compose.yml:compose/gemma4.yml` + `LLM_MODEL_ID` | Smallest footprint, best Hungarian |
+| Mistral Small 4 119B-A6B NVFP4 | `COMPOSE_FILE=docker-compose.yml:compose/mistral.yml` + `LLM_MODEL_ID` | Fastest decode of the large models |
 
-The eval is 12 Discord-agent turns through `openclaw agent` (Hungarian chat,
-arithmetic, a logic puzzle, Python exec, code, strict formatting, web search,
-honesty about unknown history, memory write and read, casual chat,
-translation). Mistral wins on reasoning and tool use. Gemma writes the more
-natural Hungarian: Mistral now and then invents words.
+`LLM_MODEL_ID` has to be in `.env` for a swap: compose fails without it, and
+config-init would otherwise register the Nemotron id. After a swap, delete
+`agents/*/agent/models.json` (a stale provider cache, see
+[openclaw-internals.md](openclaw-internals.md)).
 
-### Nemotron 3.5 Super VL 120B-A12B NVFP4 (tried 2026-10-18, default on the reference host since 2026-10-19)
+## Nemotron 3.5 Super (default)
 
-**Update 2026-10-19.** The reference host now runs Nemotron as its Discord
-model through [`docker-compose.nemotron.yml`](../../docker-compose.nemotron.yml)
-(util 0.70, medium-effort thinking, GPU clock cap). The operator ranks factual
-reliability above Hungarian fluency. A three-way run on the Discord agent:
+`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` on stock
+`vllm/vllm-openai:v0.32.0`, following NVIDIA's DGX Spark recipe:
+
+- `dflash` speculative decoding with the LiLiCorr drafter (`LLM_DRAFT_MODEL`,
+  `LLM_SPEC_TOKENS=7`).
+- `qwen3_coder` tool parser, `nemotron_v3` reasoning parser.
+- `--default-chat-template-kwargs '{"medium_effort": true}'`: full thinking ran
+  57k-token turns in tool-using agent runs; thinking off looped on tool-call JSON.
+- ~70 GiB of the 128 GB pool at `LLM_GPU_MEM_UTIL=0.70`. That leaves no room for
+  ComfyUI or Fish TTS beside it.
+- It needs the GB10 clock cap. Under sustained load an uncapped box powers off at
+  acpitz ~94 °C, well before the 104 °C trip. See
+  [gb10-power-thermal.md](gb10-power-thermal.md).
+
+Why it is the default: it was the most factual of the candidates on the Discord
+agent. The operator ranks factual reliability above Hungarian fluency.
 
 | | Qwen3.5-122B | Mistral Small 4 | Nemotron |
 |---|---|---|---|
@@ -94,14 +50,7 @@ reliability above Hungarian fluency. A three-way run on the Discord agent:
 | Refusals of edgy-but-legit requests (6) | 1 | 0 | 0 |
 | Hungarian | best | odd at times | weakest |
 
-The two hard power-offs blamed on Nemotron below turned out to be the GB10
-cutting out at acpitz ~94 °C, well before the 104 °C trip. The clock cap in
-[`gb10-power-thermal.md`](./gb10-power-thermal.md) fixes that.
-
-NVIDIA's DGX Spark recipe (vLLM v0.32.0, LiLiCorr `dflash` drafter with 7
-draft tokens, `--max-num-seqs 1`, `qwen3_coder` tool parser, `nemotron_v3`
-reasoning parser, thinking via `chat_template_kwargs.enable_thinking`) runs on
-the GX10. It is not the default:
+Speed on the GB10 (vLLM v0.32.0):
 
 | | Nemotron 3.5 Super VL | Mistral Small 4 |
 |---|---|---|
@@ -110,63 +59,24 @@ the GX10. It is not the default:
 | Decode, English, 1 stream | 26.2 tok/s | — |
 | Decode, 4 streams | 8.8 tok/s each | 19 tok/s each |
 | Prefill | ~2560 tok/s | ~1900 tok/s |
-| vLLM process at util 0.75 / 0.65 | ~91 GiB | ~78 GiB |
 | Peak ACPI temperature, 99k-token prefill | 94 °C | 92 °C |
 
-The LiLiCorr drafter predicts Hungarian poorly: the forum's English runs
-report ~6.5 accepted tokens per step. Hungarian is not among the model card's
-listed languages either.
-
-Tuning at `--gpu-memory-utilization 0.68` with ComfyUI image generation
-running beside it (both fit, ~8-16 GB left). Chars/s compares the two
-tokenizers fairly. The 12-case eval below uses the English agent prompt.
-
-| | Mistral Small 4 | Nemotron, 7 draft tokens | Nemotron, 3 draft tokens | Nemotron, no drafter |
-|---|---|---|---|---|
-| Hungarian prose, 1 stream | 98 chars/s | ~55 chars/s | 69 chars/s | 64 chars/s |
-| Hungarian prose, 4 streams, each | 61 chars/s | ~29 chars/s | 36 chars/s | 41 chars/s |
-| Thinking on (English reasoning), 1 stream | — | — | 87 chars/s (38.8 tok/s, acceptance ~3) | 47 chars/s |
-| Repo eval | 11/12, 218 s total | — | 11/12, 430 s total | 12/12, 532 s total |
-| KV cache | 441k tokens (util 0.65) | — | 633k tokens | 1.7M tokens |
-
-Nemotron is the stronger reasoner, but a Discord turn takes 2-2.5× as long.
-Its Hungarian is also worse than Mistral's: Portuguese and Chinese tokens
-showed up in the replies ("ajudarni", "只有"), along with misspellings, so
-Mistral Small 4 stayed the default. The GX10's ACPI trip point is 104 °C. One forum report has a DGX
-Spark powering off during 32K+ contexts with this model. Run long-prefill
-experiments with a temperature watchdog that stops the vLLM container first.
-
-## Thinking switch (catalog `compat`)
-
-A custom `vllm` provider sends no thinking control unless the catalog entry
-says how. Before 2026-10-18 every Gemma Discord turn ran without thinking,
-despite `thinkingDefault: "high"` (0 of 225 turns had reasoning tokens).
-`patch-config.mjs` now writes `compat` per model family
-(`LLM_THINKING_COMPAT=auto`, default):
-
-- Gemma 4 → `thinkingFormat: "qwen-chat-template"`. OpenClaw then sends
-  `chat_template_kwargs.enable_thinking`, which the Gemma 4 template reads.
-  The template's default is `false`.
-- Mistral / Magistral / Devstral → `supportsReasoningEffort: true`, efforts
-  `none` / `high`, and every OpenClaw level mapped onto those two (vLLM rejects
-  other values).
-
-Check what a turn really did in the agent sqlite: a `model.completed` event
-carries `usage.reasoningTokens`.
+The drafter predicts Hungarian poorly (English runs report ~6.5 accepted tokens per
+step), and Hungarian is not among the model card's listed languages. A Discord turn
+takes 2–2.5× as long as on Mistral.
 
 ### Sampling temperature
 
-OpenClaw sends no temperature unless the model entry in
-`agents.defaults.models` has `params.temperature`, so vLLM falls back to the
-model's `generation_config.json`. For Nemotron 3.5 Super that is 1.0 / top_p
-0.95, and at 1.0 Hungarian replies pick up stray tokens from other scripts
-(Korean, Cyrillic, Arabic, often mid-word). A direct A/B on 2026-10-20, six
-Hungarian ~250-word answers per setting: 38 foreign-script characters at 1.0,
-2 at 0.6. The patcher (step 3c, `LLM_TEMPERATURE=auto`) writes 0.6 on Nemotron
-entries. The entry hot-reloads; no vLLM restart is needed.
+OpenClaw sends no temperature unless the model entry in `agents.defaults.models` has
+`params.temperature`, so vLLM falls back to the model's `generation_config.json`. For
+Nemotron that is 1.0 / top_p 0.95, and at 1.0 Hungarian replies pick up stray tokens
+from other scripts (Korean, Cyrillic, Arabic, often mid-word). In a direct A/B, six
+Hungarian ~250-word answers per setting, there were 38 foreign-script characters at
+1.0 and 2 at 0.6. `LLM_TEMPERATURE=auto` (`config-init/steps/models.mjs`) writes 0.6
+on Nemotron entries. The entry hot-reloads; vLLM does not need a restart.
 
-Tried on top of 0.6 the same night (12 Hungarian answers per setting, thinking
-off, misspelled or non-Hungarian words counted by a judge pass):
+Tried on top of 0.6 (12 Hungarian answers per setting, thinking off, misspelled or
+non-Hungarian words counted by a judge pass):
 
 | Setting | Foreign-script chars | Flagged words / 100 |
 |---|---|---|
@@ -174,72 +84,113 @@ off, misspelled or non-Hungarian words counted by a judge pass):
 | top_p 0.9 | 5 | 2.95 |
 | min_p 0.05 | — | — |
 
-`min_p` (and `logit_bias`) are rejected with HTTP 400 while speculative
-decoding is on ("not yet supported with speculative decoding"), so it would
-cost the DFlash draft. top_p 0.9 was no better.
+`min_p` (and `logit_bias`) are rejected with HTTP 400 while speculative decoding is
+on, so they would cost the drafter.
 
-### Thinking depth (Nemotron)
+### Thinking depth
 
-Nemotron's chat template has three thinking settings: `enable_thinking`
-false (off), `medium_effort` true (the server default here) and
-`medium_effort` false (full). OpenClaw exposes only an on/off `/think` for
-vLLM Nemotron, so `thinkingDefault: "high"` and `"medium"` send the same
-request. A deeper level is reachable through a per-agent
-`params.chat_template_kwargs`, which does reach vLLM (an agent with
-`enable_thinking: false` answered with zero reasoning tokens).
+Nemotron's chat template has three settings: `enable_thinking` false (off),
+`medium_effort` true (the server default here) and `medium_effort` false (full).
+OpenClaw exposes only an on/off `/think` for vLLM Nemotron, so `thinkingDefault:
+"high"` and `"medium"` send the same request. A deeper level is reachable through a
+per-agent `params.chat_template_kwargs`, which does reach vLLM.
 
-Measured 2026-10-20 directly on vLLM, two sets of 10 reasoning questions
-with checkable answers, two runs each:
+Two sets of 10 reasoning questions with checkable answers, two runs each, directly on
+vLLM:
 
 | Set | Medium | Full |
 |---|---|---|
 | easier | 19/20, median 34 s, 410 tokens | 20/20, 47 s, 873 tokens |
 | harder | 20/20, median 21 s, 499 tokens | 20/20, 48 s, 1081 tokens |
 
-Full thinking bought nothing measurable at 2-2.5× the time, so the
-full-thinking `deep` sub-agent (patcher step 44f) ships off. Earlier, in long
-tool-using agent turns, full thinking also produced 57k-token turns.
+Full thinking bought nothing measurable at 2–2.5× the time, so the full-thinking
+`deep` sub-agent (`OPENCLAW_DISCORD_DEEP_AGENT`) ships off.
 
-## Standalone variants (port 8004 mutex — only one at a time)
+## Thinking switch (catalog `compat`)
 
-Under `llm/` there's an intentional pattern: several Gemma 4 variants use the same port 8004 — only one can run at a time. Swap = `docker compose down` in one directory, `up -d` in another.
+A custom `vllm` provider sends no thinking control unless the catalog entry says how.
+Without it the model never thinks, whatever `thinkingDefault` says.
+`config-init/steps/models.mjs` writes `compat` per model family
+(`LLM_THINKING_COMPAT=auto`):
 
-- `gemma_4_31b_bf16/` — BF16 standalone (`google/gemma-4-31B-it`), 8K × 8 users
-- `litellm/` — BF16 + LiteLLM proxy (port 4000) + Postgres, 64K × 2 users
-- `gemma_4_31b_nvfp4/` — NVFP4 standalone twin of the unified `vllm-llm-dense` (legacy / fallback)
-- `qwen3-5_27b_opus/` — alternative model
+- Gemma 4 and Nemotron: `thinkingFormat: "qwen-chat-template"`. OpenClaw then sends
+  `chat_template_kwargs.enable_thinking`. The Gemma 4 template defaults to `false`.
+- Mistral / Magistral: `supportsReasoningEffort: true`, efforts `none` / `high`, with
+  every OpenClaw level mapped onto those two (vLLM rejects other values).
 
-Before swapping: `docker compose stop vllm-llm` (and `vllm-embedding` if the sibling embedding stack also swaps).
+Check what a turn really did in the agent sqlite: a `model.completed` event carries
+`usage.reasoningTokens`.
 
-## Embedding stack (port 8005)
+## Gemma 4 (compose/gemma4.yml)
 
-**Current (2026-04-22 onward):** in-stack `vllm-embedding` service
+- `nvidia/Gemma-4-26B-A4B-NVFP4`: 25.2B total / 3.8B active per token, 128 experts
+  top-8, ~16.5 GB of weights. Measured ~52 tok/s decode on the GB10.
+- `nvidia/Gemma-4-31B-IT-NVFP4`: 31.3B dense, ~17 GB of weights, ~6.9 tok/s.
+- `gemma4` tool and reasoning parsers, plus the repo's tool chat template
+  (`compose/gemma4/tool_chat_template_gemma4.jinja`, mounted at `/templates`), tuned
+  for OpenClaw's tool calls.
+- The numbers were measured on vLLM 0.19–0.31 with a patched image; they have not
+  been re-measured on stock v0.32.
 
-- Model: `BAAI/bge-m3` BF16 (native, model ~1.1 GB)
-- Encoder: XLMRoberta
-- Flags: `--runner pooling --gpu-memory-utilization 0.03 --max-model-len 8192 --max-num-seqs 2 --enforce-eager`
-- 1024-dim dense output
-- VRAM: ~3.6 GB
-- Cross-lingual EN↔HU cosine similarity 0.88 (validated)
+Gemma writes the most natural Hungarian of the three, but scored lowest on the
+reasoning and tool-use eval below.
 
-**Previous (retired):** `qwen3_embedding_8b_nvfp4/` — `alexliap/Qwen3-Embedding-8B-NVFP4`, 4096-dim, ~5 GB. Overkill for RAG. The standalone directory remains as a swap target.
+## Mistral Small 4 (compose/mistral.yml)
 
-## Sibling compose env trick
+`mistralai/Mistral-Small-4-119B-2603-NVFP4` on `vllm/vllm-openai:v0.31.0`:
 
-The `qwen3_embedding_8b_nvfp4/` standalone uses `env_file: ../dgx-openclaw-stack/.env` to inherit `VLLM_API_KEY`. vLLM reads it automatically as an env variable when no `--api-key` flag is passed. Without `--api-key ${VLLM_API_KEY:-}`, an empty argument would trigger an `expected at least one argument` error.
+- 119B total / ~6.5B active per token (128 experts, 4 active), MLA attention, 256K
+  context, text + image input, Apache 2.0.
+- Mistral-format checkpoint (no HF `config.json`): `--tokenizer-mode`,
+  `--config-format` and `--load-format mistral`.
+- `--attention-backend TRITON_MLA`: the FlashAttention / FlashInfer MLA decode
+  kernels crash on sm121.
+- Thinking per request via `reasoning_effort` `none` | `high`.
+- No speculative decoding: the EAGLE draft does not load on vLLM v0.31 / v0.32, and
+  a published GB10 EAGLE run reached the same ~29.5 tok/s.
 
-## Embedding swap → reindex mandatory
+Measured on the GB10 (vLLM v0.31.0):
 
-4096-dim Qwen3 vectors and 1024-dim BGE-M3 vectors are incompatible; the sqlite-vec index becomes invalid. Run `docker exec openclaw-cli openclaw memory index --force`.
+| | Mistral Small 4 NVFP4 | Gemma 4 26B-A4B NVFP4 |
+|---|---|---|
+| Weights | 66 GiB | ~16.5 GiB |
+| vLLM process | ~78 GiB (util 0.65) | ~36 GiB (util 0.30) |
+| Decode, 1 stream | 29.6 tok/s | ~25–52 tok/s |
+| Decode, 4 streams | 75 tok/s total, 19 each | — |
+| Prefill | ~1900 tok/s (99k tokens in 52 s) | — |
+| Cold start to healthy | ~9.5 min (450 s weight load from USB SSD) | ~3 min |
+| Repo eval, thinking on | 11/12 | 9.5/12 |
+| Repo eval, thinking off | 8/12 | 7/12 |
+
+The repo eval is 12 Discord-agent turns through `openclaw agent` (Hungarian chat,
+arithmetic, a logic puzzle, Python exec, code, strict formatting, web search, honesty
+about unknown history, memory write and read, casual chat, translation). Mistral
+sometimes invents Hungarian words.
+
+## Embeddings (vllm-embedding)
+
+- `BAAI/bge-m3` BF16 (~1.1 GB), XLMRoberta encoder, 1024-dim dense output.
+- `--runner pooling --gpu-memory-utilization 0.03 --max-model-len 8192
+  --max-num-seqs 2 --enforce-eager`; ~3.6 GB of the pool.
+- Cross-lingual EN↔HU cosine similarity 0.88.
+
+The embedding dimension is fixed when the first chunk is indexed. After a change of
+embedding model, rebuild the index for each agent:
+`docker exec openclaw-cli openclaw memory index --force`.
 
 ## Shared HF cache volume
 
-`${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}`. The unified stack and every sibling alt-LLM compose mounts the same volume — download a model in any of them and all the others reuse the cached weights.
+`${VLLM_HF_CACHE_VOLUME_NAME:-dgx-openclaw-hf-cache}` is bound to
+`VLLM_HF_CACHE_DIR`. A sibling compose project that mounts the same volume reuses the
+cached weights instead of downloading them again.
+
+## Remote or cloud backend
+
+Point `LLM_BASE_URL` and `EMBED_BASE_URL` at the other endpoint (keep the trailing
+slash) and park the local `vllm-llm` / `vllm-embedding` services. See
+[CUSTOMIZATION.md](../CUSTOMIZATION.md).
 
 ## Why NVFP4
 
-~4× smaller weights → more KV budget in the 128 GB unified memory. For embedding, LLM KV budget doesn't matter; what matters is that bge-m3 fits alongside Gemma on the same GPU.
-
-## Non-existent option: official NVIDIA NVFP4 embedding
-
-There is no `nvidia/*` NVFP4 embedding release (as of 2026-04). Only community ports: alexliap (4.93k downloads), Forturne (6.08k), MidnightPhreaker, mdavidson83. The alexliap release is the best-documented, with a vLLM deploy guide (compressed-tensors, `task=embed`).
+About 4× smaller weights than BF16, which leaves more KV-cache budget in the 128 GB
+unified pool.

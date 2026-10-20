@@ -39,7 +39,7 @@
 #   --no-append        Don't append to docs/reference/ltx-video-bench.md;
 #                      print to stdout only.
 #
-# Cross-reference: docs/reference/video-comfyui-bridge.md "GB10 bench numbers"
+# Cross-reference: openclaw-image-comfyui/README.md "GB10 bench numbers"
 # section lays out the table format this script appends to.
 set -uo pipefail
 
@@ -261,7 +261,7 @@ from ComfyUI's \`/system_stats\` (best-effort, "n/a" when the
 endpoint isn't reachable from the bench host).
 
 For the full architecture / workflow / chat-surface context see
-[\`video-comfyui-bridge.md\`](video-comfyui-bridge.md).
+[\`openclaw-image-comfyui/README.md\`](../../openclaw-image-comfyui/README.md).
 
 EOF
     fi

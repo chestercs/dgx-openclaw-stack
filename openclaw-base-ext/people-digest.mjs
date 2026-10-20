@@ -2,7 +2,7 @@
 // people-digest — feeds the nightly people-memory job of the Discord agent.
 //
 // The job (an `openclaw cron` agent turn, see the `people-memory` workspace
-// skill written by patch-config.mjs step 44) keeps people/MEMORY.md up to
+// skill written by config-init/steps/workspaces.mjs) keeps people/MEMORY.md up to
 // date from what guild members say in ordinary channel traffic, not only
 // from what they tell the bot directly. Two subcommands:
 //

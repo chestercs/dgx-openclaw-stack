@@ -2,7 +2,7 @@
 
 > **SUPERSEDED.** The TTS surface migrated to a single **Fish Audio S2 Pro**
 > service (`openclaw-tts-fish`) backed by SGLang-Omni — see the
-> [Unreleased] entry in `CHANGELOG.md` and `openclaw-tts-fish/README.md`
+> 0.12.0 entry in `docs/archive/CHANGELOG-2026-04-to-10.md` and `openclaw-tts-fish/README.md`
 > for the current architecture. The body below documents the legacy
 > 3-service Kokoro EN + F5-TTS HU + router pipeline (decommissioned) and
 > is preserved for historical context, future model-swap rationale, and

@@ -1,264 +1,217 @@
 # OpenClaw internals
 
-> Deep technical reference for OpenClaw: releases + schema + credential
-> layout + patcher steps + persistence + CLI behavior. The stack-level
-> architecture lives in a separate doc
-> ([`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)) — this file focuses on
-> OpenClaw internals.
+Facts about OpenClaw itself that this stack depends on: config schema, where
+credentials live, caches that go stale, persistence and CLI behaviour. The stack
+architecture is in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md); every knob is in
+[`configuration.md`](./configuration.md). The schema notes match OpenClaw 2026.10.
 
-## Public repo (`chestercs/dgx-openclaw-stack`)
+## Two-phase fresh install
 
-- **Repo:** https://github.com/chestercs/dgx-openclaw-stack
-- **License:** MIT
-- **Default branch:** `main`
-- **Latest:** v0.4.2 (2026-04-22)
+Config-init exits 0 when `openclaw.json` does not exist yet, so on a fresh install:
 
-### Releases & tags
+1. `docker compose up -d` starts everything; the gateway crash-loops with
+   `Missing config. Run openclaw setup …`. That is expected: OpenClaw requires an
+   explicit onboarding step, in which the operator picks the gateway token and
+   pairs the UI.
+2. Onboard (`openclaw onboard --non-interactive …`, the Chrome extension wizard, or
+   `openclaw setup`). This writes `openclaw.json`.
+3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli`.
+   Config-init now writes the desired state and the gateway goes healthy.
 
-- `v0.1.0` (2026-04-21, `b04f250`) — Initial public release.
-- `v0.2.0` (2026-04-22, `553427e`) — Remote vLLM backend, `CLAUDE.md`, SearxNG, hybrid + MMR memory.
-- `v0.3.0` (2026-04-22, `0c4d799`) — Bilingual TTS surface.
-- `v0.4.0` (2026-04-22, `1b5b208`) — env-driven knobs (`CONTAINER_NAME_PREFIX`, `VLLM_HF_CACHE_VOLUME_NAME`, `TTS_*_BIND/PORT` loopback default), patcher step 11 top-level `messages.tts.{enabled,auto,mode}` switches.
-- `v0.4.1` (2026-04-22, `f87d3b0`) — Post-v0.4.0 polish batch: patcher **step 12** (`gateway.auth.token` → `gateway.remote.token` mirror, `bcea0a5`), patcher **step 13** (per-agent `auth-profiles.json` sync with `VLLM_API_KEY`, `dd935b0`), TTS enum normalization (`81f1fa4`), vLLM healthcheck `python3` fix (`fe6726d`), `.env` defaults convergence (`e132071`), drop `OPENCLAW_GATEWAY_TOKEN` from the CLI env (`644fe68`), `operator/` gitignore (`80a2412`), docs 11 → 13 step sync.
-- `v0.4.2` (2026-04-22) — Documentation release: publishes `docs/reference/` (six deep-dive files: LLM stack, TTS stack, Hungarian TTS research, OpenClaw internals, reusable patterns), declares an English-only documentation policy in `CLAUDE.md`, translates the new reference files to English, and renames the gitignored private-artifacts folder `operator/` → `private/`.
+Recreate the three together: the CLI shares the gateway's network namespace and is
+left in a dead one otherwise (see [`patterns.md`](./patterns.md) → "openclaw-cli
+network-namespace dependency"). The full walkthrough is in [`SETUP.md`](../../SETUP.md).
 
-### Snapshot at v0.4.2 (historical — kept for the release-history continuity above; current stack has grown considerably since)
+A pre-2026.10 config (one that still has `agents.list`) makes config-init stop with
+"run `openclaw doctor --fix` first"; doctor migrates it to the keyed layout.
 
-- **Stack:** `docker-compose.yml` (8 default services + 1 opt-in HU service via `profiles: ["hu"]`), `patch-config.mjs` (13-step idempotent patcher), `bootstrap.sh` (regex-gated secret rotation + HU TTS opt-in prompt), `templates/tool_chat_template_gemma4.jinja`, `searxng/settings/settings.yml`. **Current state (post-v0.11):** 10 default services + 3 opt-in profiles + separate image-gen compose, 27+ patcher steps. See [`docs/reference/discord-config.md`](./discord-config.md) and the `patch-config.mjs` header docblock for the up-to-date inventory.
-- **TTS surface:** `openclaw-tts-fish/` (Fish Audio S2 Pro via SGLang-Omni; multilingual incl. EN + HU; voice cloning via mounted reference clips; Fish Audio Research License — non-commercial). Replaced the historical 3-service Kokoro EN + F5-TTS HU + router pipeline.
-- **Docs:** `README.md`, `SETUP.md`, `docs/{ARCHITECTURE,CUSTOMIZATION,TROUBLESHOOTING}.md`, `docs/reference/`, `CLAUDE.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `LICENSE` (MIT).
-- **GitHub meta:** `.github/FUNDING.yml`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`.
+## Config schema
 
-### Verified use cases
-
-1. **GB10 reference profile** — `docker compose up -d` with no edits, ~6.9 tok/s decode of Gemma 4 31B NVFP4 at 256K context, multimodal, tool calling, hybrid memory, SearxNG, TTS.
-2. **Remote vLLM backend** (verified on a GPU-less Windows host) — three env overrides (`OPENAI_BASE_URL`, `LLM_BASE_URL`, `EMBED_BASE_URL`) + `profiles: ["never"]` on `vllm-llm` / `vllm-embedding`. Local footprint ~1 GB. Walkthrough: `docs/CUSTOMIZATION.md` → "Run with a remote vLLM backend".
-
-### Two-phase fresh-install onboarding (general OpenClaw flow)
-
-The patcher `exit 0`s when `openclaw.json` doesn't yet exist. Fresh-install sequence:
-
-1. `docker compose up -d` → patcher skips → gateway crash-loops with `Missing config. Run openclaw setup …` — **expected, not a bug**; don't try to "fix" it (the OpenClaw security model explicitly requires the onboarding step).
-2. `openclaw onboard --non-interactive --token "$OPENCLAW_GATEWAY_TOKEN"` (or the Chrome extension wizard).
-3. `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli` → the patcher runs, all 13 steps apply, gateway goes healthy.
-
-The trio (`config-init + gateway + cli`) must be recreated **together** — if the CLI is left alone, it points at a dead network namespace (see `patterns.md` → "openclaw-cli network-namespace dependency").
-
-### v0.4.0 env-driven knobs
-
-- `CONTAINER_NAME_PREFIX=dgx-` — container-name prefix; set empty for bare names (`vllm-llm`, etc.). Bridge DNS reachability is unaffected (services resolve by compose service name + `hostname:`).
-- `VLLM_HF_CACHE_VOLUME_NAME=dgx-openclaw-hf-cache` — Docker volume label.
-- `TTS_FISH_BIND=127.0.0.1` — loopback-only bind default.
-- `TTS_FISH_PORT=8091` — host-port override.
-
-### How to contribute
-
-- Edit + commit + push (`origin = github.com/chestercs/dgx-openclaw-stack`).
-- For a new release tag, updating `CHANGELOG.md` is mandatory (move content from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`).
-- `gh release create vX.Y.Z --notes-file …` to cut the GitHub Release object.
-
-## OpenClaw config schema (verified)
-
-### Provider level
+### Provider
 
 ```
 models.providers.vllm = {
-  baseUrl, api ("openai-completions"), apiKey,
-  models: [ { id, name, reasoning, input, cost, contextWindow, maxTokens, api } ]
+  baseUrl, api: "openai-completions", apiKey, timeoutSeconds,
+  models: [ { id, name, api, reasoning, input, cost,
+              contextWindow, contextTokens, maxTokens, compat } ]
 }
 ```
 
-### Agent level
+`config-init/steps/models.mjs` writes exactly one catalog entry, for `LLM_MODEL_ID`,
+and removes every other `vllm/...` entry: vLLM serves one model, and a stale entry
+shows up in the model picker and answers 404.
+
+**Tool calling needs the catalog entry.** The model the agent uses must appear in
+`models.providers.vllm.models[]`; a `capabilities.supportsTools` flag is rejected by
+the schema (`Unrecognized key: "capabilities"`). Onboarding adds only the model
+picked interactively, so a later swap would leave the agent without metadata.
+
+**Thinking needs `compat`.** A custom provider sends no thinking control at all
+unless the catalog entry's `compat` says how this model family takes it (Gemma 4
+and Nemotron: `thinkingFormat: "qwen-chat-template"`; Mistral Small 4:
+`supportsReasoningEffort` with `none | high`). Without it the model never thinks.
+Check with `usage.reasoningTokens` on `model.completed` events in the agent sqlite.
+
+### Agents
 
 ```
-agents.defaults.model.primary  -> "<provider>/<modelId>"
-agents.defaults.models         -> { "<provider>/<modelId>": {} }  (allowlist)
-agents.list[].tools            -> { profile: "full", alsoAllow: [...] }  (tools enablement lives here, NOT on the provider)
+agents.defaults.model                    -> "vllm/<modelId>"  (a bare string is valid)
+agents.defaults.models["vllm/<id>"]      -> { params: { temperature } }  (allowlist + per-model params)
+agents.entries.<id>                      -> { name, workspace, model, tools: { profile, alsoAllow, deny },
+                                              thinkingDefault, ... }
 ```
 
-`agents.list[0].tools.profile: "full"` already enables tool calling on the agent side — the bottleneck was NOT the OpenClaw tool permission, but missing metadata in the provider catalog.
+Agents are keyed under `agents.entries` (2026.10). Tool enablement lives on the
+agent entry, not on the provider.
 
-### `memorySearch` schema
+The `agents.defaults.*` family is strict: an unknown key or an out-of-range value
+fails with `agents.defaults: Invalid input` and the gateway crash-loops. See the
+schema-gate runbook in [`agentic-coding.md`](./agentic-coding.md#adding-a-new-key-the-schema-gate).
 
-The schema path is NOT `memory.embedding.*` (that was an assumption), but `agents.defaults.memorySearch.*`.
+### Other paths config-init writes
 
-Provider enum: `bedrock | gemini | github-copilot | local | mistral | ollama | openai | voyage`. For a custom OpenAI-compatible endpoint (vLLM), use `provider: "openai"` + `remote.baseUrl` + `remote.apiKey` — the officially supported path.
+| Path | What | Module |
+|---|---|---|
+| `memory.search` | `provider: "openai"` + `remote.baseUrl` / `remote.apiKey` for the local bge-m3 | `steps/memory.mjs` |
+| `tts` (top level) | `auto`, `mode`, `timeoutMs`, `providers.openai` pointing at the Fish shim | `steps/media.mjs` |
+| `tools.media.models[]` | Whisper as the first entry with `capabilities: ["audio"]` | `steps/tools.mjs` |
+| `tools.exec.mode` | `ask` or `full` | `steps/tools.mjs` |
+| `mcp.servers.<name>` | Python sandbox, ComfyUI bridge, Valheim; `requestTimeoutMs` per server | `steps/tools.mjs`, `steps/media.mjs`, `steps/agents.mjs` |
 
-The `remote` block also accepts `headers` and `batch.{enabled,concurrency,wait}` options.
+For a custom OpenAI-compatible embedding endpoint, `provider: "openai"` plus
+`remote.baseUrl` / `remote.apiKey` is the supported path; the provider enum has no
+`vllm`. The `remote` block also accepts `headers` and `batch.{enabled,concurrency,wait}`.
 
-## v0.4.x credential layout (3-store design, CRITICAL)
+The embedding dimension is fixed when the first chunk is indexed. Switching the
+embedding model needs `openclaw memory index --force` per agent.
 
-OpenClaw works with three separate credential stores. **After a `.env` secret rotation, all three must be kept in sync**, otherwise you get silent breakage.
+### 2026.10 behaviour worth knowing
 
-### The three places
+- Bundles are `.mjs`; a grep for `*.js` in the image matches nothing.
+- An unset `tools.toolSearch` means "on". Config-init writes it off
+  (`OPENCLAW_TOOL_SEARCH`), because MCP results then come back as JSON text and
+  images never reach the vision input.
+- The `cron` tool is called `automations`; `cron` stays an alias.
 
-#### 1. `.env` (operator intent)
+## Credentials
 
-- `VLLM_API_KEY` — vLLM API key (`bootstrap.sh` rotates it with `openssl rand`, 88-char base64).
-- `OPENCLAW_GATEWAY_TOKEN` — gateway WS auth token (pre-onboarding default only).
+Secrets live in `.env` only. Three places matter:
 
-#### 2. `~/.openclaw/openclaw.json` (JSON config file)
+### 1. `.env` and the gateway environment
 
-- `models.providers.vllm.apiKey` — patcher step 2 writes it from `VLLM_API_KEY`.
-- `agents.defaults.memorySearch.remote.apiKey` — patcher step 4 writes it.
-- `gateway.auth.token` — written by the onboarding wizard (different from the env token!).
-- `gateway.remote.token` — mirrored from `gateway.auth.token` by patcher step 12.
-- `messages.tts.providers.openai.apiKey` — patcher step 11 writes it from `OPENCLAW_TTS_FISH_API_KEY`.
-- `authProfiles.{name}` — metadata only (`{provider, mode}`), NOT the actual key.
+`bootstrap.sh` fills every `CHANGE_ME` secret, `rotate-secrets.sh` rotates them.
+The gateway container gets `VLLM_API_KEY` and `OPENCLAW_TTS_FISH_API_KEY` in its
+environment (`docker-compose.yml`), because `openclaw.json` refers to them by name.
 
-#### 3. `~/.openclaw/agents/{agent}/agent/auth-profiles.json` (per-agent credential store)
+### 2. `openclaw.json`
 
-- `profiles."vllm:default".key` — holds the actual key used by the agent runner.
-- **The agent runner reads this, NOT `models.providers.vllm.apiKey`.**
-- Seeded by the onboarding wizard; goes stale after a rotation → every LLM call returns HTTP 401.
-- Patcher step 13 keeps it in sync with `VLLM_API_KEY`.
+- `models.providers.vllm.apiKey`, `memory.search.remote.apiKey` and
+  `tts.providers.openai.apiKey` are env SecretRefs,
+  `{ source: "env", provider: "default", id: "VLLM_API_KEY" }`
+  (`config-init/lib/secrets.mjs`). The gateway resolves them from its own
+  environment at start, so the values stay out of the file and its backups, and
+  `openclaw secrets audit` does not report them. `OPENCLAW_SECRET_REFS=off` writes
+  the plain values instead.
+- Bearer tokens of the STT entry and the MCP servers sit in their own `headers`
+  objects as plain values. Config-init writes them as separate leaves so its log
+  masks them; do not `jq` whole `tools.*` or `mcp.*` subtrees into a shared log.
+- `gateway.auth.token` is written by onboarding. It is not the `.env`
+  `OPENCLAW_GATEWAY_TOKEN`, which only matters before onboarding.
+- `gateway.remote.token` is mirrored from `gateway.auth.token` by
+  `config-init/steps/gateway.mjs`. The local CLI and the MeshCore bridge present
+  it; on a mismatch `openclaw agent` falls back to an embedded runner that dials
+  vLLM from the CLI's own environment.
 
-### Typical drift scenario (incident: 2026-04-22)
+After rotating a secret, recreate the services that read it plus
+`openclaw-config-init openclaw-gateway openclaw-cli`; `rotate-secrets.sh` prints
+the exact command.
 
-`bootstrap.sh` rotates `VLLM_API_KEY` in `.env`. Steps 2 + 4 update `openclaw.json`. But `auth-profiles.json` stays untouched — the agent runner sends the stale key → vLLM 401.
+### 3. `~/.openclaw/agents/<agent>/agent/auth-profiles.json`
 
-Symptom: `payloads[0].text = "HTTP 401: Unauthorized"`, `executionTrace.attempts[0].result = success` (vLLM did respond, just with a 401).
-
-### Verify recipe (per-agent key check)
+The per-agent credential store. Onboarding seeds `profiles."vllm:default".key`
+there, and config-init does not write it. If agent runs answer
+`HTTP 401: Unauthorized` after a `VLLM_API_KEY` rotation while the provider entry
+is current, compare the key there with the one vLLM runs with:
 
 ```bash
-docker exec openclaw-cli node -e '
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
+docker exec ${PROJ}openclaw-cli node -e '
   const p=require("/home/node/.openclaw/agents/main/agent/auth-profiles.json");
   const c=require("crypto");
-  const k=p.profiles["vllm:default"].key;
+  const k=p.profiles["vllm:default"]?.key ?? "";
   console.log("len="+k.length+" sha="+c.createHash("sha256").update(k).digest("hex").slice(0,12));
 '
-docker exec vllm-llm sh -c 'cat /proc/1/cmdline' | tr '\0' '\n' | awk '/^--api-key$/{getline; printf "%s", $0}' | sha256sum | cut -c1-12
+docker exec ${PROJ}vllm-llm sh -c 'cat /proc/1/cmdline' | tr '\0' '\n' \
+  | awk '/^--api-key$/{getline; printf "%s", $0}' | sha256sum | cut -c1-12
 # The two hashes must match.
 ```
 
-### Which patcher step manages which key
+## Per-agent `models.json` (stale-prone cache)
 
-| Step | Location | Field |
-|---|---|---|
-| 2 | `openclaw.json` | `models.providers.vllm.apiKey` |
-| 4 | `openclaw.json` | `agents.defaults.memorySearch.remote.apiKey` |
-| 11 | `openclaw.json` | `messages.tts.providers.openai.apiKey` |
-| 12 | `openclaw.json` | `gateway.remote.token` ← `gateway.auth.token` |
-| 13 | `agents/*/agent/auth-profiles.json` | `profiles."vllm:default".key` |
+The `image` / vision tool reads a separate provider catalog at
+`~/.openclaw/agents/<id>/agent/models.json`, not the live `models.providers.*`.
+Text generation reads the live config, so it is unaffected. The file is
+regenerated only when it is missing; config edits do not invalidate it.
 
-### CLI agent runner behavior
-
-`openclaw agent --agent main` runs by default with **`runner: embedded`** (a loopback fast path, not a WS round-trip). The embedded runner reads the key from `auth-profiles.json`; the `OPENAI_API_KEY` env in the CLI container **does not** override it. That's why step 13 is required.
-
-### 4th store — per-agent `models.json` (stale-prone cache)
-
-The agent-tool surface for `image` / vision uses a SEPARATE provider catalog at `~/.openclaw/agents/<id>/agent/models.json` (written by `ensureOpenClawModelsJson()` in `image-2w3cApg7.js`). Text generation is unaffected — the text path reads `models.providers.*` from live `openclaw.json` directly, but the image / vision path consults this cached catalog to discover the right `baseUrl`, `apiKey`, and `input: ["text","image"]` capability flag.
-
-**Staleness gotcha (real incident 2026-05-13).** When `models.providers.vllm.baseUrl` changes (e.g. when the `vllm-llm-proxy` service was removed in v0.6.x and the URL flipped from `vllm-llm-proxy:8004` to `vllm-llm:8004`), the live config is updated but each agent's `models.json` keeps the OLD `baseUrl` because the regen logic only runs when the file is missing — config-edits don't invalidate it. Symptom: text generation works (uses live config), image / vision tool fails with `Image model failed (vllm/...): Connection error` (the stale `vllm-llm-proxy` host doesn't resolve). Sufficient hack on retry: agent reaches for `gpt-5.4-mini` openai fallback which also fails (`401 Incorrect API key`) because the stack has no real OpenAI key and the upstream catalog's `openai/gpt-5.4-mini` is registered against the openai cloud endpoint.
-
-**Fix recipe.** Delete the stale files; next image-tool call regenerates from current config:
+When a provider's `baseUrl` changes (service rename, port move), text keeps working
+but the image tool fails with `Image model failed (vllm/...): Connection error`
+against the old host. A fallback to a cloud model then fails with 401 as well,
+because the stack has no cloud key. Fix:
 
 ```bash
-docker exec openclaw-cli rm /home/node/.openclaw/agents/*/agent/models.json
-# next `openclaw agent ...` or Discord image attachment triggers regen
+docker exec ${PROJ}openclaw-cli sh -c 'rm /home/node/.openclaw/agents/*/agent/models.json'
+# the next agent run or image attachment regenerates it from current config
 ```
 
-Run this whenever:
+Do the same when you add a provider and want agents to see it.
+`agents.defaults.imageModel.primary` picks the image model but still resolves its
+`baseUrl` through this cache, so setting it alone does not fix a stale entry.
 
-- A provider's `baseUrl` changes (service rename, proxy removal, port move).
-- A new provider is added to `models.providers` and you want agents to see it.
-- The image tool errors with `Connection error` despite text generation working — that's the signature of a stale cache.
+## Persistence
 
-**Why not auto-regenerate on every patcher run?** Considered, deferred: `ensureOpenClawModelsJson()` resolves auth profiles + envs + plugin overrides, so a force-rewrite at patcher time would either short-circuit the natural sync points or pull stale auth data. The current behaviour (regenerate-when-missing) is conservative; an explicit operator `rm` is the cheapest safe path until upstream adds a `models.json --refresh` CLI.
-
-The image-tool also has an `agents.defaults.imageModel` config (`{ primary, fallbacks: [] }`) that controls which model the tool tries first — but the primary's `baseUrl` is still resolved through this stale-prone `models.json` lookup, so setting `imageModel.primary` alone doesn't fix a stale `baseUrl`.
-
-The gateway WS route is used by the remote CLI and the Chrome extension — for them, `gateway.remote.token` (step 12) is what matters.
-
-### Public commits that fixed this
-
-- `81f1fa4` — step 11 enum bug (`auto`, `mode` field enum values).
-- `bcea0a5` — step 12 + `openclaw-cli` `OPENAI_API_KEY` env.
-- `644fe68` — drop `OPENCLAW_GATEWAY_TOKEN` from the CLI env.
-- `dd935b0` — step 13 (`auth-profiles.json` sync).
-
-## Patch-config 6-step base (idempotent init service)
-
-`openclaw-config-init` runs before `openclaw-gateway` (`depends_on: service_completed_successfully`):
-
-1. **Cleanup** — remove the legacy `models.providers.vllm.capabilities` key (old schema).
-2. **Ensure vLLM provider core** — `models.providers.vllm.{baseUrl,api,apiKey}` from the `VLLM_API_KEY` env. The onboarding wizard puts a 12-char placeholder here, which causes the gateway to error with "Profile vllm:default timed out" — the patcher overwrites it with the real 139-char key on every `up`.
-3. **Ensure** — `nvidia/Gemma-4-31B-IT-NVFP4` entry in the provider's `models[]`.
-4. **Ensure memorySearch** — `agents.defaults.memorySearch = { enabled: true, provider: "openai", model: "BAAI/bge-m3", remote: { baseUrl: "${EMBED_BASE_URL:-http://vllm-embedding:8005/v1/}", apiKey: process.env.VLLM_API_KEY } }`. After phase 6 the embedding service is in-stack (`vllm-embedding`), reachable via bridge DNS.
-5. **Ensure heartbeat** (always-on) — `agents.defaults.heartbeat = { every: "30m", includeReasoning: true, isolatedSession: true, activeHours: { start: "09:00", end: "02:00", timezone: "Europe/Budapest" } }`.
-6. **Ensure dreaming** (env-gated) — if `OPENCLAW_ENABLE_DREAMING=1`, set `plugins.entries.memory-core = { enabled: true, config: { dreaming: { enabled: true, frequency: "0 3 * * *", timezone: "Europe/Budapest", storage.mode: "both", phases: { light, deep, rem } } } }`. Otherwise, cleanup mode.
-
-Successful plugin-load log line on the 2026.4.15 gateway: `[plugins] memory-core: created managed dreaming cron job.`
-
-The v0.4.x patcher has **13 steps** (6 base + 7 higher; steps 7–13 cover trustedProxies, idleTimeout, hybrid + MMR, SearxNG enable, TTS `messages.tts`, `gateway.remote.token` mirror, `auth-profiles.json` sync). Steps 12–13 landed as part of the v0.4.0 → v0.4.1 polish batch.
-
-### Higher steps (7–13) in brief
-
-7. **trustedProxies** — ensure `gateway.trustedProxies` (loopback + `172.16.0.0/12` + optional `OPENCLAW_LAN_CIDR`).
-8. **idleTimeout** — `agents.defaults.llm.idleTimeoutSeconds = 300`. The default 120s is too tight for 31B + reasoning + multi-tool chains.
-9. **hybrid + MMR** — `memorySearch.query.hybrid` block (BM25 + vector + MMR re-rank). Native OpenClaw feature, upgrade-safe.
-10. **SearxNG enable** — `tools.web.search.provider = searxng` + `plugins.entries.searxng.enabled = true`. The bundled SearxNG plugin ships disabled by default.
-11. **TTS wiring** — env-gated (`OPENCLAW_TTS_FISH_API_KEY`). Writes top-level `messages.tts.{enabled,auto,mode}` switches + `providers.openai.{baseUrl,apiKey,model,voiceId}` pointing at `openclaw-tts-fish` + `voiceAliases` (`english`/`narrator` → `default_en`, `magyar`/`hungarian` → `default_hu`, plus timbre handles `female` → `bella`, `male` → `michael`, `british` → `emma`, `deep` → `fenrir`, `soft` → `nicole` for the bundled 7-voice library). Historical spec for the legacy 3-service stack: `tts-stack.md` (SUPERSEDED).
-12. **gateway.remote.token mirror** — `gateway.auth.token` → `gateway.remote.token`. Otherwise the loopback CLI WS-connect hits a "gateway token mismatch" and silently falls back to the embedded runner (a side-car path, not the production agent route).
-
-    ```
-    [patch-config] Mirroring gateway.auth.token → gateway.remote.token
-    ```
-
-13. **auth-profiles.json sync** — per-agent `~/.openclaw/agents/*/agent/auth-profiles.json` `vllm:default.key` ← `VLLM_API_KEY`. The agent runner reads from this per-agent store, NOT from `models.providers.vllm.apiKey` — drift after a `.env` rotation produces HTTP 401 from vLLM even when the config-file apiKey is correct. Skipped if `VLLM_API_KEY` is empty or the `agents/` dir doesn't yet exist (pre-onboarding).
-
-    ```
-    [patch-config] Synced vllm:default.key in agents/main/agent/auth-profiles.json
-    ```
-
-For the full credential-flow table, see "Which patcher step manages which key" above.
-
-## Persistence (verified 2026-04-20)
-
-After a recreate test (`docker compose down && up -d`), everything survives — the `${OPENCLAW_CONFIG_DIR}` bind mount persists:
+Everything below lives in the `${OPENCLAW_CONFIG_DIR}` bind mount and survives
+`docker compose down && up -d`:
 
 - `paired.json`, `pending.json`
-- `agents/main/sessions/sessions.json` (chat history)
-- `agents/main/agent/auth-profiles.json` (provider credentials)
-- `openclaw.json` (+ patch-config re-ensures it on every `up`, idempotently)
-- Memory SQLite, `workspace/.dreams/`
+- `agents/<id>/sessions/` (chat history) and `agents/<id>/agent/auth-profiles.json`
+- `openclaw.json` (config-init re-applies its desired state on every `up`)
+- `exec-approvals.json` (learned exec grants)
+- memory SQLite and `workspace*/` (AGENTS.md, skills, memory, DREAMS.md)
+- `.node-compile-cache/` (`NODE_COMPILE_CACHE`), so a recreate does not pay the
+  compile again
 
-## Tool-calling fix gotcha
-
-NOT the `models.providers.vllm.capabilities.supportsTools` flag (the schema validator rejects it: `Unrecognized key: "capabilities"`). The fix: the currently used model must appear in `models.providers.vllm.models[]`.
-
-The onboarding wizard only adds what you interactively pick — a later model swap doesn't land in the catalog automatically, and the agent's tool loop can't find its metadata.
-
-The fix is `patch-config.mjs` step 3, which ensures the following entry before every `up`:
-
-```json
-{
-  "id": "nvidia/Gemma-4-31B-IT-NVFP4",
-  "name": "nvidia/Gemma-4-31B-IT-NVFP4",
-  "reasoning": false,
-  "input": ["text"],
-  "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-  "contextWindow": 262144,
-  "maxTokens": 8192
-}
-```
+`OPENCLAW_CANVAS_DIR` and `OPENCLAW_MEDIA_INBOUND_DIR` are separate mounts (by
+default under the config dir).
 
 ## Known non-critical warnings
 
-- `agents.main.tools.allow allowlist contains unknown entries (gateway, nodes)` — the onboarding wizard mixed unknown tool names into `alsoAllow`. Doesn't block anything.
-- `[agent] context-overflow-diag … auto-compaction succeeded` — preemptive compaction on long sessions (780+ messages). A feature, not a bug, but adds multi-minute latency.
-- `Gateway bound to "lan" (0.0.0.0)` — intentional (LAN + nginx proxy). `doctor` warns about it.
+- `agents.main.tools.allow allowlist contains unknown entries (gateway, nodes)` —
+  onboarding mixed tool names that are not available into `alsoAllow`. It blocks
+  nothing.
+- `[agent] context-overflow-diag … auto-compaction succeeded` — preemptive
+  compaction on long sessions. A feature, but it adds minutes of latency.
+- `Gateway bound to "lan" (0.0.0.0)` — intentional (LAN plus reverse proxy);
+  `doctor` warns about it.
 
-## CLI overhead (measurements)
+## CLI overhead
 
-- `openclaw --version`: ~0.18 s.
-- `openclaw health`: ~5.2 s (WS handshake + auth).
-- `openclaw doctor`: ~45 s (multiple pre-checks).
-- `openclaw agent --agent main --thinking off`: ~31–51 s end-to-end (backend vLLM ~5.5 s; the rest is gateway WS session setup).
-- No simple env-var trick to bring this down — the overhead is gateway-side. For interactive use, the Chrome UI is faster.
+- `openclaw --version`: ~0.2 s.
+- `openclaw health`: ~5 s (WebSocket handshake and auth).
+- `openclaw doctor`: ~45 s.
+- `openclaw agent --agent main --thinking off`: ~31–51 s end to end on a short
+  prompt, of which vLLM was ~5.5 s; the rest is gateway session setup, paid on
+  every invocation. There is no env trick to bring it down. For interactive use the
+  Control UI is faster, and the MeshCore bridge keeps one WebSocket open for the
+  same reason ([`meshcore-bridge.md`](./meshcore-bridge.md)).
+- Tool-using runs need `--timeout 600`; the default 60 s trips on a cold cache.
 
-## Browser UI behavior
+## Control UI behaviour
 
-- The chat `agent:main:main` session is a single stream; the `/new` command (New session button) only partially clears it, and a stale context can produce odd replies. Starting via the CLI gives you a clean session.
-- Tool traces render in the chat UI (`memory_search` invocation + tool output + agent-summary blocks) — toggle with "Toggle tool calls and tool results".
+- The `agent:main:main` chat session is a single stream; `/new` (New session)
+  only partly clears it, and stale context can produce odd replies. The CLI starts
+  a clean session.
+- Tool traces render in the chat (tool call, output, summary blocks); toggle them
+  with "Toggle tool calls and tool results".
+- The WebGUI doubles as a schema oracle: set a value in Settings, Save (it validates
+  against the running schema), then read the persisted JSON. That is how new
+  config-init keys are checked before they ship.

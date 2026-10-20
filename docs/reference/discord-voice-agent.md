@@ -21,7 +21,7 @@ openclaw-gateway (agent dispatch — routed to the bound `discord-voice` agent)
    │  isolated workspace at ~/.openclaw/workspace-discord/
    │  tool calls subject to cautious exec-policy (destructive ops approval-gated)
    ▼
-vllm-llm (Gemma 4 31B NVFP4) + tool runtime
+vllm-llm (Nemotron 3.5 Super by default) + tool runtime
    │  final assistant message
    ▼  POST /v1/audio/speech (Fish Audio S2 Pro, multilingual, voice cloning)
 openclaw-tts-fish (SGLang-Omni serving fishaudio/s2-pro)
@@ -30,11 +30,11 @@ openclaw-tts-fish (SGLang-Omni serving fishaudio/s2-pro)
 Discord voice servers → user hears the reply
 ```
 
-Every stage is a pre-existing service in this stack. The Discord integration itself is 100% configuration — no custom code, no new container.
+Every stage is a service in this stack, and the Discord side is configuration only. Fish TTS is optional (`compose/tts-fish.yml`) and off on the reference host, because it does not fit in the unified memory pool next to Nemotron; add it to `COMPOSE_FILE` before using `/vc`.
 
 ## Schema: `channels.discord.*`
 
-Written by `openclaw channels add --channel discord --bot-token <token>` and tuned via subsequent `channels add` re-runs (treated as upsert). Probe the exact shape on your live gateway with `docker exec openclaw-cli openclaw channels capabilities --channel discord --json`. Confirmed on OpenClaw 2026.4.22:
+Written by `openclaw channels add --channel discord --bot-token <token>` and tuned via subsequent `channels add` re-runs (treated as upsert). Probe the exact shape on your live gateway with `docker exec ${PROJ}openclaw-cli openclaw channels capabilities --channel discord --json`; the keys below are the ones seen so far:
 
 ```json5
 {
@@ -54,9 +54,9 @@ Written by `openclaw channels add --channel discord --bot-token <token>` and tun
           { "guildId": "<snowflake>", "channelId": "<voice-channel-snowflake>" }
         ],
         "tts": {
-          // Optional override; if omitted, the voice surface uses the gateway-level
-          // messages.tts wiring (patcher step 11). Same enum shape as top-level
-          // messages.tts: { enabled, auto (off|always|inbound|tagged), mode (final|all),
+          // Optional override; if omitted, the voice surface uses the top-level
+          // `tts` block (written by config-init/steps/media.mjs). Same shape as
+          // that block: { enabled, auto (off|always|inbound|tagged), mode (final|all),
           // provider, summaryModel, modelOverrides, providers }. Set voiceId here to
           // pin a specific voice — e.g. Hungarian in one guild and English in another.
         }
@@ -68,12 +68,12 @@ Written by `openclaw channels add --channel discord --bot-token <token>` and tun
 
 Gotcha on the `autoJoin[]` item keys: they're `guildId` / `channelId` (camelCase, `Id`-suffixed), not `guild` / `channel`. Discord snowflakes are 18-19 digit numeric strings — copy them via Discord Developer Mode → right-click → Copy ID.
 
-**Why not write this from `patch-config.mjs`?** Two reasons:
+**Why config-init writes only `voice.enabled`:** two reasons.
 
 1. The token is secret-grade and lives in OpenClaw's credential store, not the plaintext config file. `openclaw channels add --bot-token <token>` is the only supported path that plumbs the secret through the right store. Writing it to `openclaw.json` directly would leak it into log scrapes and backups.
-2. The channel block under `channels.discord.accounts.<id>.*` is keyed on an account id the CLI assigns — the patcher would have to enumerate account ids from a dir it doesn't otherwise touch.
+2. The channel block under `channels.discord.accounts.<id>.*` is keyed on an account id the CLI assigns, and it belongs to the operator.
 
-A future patcher step 15 could still take over re-upsert of the non-secret voice fields (`voice.enabled`, `voice.autoJoin`, `voice.decryptionFailureTolerance`) at the top-level `channels.discord.voice.*` namespace, leaving account-level overrides and credentials to the CLI. Not worth doing until someone's running multiple Discord accounts on one gateway.
+`config-init/steps/discord.mjs` sets `channels.discord.voice.enabled` only when it is unset (`OPENCLAW_DISCORD_VOICE=stt-tts`), so `/vc` registers. `autoJoin` and the DAVE settings stay with the operator.
 
 ## Isolation design
 
@@ -87,7 +87,7 @@ The runbook's isolation goal: **anyone who can speak in the bound Discord voice 
 
 **What the isolation does NOT protect against:**
 
-- **LLM response inference**: the Discord agent can call the same LLM that your primary agent uses. If your LLM system prompt contains personal information (it shouldn't — patcher keeps defaults), that leaks. We enforce a distinct system prompt in the runbook's `openclaw agents add ... --system-prompt "…You have no access to the operator's personal workspace or memory…"`.
+- **LLM response inference**: the Discord agent can call the same LLM that your primary agent uses. If your LLM system prompt contains personal information (it shouldn't; config-init writes none), that leaks. We enforce a distinct system prompt in the runbook's `openclaw agents add ... --system-prompt "…You have no access to the operator's personal workspace or memory…"`.
 - **Cloud LLM leaks**: if you've configured a cloud LLM backend, voice transcripts transit that provider. Run local vLLM (the default) to keep voice data on-prem.
 - **Shared SearxNG**: the Discord agent can call `web_search` just like your primary agent. Not a leak per se (web search is stateless), but it does contribute to your shared SearxNG usage quota / logs.
 - **Exec-policy bypass**: `yolo` preset defeats the approval gate. If you set it explicitly, you're trusting everyone who can speak in the channel not to abuse it.
@@ -105,7 +105,7 @@ The runbook's isolation goal: **anyone who can speak in the bound Discord voice 
 
 ## DAVE encryption
 
-Discord rolled out DAVE (Direct Audio Voice Encryption, an E2EE protocol for voice channels) in 2024. OpenClaw 2026.4.15+ speaks the DAVE protocol (`voice.daveEncryption: true`). This means:
+Discord rolled out DAVE (Direct Audio Voice Encryption, an E2EE protocol for voice channels) in 2024. OpenClaw speaks the DAVE protocol (`voice.daveEncryption: true`). This means:
 
 - The voice stream between client and Discord's SFU is E2E-encrypted at the user pairwise level.
 - Our bot is a participant in the DAVE key exchange — it holds the shared group key, so it can decrypt what it's there to listen to.
@@ -119,13 +119,13 @@ Discord rolled out DAVE (Direct Audio Voice Encryption, an E2EE protocol for voi
 - **`/vc join` requires the user to be in a voice channel first**. The bot can't join a voice channel the invoking user isn't already in.
 - **Privileged intents**: if the Discord Developer Portal doesn't have `Server Members Intent` enabled, the bot can't match guild members to the voice speakers. The STT still works but multi-speaker context ("Alice just said X, reply to her") won't.
 - **Auto-join race on gateway restart**: the `autoJoin` list fires ~5-10 s after gateway startup. If you run `/vc leave` and restart within that window, the bot may re-join faster than you'd expect.
-- **Audio codec mismatch**: Discord is Opus 48kHz stereo; Whisper wants 16kHz mono wav. The gateway uses its bundled ffmpeg for this. If ffmpeg is missing (unusual on the OpenClaw image), you'll see `ffmpeg: not found` in the log and voice transcription silently drops. Probe with `docker exec openclaw-gateway ffmpeg -version`.
+- **Audio codec mismatch**: Discord is Opus 48kHz stereo; Whisper wants 16kHz mono wav. The gateway uses its bundled ffmpeg for this. If ffmpeg is missing (unusual on the OpenClaw image), you'll see `ffmpeg: not found` in the log and voice transcription silently drops. `openclaw-base-ext` adds ffmpeg to the image; probe with `docker exec ${PROJ}openclaw-gateway ffmpeg -version`.
 - **Latency cliff on the first message after idle**: if vLLM was idle and offloaded the KV cache, first utterance after a gap of minutes can take an extra 2-3 s for prefill warm-up. Subsequent utterances are fast.
 
 ## Related docs
 
 - End-user runbook: [`docs/CUSTOMIZATION.md` → "Voice-controlled agent over Discord"](../CUSTOMIZATION.md#voice-controlled-agent-over-discord)
 - STT service details: [`docs/reference/stt-stack.md`](./stt-stack.md)
-- TTS router + voice aliases: [`docs/reference/tts-stack.md`](./tts-stack.md)
+- TTS service and voice aliases: [`openclaw-tts-fish/README.md`](../../openclaw-tts-fish/README.md)
 - Agent credential stores: [`docs/reference/openclaw-internals.md`](./openclaw-internals.md)
 - Upstream OpenClaw channel docs (authoritative): <https://docs.openclaw.ai/channels/discord>

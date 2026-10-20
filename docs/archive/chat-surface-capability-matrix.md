@@ -1,5 +1,7 @@
 # Chat surface capability matrix
 
+> **Archived.** Written against OpenClaw 2026.4-2026.6 and not re-checked on 2026.10. Media tools are off on the reference host; generated images now reach Discord as `MEDIA:` attachments (see `openclaw-image-comfyui/README.md`).
+
 > Reference: which media features render on which OpenClaw surfaces, with reproducible smoke tests.
 
 This document anchors the empirical answers to "if I send X over Y, will the user see it?" — the kind of question that bit us on every media integration so far (image-gen `display_markdown`, TTS attachment in Discord text, MCP image-content blocks, etc.). When you add a new media-bridge or surface, run the relevant cells against your deploy and update the verdict.
@@ -200,7 +202,7 @@ docker exec openclaw-cli openclaw agent --agent main \
 # The chat bundle's "Read aloud" button calls window.speechSynthesis.speak() with the
 # OS-default voice. Hungarian is poor on most OSes. Mitigation: userscript that
 # monkey-patches speechSynthesis to fetch from the openclaw-tts-router instead.
-# See docs/reference/tts-stack.md → "Web chat workaround".
+# See docs/archive/tts-stack.md → "Web chat workaround".
 ```
 
 ## How this matrix evolves
@@ -214,7 +216,6 @@ When upstream OpenClaw or this stack ships a change that flips a cell:
 
 ## Related references
 
-- `docs/reference/media-bridge-checklist.md` — pre-flight checklist for any new media-feature integration
-- `docs/reference/image-comfyui-bridge.md` — bridge architecture and the three candidate fix paths for image rendering
-- `docs/reference/tts-stack.md` — TTS router design, web-chat speechSynthesis workaround
+- `openclaw-image-comfyui/README.md` — the bridge today, including its media checklist (the old `media-bridge-checklist.md` and `image-comfyui-bridge.md` were merged into it)
+- `docs/archive/tts-stack.md` — TTS router design, web-chat speechSynthesis workaround
 - `docs/TROUBLESHOOTING.md` — quick fixes for the most common surface mismatches users hit first

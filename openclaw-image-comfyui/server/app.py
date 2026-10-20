@@ -92,7 +92,7 @@ COMFYUI_VIEW_TOKEN = os.environ.get("COMFYUI_VIEW_TOKEN", "").strip()
 # the GB10 shared pool, and the first render after an image→video family
 # switch reloads models from disk (+1-2 min). 900s gives that cold path
 # comfortable headroom. NOTE: the gateway's MCP client requestTimeoutMs MUST
-# be >= this value (patcher step 19 writes 960000) or the client abandons the
+# be >= this value (config-init/steps/media.mjs writes 960000) or the client abandons the
 # call before the bridge finishes and the user sees a phantom timeout.
 DEFAULT_TIMEOUT_S = float(os.environ.get("IMAGE_GEN_TIMEOUT_S", "900"))
 MAX_OUTPUT_BYTES = int(os.environ.get("IMAGE_GEN_MAX_OUTPUT_BYTES", str(50 * 1024 * 1024)))
@@ -141,7 +141,7 @@ WORKFLOWS_DIR = os.environ.get("IMAGE_GEN_WORKFLOWS_DIR", "/app/workflows")
 #
 # The path is the IN-CONTAINER path; bind it to the gateway's host-side
 # canvas dir (typically `${OPENCLAW_CONFIG_DIR}/canvas` — verify against
-# your deploy via the SSH probe in docs/reference/image-comfyui-bridge.md).
+# your deploy via the SSH probe in openclaw-image-comfyui/README.md).
 # Leave empty to keep the legacy display_markdown emission (cross-origin
 # <img> markdown + autolinked plain URL — works on Discord and on direct
 # navigation with cached Basic auth, but not inline in webchat).
@@ -1124,7 +1124,7 @@ async def _tool_generate(args: dict) -> dict:
         #    OpenClaw web chat normalizer extracts this BEFORE DOMPurify
         #    and renders an inline iframe (same-origin, capability-token
         #    auth, parser-whitelisted). Added in upstream 2026.4.11
-        #    (PR #64104). See docs/reference/image-comfyui-bridge.md.
+        #    (PR #64104). See openclaw-image-comfyui/README.md.
         #
         # ORDER MATTERS: the naked URL goes FIRST so that even if the
         # agent cherrypicks only the first line, Discord still auto-embeds
@@ -1729,7 +1729,7 @@ async def _tool_generate_video(args: dict) -> dict:
             # iframe's src loads the wrapper; the wrapper's <video> tag
             # references the mp4 via the same relative URL the chat
             # session's capability token already gates. Unverified
-            # end-to-end (see docs/reference/video-comfyui-bridge.md
+            # end-to-end (see openclaw-image-comfyui/README.md
             # "web chat (degraded)" section).
             canvas_url_path: Optional[str] = None
             canvas_file: Optional[str] = None

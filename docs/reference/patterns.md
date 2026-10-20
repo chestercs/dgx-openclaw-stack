@@ -18,12 +18,14 @@ Every compose file carries the same block. The FIRST `compose up` (whichever run
 
 ### Why
 
-Explicit user feedback: "I want `compose up` to create the network if it doesn't exist and attach to it if it does — no separate `docker network create` step." The `external: true` pattern doesn't solve that (you must `docker network create` manually first time); `external: false` + `name:` does.
+`compose up` should create the network if it does not exist and attach to it if it does, with no separate `docker network create` step. The `external: true` pattern does not do that (you must `docker network create` it the first time); `external: false` + `name:` does.
+
+This stack's own optional ComfyUI bridge (`openclaw-image-comfyui/docker-compose.yml`) takes the simpler variant: it joins the main stack's default network (`${COMPOSE_PROJECT_NAME}_default`) with `external: true`, because the main stack is always up first.
 
 ### How to apply
 
 - Use this as the default for any new cross-compose setup.
-- Services should reference each other by hostname (`bge-m3:8005`, `gemma4-31b:8004`), NOT via `host.docker.internal` / IPs / `extra_hosts`. Cross-platform stable (Linux daemon, Docker Desktop on Mac / Windows).
+- Services should reference each other by hostname (`vllm-embedding:8005`, `vllm-llm:8004`), NOT via `host.docker.internal` / IPs / `extra_hosts`. Cross-platform stable (Linux daemon, Docker Desktop on Mac / Windows).
 - The `name:` field is CRITICAL — without it, Compose creates a `<project>_<networkname>` form and the two projects see different networks.
 - If a service also needs another internal network (e.g., a private DB), pass a list: `networks: [shared-net, internal-net]`.
 - State in the README that there is NO need to `docker network create`.
@@ -33,7 +35,7 @@ Explicit user feedback: "I want `compose up` to create the network if it doesn't
 Two brittle points at once:
 
 1. The `extra_hosts: host-gateway` Compose directive is forbidden together with `network_mode: service:` ("conflicting options") — you end up with a manual entrypoint script.
-2. The OpenClaw base image already ships `172.17.0.1 host.docker.internal` in `/etc/hosts` → on a custom Compose network (e.g. 172.28.0.0/16) that's ENETUNREACH. The entrypoint guard (`if ! getent hosts host.docker.internal`) therefore skipped the override.
+2. The OpenClaw base image already ships `172.17.0.1 host.docker.internal` in `/etc/hosts`, so on a custom Compose network (e.g. 172.28.0.0/16) the name resolves to an unreachable address (ENETUNREACH), and an `if ! getent hosts host.docker.internal` guard never fires.
 
 Lesson: do NOT rely on `host.docker.internal` for cross-compose calls. Shared network + DNS hostname is the only stable path.
 
@@ -45,33 +47,33 @@ Lesson: do NOT rely on `host.docker.internal` for cross-compose calls. Shared ne
 
 `.env` files often have comment lines that mention the key name (usually explaining what the key does). Without the anchor, grep matches the comment line too; if the comment has no `=`, `cut -d= -f2` returns the whole line unchanged → a multi-line value. Bash `$(...)` preserves the embedded newline.
 
-### Concrete incident (2026-04-22, `c69a9f2`)
+### Example
 
-`openclaw-tts-router/.env.example` had a comment mentioning `OPENCLAW_TTS_ROUTER_API_KEY`. `grep OPENCLAW_TTS_ROUTER_API_KEY .env | cut -d= -f2` returned a multi-line value, and the `echo "KEY=$ROUTER" >> ../openclaw/.env` call slipped a `KEY=<start-of-comment>` line followed by a lone-hex line into the gateway env file. Docker Compose's `.env` parser took the first line, so the gateway's `apiKey` became the start of the comment → curl 401.
+A comment line mentioning the key made an unanchored `grep KEY .env | cut -d= -f2` return two lines. Written into a second env file, the first line (`KEY=<start of the comment>`) won, the service's API key became comment text, and every call answered 401.
 
 ### How to apply
 
 Any time you read a value from one env file into another file or a command chain, start with an anchored grep. In READMEs and docs, always write the `grep '^KEY='` form.
 
-## CC-BY-NC opt-in triple-gate (public repo)
+## Restrictive-licence opt-in (public repo)
 
-CC-BY-NC model weights must NEVER land in the default code path of a public repo (not even by accident). Proven triple-gate pattern (`dgx-openclaw-stack/openclaw-tts-f5hun`, 2026-04-22):
+Non-commercial or otherwise restricted model weights must never land in the default code path of a public repo, not even by accident. The Fish Audio S2 Pro TTS (research licence, non-commercial) shows the pattern:
 
-1. **Compose profile guard** — `profiles: ["hu"]` on the service block. Plain `docker compose up -d` won't start it, plain `docker compose build` won't build it.
-2. **Env-token guard** — the fronting / aggregator service (router) only activates the backend when both the matching token and URL are non-empty.
-3. **Bootstrap prompt** — `bootstrap.sh` asks once (license disclaimer + readme pointer); if NO → all opt-in env vars stay empty; if YES → it fills all three in one pass (token rotation + URL default + `COMPOSE_PROFILES=hu` append).
+1. **Separate compose file.** The service lives in `compose/tts-fish.yml`, which runs only when the operator adds it to `COMPOSE_FILE`. Plain `docker compose up -d` or `build` never touches it.
+2. **Token gate on the wiring.** Config-init (`config-init/steps/media.mjs`) writes OpenClaw's `tts` block only when `OPENCLAW_TTS_FISH_API_KEY` is set, so the gateway never calls a service that is not running.
+3. **Licence stated where the switch is.** The compose file header and the service README name the licence; the build-time HuggingFace download is the acceptance.
 
 ### Why
 
-The wrapper code stays MIT (instruction set, not redistribution) — only the build-time HF download triggers acceptance of the upstream model license. Same pattern as Gemma 4 NVFP4 (gated, license acceptance on HF) — battle-tested and compatible with a public MIT repo.
+The wrapper code stays MIT (instructions, not redistribution); only the download pulls in the upstream licence. Gated models on HuggingFace work the same way: the operator accepts the licence on the model page.
 
 ### How to apply
 
-For any new service with CC-BY-NC or other restrictive content (TTS, STT, image gen, etc.), follow this triad. NEVER ship license-restrictive content in the default code path. The `default_hu` reference voice (LibriVox / public domain) is an exception — it's CC0/PD; only the fine-tune weights are NC.
+For any new service with restrictive content (TTS, STT, image gen), follow the same three steps. Never ship licence-restricted content in the default code path.
 
 ## openclaw-cli network-namespace dependency
 
-`openclaw-cli` runs with `network_mode: container:<openclaw-gateway-id>` (it shares the gateway's network namespace). So when you force-recreate `openclaw-gateway` (e.g. after a patch-config change), the gateway gets a **new container ID**, while `openclaw-cli` still points at the old (now dead) ID → no network is reachable (not the gateway RPC, not vLLM, not SearxNG).
+`openclaw-cli` runs with `network_mode: container:<openclaw-gateway-id>` (it shares the gateway's network namespace). So when you force-recreate `openclaw-gateway` (e.g. after a config-init change), the gateway gets a **new container ID**, while `openclaw-cli` still points at the old (now dead) ID → no network is reachable (not the gateway RPC, not vLLM, not SearxNG).
 
 Symptom: `openclaw agent` prints `Gateway agent failed; falling back to embedded`, then `LLM request failed: network connection error`. `docker inspect openclaw-cli --format '{{.HostConfig.NetworkMode}}'` shows the old ID, and `docker ps` lists the CLI with an empty Networks column.
 
@@ -97,7 +99,7 @@ Symptom: `openclaw agent` prints `Gateway agent failed; falling back to embedded
     echo "*/5 * * * * $S --watch >> $HOME/netns-dependents.log 2>&1" ) | crontab -
   ```
 
-  Verified on GB10 on 2026-10-20: after `docker restart openclaw-gateway` the watcher restarted the bridge and started the CLI; after a `--force-recreate` of the gateway alone it recreated both. The bridge logged `handshake ok` each time.
+  On the reference host, after `docker restart openclaw-gateway` the watcher restarts the bridge and starts the CLI; after a `--force-recreate` of the gateway alone it recreates both. The bridge logs `handshake ok` each time.
 
 ## SearxNG bundled-but-default-disabled gotcha
 
@@ -105,7 +107,7 @@ The `searxng` plugin ships **bundled-but-default-disabled** in the OpenClaw imag
 
 ### `keep_only` is not an enable flag
 
-SearxNG's `use_default_settings.engines.keep_only:` discards every engine not in the list, but does NOT flip `disabled: false` on the survivors. Engines shipped with `disabled: true` in upstream defaults (Yahoo, Yep, Mwmbl, Qwant, …) need an explicit per-engine override. The pre-2026-10 engine set fell into exactly this trap: Mojeek and Qwant sat in `keep_only` and never ran.
+SearxNG's `use_default_settings.engines.keep_only:` discards every engine not in the list, but does NOT flip `disabled: false` on the survivors. Engines shipped with `disabled: true` in upstream defaults (Yahoo, Yep, Mwmbl, Qwant, …) need an explicit per-engine override; an engine listed in `keep_only` alone simply never runs.
 
 ```yaml
 engines:
@@ -117,7 +119,7 @@ If you add an engine to `keep_only` and it returns no results, check its default
 
 ## Bridge DNS reachability semantics
 
-Services on the default compose bridge can reach each other by service name (DNS resolution via `hostname:`). They can also reach LAN IPs and public hostnames outbound — Docker bridge networks NAT outbound by default. Use this when wiring remote backends: `OPENAI_BASE_URL=http://192.168.x.x:8004/v1` works from inside a container without any extra Docker network config.
+Services on the default compose bridge can reach each other by service name (DNS resolution via `hostname:`). They can also reach LAN IPs and public hostnames outbound — Docker bridge networks NAT outbound by default. Use this when wiring remote backends: `LLM_BASE_URL=http://192.168.x.x:8004/v1/` works from inside a container without any extra Docker network config.
 
 What does NOT work: reaching `host.docker.internal` is platform-dependent (works on Docker Desktop, broken on raw Linux).
 
@@ -127,6 +129,6 @@ When a service should exist in the compose file (for documentation, for users wi
 
 This is how the remote-backend setup parks `vllm-llm` / `vllm-embedding`. Do NOT comment out the service blocks — that loses their documentation value and makes diffs harder to read.
 
-## `bootstrap.sh` `upsert_env` is regex-gated
+## `bootstrap.sh` fills placeholders only
 
-`upsert_env KEY NEWVAL PLACEHOLDER_REGEX` only writes the new value if the current value matches the placeholder regex (e.g. `^CHANGE_ME`). That makes the script safe to re-run — real user values never get overwritten. When adding a new secret, follow the pattern: shipped placeholder in `.env.example` starts with `CHANGE_ME`; bootstrap regex matches that prefix.
+`bootstrap.sh`'s `fill KEY VALUE` writes the new value only while the current value is empty or contains `CHANGE_ME`. That makes the script safe to re-run: real values are never overwritten. When adding a new secret, ship it in `.env.example` as a `CHANGE_ME` placeholder and add a `fill` line.

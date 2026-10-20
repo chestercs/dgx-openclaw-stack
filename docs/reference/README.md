@@ -1,49 +1,50 @@
 # Reference knowledge base — `docs/reference/`
 
-Deeper reference / research material for the components used in this stack.
-Complements the end-user docs at the top of `docs/` (`ARCHITECTURE.md`,
-`CUSTOMIZATION.md`, `TROUBLESHOOTING.md`) — if you want to understand the
-internal schema, the credential layout, the patcher step-by-step, or the
-research rationale behind the chosen LLM / TTS stack, this is where to look.
+Deeper reference material for the components of this stack. It complements the
+end-user docs at the top of `docs/` (`ARCHITECTURE.md`, `CUSTOMIZATION.md`,
+`TROUBLESHOOTING.md`): the internal schema, the credential layout, what config-init
+writes and why, and the measurements behind the model choices.
 
-## Stack internals
-
-| File | Topic |
-|---|---|
-| [`openclaw-internals.md`](./openclaw-internals.md) | OpenClaw v0.4.x internals: 3-store credential layout, schema, patcher steps, releases, persistence, CLI overhead |
-| [`patterns.md`](./patterns.md) | Reusable Docker / dev patterns: cross-compose network, anchored grep, opt-in triple-gate, network namespace, SearxNG gotchas |
-
-## Model serving
+## Configuration and internals
 
 | File | Topic |
 |---|---|
-| [`llm-stack.md`](./llm-stack.md) | Gemma 4 NVFP4 (MoE + dense) + bge-m3 embedding stack architecture, GB10 benchmarks, remote-backend swap |
-| [`tts-stack.md`](./tts-stack.md) | **SUPERSEDED** (Kokoro EN + F5-TTS HU + router era — preserved for historical context). Current TTS is Fish Audio S2 Pro, see [`openclaw-tts-fish/README.md`](../../openclaw-tts-fish/README.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md) § "TTS subsystem" |
-| [`tts-research-hungarian.md`](./tts-research-hungarian.md) | **SUPERSEDED** Hungarian TTS open-source landscape (F5-TTS, XTTS, Piper, tier list) — research notes from the pre-Fish-Audio era |
-| [`stt-stack.md`](./stt-stack.md) | Whisper large-v3 self-built CUDA 13 image: three voice surfaces, CTranslate2 on Blackwell notes |
-| [`gb10-power-thermal.md`](./gb10-power-thermal.md) | GB10 hard power-offs under load (clock cap, thermal guard), the 611 MHz PD wedge (cold drain), ASUS GX10 firmware update, unified-memory livelock on big checkpoint shards |
+| [`configuration.md`](./configuration.md) | Every `.env` knob config-init and the compose files read, with its default |
+| [`openclaw-internals.md`](./openclaw-internals.md) | OpenClaw internals: credential stores, per-agent `models.json` cache, schema notes, persistence |
+| [`patterns.md`](./patterns.md) | Reusable Docker patterns: network namespace sharing, parked services, SearxNG gotchas |
+
+## Model serving and hardware
+
+| File | Topic |
+|---|---|
+| [`llm-stack.md`](./llm-stack.md) | LLM backends: Nemotron (default), Gemma 4 and Mistral Small 4 swaps, thinking and sampling settings, bge-m3 embeddings |
+| [`stt-stack.md`](./stt-stack.md) | Whisper turbo on a self-built CUDA 13 image |
+| [`gb10-power-thermal.md`](./gb10-power-thermal.md) | GB10 power-offs under load (clock cap, thermal guard), the 611 MHz PD wedge, firmware, unified-memory livelock |
 
 ## Discord integration
 
 | File | Topic |
 |---|---|
-| [`discord-config.md`](./discord-config.md) | Patcher overrides at a glance (steps 20–39, env knobs, vanilla restore recipe), slash-command authz (#19310), slash command matrix, mention gate vs `/activation` slash |
-| [`discord-text-agent.md`](./discord-text-agent.md) | Text-channel agent design: mention pill, `tools.profile` gating, `message` tool, ackReactionScope cycle bug + agent-driven workaround, progressive streaming UX, TTS opt-in, verify checklist |
-| [`discord-voice-agent.md`](./discord-voice-agent.md) | Voice-channel agent: schema, workspace isolation, threat model, DAVE E2E notes |
-| [`agentic-coding.md`](./agentic-coding.md) | Agentic coding from Discord: exec + chat-side approvals (3-layer surface, exec-approvals.json contract), thread-per-task, workboard, long-run knobs ("work on it for a day"), skills layout / docs diet, schema-gate runbook |
+| [`discord-config.md`](./discord-config.md) | Discord settings config-init writes, keyed by knob and module; slash-command authz; mention gate vs `/activation` |
+| [`discord-text-agent.md`](./discord-text-agent.md) | Text-channel agent design |
+| [`discord-voice-agent.md`](./discord-voice-agent.md) | Voice-channel agent: schema, workspace isolation, threat model |
+| [`agentic-coding.md`](./agentic-coding.md) | Exec and chat-side approvals, thread-per-task, long runs, skills layout, schema-gate runbook |
 
 ## Tool services
 
 | File | Topic |
 |---|---|
-| [`browser-automation.md`](./browser-automation.md) | Playwright Chromium over CDP: port-per-profile, query-string token, noVNC bridge, threat model, `browser.act` parameter coaching |
-| [`python-sandbox.md`](./python-sandbox.md) | Python code-execution sandbox: MCP wiring, kernel pool, threat model, why not OpenClaw native or `agents.defaults.sandbox` |
-| [`image-comfyui-bridge.md`](./image-comfyui-bridge.md) | Image-generation MCP bridge → ComfyUI: cross-compose join, host-gateway hop, workflow template architecture, chat-side render limitations, threat model |
-| [`video-comfyui-bridge.md`](./video-comfyui-bridge.md) | Video-generation extension on the same bridge (LTX-Video 2.3, v0.12.0+): model bundle ~71 GB, native audio in a single pass, T2V + I2V tool, Discord auto-embed as the primary surface |
-| [`img-bash-command.md`](./img-bash-command.md) | `!~/.openclaw/bin/img` Discord bash bypass for image-gen — why it exists, how it's wired |
-| [`media-bridge-checklist.md`](./media-bridge-checklist.md) | End-to-end TTS / STT / image-gen pipeline verification checklist for new deploys |
-| [`meshcore-bridge.md`](./meshcore-bridge.md) | MeshCore LoRa bridge: off-grid agent access from a mesh handheld via a USB companion radio — persistent gateway WS, per-contact sessions, SMS-sized reply budget, allowlist threat model |
-| [`chat-surface-capability-matrix.md`](./chat-surface-capability-matrix.md) | What renders where: Discord text vs Discord voice vs OpenClaw web chat vs CLI (markdown / images / TTS / shortcodes) |
+| [`browser-automation.md`](./browser-automation.md) | Playwright Chromium over CDP: port-per-profile, query-string token, noVNC login helper, threat model |
+| [`python-sandbox.md`](./python-sandbox.md) | Python code-execution sandbox: MCP wiring, kernel pool, threat model |
+| [`meshcore-bridge.md`](./meshcore-bridge.md) | MeshCore LoRa bridge: off-grid agent access from a mesh handheld |
+| [`openclaw-image-comfyui/README.md`](../../openclaw-image-comfyui/README.md) | ComfyUI image / video / music bridge (optional, off on the reference host) |
+| [`openclaw-tts-fish/README.md`](../../openclaw-tts-fish/README.md) | Fish Audio S2 Pro TTS (optional, off on the reference host) |
+
+## Archive
+
+[`docs/archive/`](../archive/) keeps superseded material for history: the changelog
+before 1.0.0, the Kokoro / F5-TTS stack and Hungarian TTS research, the 2026.4-era
+chat-surface capability matrix, and upstream feedback drafts.
 
 ## Related docs
 

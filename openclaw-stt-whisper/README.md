@@ -1,9 +1,14 @@
 # openclaw-stt-whisper
 
+Status: live on the reference host (default stack, `docker-compose.yml`).
+
 Self-built speech-to-text service for the DGX OpenClaw stack. OpenAI-compatible
 `/v1/audio/transcriptions` + `/v1/audio/translations` on top of
-[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) running
-`Systran/faster-whisper-large-v3` by default.
+[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper). The stack runs
+`deepdml/faster-whisper-large-v3-turbo-ct2` (`STT_WHISPER_MODEL` in `.env`).
+Config-init (`config-init/steps/tools.mjs`) wires it as OpenClaw's audio model
+once `STT_API_TOKEN` is set. Background:
+[`docs/reference/stt-stack.md`](../docs/reference/stt-stack.md).
 
 ## Why a custom wrapper instead of `ghcr.io/speaches-ai/speaches`
 
@@ -14,7 +19,7 @@ not support efficient ... computation"_), and the `float32` fallback runs on
 CUDA cores at real-time factor ~1× while also destabilizing numerically
 (Whisper generation collapsing into compression-ratio loops). A `CUDA 13.0.0`
 base with the cu130 PyTorch wheels and current `faster-whisper` (≥ 1.2) is the
-proven path on GB10 — the surrounding vLLM and Kokoro services already use it.
+proven path on GB10, the same base the stack's other CUDA 13 images use.
 
 ### Why source-built CTranslate2
 
@@ -40,20 +45,22 @@ retire.
 
 - **Wrapper code** (`Dockerfile`, `server/app.py`, `server/requirements.txt`):
   MIT, matching the rest of this repo.
-- **Model weights** (`Systran/faster-whisper-large-v3` and the other official
-  Systran CT2 rehosts): **MIT**, inherited from OpenAI's Whisper release.
-  No CC-BY-NC component — this service ships in the default profile with no
-  opt-in gate.
+- **Model weights**: Whisper large-v3 and its CT2 rehosts (`Systran/*`, the
+  `deepdml` turbo conversion) are **MIT**, inherited from OpenAI's Whisper
+  release. No non-commercial component, so the service runs in the default
+  stack with no opt-in gate. Check the model card of any fine-tune you swap in.
 
 ## Configuration
 
 Environment variables (all read at service start — restart the container to
-apply changes):
+apply changes). Compose maps the `.env` knobs `STT_WHISPER_MODEL`,
+`STT_WHISPER_COMPUTE_TYPE` and `WHISPER_LANGUAGE` onto them; see
+[`docs/reference/configuration.md`](../docs/reference/configuration.md#speech-sttts).
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STT_API_TOKEN` | _(empty)_ | Bearer token; when set, every `/v1/*` request must carry `Authorization: Bearer <token>`. `/health` always bypasses auth for Docker healthchecks. |
-| `WHISPER_MODEL` | `Trendency/whisper-large-v3-hu` | HuggingFace model id. Default is the Hungarian Whisper fine-tune (Apache-2.0, ~11% CV WER, validated EN parity on the JFK 11-sec clip). Swap to `Systran/faster-whisper-large-v3` for the MIT multilingual baseline, or `deepdml/faster-whisper-large-v3-turbo-ct2` for 8× speed / half VRAM (HU WER on turbo unvalidated). Non-CT2 HF repos auto-convert to CT2 float16 on first boot, cached thereafter. |
+| `WHISPER_MODEL` | `deepdml/faster-whisper-large-v3-turbo-ct2` (set by compose; the bare image falls back to `Systran/faster-whisper-large-v3`) | HuggingFace model id. Turbo is ~8× faster than large-v3 at ~1.6 GB VRAM. `Trendency/whisper-large-v3-hu` (Hungarian fine-tune) is slower but more accurate on noisy Hungarian input. Non-CT2 HF repos auto-convert to CT2 float16 on first boot, cached thereafter. |
 | `WHISPER_DEVICE` | `cuda` | `cuda` or `cpu`. CPU is ~50× slower but a workable fallback on GPU-less hosts. |
 | `WHISPER_COMPUTE_TYPE` | `float16` | One of `float16`, `bfloat16`, `int8_float16`, `int8_bfloat16`, `int8`, `float32`. See fallback ladder below. |
 | `WHISPER_LANGUAGE` | _(empty → autodetect)_ | ISO-639-1 code (e.g. `hu`, `en`). Leave empty so Whisper detects per request. |
@@ -85,8 +92,8 @@ transcribe. Try these in order until one loads:
 
 ## First-boot behavior
 
-No model weights are baked into the image — the ~3 GB large-v3 CT2 weights
-download from HuggingFace on the first `/v1/audio/transcriptions` request
+No model weights are baked into the image — the CT2 weights (~1.6 GB for
+turbo, ~3 GB for large-v3) download from HuggingFace on the first `/v1/audio/transcriptions` request
 (or on an explicit warm-up call). Subsequent boots reuse the
 `stt-whisper-hf-cache` Docker volume, so the download happens exactly once
 per host.

@@ -56,8 +56,7 @@
 #                          before running.
 #
 # Cross-reference:
-#   docs/reference/video-comfyui-bridge.md  — what each file is for
-#   docs/reference/image-comfyui-bridge.md  — the same pattern, for images
+#   openclaw-image-comfyui/README.md  — what each file is for
 set -uo pipefail
 
 # ─── Setup ───────────────────────────────────────────────────────────
@@ -311,6 +310,6 @@ ${BOLD}Next steps:${RESET}
      Cold first run: 3-10 minutes (ComfyUI loads ~71 GB into VRAM
      for the first time). Subsequent runs reuse the cache.
 
-If anything goes sideways, ${BOLD}docs/reference/video-comfyui-bridge.md${RESET}
+If anything goes sideways, ${BOLD}openclaw-image-comfyui/README.md${RESET}
 has the troubleshooting matrix.
 EOF

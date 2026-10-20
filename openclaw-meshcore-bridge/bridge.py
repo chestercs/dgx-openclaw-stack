@@ -99,7 +99,7 @@ AGENT_ID = _env("MESHCORE_AGENT_ID", "meshcore")
 # Separate agent for the channel surface. A session key isolates conversation
 # history but NOT memory — the memory store and workspace are per-agent — so
 # hard isolation between the private DM rail and a shared channel needs two
-# agents (patcher step 42 registers both). Empty = both surfaces share
+# agents (config-init/steps/agents.mjs registers both). Empty = both surfaces share
 # AGENT_ID, and only the per-surface extraSystemPrompt separates them.
 CHANNEL_AGENT_ID = _env("MESHCORE_CHANNEL_AGENT_ID") or AGENT_ID
 AGENT_TIMEOUT_S = _env_f("MESHCORE_AGENT_TIMEOUT_S", 180)
@@ -147,7 +147,7 @@ DM_SESSION_GROUPS = parse_dm_session_groups(_env("MESHCORE_DM_SESSION_GROUPS"))
 DM_EXTRA_PROMPT = _env("MESHCORE_DM_EXTRA_PROMPT")
 # The channel default only applies when both surfaces share one agent. With a
 # dedicated channel agent the persona lives in that agent's own AGENTS.md
-# (patcher step 42 seeds it), so injecting the same guidance again per turn
+# (config-init/steps/agents.mjs seeds it), so injecting the same guidance again per turn
 # would be redundant prompt noise.
 CHANNEL_EXTRA_PROMPT = _env(
     "MESHCORE_CHANNEL_EXTRA_PROMPT",
@@ -237,7 +237,7 @@ DM_ACK_MIN_TIMEOUT_S = _env_f("MESHCORE_DM_ACK_MIN_TIMEOUT_S", 12)
 def resolve_gateway_token():
     """MESHCORE_GATEWAY_TOKEN env wins; otherwise read the token remote WS
     clients authenticate with (gateway.remote.token, kept in lockstep with
-    gateway.auth.token by patcher step 12) from the read-only-mounted
+    gateway.auth.token by config-init/steps/gateway.mjs) from the read-only-mounted
     openclaw.json. NOTE: the OPENCLAW_GATEWAY_TOKEN .env value is NOT the
     right token — the onboarding wizard writes a different one into the
     config (see openclaw-internals.md, credential store #2)."""
@@ -603,7 +603,7 @@ class MeshSide:
 
     async def _ensure_channel(self):
         """Idempotently provision the configured channel slot — the same
-        desired-state posture patch-config.mjs uses for openclaw.json, so a
+        desired-state posture config-init uses for openclaw.json, so a
         replaced radio self-heals on the next boot instead of needing manual
         setup. Only ever writes the ONE configured slot; other slots (the
         Public channel, the operator's own channels) are never touched."""

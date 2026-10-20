@@ -1,5 +1,7 @@
 # openclaw-meshcore-bridge
 
+Status: optional (compose profile `meshcore` plus `MESHCORE_ENABLED=on`).
+
 Talk to your OpenClaw agent over a **MeshCore LoRa mesh** — from a handheld
 (LilyGO T-Deck or any standalone MeshCore messenger) to a companion radio
 (e.g. LilyGO T-Echo) plugged into the stack host over USB. Fully off-grid on
@@ -48,8 +50,8 @@ Corollary: when you recreate the gateway, recreate this container too
    messenger firmware the handheld runs.
 2. Find the stable device path on the host:
    `ls -l /dev/serial/by-id/` → put it in `.env` as `MESHCORE_SERIAL_DEVICE`.
-3. Set `MESHCORE_ENABLED=on` in `.env` (registers the `meshcore` agent via
-   patcher step 42), then:
+3. Set `MESHCORE_ENABLED=on` in `.env` (config-init registers the `meshcore`
+   agent in `config-init/steps/agents.mjs`), then:
 
    ```bash
    docker compose up -d --force-recreate openclaw-config-init openclaw-gateway

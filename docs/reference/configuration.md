@@ -39,6 +39,7 @@ means there is no default and the feature or key is left alone.
 |---|---|---|
 | `LLM_MODEL_ID` | `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` | The id vLLM serves and config-init registers as the only `vllm/...` model; every other `vllm/` entry is removed because a stale one answers 404. |
 | `VLLM_API_KEY` | (empty) | API key of both vLLM servers, also used by memory search. Without it config-init leaves `memory.search` as onboarding wrote it. |
+| `OPENCLAW_SECRET_REFS` | `on` | `on`: `openclaw.json` holds `{source: "env", id: "VLLM_API_KEY"}`-style references for the vLLM and TTS keys and the gateway resolves them from its environment, so the values stay out of the config file and `openclaw secrets audit` is clean for them. `off`: the plain values are written. |
 | `HUGGING_FACE_HUB_TOKEN` | (empty) | HF token for model downloads (vLLM, Whisper, Fish build). Accept the model licence on its HF page first. |
 | `HF_HUB_OFFLINE` | `0` | `1` stops all hub dial-outs once weights are cached: faster boots, no hang when the uplink is down. |
 | `VLLM_LOGGING_LEVEL` | `INFO` | vLLM log verbosity (`ERROR`, `WARNING`, `INFO`, `DEBUG`). |
@@ -291,7 +292,7 @@ a builder agent bound to the listed channels and are denied on every other agent
 ## Media (ComfyUI image/video/music, LTX)
 
 The bridge runs from its own compose file (`openclaw-image-comfyui/`) with its own
-knobs; see [image-comfyui-bridge.md](image-comfyui-bridge.md). These are what
+knobs; see [openclaw-image-comfyui/README.md](../../openclaw-image-comfyui/README.md). These are what
 config-init reads. `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` (above) turns groups off.
 
 | Knob | Default | What it does |

@@ -116,7 +116,7 @@ _DEFAULT_VOICE_ALIASES = {
     "coral": "bella", "echo": "michael", "fable": "emma",
     "onyx": "fenrir", "nova": "nicole", "sage": "nicole",
     "shimmer": "bella",
-    # Friendly handles (same set patcher step 11 writes into openclaw.json)
+    # Friendly handles (same set config-init/steps/media.mjs writes into openclaw.json)
     "english": "default_en", "narrator": "default_en",
     "female": "bella", "male": "michael", "british": "emma",
     "deep": "fenrir", "soft": "nicole",

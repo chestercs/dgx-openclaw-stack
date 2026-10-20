@@ -1,10 +1,17 @@
 # openclaw-tts-fish
 
+Status: optional; off on the reference host. Enabled by adding
+`compose/tts-fish.yml` to `COMPOSE_FILE` and setting
+`OPENCLAW_TTS_FISH_API_KEY`; config-init (`config-init/steps/media.mjs`) then
+wires OpenClaw's `tts` block to it. It does not fit next to Nemotron on the
+128 GB pool, so it pairs with a smaller model (`compose/gemma4.yml`).
+
 OpenAI-compatible Text-to-Speech service backed by **Fish Audio S2 Pro**,
 self-hosted on NVIDIA GB10 (Grace-Blackwell, sm_120, aarch64, CUDA 13) via
-**SGLang-Omni**. Replaces the legacy 3-service Kokoro EN + F5-TTS HU + router
-pipeline with one container that handles 80+ languages out of one checkpoint,
-including English and Hungarian, with reference-audio voice cloning.
+**SGLang-Omni**. One container handles 80+ languages out of one checkpoint,
+including English and Hungarian, with reference-audio voice cloning. The
+earlier Kokoro + F5-TTS pipeline it replaced is described in
+[`docs/archive/tts-stack.md`](../docs/archive/tts-stack.md).
 
 ## License
 
@@ -93,10 +100,9 @@ curl -H "Authorization: Bearer $TTS_API_TOKEN" \
 
 Bundled in the repo at `server/voices/` and baked into the image's
 `/app/voices_seed/`; the shim copies them into `/app/voices/` on first start
-without overwriting user voices. (The old HF-dataset fetcher was removed
-2026-06-10 — it soft-failed on every aarch64 build because `datasets` audio
-decoding needs torchcodec, which has no aarch64 wheel, so images shipped with
-an empty seed dir.)
+without overwriting user voices. The clips are committed rather than fetched
+at build time: `datasets` audio decoding needs torchcodec, which has no
+aarch64 wheel.
 
 | Voice | Timbre | Source | License |
 |-------|--------|--------|---------|
@@ -108,7 +114,7 @@ an empty seed dir.)
 | `emma` | UK female | Kokoro `bf_emma` | Apache-2.0 (generated) |
 | `default_hu` | HU female | KTH/hungarian-single-speaker-tts — Diana Majlinger, "Egri csillagok" | Public domain (LibriVox) |
 
-Patcher step 11 maps friendly aliases on top: `english`/`narrator` →
+Config-init (`config-init/steps/media.mjs`) maps friendly aliases on top: `english`/`narrator` →
 `default_en`, `female` → `bella`, `male` → `michael`, `british` → `emma`,
 `deep` → `fenrir`, `soft` → `nicole`, `magyar`/`hungarian` → `default_hu`.
 

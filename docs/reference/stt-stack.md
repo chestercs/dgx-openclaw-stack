@@ -4,7 +4,7 @@
 
 ## Overview
 
-One service in the unified `llm/dgx-openclaw-stack/` compose:
+One service in the main `docker-compose.yml`, always on:
 
 | Service | Model | Port | VRAM | License | Profile |
 |---|---|---|---|---|---|
@@ -14,7 +14,7 @@ Self-built from `./openclaw-stt-whisper/server/` on `nvidia/cuda:13.0.0-cudnn-de
 
 ## Why Whisper turbo + self-built CUDA 13 image
 
-The backend choice was made 2026-04 (then re-defaulted to turbo in 2026-05 for voice-chat latency) against these candidates:
+The candidates the backend was chosen from (turbo is the default for voice-chat latency):
 
 | Candidate | HU WER (FLEURS) | VRAM | Licence | OpenAI-compat server | Verdict |
 |---|---|---|---|---|---|
@@ -31,9 +31,9 @@ The backend choice was made 2026-04 (then re-defaulted to turbo in 2026-05 for v
 
 ### Why self-built instead of the speaches upstream image
 
-On paper `ghcr.io/speaches-ai/speaches` is the ideal dependency: MIT license, active maintenance, ships OpenAI-compatible routes, zero custom code to maintain. The original 2026-04-23 plan selected it. In practice the upstream publishes only CUDA 12.6.3 variants, and on GB10 (sm_120) that image's bundled CTranslate2 rejects every low-precision compute type — `float16`, `int8_float16`, and `int8_bfloat16` all fail with _"target device or backend do not support efficient … computation"_. The `float32` fallback runs on CUDA cores at real-time factor ~1× (2 min audio = 2 min transcribe) while also destabilizing numerically (Whisper generation collapses into compression-ratio loops).
+On paper `ghcr.io/speaches-ai/speaches` is the ideal dependency: MIT license, active maintenance, ships OpenAI-compatible routes, zero custom code to maintain. In practice the upstream publishes only CUDA 12.6.3 variants, and on GB10 (sm_120) that image's bundled CTranslate2 rejects every low-precision compute type — `float16`, `int8_float16`, and `int8_bfloat16` all fail with _"target device or backend do not support efficient … computation"_. The `float32` fallback runs on CUDA cores at real-time factor ~1× (2 min audio = 2 min transcribe) while also destabilizing numerically (Whisper generation collapses into compression-ratio loops).
 
-The fix is a CUDA 13 base + cu130 PyTorch wheels + current `faster-whisper` (≥ 1.2), which is the same wheel pattern the surrounding `vllm-llm` and `openclaw-tts-fish` services already use successfully on GB10. The wrapper is ~150 LOC of FastAPI + a Bearer-auth middleware — trivial to retire if speaches upstream later publishes a Blackwell-tensor-core variant (swap `build:` back to `image:` in `docker-compose.yml`).
+The fix is a CUDA 13 base + cu130 PyTorch wheels + current `faster-whisper` (≥ 1.2), which is the same wheel pattern the optional `openclaw-tts-fish` service uses on GB10. The wrapper is ~150 LOC of FastAPI + a Bearer-auth middleware — trivial to retire if speaches upstream later publishes a Blackwell-tensor-core variant (swap `build:` back to `image:` in `docker-compose.yml`).
 
 ### `compute_type` fallback ladder on Blackwell
 
@@ -60,25 +60,25 @@ OpenClaw has three speech-input paths; this service only backs two of them.
 
 ## OpenClaw wiring
 
-`patch-config.mjs` step 14, env-gated by `STT_API_TOKEN`. Writes into `tools.media.audio`:
+`config-init/steps/tools.mjs`, gated by `STT_API_TOKEN`. It sets
+`tools.media.audio.enabled` and puts this entry first in `tools.media.models[]`
+(OpenClaw 2026.10 schema). The audio pipeline uses the first entry whose
+`capabilities` include `audio`:
 
 ```json5
 {
   "tools": {
     "media": {
-      "audio": {
-        "enabled": true,
-        "models": [
-          {
-            "provider": "openai",
-            "model": "deepdml/faster-whisper-large-v3-turbo-ct2",
-            "baseUrl": "http://openclaw-stt-whisper:8080/v1/",
-            "headers": {
-              "Authorization": "Bearer <STT_API_TOKEN>"
-            }
-          }
-        ]
-      }
+      "audio": { "enabled": true },
+      "models": [
+        {
+          "provider": "openai",
+          "model": "deepdml/faster-whisper-large-v3-turbo-ct2",
+          "baseUrl": "http://openclaw-stt-whisper:8080/v1/",
+          "capabilities": ["audio"],
+          "headers": { "Authorization": "Bearer <STT_API_TOKEN>" }
+        }
+      ]
     }
   }
 }
@@ -86,22 +86,22 @@ OpenClaw has three speech-input paths; this service only backs two of them.
 
 **Why the Bearer lives in `headers.Authorization`, not `apiKey`:** the OpenClaw schema (see `docs.openclaw.ai/nodes/audio`) routes provider auth through the standard chain — `models.providers.openai.apiKey` or env vars or auth profiles. Writing the Whisper Bearer into the global `models.providers.openai` block would collide with any cloud OpenAI account the user might also configure. Per-entry `headers` overrides are explicitly supported by the schema and keep the STT token isolated.
 
-**Upsert-by-`baseUrl`:** re-runs of the patcher don't clobber user-added entries. If the user has a Deepgram fallback or a local `whisper-cpp` CLI entry in `models[]`, they survive; only the entry whose `baseUrl` matches ours is updated.
+**Upsert-by-`baseUrl`:** config-init re-runs don't clobber user-added entries. If the user has a Deepgram fallback or a local `whisper-cpp` CLI entry in `models[]`, they survive; only the entry whose `baseUrl` matches ours is updated.
 
-**Env-gated skip:** unset `STT_API_TOKEN` leaves `tools.media.audio` alone. Combined with `profiles: ["never"]` on the service block, that is the full opt-out path.
+**Env-gated skip:** unset `STT_API_TOKEN` leaves `tools.media` alone. Combined with `profiles: ["never"]` on the service block, that is the full opt-out path.
 
 ## Model catalog
 
 | Env override | VRAM | Trade-off |
 |---|---|---|
 | `STT_WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2` (default) | ~1.6 GB | MIT-licensed pre-converted CT2 build of the turbo Whisper variant (4-layer pruned decoder). ~8× faster than vanilla large-v3 at near-equal EN WER. Multilingual EN+HU autodetect works out of the box. No CT2 conversion required on first boot (pre-converted). Picked as the default because voice-chat latency (Fish Audio S2 Pro → LLM → STT roundtrip on Discord voice channels) matters more than the last few percentage points of HU WER. |
-| `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu` | ~3 GB | Hungarian Whisper fine-tune (Apache-2.0). Published 11.26% CV19/20/21 WER with a clean train/eval split. 2026-04-24 GB10 validation: ~7-8 fewer mis-hearings per chapter than vanilla on LibriVox HU, holds up cleanly under telephone-bandpass + pink-noise degradation, EN identical on the JFK 11-sec reference clip. Slower (full 32-layer decoder, ~3 GB VRAM). Auto-converts from HF transformers format to CT2 float16 on first boot (~3 min), cached in the stt-whisper-hf-cache volume thereafter. **Pick this for accuracy-first HU on noisy / phone-grade mic input.** |
+| `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu` | ~3 GB | Hungarian Whisper fine-tune (Apache-2.0). Published 11.26% CV19/20/21 WER with a clean train/eval split. GB10 validation: ~7-8 fewer mis-hearings per chapter than vanilla on LibriVox HU, holds up cleanly under telephone-bandpass + pink-noise degradation, EN identical on the JFK 11-sec reference clip. Slower (full 32-layer decoder, ~3 GB VRAM). Auto-converts from HF transformers format to CT2 float16 on first boot (~3 min), cached in the stt-whisper-hf-cache volume thereafter. **Pick this for accuracy-first HU on noisy / phone-grade mic input.** |
 | `STT_WHISPER_MODEL=Systran/faster-whisper-large-v3` | ~3 GB | Pure multilingual baseline. MIT-licensed, FLEURS HU WER 14.1%. Pick this if your workload is English-heavy, you need the broadest out-of-language robustness, or you want a CT2-native upstream. On noisy HU this model fragments segments more (61 vs 36 on the 3-min stress test) but keeps the Hungarian proper nouns slightly more reliably. |
 | `STT_WHISPER_COMPUTE_TYPE=int8_float16` | halves on any model | 5-10% WER increase on any model. Safe VRAM fallback if the LLM + Fish TTS squeeze the budget, or if a Blackwell sm_120 numerical issue appears. |
 
 Community Hungarian fine-tunes we evaluated and **rejected**:
 
-- **benmajor27/whisper-large-v3-hu_full** — published 8.86% CV17 WER looked promising, but 2026-04-24 validation showed it was trained on the full CV17 set and evaluated on CV17, so the published number is overfit. Out-of-distribution audio (LibriVox Petőfi, noisy synthetic phone-grade) causes the decoder to collapse into long compression-ratio loops (`"Tüz. Tüz. Tüz. ..."`, `"-‑-‑-‑-‑-‑"`, `"��������"`, random `"a the in the"` English tokens). Do not swap in this model.
+- **benmajor27/whisper-large-v3-hu_full** — published 8.86% CV17 WER looked promising, but validation showed it was trained on the full CV17 set and evaluated on CV17, so the published number is overfit. Out-of-distribution audio (LibriVox Petőfi, noisy synthetic phone-grade) causes the decoder to collapse into long compression-ratio loops (`"Tüz. Tüz. Tüz. ..."`, `"-‑-‑-‑-‑-‑"`, `"��������"`, random `"a the in the"` English tokens). Do not swap in this model.
 
 ### HuggingFace transformers → CT2 auto-conversion
 
@@ -111,33 +111,23 @@ Any HF repo id starting with `Systran/`, `deepdml/`, or `openai/` is treated as 
 
 ## VRAM budget on GB10
 
-At `LLM_GPU_MEM_UTIL=0.68` with Fish Audio S2 Pro TTS running (default
-profile):
-
-```
-Gemma 4 NVFP4     ~96 GB
-bge-m3             ~1.1 GB
-Fish Audio S2 Pro  ~11 GB
-Whisper turbo      ~1.6 GB
-────────────────────────────
-≈ 110 GB used, ~3 GB headroom on the 113 GB effective shared pool
-```
-
-Switching to the Trendency HU finetune raises Whisper to ~3 GB and eats
-into the already-thin headroom. Drop ComfyUI / LTX-Video workloads before
-heavy concurrent TTS+STT use — see the migration notes in `CHANGELOG.md`
-for the ComfyUI co-existence caveat.
+Whisper turbo takes ~1.6 GB of the unified pool, the Trendency HU
+fine-tune ~3 GB. Next to the default Nemotron backend
+(`LLM_GPU_MEM_UTIL=0.70`, ~70 GiB) and bge-m3 that fits; Fish TTS and
+ComfyUI renders do not fit beside Nemotron (see
+[`gb10-power-thermal.md`](./gb10-power-thermal.md) for what a full pool
+does to the host).
 
 ## Environment variables
 
-See `.env.example` "STT — faster-whisper large-v3" section. Key entries:
+Every knob with its default: [`configuration.md`](./configuration.md#speech-sttts). Key entries:
 
-- `STT_API_TOKEN` — Bearer token (required to lock the service; leaving it empty disables Bearer auth).
+- `STT_API_TOKEN` — Bearer token (required to lock the service; leaving it empty disables Bearer auth, and config-init then does not wire OpenClaw to it).
 - `STT_WHISPER_MODEL` — HuggingFace model id.
 - `STT_WHISPER_COMPUTE_TYPE` — walk the fallback ladder above if `float16` isn't supported by your CT2 build.
-- `STT_WHISPER_DEVICE` — `cuda` or `cpu`.
+- `WHISPER_LANGUAGE` — server-side default language; empty = detect per request.
 - `STT_WHISPER_BIND` / `STT_WHISPER_PORT` — host-side publish (loopback default).
-- `OPENCLAW_STT_BASE_URL` / `OPENCLAW_STT_MODEL` / `OPENCLAW_STT_LANGUAGE` — patcher inputs.
+- `OPENCLAW_STT_BASE_URL` / `OPENCLAW_STT_MODEL` / `OPENCLAW_STT_LANGUAGE` — what config-init writes into the `tools.media.models[]` entry.
 
 ## Verification
 
@@ -159,13 +149,13 @@ curl -sS -X POST http://127.0.0.1:8093/v1/audio/transcriptions \
 # expected: "hu" + accurate Hungarian diacritics
 
 # Gateway-side config inspection
-docker exec openclaw-cli jq '.tools.media.audio' $OPENCLAW_CONFIG_DIR/openclaw.json
+jq '.tools.media | del(.models[].headers)' "$OPENCLAW_CONFIG_DIR/openclaw.json"
 ```
 
 ## Troubleshooting
 
 - **Cold start takes minutes on first boot** — ~1.6 GB of turbo CT2 weights download from HuggingFace. Subsequent boots reuse the `stt-whisper-hf-cache` volume.
-- **401 Unauthorized from a gateway audio upload** — most likely `STT_API_TOKEN` drift between `.env` and the patched `openclaw.json`. Re-run `docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli` to re-apply the patcher after rotating the token.
+- **401 Unauthorized from a gateway audio upload** — most likely `STT_API_TOKEN` drift between `.env` and `openclaw.json`. After rotating the token, run `docker compose up -d --force-recreate openclaw-stt-whisper openclaw-config-init openclaw-gateway openclaw-cli` so the service and config-init both pick up the new value.
 - **HU transcripts look rough on your actual audio** — turbo trades a few percentage points of HU WER for ~8× latency improvement. On noisy mic input, poorly-placed ékezetek, or heavy speaker accent, switch to `STT_WHISPER_MODEL=Trendency/whisper-large-v3-hu` (Hungarian fine-tune, slower but ~3pp lower WER on noisy mic) or `Systran/faster-whisper-large-v3` (full multilingual baseline). All swaps are reversible — converted CT2 artefacts coexist in the HF volume.
 - **Blackwell / sm_120 kernel class unsupported** — first transcribe raises `ValueError: target device or backend do not support efficient <type> computation`. Walk the `compute_type` fallback ladder above (`float16` → `bfloat16` → `int8_float16` → `int8_bfloat16` → `int8` → `float32`). A `.env` line change + `docker compose up -d --force-recreate openclaw-stt-whisper` is enough; no rebuild.
 

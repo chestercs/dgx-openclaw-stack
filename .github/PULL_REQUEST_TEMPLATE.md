@@ -16,7 +16,7 @@ Thanks for the PR! A short, focused description goes a long way.
 
 ## Verification
 
-- [ ] `node --check patch-config.mjs` passes
+- [ ] `node --check` passes on every `config-init/` file
 - [ ] `docker compose --env-file .env config --services` parses cleanly
 - [ ] (For non-trivial changes) brought the stack up on a real host and ran:
   - [ ] `curl -sS http://127.0.0.1:18789/healthz` → `{"ok":true,"status":"live"}`

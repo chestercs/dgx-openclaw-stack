@@ -1,207 +1,185 @@
-# Agentic coding from Discord — exec, approvals, threads, long tasks
+# Agentic coding from Discord: exec, approvals, threads, long tasks
 
-How this stack turns the Discord bot into a first-class coding agent: shell
-access with chat-side approvals, per-task Discord threads, workboard tracking,
-and the knobs that let a task genuinely run for hours (or a day) without the
-gateway killing it. Companion to
-[`discord-config.md`](./discord-config.md) (the per-step override table) and
-[`discord-text-agent.md`](./discord-text-agent.md) (agent design).
+How the Discord bot works as a coding agent: a shell with chat-side approvals,
+one Discord thread per task, workboard tracking, and the settings that let a task
+run for hours without the gateway killing it. Companion to
+[`discord-config.md`](./discord-config.md) (the Discord settings) and
+[`discord-text-agent.md`](./discord-text-agent.md) (agent design). Every knob named
+here, with its default, is in [`configuration.md`](./configuration.md#tools--exec).
 
-## The exec surface — three layers
+## The exec surface: three layers
 
 ```
-tools.exec (openclaw.json, patcher step 31)   ← policy: allowlist + ask-on-miss
-~/.openclaw/exec-approvals.json (step 32)     ← WHAT is allowlisted, per agent
-channels.discord.execApprovals (step 33)      ← WHERE approval prompts land
+tools.exec                        (openclaw.json, config-init/steps/tools.mjs)    policy
+~/.openclaw/exec-approvals.json   (written by the gateway)                        what is allowed
+channels.discord.execApprovals    (openclaw.json, config-init/steps/discord.mjs)  where prompts land
 ```
 
-1. **`tools.exec`** (step 31) sets `security: "allowlist"` + `ask: "on-miss"`:
-   commands matching an allowlist entry run immediately; anything else becomes
-   an approval request instead of a denial. `strictInlineEval: true` keeps
-   `python -c` / `node -e` one-liners out of persistent grants — every inline
-   eval is reviewed even when the interpreter binary itself is allowlisted.
-   `safeBins` (cat/grep/sed/head/tail/cut/wc) are stdin-only stream filters
-   that never need approval. `applyPatch` is enabled workspace-only.
+1. **`tools.exec`** is written in full on every run, so a mode changed by hand
+   cannot outlive a recreate. With `OPENCLAW_EXEC_SECURITY=allowlist` (default) it
+   sets `mode: "ask"`: a command that matches an approved entry runs at once,
+   anything else becomes an approval request instead of a refusal.
+   `strictInlineEval: true` keeps `python -c` / `node -e` one-liners out of
+   persistent grants, so every inline eval is reviewed even when the interpreter
+   itself is approved. `safeBins` (`OPENCLAW_EXEC_SAFE_BINS`) are stdin-only
+   filters that never need approval; keep interpreters out of that list.
+   `applyPatch` is on, limited to the agent workspace.
 
-2. **`exec-approvals.json`** (step 32) is a sibling file next to
-   `openclaw.json` — NOT schema-validated config, so a wrong shape degrades
-   (approvals fall back to ask/deny) instead of crash-looping the gateway.
-   The patcher seeds `defaults: {security: allowlist, ask: on-miss,
-   askFallback: deny}` plus a developer-toolchain allowlist (git, npm, npx,
-   node, python3, pip, make, cmake, go, cargo) for the Discord-routed agent.
+2. **`exec-approvals.json`** sits next to `openclaw.json`. The gateway writes it
+   when someone answers `/approve <id> allow-always`. It is not schema-validated
+   config, so a wrong shape makes approvals fall back to ask/deny instead of
+   crash-looping the gateway. Config-init never writes or prunes it, so learned
+   grants survive every run.
 
-   **Contract: the patcher never removes or rewrites existing entries.** The
-   gateway persists `/approve <id> allow-always` decisions into this same
-   file; the seed merge is set-union by command pattern, defaults are
-   written only when undefined, and `OPENCLAW_EXEC_APPROVALS_SEED=off` skips
-   seeding without deleting anything. Verify after any patcher change: grant
-   an allow-always from Discord, re-run the patcher, confirm the entry
-   survived.
+3. **`channels.discord.execApprovals`** sends pending approvals as DMs with
+   buttons to the approvers (`target: "dm"`). The user answers
+   `/approve <id> allow-once`, `allow-always` or `deny`. Approvers come from
+   `OPENCLAW_EXEC_APPROVERS`, then `OPENCLAW_DISCORD_OWNER_IDS`, then a concrete
+   (not `*`) `OPENCLAW_DISCORD_COMMAND_OWNERS`. Config-init never writes a
+   wildcard approver list: anyone could then approve the bot's own escalation.
+   With no concrete ID it logs a warning, and prompts wait on a UI nobody
+   watches until they time out to deny.
 
-3. **`channels.discord.execApprovals`** (step 33) routes pending approvals to
-   Discord as interactive prompts in the approvers' DMs. The user answers
-   `/approve <id> allow-once`, `allow-always`, or `deny`. Approvers resolve
-   from `OPENCLAW_EXEC_APPROVERS` → `OPENCLAW_DISCORD_OWNER_IDS` → a concrete
-   (non-`"*"`) `OPENCLAW_DISCORD_COMMAND_OWNERS` list; the step refuses to
-   write a wildcard approver list and skips loudly when no concrete snowflake
-   exists — an approval surface open to everyone would let any guild member
-   approve the bot's own escalation.
+The bot's tool-policy block tells it to say "the approver got a DM" rather than
+treat a pending approval as an error.
 
-Pending approvals expire after ~30 minutes; on expiry `askFallback: "deny"`
-applies. The agent is taught (tool-policy core block) to tell the user "the
-approver got a DM" instead of treating a pending approval as an error.
+### What stays off by default
 
-### What stays deliberately off
+- **`OPENCLAW_EXEC_SECURITY=full`** writes `mode: "full"` and
+  `strictInlineEval: false`: no gate at all. Anyone the bot answers can run
+  commands in the gateway container, which mounts the config volume (secrets)
+  read-write. `strictInlineEval` must be off in this mode: the gateway skips
+  approval only when it is not true, so one-liners kept asking otherwise.
+  Learned grants stay in `exec-approvals.json` and apply again after you switch
+  back to `allowlist`.
+- **`tools.codeMode`** is never written. It hides the normal tools behind an
+  exec-only bridge, which breaks image, browser and the other tools on this bot.
 
-- `tools.exec.security: "full"` — removes the approval gate entirely;
-  arbitrary commands from any Discord sender run immediately in the gateway
-  container. Off by default, but available as an explicit homelab opt-in via
-  `OPENCLAW_EXEC_SECURITY=full`: the patcher then writes `full` into both
-  `tools.exec.security` and `exec-approvals.json` `defaults.security` (the
-  two layers must agree — a stricter file value would silently re-gate exec).
+## Thread per task
 
-  Full mode also has to stand down the *ask* machinery, not just the security
-  enum. The runtime skips approval handling only when `security: "full"` AND
-  `ask: "off"` AND `strictInlineEval` is not true, and the effective ask mode
-  is merged across the two layers with stricter-wins (`maxAsk`). So in full
-  mode the patcher writes `ask: "off"` + `strictInlineEval: false` into
-  `tools.exec` and mirrors `defaults.ask: "off"` into `exec-approvals.json`;
-  with any of those left at the allowlist-mode values, every `python3 -c` /
-  `node -e` one-liner still lands in a Discord approval DM even when the
-  interpreter binary is allowlisted (observed 2026-06-11).
+Coding and long tasks run in their own Discord thread:
 
-  Learned allow-always grants are never touched; they go inert under full and
-  resume on rollback. Rollback = set the knob back to `allowlist` (or unset)
-  and re-run the patcher — this restores `ask: "on-miss"` +
-  `strictInlineEval: true` and heals a stale `defaults.ask: "off"` back to
-  `"on-miss"` (an operator-set stricter `"always"` is left alone).
-- `tools.codeMode` — hides normal tools behind an exec-only QuickJS bridge;
-  breaks image/browser/etc. on this multi-tool bot.
+- The `discord-thread-tasks` AGENTS.md block
+  (`config-init/templates/discord/AGENTS.d/`) teaches the agent
+  `sessions_spawn {thread: true, taskName, cleanup: "keep", context: "isolated",
+  task: "<self-contained description>"}`: one task, one thread; status via
+  `/subagents list`; a summary in the main channel, the detail in the thread.
+- `OPENCLAW_DISCORD_THREAD_BINDINGS` enables `channels.discord.threadBindings`
+  (`/focus`, `/unfocus`); `OPENCLAW_DISCORD_THREAD_IDLE_HOURS` and
+  `OPENCLAW_DISCORD_THREAD_MAX_AGE_HOURS` set how long a binding lives (coding
+  threads are often revisited the next day).
+- `OPENCLAW_SESSION_THREAD_SPAWN` writes `session.threadBindings.spawnSessions`,
+  so a spawn may create a thread-bound session that starts from a clean transcript.
 
-## Thread-per-task
+## "Work on it for a day"
 
-Coding and long-running tasks spawn into their own Discord thread instead of
-camping on the main channel:
+These settings decide whether an hours-long task survives. All are written by
+`config-init/steps/gateway.mjs` and `config-init/steps/tools.mjs`:
 
-- The `discord-thread-tasks` AGENTS.md policy block teaches the agent:
-  `sessions_spawn {thread: true, taskName, cleanup: "keep", context:
-  "isolated", task: "<self-contained description>"}` — one task, one thread;
-  status via `/subagents list`; summary on the main channel, detail in the
-  thread.
-- Step 29 (existing) enables `channels.discord.threadBindings`; step 29c
-  tunes binding lifetimes (`idleHours` / `maxAgeHours` — suggested 48/336 for
-  multi-day coding threads); step 29d (`session.threadBindings.spawnSessions`)
-  is schema-gated off until validated (see the runbook below).
-
-## "Work on it for a day" — the long-run stack
-
-Five knobs decide whether an hours-long task survives:
-
-| Layer | Knob | Why |
+| Setting | Knob | Why |
 |---|---|---|
-| Sub-agent run timeout | `agents.defaults.subagents.runTimeoutSeconds = 0` (step 5b, gated) | `0` = no timeout. This is the literal enabler for day-long tasks. |
-| Gateway per-run ceiling | `agents.defaults.timeoutSeconds` 600→1800 (step 8i, gated) | Upstream 600s aborts runs the vLLM backend is still serving (cold 128K prefill alone is ~127s). |
-| Context budget | `agents.defaults.contextTokens = 131072` (step 8j, gated) | Match the gateway's packing budget to the backend's real window. |
-| Context hygiene | `agents.defaults.contextPruning {mode: cache-ttl}` (step 8j, gated) | Trims OLD tool results in-memory between compactions — exec/read output dominates context growth on coding runs. Transcript on disk is untouched. |
-| Loop detection | `tools.loopDetection` thresholds (step 8h ext.) | Repeated `npm run build` is legitimate; relax warning/critical so the circuit breaker doesn't kill a productive run. Keep it enabled — it's still the runaway-chain backstop. |
+| `agents.defaults.subagents.runTimeoutSeconds = 0` | `OPENCLAW_SUBAGENTS_BOUNDS` | No timeout on sub-agent runs; this is what makes day-long tasks possible. Depth 2, 5 children, 8 concurrent. |
+| `agents.defaults.timeoutSeconds = 1800` | `OPENCLAW_AGENT_TIMEOUT_SECONDS` | The upstream 600 s aborted runs vLLM was still serving; a cold 128K prefill alone takes about 2 minutes. |
+| `models.providers.vllm.timeoutSeconds = 1800` | `LLM_REQUEST_TIMEOUT_SECONDS` | Same reason, at the provider request level. |
+| `agents.defaults.contextPruning {mode: cache-ttl}` | `OPENCLAW_AGENT_CONTEXT_PRUNING_MODE` | Trims old tool results in memory before each model call; exec and read output dominate context growth on coding runs. The transcript on disk is untouched. |
+| `tools.loopDetection` thresholds | `OPENCLAW_TOOLS_LOOP_DETECTION_*` | A build-fix-build loop looks like a loop to the breaker. Raise the thresholds for long coding runs, but keep it on as the runaway backstop. |
+| `tools.exec.timeoutSeconds = 1800` | `OPENCLAW_EXEC_TIMEOUT_SEC` | npm installs and cmake builds on the GB10 outrun the upstream default. |
 
-Plus `messages.queue.mode = "steer"` (step 39): a follow-up message lands at
-the next model boundary, so the user can redirect a running task without
-waiting hours. `/queue interrupt` aborts.
+`messages.queue.mode = "steer"` (`OPENCLAW_MESSAGES_QUEUE_MODE`) folds a message
+sent mid-run into the running turn at the next model boundary, so the user can
+redirect a task without waiting. Discord channels use `followup` instead
+(`OPENCLAW_DISCORD_QUEUE_MODE`): a guild channel is one shared session, and `steer`
+merged a second user's request into the first one's run. `/queue interrupt`
+aborts.
 
-Honesty contract (AGENTS.md): background work may only be *promised* when a
-spawn actually happened (there is a runId). "I'll work on it overnight"
-without a spawn is the lie the honesty block exists to prevent.
+Honesty rule (AGENTS.md): background work may only be promised when a spawn
+actually happened (a runId exists).
 
 ## Workboard
 
-`OPENCLAW_WORKBOARD=on` (step 34, tri-state) enables the bundled workboard
-plugin: `/workboard create|list|show|dispatch` from any command-capable
-channel. Dispatched cards carry the worker run id, session key and worker
-log — the "what is running right now" surface for multi-hour work. The
-`long-task-workboard` skill teaches the agent the card protocol.
+`OPENCLAW_WORKBOARD=on` enables the bundled workboard plugin
+(`config-init/steps/plugins.mjs`): `/workboard create|list|show|dispatch` from any
+channel that takes commands. Dispatched cards carry the worker run id, session key
+and log, which makes them the "what is running now" view for multi-hour work. The
+`long-task-workboard` skill teaches the card protocol; it is written only while
+the plugin is on, because it names tools that exist only then. `off` removes the
+plugin entry and the skill; unset leaves the plugin entry alone and removes the
+skill.
 
-## Skills layout (docs diet)
+## Skills layout
 
-`OPENCLAW_AGENT_DOCS_MODE=skills` (default) moves tool-usage recipes out of
-the always-injected AGENTS.md into per-recipe workspace skills
-(`<workspace>/skills/<name>/SKILL.md`):
+Tool recipes live in workspace skills (`<workspace>/skills/<name>/SKILL.md`), not
+in the always-injected AGENTS.md. Each skill shows up in the prompt as one
+name-and-description line, and the body loads on demand. The Discord AGENTS.md is
+~29 KB this way, against ~53 KB with the recipes inline, and the prefill of every
+fresh session shrinks with it.
 
-| Skill | Source block | Gate |
+`config-init/steps/workspaces.mjs` and `config-init/steps/media.mjs` write them
+from `config-init/templates/skills/`:
+
+| Skill | Workspace | Written when |
 |---|---|---|
-| `cron-reminders` | cron-tools | always |
-| `browser-automation` | browser-tools + orchestration browser chains | always (both workspaces) |
-| `image-generation` | image-gen-tools | `IMAGE_GEN_DEFAULT_WORKFLOW` |
-| `image-to-image` | discord-i2i | `OPENCLAW_DISCORD_AGENT_I2I_CHEATSHEET` |
-| `video-generation` | ltx-video-tools | `LTX_VIDEO_ENABLED` (both workspaces) |
-| `media-downloads` | orchestration (yt-dlp/transcribe/upload) | `OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION` |
-| `weather-forecast` | orchestration (open-meteo) | `OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION` |
-| `coding-projects` | orchestration (code/host/git_push) | `OPENCLAW_DISCORD_AGENT_TOOL_ORCHESTRATION` |
-| `long-task-workboard` | new | `OPENCLAW_WORKBOARD=on` |
+| `cron-reminders`, `media-downloads`, `weather-forecast`, `coding-projects` | Discord | always |
+| `browser-automation` | Discord and main | always |
+| `long-task-workboard` | Discord | `OPENCLAW_WORKBOARD=on` |
+| `people-memory` | Discord | `OPENCLAW_DISCORD_PEOPLE_MEMORY` (default on) |
+| `community-summary` | Discord | people memory on and `OPENCLAW_COMMUNITY_SUMMARY` (default on) |
+| `image-generation` | Discord | `IMAGE_GEN_DEFAULT_WORKFLOW` set and `image` not in `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` |
+| `image-to-image` | Discord | `image` not in `OPENCLAW_DISCORD_MEDIA_TOOLS_OFF` |
+| `video-generation` | Discord and main | `LTX_VIDEO_ENABLED=on` and `video` not off |
+| `music-generation` | Discord | `music` not off |
 
-What stays in AGENTS.md (decision-time policy, always injected): format
-rules, image-history discipline, deep-agentic protocol, honesty, sender
-identity, subagent delegation, thread-tasks, the tool-policy core (output
-contract / failure honesty / web_search triggers), and a short skill router
-mapping trigger phrases to skill names.
+AGENTS.md keeps what must be seen at decision time: format rules, image-history
+rule, deep-agentic protocol, honesty, sender identity, sub-agent delegation,
+thread tasks, the tool-policy core (output contract, failure honesty, when to
+search) and the skill router, which maps request types to skill names and says
+which media tools are off. The model decides from the router lines, so the core
+of a rule must be in the router line itself, not only in the skill body.
 
-Each skill surfaces as one name+description line in the prompt (~100 tokens)
-and the body loads on demand. Net effect on the discord workspace: AGENTS.md
-~37.5 KB → ~17 KB, total bootstrap ≈ halved — directly proportional to the
-GB10's cold-prefill latency on every fresh session.
+Skill files belong to config-init entirely: edits are overwritten on the next
+`docker compose up`, and a skill whose feature is turned off is deleted. To
+customize, add your own skill under a different name. AGENTS.md marker blocks are
+also rewritten; text outside the markers belongs to the operator.
 
-Skill files are 100% patcher-owned (header comment says so): operator edits
-are overwritten on the next compose up. To customize, either flip to
-`agentsmd` mode and edit the marker block, or add your own differently-named
-skill alongside. `agentsmd` mode restores the legacy all-in-AGENTS.md layout
-and removes the skill files — the rollback path if your model turns out not
-to read skill bodies reliably (watch for the bot "knowing the skill exists
-but improvising the recipe").
+## Adding a new key: the schema gate
 
-## Schema-gate runbook (risky keys)
+The `agents.defaults.*` family rejects unknown or out-of-range keys with
+`agents.defaults: Invalid input`, and the gateway then crash-loops. Before a new
+key goes into a config-init step:
 
-For every key marked *gated* above (`agents.defaults.subagents`,
-`agents.defaults.timeoutSeconds` / `contextTokens` / `contextPruning`,
-`session.threadBindings`, `plugins.entries.workboard`) — the
-`agents.defaults` family has crash-looped this gateway twice before:
+1. **Ask the WebGUI first.** Set the value in the Control UI (the matching
+   Settings section), Save (the UI validates against the running schema), then
+   read the persisted `openclaw.json` back and copy the exact path and shape.
+2. **Dry-run on a copy.** `config-init/test/run.sh <name>` runs config-init on a
+   copy of the live state, and `config-init/test/diff.sh <a> <b>` compares two
+   such runs (before and after your change). `docker compose run --rm
+   openclaw-config-init` runs it against the live config without touching the
+   gateway.
+3. **One change per recreate.** `docker compose up -d --force-recreate
+   openclaw-config-init openclaw-gateway openclaw-cli`, then watch `healthz` for
+   two minutes and
+   `docker logs <prefix>openclaw-gateway --since 2m | grep -Ei "invalid input|unrecognized key|config invalid"`.
+4. **Rollback** = the knob off in `.env` plus the same recreate; every step
+   removes its key when its knob is `off`.
+5. After a gateway recreate, run `openclaw memory status --deep`, and do not
+   recreate while someone is testing the bot live.
 
-1. **Oracle first**: set the equivalent value in the live WebGUI (Settings →
-   the matching section) → Save (the GUI validates against the running
-   schema) → read the persisted JSON back over SSH → confirm the path matches
-   what the patcher writes.
-2. **One knob per recreate**: flip exactly one knob in `.env`, then
-   `docker compose run --rm openclaw-config-init` (isolated patcher run, the
-   gateway is untouched), inspect with `jq`, then
-   `docker compose up -d --force-recreate openclaw-config-init
-   openclaw-gateway openclaw-cli`.
-3. **Watch the gate**: 120s healthz loop +
-   `docker logs <prefix>openclaw-gateway --since 2m | grep -Ei "invalid
-   input|unrecognized key|config invalid"`.
-4. **Rollback** = knob off in `.env` + the same force-recreate; the step's
-   self-heal branch strips the key. Keep a timestamped `openclaw.json.bak`
-   anyway.
-5. After any gateway recreate: `openclaw memory status --deep` (the vector
-   index is rollback-sensitive) and don't recreate while someone is
-   live-testing the bot.
-
-## Verification (functional smoke)
+## Verification
 
 ```bash
-PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2); PROJ=${PROJ:-dgx-}
+PROJ=$(grep '^CONTAINER_NAME_PREFIX=' .env | cut -d= -f2)
 
-# exec ask-flow end to end: ask the bot (on Discord) to run an UNLISTED
-# command → expect an approval DM → /approve <id> allow-always → verify the
-# learned entry landed, then that it SURVIVES a patcher re-run:
+# Ask the bot on Discord to run a command that is not approved yet: expect an
+# approval DM, answer /approve <id> allow-always, then check that the grant is
+# there and survives a config-init run.
 docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/exec-approvals.json | jq '.agents'
 docker compose run --rm openclaw-config-init
 docker exec ${PROJ}openclaw-gateway cat /home/node/.openclaw/exec-approvals.json | jq '.agents'
 
-# thread-per-task: "build me a small node script, work in a thread" →
-# expect a new thread + /subagents list shows the child.
+# Thread per task: "build me a small node script, work in a thread" should open
+# a new thread, and /subagents list should show the child.
 
-# skills loaded:
-docker exec ${PROJ}openclaw-cli openclaw skills list | grep -E "cron-reminders|coding-projects|browser-automation"
-
-# bootstrap size after the diet:
-docker exec ${PROJ}openclaw-gateway sh -lc 'wc -c /home/node/.openclaw/workspace-discord/AGENTS.md'
+# Skills and bootstrap size:
+docker exec ${PROJ}openclaw-gateway sh -lc \
+  'ls /home/node/.openclaw/workspace-discord/skills/ && wc -c /home/node/.openclaw/workspace-discord/AGENTS.md'
 ```

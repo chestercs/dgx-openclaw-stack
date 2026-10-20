@@ -12,13 +12,13 @@
 # Activation:
 #   1. Make sure the main stack is up at least once (the bridge network
 #      is created lazily by the main `docker compose up`).
-#   2. Set IMAGE_GEN_API_TOKEN in the main .env (bootstrap.sh prompt 3e
-#      handles this, or `./rotate-secrets.sh IMAGE_GEN_API_TOKEN`).
+#   2. Set IMAGE_GEN_API_TOKEN in the main .env (`./rotate-secrets.sh IMAGE_GEN_API_TOKEN`
+#      generates one).
 #   3. Build + start:
 #        docker compose -f openclaw-image-comfyui/docker-compose.yml \
 #                       --env-file ../.env --profile image-gen \
 #                       up -d --build
-#   4. Re-run the patcher so the gateway picks up `mcp.servers.comfyui_image`:
+#   4. Re-run config-init so the gateway picks up `mcp.servers.comfyui_image`:
 #        docker compose -f docker-compose.yml up -d --force-recreate \
 #                       openclaw-config-init openclaw-gateway openclaw-cli
 #
@@ -78,7 +78,7 @@ services:
       # LTX_VIDEO_MAX_PIXELS) renders in ~7-8 min, and the first render after
       # an image→video family switch reloads models (+1-2 min), so 900s covers
       # the cold path. Keep the gateway MCP client requestTimeoutMs >= this
-      # (patcher step 19 writes 960000) or the client abandons the call early.
+      # (config-init/steps/media.mjs writes 960000) or the client abandons the call early.
       IMAGE_GEN_TIMEOUT_S: ${IMAGE_GEN_TIMEOUT_S:-900}
       IMAGE_GEN_MAX_CONCURRENCY: ${IMAGE_GEN_MAX_CONCURRENCY:-1}
       IMAGE_GEN_MAX_OUTPUT_BYTES: ${IMAGE_GEN_MAX_OUTPUT_BYTES:-52428800}
@@ -87,7 +87,7 @@ services:
       # Path A (chat-side inline image render via [embed] shortcode):
       # set to /canvas to opt in. Pair with the volume mount below
       # (currently commented — uncomment to activate). See
-      # docs/reference/image-comfyui-bridge.md "Path A" for the SSH probe
+      # openclaw-image-comfyui/README.md "Path A" for the SSH probe
       # the operator should run before opting in. Default empty =
       # legacy display_markdown emission (cross-origin URL only).
       IMAGE_GEN_CANVAS_DIR: ${IMAGE_GEN_CANVAS_DIR:-}
@@ -171,7 +171,7 @@ services:
       # which matches the gateway's UID — the gateway's canvas-documents
       # lifecycle and the bridge's PNG drops coexist without permission
       # issues. Don't activate without first running the SSH probe in
-      # docs/reference/image-comfyui-bridge.md → "Path A" (verify the
+      # openclaw-image-comfyui/README.md → "Path A" (verify the
       # canvas dir host path on your deploy + that [embed] accepts .png
       # MIME on your openclaw version).
       #
