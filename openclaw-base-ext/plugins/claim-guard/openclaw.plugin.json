@@ -1,0 +1,8 @@
+{
+  "id": "claim-guard",
+  "name": "Claim Guard",
+  "description": "Asks the discord-friend agent for one more model pass when its answer claims a save, look-up or reminder that no tool call in the run backs.",
+  "categories": ["other"],
+  "activation": { "onStartup": true },
+  "configSchema": { "type": "object", "additionalProperties": false }
+}

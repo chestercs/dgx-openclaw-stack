@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — claim-guard plugin
+
+- **`openclaw-base-ext/plugins/claim-guard`** + patcher step 44e
+  (`OPENCLAW_DISCORD_CLAIM_GUARD`, default `on`). A `before_agent_finalize`
+  hook checks that "elmentettem / megnéztem / beállítottam az emlékeztetőt"
+  in the final answer is backed by a tool call that succeeded in the same
+  run, and on a mismatch asks for one more model pass (do it, or say it was
+  not done). Prompt rules had not stopped such claims. Not a reply hook, so
+  Discord preview streaming stays on. Findings, structure only, are logged
+  to `logs/claim-guard.jsonl`.
+
 ### Fixed — Nemotron Hungarian token salad
 
 - **Patcher step 3c** (`LLM_TEMPERATURE`, default `auto`) writes

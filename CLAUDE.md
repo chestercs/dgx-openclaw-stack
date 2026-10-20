@@ -241,6 +241,11 @@ file before changing the area.
   hook) prepends the sender's section per turn. `openclaw agent` has no
   sender, so test that hook on a real Discord turn (`finalPromptText` in
   the agent sqlite `trajectory_runtime_events`).
+- False "I saved / checked it" claims are caught by the `claim-guard`
+  plugin (step 44e): its `before_agent_finalize` hook compares the claim
+  with the run's successful tool calls and requests one more model pass.
+  `before_agent_finalize` does not touch Discord streaming. Audit
+  `logs/claim-guard.jsonl` (outcomes `revise` / `resolved` / `unresolved`).
 - Registering ANY `reply_payload_sending` / `message_sending` plugin hook
   turns off Discord draft-preview streaming for every Discord turn (the
   plugin checks `hasHooks(...)` globally). That is why generated-image

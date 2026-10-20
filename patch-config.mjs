@@ -241,6 +241,7 @@
 //      hook (channel sessions never see the root MEMORY.md). Env-gated by
 //      OPENCLAW_DISCORD_PEOPLE_MEMORY (default on). 44b nightly-job skill,
 //      44c people-context plugin (sender's own lines prepended per turn).
+//      44e claim-guard plugin (an unbacked "elmentettem" gets one more pass).
 //  45. plugins.entries.device-pair.config.publicUrl — the wss:// address
 //      `openclaw qr` puts in setup codes (OPENCLAW_DEVICE_PAIR_PUBLIC_URL).
 //  46. gateway.nodes.commands.allow — node commands admitted beyond the
@@ -5958,6 +5959,51 @@ if (isEnvOff(peopleMemoryEnv) || !fs.existsSync(PEOPLE_CONTEXT_DIR)) {
     entry.hooks.allowConversationAccess = true;
     changed = true;
     console.log('[patch-config] plugins.entries.people-context.hooks.allowConversationAccess = true');
+  }
+}
+
+// 44e. claim-guard plugin (openclaw-base-ext, /opt/openclaw-plugins). Prompt
+//      rules did not stop false action claims: on 2026-10-19 the bot said it
+//      had saved notes to memory in a turn with no write call. The plugin's
+//      before_agent_finalize hook compares "elmentettem / megnéztem /
+//      beállítottam az emlékeztetőt" in the final answer with the tool calls
+//      that succeeded in the run and, on a mismatch, asks for one more model
+//      pass (do it, or say it was not done). It is not a reply hook, so
+//      Discord preview streaming stays on. Findings (structure only, no text)
+//      land in logs/claim-guard.jsonl. Needs hooks.allowConversationAccess
+//      like any non-bundled finalize hook. OPENCLAW_DISCORD_CLAIM_GUARD
+//      (default on); `off` removes the load path and entry.
+const CLAIM_GUARD_DIR = '/opt/openclaw-plugins/claim-guard';
+const claimGuardEnv = (process.env.OPENCLAW_DISCORD_CLAIM_GUARD ?? 'on').trim().toLowerCase();
+if (isEnvOff(claimGuardEnv) || !fs.existsSync(CLAIM_GUARD_DIR)) {
+  const paths = config.plugins?.load?.paths;
+  if (Array.isArray(paths) && paths.includes(CLAIM_GUARD_DIR)) {
+    config.plugins.load.paths = paths.filter((p) => p !== CLAIM_GUARD_DIR);
+    changed = true;
+    console.log(`[patch-config] plugins.load.paths: removed ${CLAIM_GUARD_DIR}`);
+  }
+  if (config.plugins?.entries?.['claim-guard']) {
+    delete config.plugins.entries['claim-guard'];
+    changed = true;
+    console.log('[patch-config] plugins.entries.claim-guard removed');
+  }
+} else if (config.channels?.discord) {
+  config.plugins ??= {};
+  config.plugins.load ??= {};
+  if (!Array.isArray(config.plugins.load.paths)) config.plugins.load.paths = [];
+  if (!config.plugins.load.paths.includes(CLAIM_GUARD_DIR)) {
+    config.plugins.load.paths.push(CLAIM_GUARD_DIR);
+    changed = true;
+    console.log(`[patch-config] plugins.load.paths += ${CLAIM_GUARD_DIR}`);
+  }
+  config.plugins.entries ??= {};
+  const entry = (config.plugins.entries['claim-guard'] ??= {});
+  if (entry.enabled !== true) { entry.enabled = true; changed = true; console.log('[patch-config] plugins.entries.claim-guard.enabled = true'); }
+  entry.hooks ??= {};
+  if (entry.hooks.allowConversationAccess !== true) {
+    entry.hooks.allowConversationAccess = true;
+    changed = true;
+    console.log('[patch-config] plugins.entries.claim-guard.hooks.allowConversationAccess = true');
   }
 }
 
