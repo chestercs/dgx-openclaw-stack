@@ -6,4 +6,4 @@
      A temporary state (e.g. „épp iszogat, este jön”) gets a date: `- (ideiglenes, YYYY-MM-DD) …` — the nightly job drops it once stale.
      A `- (stílus) …` line (one per member, written by the nightly job) says how they talk and what tone works with them.
      Not here: conversation summaries (those go under memory/).
-     Write ONLY like this (exec): `node /opt/people-digest.mjs note --id <ID> --name "<name>" --text "<fact>" [--temp]` — never by hand. -->
+     Write ONLY with the people_note tool (one fact per call; people_forget removes) — never by hand. -->

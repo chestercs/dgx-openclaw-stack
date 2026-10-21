@@ -12,8 +12,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as env from '../lib/env.mjs';
-import { template, upsertBlock, skill, removeSkill, writeIfChanged } from '../lib/files.mjs';
+import { template, upsertBlock, removeBlock, skill, removeSkill, writeIfChanged } from '../lib/files.mjs';
 import { mediaOn, comfyuiOn, ttsOn } from './media.mjs';
+import { ownerOnlyTools, ownerIds } from './discord.mjs';
 
 const DESC = {
   'browser-automation': 'Open a web page, take a screenshot, read an article, click/fill forms with the browser tool — open/snapshot/screenshot/act actions and the mandatory parameter shapes (fill = fields array!).',
@@ -44,13 +45,22 @@ function peopleVars() {
     // The example quotes a Hungarian chat line ("why don't you answer X"),
     // which puts the name in the dative.
     NAME_D_DATIVE: `${d.toLowerCase()}nak`,
+    OWNER_ONLY_LINE: ownerOnly().length
+      ? ` Only the owner may use ${ownerOnly().map((t) => `\`${t}\``).join(', ')}; if someone else needs it, say plainly that it is not available to them and offer what you can do instead.`
+      : '',
   };
 }
+
+// The owner-only tools, when an owner is set (the policy needs one).
+const ownerOnly = () => (ownerIds().length ? ownerOnlyTools() : []);
 
 // The router lists only the tools that run; an "off" line tells the bot to
 // say so instead of reaching for another tool.
 function routerVars() {
-  const vars = { TTS_TOOL: ttsOn() ? '`tts` · ' : '' };
+  const vars = {
+    TTS_TOOL: ttsOn() ? '`tts` · ' : '',
+    OWNER_TOOLS: ownerOnly().length ? ` · owner only: ${ownerOnly().map((t) => `\`${t}\``).join(', ')}` : '',
+  };
   for (const g of ['image', 'video', 'music']) {
     const on = mediaOn(g) && comfyuiOn();
     vars[`${g.toUpperCase()}_TOOLS`] = on ? template(`discord/router/${g}-tools.md`) : '';
@@ -63,27 +73,31 @@ function discordAgentsMd(config, ws) {
   const md = path.join(ws, 'AGENTS.md');
   if (!fs.existsSync(md)) return; // no Discord-routed agent onboarded yet
 
+  // A map, not a manual: formatting, a contract per request type, who is
+  // talking, delegation and the tool/skill router. Recipes live in skills and
+  // in the tools' own descriptions. The blocks were 23 KB of overlapping
+  // rules (the sub-agent protocol was in four places); retired ids are
+  // removed so an old file does not keep them.
+  for (const id of ['discord-deep-agentic', 'discord-honesty', 'discord-tool-policy-core', 'discord-thread-tasks', 'discord-subagent-delegation']) removeBlock(md, id);
   const people = peopleVars();
   block(md, 'discord-format-rules', people);
-  block(md, 'discord-deep-agentic');
-  block(md, 'discord-honesty');
+  block(md, 'discord-contract');
   block(md, 'discord-sender-identity', people);
   // The delegation recipe names the full-thinking deep agent only when the
   // agents step creates it.
   const deepId = env.bool('OPENCLAW_DISCORD_DEEP_AGENT', false) ? env.str('OPENCLAW_DISCORD_DEEP_AGENT_ID', 'deep') : undefined;
-  upsertBlock(md, 'discord-subagent-delegation',
-    template('discord/AGENTS.d/discord-subagent-delegation.md') +
-    (deepId ? template('discord/AGENTS.d/discord-subagent-delegation.deep.md', { DEEP_AGENT_ID: deepId }) : ''));
-  block(md, 'discord-tool-policy-core');
-  block(md, 'discord-thread-tasks');
+  upsertBlock(md, 'discord-delegation',
+    template('discord/AGENTS.d/discord-delegation.md') +
+    (deepId ? template('discord/AGENTS.d/discord-delegation.deep.md', { DEEP_AGENT_ID: deepId }) : ''));
   block(md, 'discord-skills-discoverability', routerVars());
 
   for (const name of ['cron-reminders', 'browser-automation', 'media-downloads', 'weather-forecast']) put(ws, name);
   // Where web apps built in the sandbox are reachable (the sandbox's preview
   // port, usually behind a reverse proxy).
   put(ws, 'coding-projects', { SANDBOX_PUBLIC_URL: env.str('OPENCLAW_SANDBOX_PUBLIC_URL', 'http://localhost:8095').replace(/\/$/, '') });
-  // Points at workboard tools that exist only with the plugin enabled.
-  if (env.bool('OPENCLAW_WORKBOARD', false)) put(ws, 'long-task-workboard');
+  // Points at workboard tools, which the Discord agent has only when both
+  // the plugin and OPENCLAW_DISCORD_WORKBOARD_TOOLS are on (steps/agents.mjs).
+  if (env.bool('OPENCLAW_WORKBOARD', false) && env.bool('OPENCLAW_DISCORD_WORKBOARD_TOOLS', false)) put(ws, 'long-task-workboard');
   else removeSkill(ws, 'long-task-workboard');
 
   // Past bootstrapMaxChars the runtime silently truncates the file, and the

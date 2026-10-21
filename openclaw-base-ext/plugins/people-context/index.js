@@ -12,12 +12,20 @@
 // 2. People memory. people/MEMORY.md is in the system prompt already, but the
 //    model rarely links "mit csinálok most?" to the sender's section there.
 //    before_prompt_build adds the sender's lines and those of tagged people.
+// 3. Tools. people_note, people_forget and discord_history wrap
+//    /opt/people-digest.mjs (the guarded people-file writer and the channel
+//    reader) as tools with their own parameters and error text, so the agent
+//    needs no shell for them and exec can stay owner-only. A note or forget
+//    about someone other than the sender is refused unless the owner asks:
+//    it changes what the bot says about another person.
 // A before_tool_call hook refuses direct edits of the file (see below). No
 // reply hooks: `reply_payload_sending` / `message_sending` would turn off
 // Discord preview streaming for every turn.
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
+import { textResult } from 'openclaw/plugin-sdk/tool-results';
 
 const PEOPLE_FILE = 'people/MEMORY.md';
 const MAX_TAGGED = 4;
@@ -33,6 +41,110 @@ function botToken(cfg) {
   const t = cfg?.channels?.discord?.token;
   if (typeof t === 'string' && t && !t.startsWith('${')) return t;
   return process.env.DISCORD_BOT_TOKEN || null;
+}
+
+const DIGEST = '/opt/people-digest.mjs';
+const TOOL_NAMES = ['discord_history', 'people_note', 'people_forget'];
+
+function digest(args, timeoutMs = 90_000) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [DIGEST, ...args], { timeout: timeoutMs, maxBuffer: 4 << 20 }, (err, stdout, stderr) => {
+      const out = String(stdout || '').trim();
+      if (!err) return resolve(textResult(out || 'ok', { ok: true }));
+      const why = String(stderr || err.message).trim().split('\n').slice(-2).join(' ');
+      resolve(textResult(`FAILED: ${why}${out ? `\n${out}` : ''}`, { ok: false }));
+    });
+  });
+}
+
+const refuse = (text) => Promise.resolve(textResult(`REFUSED: ${text}`, { ok: false }));
+
+function peopleTools(ctx) {
+  const sender = discordId(ctx?.requesterSenderId);
+  // Only the person themself, or the owner, may change what is stored about
+  // someone. No sender (CLI, scheduled job) is the operator.
+  const otherPerson = (id) => Boolean(sender) && ctx?.senderIsOwner !== true && id !== sender;
+  return [
+    {
+      name: 'discord_history',
+      label: 'Discord channel history',
+      description: 'Read a Discord channel\'s history, newest first: one line per message (time, author, text including embeds, and who ran a slash command such as [/ruin — Name]), with a header that says which range was scanned. ' +
+        'Search the channel where the thing happened, not necessarily the one you are asked in: a game or log bot posts in its own channel. `grep` matches the author\'s name and the text. ' +
+        'On 0 matches, say the scanned range from the header, or page back with `before`.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['channel'],
+        properties: {
+          channel: { type: 'string', description: 'Channel ID (digits).' },
+          author: { type: 'string', description: 'Only messages by this name or user ID.' },
+          grep: { type: 'string', description: 'Only messages whose author or text contains this.' },
+          limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Matches to return (default 20).' },
+          days: { type: 'integer', minimum: 1, maximum: 365, description: 'Stop after this many days back.' },
+          before: { type: 'string', description: 'Message ID to continue before (from the header of an earlier call).' },
+        },
+      },
+      execute: async (_id, p = {}) => {
+        const channel = discordId(p.channel);
+        if (!channel) return refuse('channel must be a channel ID (digits).');
+        const args = ['history', '--channel', channel];
+        for (const k of ['author', 'grep', 'limit', 'days', 'before']) if (p[k] !== undefined && p[k] !== '') args.push(`--${k}`, String(p[k]));
+        return digest(args);
+      },
+    },
+    {
+      name: 'people_note',
+      label: 'Save a fact about a person',
+      description: 'Save ONE fact about a person to people/MEMORY.md — the only way to write it. One call = one fact, one short Hungarian sentence. ' +
+        'Only what the person said or a tool showed; never your own guess. A temporary state ("épp vonaton ülök") is kind=temp; ' +
+        'to correct an old fact pass a fragment of it as `replace`. Facts about someone other than the sender are refused unless the owner asks.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'name', 'text'],
+        properties: {
+          id: { type: 'string', description: 'The person\'s Discord user ID (digits).' },
+          name: { type: 'string', description: 'The person\'s display name.' },
+          text: { type: 'string', description: 'The fact, one short sentence in Hungarian.' },
+          kind: { type: 'string', enum: ['durable', 'temp'], description: 'temp = a current state that replaces the previous one.' },
+          replace: { type: 'string', description: 'A fragment of the old fact this one corrects.' },
+        },
+      },
+      execute: async (_id, p = {}) => {
+        const id = discordId(p.id);
+        if (!id) return refuse('id must be the person\'s Discord user ID (digits).');
+        if (otherPerson(id)) return refuse('only the person themself or the owner can change what is stored about them. Tell the user so.');
+        const args = ['note', '--id', id, '--name', String(p.name ?? ''), '--text', String(p.text ?? '')];
+        if (p.kind === 'temp') args.push('--temp');
+        if (p.kind === 'durable') args.push('--durable');
+        if (p.replace) args.push('--replace', String(p.replace));
+        return digest(args);
+      },
+    },
+    {
+      name: 'people_forget',
+      label: 'Forget a fact about a person',
+      description: 'Remove facts about a person from people/MEMORY.md: the lines containing `match`, or all of them with all=true. ' +
+        'Refused for someone other than the sender unless the owner asks.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id'],
+        properties: {
+          id: { type: 'string', description: 'The person\'s Discord user ID (digits).' },
+          match: { type: 'string', description: 'A fragment of the line(s) to remove.' },
+          all: { type: 'boolean', description: 'Remove everything stored about the person.' },
+        },
+      },
+      execute: async (_id, p = {}) => {
+        const id = discordId(p.id);
+        if (!id) return refuse('id must be the person\'s Discord user ID (digits).');
+        if (otherPerson(id)) return refuse('only the person themself or the owner can change what is stored about them. Tell the user so.');
+        if (!p.match && p.all !== true) return refuse('give `match` (a fragment of the line) or all=true.');
+        return digest(['forget', '--id', id, ...(p.all === true ? ['--all'] : ['--match', String(p.match)])]);
+      },
+    },
+  ];
 }
 
 // The bot's own user ID: tagging the bot is how people talk to it, so its
@@ -90,10 +202,12 @@ function readSections(file) {
 export default definePluginEntry({
   id: 'people-context',
   name: 'People Context',
-  description: 'Prepends the Discord sender\'s people/MEMORY.md section to each turn.',
+  description: 'Prepends the Discord sender\'s people/MEMORY.md section to each turn; people_note, people_forget and discord_history tools.',
   register(api) {
     const token = botToken(api.config);
     const agents = new Set(api.pluginConfig?.agents ?? []);
+    // Only the agents it serves get the tools; others see nothing extra.
+    api.registerTool((ctx) => (agents.has(ctx?.agentId) ? peopleTools(ctx) : null), { names: TOOL_NAMES });
     // sessionKey → promise of the latest message's mentions. A turn waits for
     // it (at most MENTION_WAIT_MS); a later message replaces it.
     const pending = new Map();
@@ -151,8 +265,8 @@ export default definePluginEntry({
       if (!targets.some((t) => typeof t === 'string' && t.replace(/\\/g, '/').endsWith(PEOPLE_FILE))) return;
       return {
         block: true,
-        blockReason: 'people/MEMORY.md cannot be edited directly. Save: exec `node /opt/people-digest.mjs note --id <ID> --name "<name>" --text "<fact>"`; ' +
-          'correct: the same with `--replace "<old fragment>"`; delete: `node /opt/people-digest.mjs forget --id <ID> --match "<fragment>"`.',
+        blockReason: 'people/MEMORY.md cannot be edited directly. Save one fact with the people_note tool ' +
+          '(correct an old one with its `replace`); remove with people_forget.',
       };
     }, { matcher: ['edit', 'write', 'apply_patch'] });
   },

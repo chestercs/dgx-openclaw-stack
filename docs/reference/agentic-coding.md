@@ -59,7 +59,7 @@ treat a pending approval as an error.
 
 Coding and long tasks run in their own Discord thread:
 
-- The `discord-thread-tasks` AGENTS.md block
+- The `discord-delegation` AGENTS.md block
   (`config-init/templates/discord/AGENTS.d/`) teaches the agent
   `sessions_spawn {thread: true, taskName, cleanup: "keep", context: "isolated",
   task: "<self-contained description>"}`: one task, one thread; status via

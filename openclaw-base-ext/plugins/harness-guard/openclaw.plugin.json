@@ -1,0 +1,16 @@
+{
+  "id": "harness-guard",
+  "name": "Harness Guard",
+  "description": "Policy checks outside the model for the Discord agent: owner-only tools in DMs.",
+  "categories": ["other"],
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "agents": { "type": "array", "items": { "type": "string" } },
+      "owners": { "type": "array", "items": { "type": "string" } },
+      "ownerOnlyTools": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}

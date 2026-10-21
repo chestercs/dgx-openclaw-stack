@@ -26,6 +26,15 @@ function concreteIds(...names) {
   return [];
 }
 
+// The bot owners as concrete IDs ("*" never counts).
+export const ownerIds = () => concreteIds('OPENCLAW_DISCORD_COMMAND_OWNERS');
+
+// Tools only the owner may use: a shell, the browser with its logged-in
+// profiles. Everyone else gets search, memory, reminders and the sandbox.
+// `off` turns the rule off.
+export const ownerOnlyTools = () => (env.raw('OPENCLAW_DISCORD_OWNER_ONLY_TOOLS')?.toLowerCase() === 'off'
+  ? [] : env.list('OPENCLAW_DISCORD_OWNER_ONLY_TOOLS', ['exec', 'process', 'browser']));
+
 // "Handle=snowflake,Other Handle=snowflake" -> [[handle, id], ...]
 function aliasPairs(name) {
   const pairs = env.list(name).map((p) => {
@@ -57,6 +66,20 @@ export default function discord({ config }) {
   if (config.get([...D, 'enabled']) !== true) return;
 
   adopt(config, 'channels.discord.token', 'DISCORD_BOT_TOKEN');
+
+  // Owner-only tools in guild channels, through the official per-sender
+  // policy: the most specific key wins, so the owners' empty policy keeps
+  // everything and "*" denies the rest — which also takes those schemas out
+  // of everyone else's prompt. DMs have no such policy; harness-guard blocks
+  // them there (steps/plugins.mjs). Without a concrete owner it is skipped.
+  const bySender = [...D, 'guilds', '*', 'toolsBySender'];
+  const ownerList = ownerIds();
+  const ownerOnly = ownerOnlyTools();
+  if (ownerList.length && ownerOnly.length) {
+    config.set(bySender, { ...Object.fromEntries(ownerList.map((id) => [`id:${id}`, {}])), '*': { deny: ownerOnly } });
+  } else {
+    config.remove(bySender, ownerList.length ? 'OPENCLAW_DISCORD_OWNER_ONLY_TOOLS=off' : 'no concrete owner ID');
+  }
 
   // Without an explicit false the plugin sends every message with the
   // suppress_embeds flag, so no image/video/link URL unfurls.

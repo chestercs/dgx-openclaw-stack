@@ -168,7 +168,22 @@ function messages(config) {
   }
 }
 
+// A guild channel is one shared session that never resets by itself: it kept
+// growing, and the model copied its own older replies, wrong ones included.
+// After OPENCLAW_DISCORD_SESSION_IDLE_MINUTES (default 240) without a message
+// the next one starts a fresh session; people memory and Active Memory carry
+// what should last. `off` removes the policy. Guild channels count as "group".
+function sessionReset(config) {
+  const p = ['session', 'resetByType', 'group'];
+  if (env.raw('OPENCLAW_DISCORD_SESSION_IDLE_MINUTES')?.toLowerCase() === 'off') {
+    removePruned(config, p, 'OPENCLAW_DISCORD_SESSION_IDLE_MINUTES=off');
+    return;
+  }
+  config.merge(p, { mode: 'idle', idleMinutes: env.int('OPENCLAW_DISCORD_SESSION_IDLE_MINUTES', 240) });
+}
+
 export default function gateway({ config }) {
+  sessionReset(config);
   network(config);
   heartbeat(config);
   runs(config);

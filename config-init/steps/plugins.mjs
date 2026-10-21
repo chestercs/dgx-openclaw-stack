@@ -7,13 +7,15 @@
 // streaming for every Discord turn.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import * as env from '../lib/env.mjs';
 import { discordAgentIds } from './agents.mjs';
+import { ownerIds, ownerOnlyTools } from './discord.mjs';
 
 const PLUGIN_ROOT = '/opt/openclaw-plugins';
 const PEOPLE_MEMORY = 'people/MEMORY.md';
 
-export default function plugins({ config }) {
+export default function plugins({ config, ws }) {
   const discord = config.get('channels.discord') !== undefined;
 
   // on: true = load and enable, false = remove load path and entry,
@@ -85,6 +87,16 @@ export default function plugins({ config }) {
   ensureLocalPlugin('claim-guard', 'claim-guard', { on: discordGate('OPENCLAW_DISCORD_CLAIM_GUARD'), conversationAccess: true });
   servesDiscordAgents('claim-guard');
 
+  // harness-guard: policy checks outside the model. Owner-only tools in DMs,
+  // where Discord has no per-sender tool policy (guilds: steps/discord.mjs).
+  const ownerOnly = ownerOnlyTools();
+  const owners = ownerIds();
+  const guardOn = ownerOnly.length && owners.length ? discordGate('OPENCLAW_HARNESS_GUARD') : false;
+  ensureLocalPlugin('harness-guard', 'harness-guard', { on: guardOn });
+  if (config.get('plugins.entries.harness-guard.enabled')) {
+    config.set('plugins.entries.harness-guard.config', { agents: discordAgentIds(config), owners, ownerOnlyTools: ownerOnly });
+  }
+
   // dm-guild-gate: DMs are open (dmPolicy=open) so members need no pairing,
   // and dmPolicy has no "members of my servers" mode. before_dispatch asks
   // Discord whether the sender shares a guild with the bot and ends a
@@ -108,4 +120,23 @@ export default function plugins({ config }) {
   const workboard = env.bool('OPENCLAW_WORKBOARD');
   if (workboard === true) config.set('plugins.entries.workboard.enabled', true, '/workboard slash surface');
   else if (workboard === false) config.remove('plugins.entries.workboard', 'OPENCLAW_WORKBOARD=off');
+
+  discordSkills(config, ws);
+}
+
+// The Discord agents see only the skills written into their workspace (the
+// ones the router points at) plus OPENCLAW_DISCORD_AGENT_SKILLS_EXTRA. Bundled
+// skills (notion, obsidian, node debugging, ...) are no use on Discord and
+// were 7 KB of every prompt; one of them, `weather`, duplicated
+// weather-forecast. Runs here, last, because earlier steps write the skills.
+// `off` lifts the filter.
+function discordSkills(config, ws) {
+  const extra = env.raw('OPENCLAW_DISCORD_AGENT_SKILLS_EXTRA');
+  const dir = path.join(ws('discord'), 'skills');
+  for (const id of discordAgentIds(config)) {
+    const p = ['agents', 'entries', id, 'skills'];
+    if (extra?.toLowerCase() === 'off' || !fs.existsSync(dir)) { config.remove(p, 'skill filter off'); continue; }
+    const own = fs.readdirSync(dir).filter((n) => fs.existsSync(path.join(dir, n, 'SKILL.md'))).sort();
+    config.set(p, [...new Set([...own, ...env.list('OPENCLAW_DISCORD_AGENT_SKILLS_EXTRA')])]);
+  }
 }

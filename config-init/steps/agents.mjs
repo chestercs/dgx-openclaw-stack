@@ -21,8 +21,12 @@ const VALHEIM_GLOB = 'valheim__*';
 // profile plus the bundled plugins gave the bot 113 tools on 2026.10.3, and a
 // MoE picks badly from a catalog that size. `image_generate` collides with the
 // local comfyui_image__generate under a shorter name (and has no key here).
-// The five-tool workboard core (create/list/show/dispatch/update) stays.
+// The second group never ran in six days of real Discord traffic
+// (2026-10-15..21, ~4700 tool calls) and their schemas are ~12 KB of every
+// prompt; the bot's whole tool catalog was 55 KB of schema per model call.
 const DISCORD_DENY = [
+  'sessions', 'sessions_send', 'agents_list', 'agents_wait', 'intent', 'transcripts',
+  'github_identity_status',
   'computer', 'mobile_ui', 'nodes', 'node_inference', 'gateway', 'plugins', 'openclaw',
   'secrets', 'terminal', 'portal', 'theme', 'dashboard', 'presence', 'progress_card',
   'talk_voice', 'file_fetch', 'file_write', 'dir_list', 'dir_fetch',
@@ -107,8 +111,18 @@ function discordAgent(config) {
   const offTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => mediaOff.has(g)).flatMap(([, t]) => t);
   const onTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => !mediaOff.has(g)).flatMap(([, t]) => t);
 
+  // The workboard core (create/list/read/dispatch/complete) only when asked
+  // for: the bot never used it, and its skill goes with it (workspaces).
+  const workboardCore = ['workboard_create', 'workboard_list', 'workboard_read', 'workboard_dispatch', 'workboard_complete'];
+  const workboardOn = env.bool('OPENCLAW_DISCORD_WORKBOARD_TOOLS', false);
+
   for (const id of discordAgentIds(config)) {
     if (profile !== 'off') config.set(entry(id, 'tools', 'profile'), profile);
+    if (workboardOn) config.removeFrom(entry(id, 'tools', 'deny'), workboardCore, 'OPENCLAW_DISCORD_WORKBOARD_TOOLS=on');
+    else config.addTo(entry(id, 'tools', 'deny'), workboardCore, 'OPENCLAW_DISCORD_WORKBOARD_TOOLS off');
+    // `full` lists tts even without a TTS provider, where it can only fail.
+    if (ttsOn()) config.removeFrom(entry(id, 'tools', 'deny'), ['tts'], 'TTS on');
+    else config.addTo(entry(id, 'tools', 'deny'), ['tts'], 'no TTS provider');
     config.removeFrom(entry(id, 'tools', 'alsoAllow'), unknown.filter((t) => !alsoAllow.includes(t)), 'matches no tool');
     if (alsoAllow.length) config.addTo(entry(id, 'tools', 'alsoAllow'), alsoAllow);
     if (thinking !== 'off') config.set(entry(id, 'thinkingDefault'), thinking);

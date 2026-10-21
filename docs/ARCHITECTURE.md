@@ -189,9 +189,10 @@ kept.
 
 | Plugin | Hooks | What it does |
 |---|---|---|
-| `people-context` | `message_received`, `before_prompt_build`, `before_tool_call` | The Discord plugin turns `<@ID>` into `@Name` before any hook sees it, so the model could not tag people back. The plugin reads the message's mention list from the Discord API and adds `Tagged: @Name = <@ID>`, then prepends the sender's (and tagged people's) lines from `people/MEMORY.md`. It refuses direct edits of that file. |
+| `people-context` | `message_received`, `before_prompt_build`, `before_tool_call`; tools `people_note`, `people_forget`, `discord_history` | The Discord plugin turns `<@ID>` into `@Name` before any hook sees it, so the model could not tag people back. The plugin reads the message's mention list from the Discord API and adds `Tagged: @Name = <@ID>` and the sender's `<@ID>`, then prepends the sender's (and tagged people's) lines from `people/MEMORY.md`. It refuses direct edits of that file. Its tools wrap `/opt/people-digest.mjs` (the guarded writer and the channel reader), so the agent needs no shell for them; a note about someone other than the sender is refused unless the owner asks. |
 | `claim-guard` | `after_tool_call`, `before_agent_finalize` | Asks the host model which actions the answer claims and checks them against the run's successful tool calls; a second question flags uncommon facts stated without a look-up. On a mismatch the runner gets one more pass: do it, or say it was not done. If the judge fails, the answer goes out as is. Log: `logs/claim-guard.jsonl`, structure only. |
 | `dm-guild-gate` | `before_dispatch` | Answers a DM only when the sender shares a guild with the bot (Discord REST, cached). `dmPolicy` has no such mode, and `open` is needed so members can DM without pairing. If Discord cannot be asked, the message goes through. Log: `logs/dm-guild-gate.jsonl`. |
+| `harness-guard` | `before_tool_call` | Policy outside the model. Owner-only tools (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`) in DMs, where Discord has no per-sender tool policy; guild channels get the same rule from `channels.discord.guilds["*"].toolsBySender`. Runs without a sender (scheduled jobs) pass. |
 | `mcp-image-saver` | tool-result middleware | Saves images returned by MCP tools (the Valheim builder's screenshots) into the canvas and adds a `[saved: <path>]` line, so the reply can attach them as `MEDIA:`. |
 
 The Discord plugins are wired only while the Discord channel is configured, and each
@@ -206,7 +207,7 @@ Several layers, each for a different question:
 |---|---|---|---|
 | Memory search | `workspace*/memory/*.md`, indexed per agent with bge-m3 | The agent (notes it was asked to keep), dreaming, the community-summary job | `memory_search`; Active Memory |
 | Root `MEMORY.md` | each workspace | Dreaming promotions, the agent | Injected into DM and main sessions only |
-| People memory | `workspace-discord/people/MEMORY.md` | `/opt/people-digest.mjs note\|forget` (bot) and `apply` (nightly job) | Every Discord session via `bootstrap-extra-files`; people-context per turn |
+| People memory | `workspace-discord/people/MEMORY.md` | the `people_note` / `people_forget` tools (bot) and `people-digest.mjs apply` (nightly job) | Every Discord session via `bootstrap-extra-files`; people-context per turn |
 | Community summaries | `workspace-discord/memory/community/<from>_<to>.md` | The community-summary job, every 3 days | `memory_search` |
 | Active Memory | no storage | — | A recall run before each Discord reply |
 

@@ -10,6 +10,37 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ## [Unreleased]
 
+### Added
+
+- Discord eval: `scripts/discord-eval.sh` runs regression cases as Gateway
+  turns (machine checks, then a rubric-only judge that may say unknown;
+  latency and tokens per run; `--rejudge` regrades an earlier report). Real
+  cases from the bot's own history stay in `private/`; `evals/discord/` holds
+  the schema and synthetic examples. claim-guard's log line is now the
+  answer's receipt (AGENTS.md hash, model, context size, run time, sources),
+  summarised by daily-status.
+- people-context tools `people_note`, `people_forget` and `discord_history`
+  (wrapping `/opt/people-digest.mjs`), so the agent needs no shell for them; a
+  note about someone other than the sender is refused unless the owner asks.
+- `harness-guard` plugin: owner-only tools in DMs.
+
+### Changed
+
+- Owner-only shell and browser (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`, default
+  `exec,process,browser`): guild channels through the official
+  `channels.discord.guilds["*"].toolsBySender`, which also takes them out of
+  everyone else's prompt; DMs through harness-guard. Scheduled runs keep them.
+- The Discord agent's prompt is a map, not a manual: the marker blocks went
+  from 23 KB of overlapping rules to ~8 KB (formatting, a "what done means"
+  contract per request type, who is talking, delegation, the router).
+  Retired blocks are removed from existing files.
+- The Discord agent loses 12 tools it never used in six days of traffic
+  (session admin, agent listing, transcripts, the workboard core unless
+  `OPENCLAW_DISCORD_WORKBOARD_TOOLS=on`, tts without a TTS provider) and sees
+  only the skills in its workspace (`OPENCLAW_DISCORD_AGENT_SKILLS_EXTRA`).
+- Guild channel sessions reset after 240 idle minutes
+  (`OPENCLAW_DISCORD_SESSION_IDLE_MINUTES`).
+
 ### Fixed
 
 - Memory keeps no raw session dumps. Config-init turns the `session-memory`

@@ -99,7 +99,7 @@ such hook turns off Discord preview streaming for every Discord turn.
 
 | What | Knob | Why |
 |---|---|---|
-| Marker blocks in `workspace-discord/AGENTS.md`: format rules, deep-agentic, honesty, sender identity, sub-agent delegation, tool policy, thread tasks, skill router | `OPENCLAW_DISCORD_MEMBER_NAMES`, `OPENCLAW_DISCORD_ADMIN_NAME`, `OPENCLAW_DISCORD_ADMIN_ID` | Text from `templates/discord/AGENTS.d/`. Names come from `.env`, so the repo carries none. Text outside the markers is the operator's. |
+| Marker blocks in `workspace-discord/AGENTS.md`: format rules, contract (what "done" means per request type), sender identity, delegation, skill router, image-history rule | `OPENCLAW_DISCORD_MEMBER_NAMES`, `OPENCLAW_DISCORD_ADMIN_NAME`, `OPENCLAW_DISCORD_ADMIN_ID` | Text from `templates/discord/AGENTS.d/`. Names come from `.env`, so the repo carries none. Text outside the markers is the operator's. |
 | Skills: `cron-reminders`, `browser-automation`, `media-downloads`, `weather-forecast`, `coding-projects` | `OPENCLAW_SANDBOX_PUBLIC_URL` (coding) | Tool recipes the bot reads on demand; one router line each keeps AGENTS.md at ~29 KB. Skill files are wholly config-init's. |
 | Skills: `people-memory`, `community-summary` | `OPENCLAW_PEOPLE_DIGEST_NSFW`, `OPENCLAW_PEOPLE_DIGEST_EXCLUDE`, `OPENCLAW_COMMUNITY_SUMMARY` | Recipes for the two cron jobs below. |
 | `people/MEMORY.md` seed (written once) | `OPENCLAW_DISCORD_PEOPLE_MEMORY` | The file then belongs to the bot. |

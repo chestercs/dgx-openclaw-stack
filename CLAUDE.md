@@ -42,8 +42,8 @@ config-init/                # writes openclaw.json + workspaces (openclaw-config
   test/                     #   run a patcher on a copy of live state and diff
 openclaw-base-ext/          # upstream OpenClaw image + ffmpeg/git/curl,
                             #   people-digest.mjs and the local plugins:
-  plugins/                  #   people-context, claim-guard, dm-guild-gate,
-                            #   mcp-image-saver
+  plugins/                  #   people-context, claim-guard, harness-guard,
+                            #   dm-guild-gate, mcp-image-saver
 openclaw-stt-whisper/       # faster-whisper turbo (CUDA 13)
 openclaw-browser/           # Chromium over CDP                  profile=browser
 openclaw-python-sandbox/    # Python MCP sandbox                 profile=python
@@ -230,8 +230,9 @@ Read the linked doc before changing the area.
   The root `MEMORY.md` is never injected into group/channel sessions, so guild
   long-term memory is `workspace-discord/people/MEMORY.md`, loaded by the
   `bootstrap-extra-files` hook. The bot writes it only through
-  `/opt/people-digest.mjs note|forget` (people-context blocks direct edits; its own
-  `write` once replaced the whole file). Check what a session really loads with
+  the `people_note` / `people_forget` tools of people-context, which wrap
+  `/opt/people-digest.mjs` (direct edits are blocked; its own `write` once replaced
+  the whole file). Check what a session really loads with
   `systemPromptReport.injectedWorkspaceFiles` in `openclaw agent --json`. `openclaw
   agent` has no sender, so test people-context on a real Discord turn. The embedding
   dimension is fixed when the first chunk is indexed; an upgrade or rollback can lose
@@ -244,6 +245,12 @@ Read the linked doc before changing the area.
   runs and heartbeats are skipped (a revise pass turned a silent heartbeat into a
   DM). Audit `logs/claim-guard.jsonl` (`none` / `revise` / `resolved` /
   `unresolved` / `judge_failed`).
+- **Owner-only tools** (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`): guild channels use the
+  official `channels.discord.guilds["*"].toolsBySender` (most specific key wins, so
+  the owners get `{}` and `*` the deny); DMs have no such policy, so harness-guard
+  (`before_tool_call`) blocks there by the DM peer in the session key. Do not use
+  the agent-level `tools.toolsBySender`: scheduled runs have no sender, match `*`
+  and would lose exec.
 - **dm-guild-gate** (`before_dispatch`): a DM is answered only when the sender shares a
   guild with the bot (Discord REST, cached); `dmPolicy` has no such mode. Audit
   `logs/dm-guild-gate.jsonl`.
