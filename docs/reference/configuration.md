@@ -165,7 +165,8 @@ Profile `python`. Details: [python-sandbox.md](python-sandbox.md).
 | `OPENCLAW_ENABLE_DREAMING` | `on` | Nightly memory consolidation into MEMORY.md (separate storage, so session metadata does not rank in memory search). `off` removes the plugin entry. |
 | `OPENCLAW_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS` | `80` | Tokens per promoted snippet; MEMORY.md is in every bootstrap and grew to ~12 KB unbounded. |
 | `OPENCLAW_DREAMS_ROTATE_BYTES` | `32768` | DREAMS.md over this size moves to `memory/dreams-archive/` (still searchable). `0` disables rotation. |
-| `OPENCLAW_ACTIVE_MEMORY` | `on` | Recall before every reply of the `discord-friend` agent (mode `always`, 30 s, thinking off). The upstream `escalate` mode never fired on Hungarian. `off` removes it. |
+| `OPENCLAW_SESSION_MEMORY` | `off` | The `session-memory` hook, which dumps a session's last messages into `memory/<date>.md` on `/new` or reset. Off: the dumps kept the bot's wrong conclusions, and recall brought them back as facts. |
+| `OPENCLAW_ACTIVE_MEMORY` | `on` | Recall before every reply of the Discord-routed agents (mode `always`, 30 s, thinking off). The upstream `escalate` mode never fired on Hungarian. `off` removes it. |
 
 ## Tools & exec
 

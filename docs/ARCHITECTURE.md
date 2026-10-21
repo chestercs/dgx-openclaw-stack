@@ -204,7 +204,7 @@ Several layers, each for a different question:
 
 | Layer | Where | Written by | Read by |
 |---|---|---|---|
-| Memory search | `workspace*/memory/*.md`, indexed per agent with bge-m3 | The agent (notes), dreaming, the community-summary job | `memory_search`; Active Memory |
+| Memory search | `workspace*/memory/*.md`, indexed per agent with bge-m3 | The agent (notes it was asked to keep), dreaming, the community-summary job | `memory_search`; Active Memory |
 | Root `MEMORY.md` | each workspace | Dreaming promotions, the agent | Injected into DM and main sessions only |
 | People memory | `workspace-discord/people/MEMORY.md` | `/opt/people-digest.mjs note\|forget` (bot) and `apply` (nightly job) | Every Discord session via `bootstrap-extra-files`; people-context per turn |
 | Community summaries | `workspace-discord/memory/community/<from>_<to>.md` | The community-summary job, every 3 days | `memory_search` |
@@ -213,6 +213,11 @@ Several layers, each for a different question:
 - **Memory search** embeds with the local bge-m3 server (1024 dimensions, fixed once
   the first chunk is indexed). Each agent has its own workspace and index, which is
   what keeps a separate agent's memory separate.
+- **Only deliberate writes become memory.** The `session-memory` hook is off
+  (`OPENCLAW_SESSION_MEMORY`): its raw session dumps kept the bot's own wrong
+  conclusions, and recall served them back as facts a day later. The prompt lets
+  the agent save what the user said or a tool showed, with the source, never its
+  own guess.
 - **Dreaming** (`memory-core`) consolidates nightly at 03:00 in `OPENCLAW_HEARTBEAT_TZ`.
   Storage is `separate`: inline mode wrote session metadata into the daily notes,
   where it ranked next to real notes. Promotions into `MEMORY.md` are capped at 80

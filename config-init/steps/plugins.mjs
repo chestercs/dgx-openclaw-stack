@@ -63,6 +63,14 @@ export default function plugins({ config }) {
     config.addTo([...hook, 'paths'], [PEOPLE_MEMORY]);
   }
 
+  // session-memory (on after onboarding) dumps the last messages of a
+  // session into memory/<date>.md on every /new or reset. The dump keeps the
+  // bot's own wrong conclusions, and memory search and Active Memory then
+  // bring them back as facts ("ruinbot posts are deleted after 30 s", which
+  // the bot repeated a day later). Memory comes from deliberate writes only:
+  // people-digest note for people, memory/<topic>.md for what was asked.
+  config.set(['hooks', 'internal', 'entries', 'session-memory', 'enabled'], env.bool('OPENCLAW_SESSION_MEMORY', false));
+
   // people-context: the file sits in the system prompt, yet the model answered
   // "what am I doing now?" from the channel's recent history instead of the
   // sender's section. before_prompt_build prepends the sender's own lines (and

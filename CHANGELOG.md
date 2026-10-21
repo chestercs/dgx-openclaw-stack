@@ -12,6 +12,12 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Fixed
 
+- Memory keeps no raw session dumps. Config-init turns the `session-memory`
+  hook off (`OPENCLAW_SESSION_MEMORY`, default `off`): it saved each
+  session's last messages on reset, the bot's wrong conclusions included, and
+  memory search and Active Memory served them back as facts. The agent's save
+  rule now allows what the user said or a tool showed, with the source, and
+  never its own guess.
 - Discord channel history: `people-digest.mjs history --grep` also matches
   the author's name, and the tool policy says to search the channel where a
   thing happened. Asked who won the last /ruin round, the bot searched the
