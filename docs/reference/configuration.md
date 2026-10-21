@@ -248,7 +248,8 @@ marker blocks and skills in `workspace-discord/`.
 | `OPENCLAW_PEOPLE_DIGEST_NSFW` | `off` | Include NSFW channels in the digests. Off because the file reaches every channel's prompt. |
 | `OPENCLAW_PEOPLE_DIGEST_EXCLUDE` | (unset) | Channel names or IDs kept out of the digests (e.g. a patch-notes channel). |
 | `OPENCLAW_COMMUNITY_SUMMARY` | `on` | Skill for the multi-day community summary into `memory/community/`. |
-| `OPENCLAW_DISCORD_CLAIM_GUARD` | `on` | `claim-guard` plugin: checks claimed actions against the run's successful tool calls and uncommon facts against its tool results; up to two more passes on a gap. Audit: `logs/claim-guard.jsonl`. |
+| `OPENCLAW_DISCORD_CLAIM_GUARD` | `on` | `claim-guard` plugin: checks claimed actions against the run's successful tool calls and flags uncommon facts stated without a look-up; one more pass on a mismatch. Audit: `logs/claim-guard.jsonl`. |
+| `OPENCLAW_CLAIM_GUARD_SOURCE_CHECK` | `off` | `on`: claim-guard also rates each fact against the turn's tool results and allows two revisions. Off by default: on the 43-case eval it gave no gain in passes (72 vs 75 of 129) for +15 s median and +100 s p90 latency. |
 | `OPENCLAW_DISCORD_DM_GUILD_GATE` | `on` | `dm-guild-gate` plugin: answers DMs only from people who share a server with the bot (`dmPolicy` has no such mode). Audit: `logs/dm-guild-gate.jsonl`. |
 | `OPENCLAW_DISCORD_DEEP_AGENT` | `off` | A full-thinking sub-agent the Discord agent can spawn; it mirrors that agent's tools and workspace. Off: 40/40 against medium's 39/40 on checkable reasoning, at 2-2.5x the time. |
 | `OPENCLAW_DISCORD_DEEP_AGENT_ID` | `deep` | Its agent id. |

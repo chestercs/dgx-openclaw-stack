@@ -28,11 +28,12 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   task; a member's `message` sends and `automations` deliveries only to the
   conversation they asked in (no other channel or DM, no broadcast, no mass
   mention). Owners and scheduled runs pass.
-- claim-guard checks facts against the turn's tool results: a third question
-  rates each specific, uncommon fact `supported`, `contradicted` or
-  `not_found`, and the revise names the exact gap. Up to two revisions (look
-  it up and fix, then remove or mark as not verified); daily-status lists the
-  Discord sessions left unresolved.
+- claim-guard source check, opt-in (`OPENCLAW_CLAIM_GUARD_SOURCE_CHECK`): a
+  third question rates each fact against the turn's tool results and the
+  revise names the exact gap, with a second revision. Off by default: on the
+  43-case eval (same grading) 72 vs 75 of 129 passed, median latency 53 → 68
+  s, p90 130 → 230 s, input tokens +38 %. daily-status lists the Discord
+  sessions claim-guard left unresolved.
 - `people-digest.mjs server-map` writes `memory/server-map.md` (every text
   channel with id, topic and the bots posting there); the nightly `collect`
   refreshes it.

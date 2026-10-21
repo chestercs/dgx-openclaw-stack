@@ -7,6 +7,9 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": { "agents": { "type": "array", "items": { "type": "string" } } }
+    "properties": {
+      "agents": { "type": "array", "items": { "type": "string" } },
+      "sourceCheck": { "type": "boolean" }
+    }
   }
 }

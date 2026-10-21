@@ -86,6 +86,12 @@ export default function plugins({ config, ws }) {
   // one more pass on a mismatch. Audit: logs/claim-guard.jsonl.
   ensureLocalPlugin('claim-guard', 'claim-guard', { on: discordGate('OPENCLAW_DISCORD_CLAIM_GUARD'), conversationAccess: true });
   servesDiscordAgents('claim-guard');
+  // The source check (facts against the tool results) is off by default: on
+  // the eval it cost +15 s median and +100 s p90 for no gain in passes.
+  if (config.get('plugins.entries.claim-guard.enabled')) {
+    if (env.bool('OPENCLAW_CLAIM_GUARD_SOURCE_CHECK', false)) config.set('plugins.entries.claim-guard.config.sourceCheck', true);
+    else config.remove('plugins.entries.claim-guard.config.sourceCheck', 'OPENCLAW_CLAIM_GUARD_SOURCE_CHECK=off');
+  }
 
   // harness-guard: policy checks outside the model. Owner-only tools in DMs,
   // where Discord has no per-sender tool policy (guilds: steps/discord.mjs);

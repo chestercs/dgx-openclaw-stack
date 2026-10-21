@@ -14,14 +14,15 @@
 // model, no credentials in the plugin) gets the answer plus the tool list and
 // returns JSON.
 //
-// "A tool ran" is not evidence. On the 2026-10-21 eval 18 of 31 failed fact
-// answers had searched and still stated what no result said (tier VIII tanks
-// that are not tier VIII). So when the reply states specific facts and the
-// turn has tool results, the facts are checked against those results:
-// supported, contradicted, or not found, and the revise names the exact gap
-// ("source [2] says 1961"). At most two revisions: the first asks to look up
-// and fix, the second to remove or mark what is still unbacked. After that
-// the answer goes out and the log says unresolved; daily-status reports it.
+// Optional source check (config.sourceCheck, off by default). On the
+// 2026-10-21 eval 18 of 31 failed fact answers had searched and still stated
+// what no result said, so a third question can rate each fact against the
+// turn's tool results (supported / contradicted / not found) and the revise
+// names the exact gap, with a second revision to remove or mark what is
+// still unbacked. Measured on the 43-case eval it did not pay: 72 vs 75 of
+// 129 passing under the same grading, median latency 53 -> 68 s, p90
+// 130 -> 230 s, +38 % input tokens. Without it a fact counts as checked when
+// the run looked anything up, and there is one revision.
 //
 // before_agent_finalize is the supported hook for this ("inspect the natural
 // final answer and request one more model pass"). It runs before delivery
@@ -47,7 +48,6 @@ const LOG_FILE = process.env.CLAIM_GUARD_LOG
   || path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'logs', 'claim-guard.jsonl');
 const JUDGE_TIMEOUT_MS = Number(process.env.CLAIM_GUARD_TIMEOUT_MS) || 25_000;
 const SOURCE_TIMEOUT_MS = Number(process.env.CLAIM_GUARD_SOURCE_TIMEOUT_MS) || 20_000;
-const MAX_REVISES = 2;
 const MAX_RUNS = 200;
 const MAX_REPLY_CHARS = 6000;
 const MAX_CLAIMS = 6;
@@ -367,6 +367,8 @@ export default definePluginEntry({
   register(api) {
     // The agents it judges; config-init writes the Discord-routed ones.
     const agents = new Set(api.pluginConfig?.agents ?? []);
+    const sourceCheck = api.pluginConfig?.sourceCheck === true;
+    const MAX_REVISES = sourceCheck ? 2 : 1;
     const ask = (content, purpose, maxTokens) => api.runtime.llm.complete({
       systemPrompt: JUDGE_SYSTEM,
       messages: [{ role: 'user', content }],
@@ -406,6 +408,10 @@ export default definePluginEntry({
         .slice(0, MAX_CLAIMS).map((s) => String(s.claim).slice(0, 160));
       if (!facts.length) return done({ verdict: { unbacked: false } });
       const sources = turnSources(messages, facts);
+      if (!sourceCheck) {
+        return done({ verdict: sources.length ? { unbacked: false }
+          : { unbacked: true, kind: 'fact', gaps: facts.map((claim) => ({ claim, why: 'nothing' })) } });
+      }
       if (!sources.length) {
         return done({ verdict: { unbacked: true, kind: 'fact', gaps: facts.map((claim) => ({ claim, why: 'nothing' })) } });
       }

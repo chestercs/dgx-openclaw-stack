@@ -410,7 +410,10 @@ documented `api.runtime.llm.complete` plugin API, with thinking off:
 
    Keep the two prompts separate. Merged into one, the fact rules leaked into
    the action verdicts (36-38 of 42 cases right instead of 42).
-3. **Sources.** When such facts remain and the turn has tool results, a third
+3. **Sources** (`OPENCLAW_CLAIM_GUARD_SOURCE_CHECK=on`, off by default: on the
+   eval it cost +15 s median and +100 s p90 latency for no gain in passes).
+   Without it a fact counts as checked when the run looked anything up. When
+   such facts remain and the turn has tool results, a third
    prompt gets the results (numbered; skill files left out; long pages cut to
    their head plus windows around the claims' numbers and names, ~24k
    characters in all) and rates each fact `supported`, `contradicted` or
@@ -420,7 +423,7 @@ documented `api.runtime.llm.complete` plugin API, with thinking off:
 4. On a gap the hook returns `revise` with the exact gap per fact ("source [2]
    says 1961", "none of your tool results says this", "nothing was looked
    up"). The first pass asks to look it up and fix the answer, the second
-   (`maxAttempts: 2`) to remove what is still unbacked or mark it as not
+   (`maxAttempts: 2`, only with the source check; otherwise one pass) to remove what is still unbacked or mark it as not
    verified. A revision drops only the rejected final message, so the second
    pass sees the same tool results; the runner skips it after a side effect
    (a message sent, a job added).
