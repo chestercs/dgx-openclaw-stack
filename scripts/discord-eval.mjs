@@ -89,9 +89,12 @@ function machineCheck(c, r) {
 
 async function judge(c, r) {
   if (!c.rubric || !JUDGE_MODEL) return { verdict: 'pass', reason: 'no rubric' };
+  // The judge is the same model and has no tools: on the Szeged case it
+  // called two real landmarks invented. It grades against the rubric only.
   const content = [
     'You grade a Discord bot answer against a rubric. Reply with JSON only: {"verdict":"pass|fail|unknown","reason":"<max 20 words>"}.',
-    'Use "unknown" when the rubric cannot be applied to this answer.',
+    'Judge ONLY by what the rubric says is correct or a failure. Do not use your own knowledge to call something in the answer invented or wrong unless the rubric names it; extra details the rubric does not mention are not a failure.',
+    'Use "unknown" when the rubric cannot be applied to this answer or you are not sure.',
     `RUBRIC: ${c.rubric}`,
     `USER MESSAGE: ${c.prompt}`,
     `BOT ANSWER: ${r.text.slice(0, 4000)}`,
@@ -121,15 +124,23 @@ function guardOutcome(key) {
 }
 
 const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
-const queue = cases.flatMap((c) => Array.from({ length: RUNS }, (_, i) => ({ c, n: i + 1 })));
+// --rejudge <report.json>: grade the answers stored in an earlier report with
+// the current cases and judge, without new agent turns, so two runs can be
+// compared under the same grading.
+const prior = opt('rejudge') ? JSON.parse(fs.readFileSync(opt('rejudge'), 'utf8')) : null;
+const priorRuns = new Map((prior?.results ?? []).map((x) => [x.id, x.runs]));
+if (prior) cases = cases.filter((c) => priorRuns.has(c.id));
+
+const queue = cases.flatMap((c) => (prior ? priorRuns.get(c.id).map((r) => ({ c, n: r.n, stored: r }))
+  : Array.from({ length: RUNS }, (_, i) => ({ c, n: i + 1 }))));
 const runsOf = new Map(cases.map((c) => [c.id, []]));
 async function worker() {
   for (let job = queue.shift(); job; job = queue.shift()) {
     const { c, n } = job;
-    const r = await turn(c, n);
+    const r = job.stored ?? await turn(c, n);
     const fails = machineCheck(c, r);
     const j = fails.length ? { verdict: 'fail', reason: fails.join('; ') } : await judge(c, r);
-    runsOf.get(c.id).push({ n, ...r, verdict: j.verdict, reason: j.reason, guard: guardOutcome(r.key) });
+    runsOf.get(c.id).push({ ...r, n, verdict: j.verdict, reason: j.reason, guard: job.stored ? r.guard : guardOutcome(r.key) });
     console.log(`${j.verdict.padEnd(7)} ${c.id} #${n} ${(r.ms / 1000).toFixed(0)}s in=${r.inputTokens} tools=[${r.tools}] ${j.verdict === 'pass' ? '' : j.reason}`);
   }
 }
