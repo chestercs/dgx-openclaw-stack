@@ -160,7 +160,7 @@ only on the compose network.
 Search MCP (`https://search.parallel.ai/mcp`). It needs no key, account or payment,
 but every query goes to Parallel instead of staying on your host, and the free
 tier has lower rate limits than the paid API. On the reference host it answered
-56 of the 60 bench questions against SearxNG's 52, with fuller excerpts. Install
+59 of the 60 bench questions against SearxNG's 53, with fuller excerpts. Install
 the official plugin once, at the version of the pinned OpenClaw image (a newer
 plugin may require a newer OpenClaw):
 

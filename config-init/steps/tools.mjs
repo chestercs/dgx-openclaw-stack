@@ -16,9 +16,10 @@ import * as env from '../lib/env.mjs';
 //
 // OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free sends web_search to Parallel's
 // free Search MCP instead (search.parallel.ai: no key, but the queries leave
-// the host). On the three sets of scripts/websearch-bench.py it found 56/60
-// against SearxNG's 52/60 (2026-10-20), with fuller excerpts. It needs the official plugin installed once
-// (docs/CUSTOMIZATION.md); SearxNG stays wired as the way back.
+// the host). On the three sets of scripts/websearch-bench.py it found 59/60
+// against SearxNG's 53/60 (2026-10-21), with fuller excerpts. It needs the
+// official plugin installed once (docs/CUSTOMIZATION.md); SearxNG stays wired
+// as the way back.
 function webSearch(config) {
   const provider = env.oneOf('OPENCLAW_WEB_SEARCH_PROVIDER', ['searxng', 'parallel-free'], 'searxng');
   config.set('tools.web.search.provider', provider);

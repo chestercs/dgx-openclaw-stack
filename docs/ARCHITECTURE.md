@@ -257,7 +257,7 @@ and yahoo news. The set was chosen on a 40-question Hungarian/English fact bench
 
 `OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free` switches `web_search` to the official
 Parallel plugin and its free Search MCP (no key; the queries leave the host). It
-scored 56/60 against SearxNG's 52/60 on the same bench. SearxNG keeps running as
+scored 59/60 against SearxNG's 53/60 on the same bench. SearxNG keeps running as
 the way back ([CUSTOMIZATION.md](CUSTOMIZATION.md#parallel-free-instead-of-searxng)).
 
 Scraped engines rot without an error: a blocked engine just returns nothing, and the
