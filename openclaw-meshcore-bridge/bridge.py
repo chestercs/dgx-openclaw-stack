@@ -48,7 +48,7 @@ import websockets
 
 from meshcore import MeshCore, EventType
 
-BRIDGE_VERSION = "0.1.1"
+BRIDGE_VERSION = "0.1.2"
 
 log = logging.getLogger("meshcore-bridge")
 
@@ -103,6 +103,8 @@ AGENT_ID = _env("MESHCORE_AGENT_ID", "meshcore")
 # AGENT_ID, and only the per-surface extraSystemPrompt separates them.
 CHANNEL_AGENT_ID = _env("MESHCORE_CHANNEL_AGENT_ID") or AGENT_ID
 AGENT_TIMEOUT_S = _env_f("MESHCORE_AGENT_TIMEOUT_S", 180)
+# Archived generations skipped per turn before the error goes to the radio.
+ARCHIVED_SKIPS = 10
 
 ALLOWED_PUBKEYS = [p.strip().lower()
                    for p in _env("MESHCORE_ALLOWED_PUBKEYS").split(",")
@@ -1128,10 +1130,26 @@ class Bridge:
         if ACK_AFTER_S > 0:
             ack_task = asyncio.create_task(self._late_ack(peer))
         try:
-            reply = await self.gateway.agent_turn(
-                text, session_key, self._extra_prompt(peer),
-                self._agent_id(peer),
-                lambda rid: self.inflight.__setitem__(sid, (session_key, rid)))
+            for skip in range(ARCHIVED_SKIPS + 1):
+                try:
+                    reply = await self.gateway.agent_turn(
+                        text, session_key, self._extra_prompt(peer),
+                        self._agent_id(peer),
+                        lambda rid: self.inflight.__setitem__(sid, (session_key, rid)))
+                    break
+                except RuntimeError as e:
+                    # OpenClaw archives sessions idle for weeks and refuses
+                    # new work in them ("Session … is archived"). The
+                    # generation lives in memory only, so after a restart the
+                    # bridge is back on -g0, which may be one of those: move
+                    # this conversation to the next generation and retry.
+                    if "is archived" not in str(e) or skip == ARCHIVED_SKIPS:
+                        raise
+                    self.session_gen[sid] = self.session_gen.get(sid, 0) + 1
+                    session_key = self._session_key(peer)
+                    self.inflight[sid] = (session_key, None)
+                    log.info("session archived; %s moves to generation %d",
+                             sid, self.session_gen[sid])
         except ConnectionError:
             reply = None
             await self.mesh.send_text(peer, "📡 gateway offline — try later")
