@@ -3,6 +3,7 @@
 // the device / node pairing surface.
 
 import * as env from '../lib/env.mjs';
+import { adopt } from '../lib/secrets.mjs';
 
 const QUEUE_MODES = ['steer', 'followup', 'collect', 'interrupt'];
 
@@ -26,11 +27,15 @@ function network(config) {
   const lan = env.str('OPENCLAW_LAN_CIDR');
   config.set('gateway.trustedProxies', ['127.0.0.1', '::1', '172.16.0.0/12', ...(lan ? [lan] : [])]);
 
-  // Onboarding writes gateway.auth.token but not gateway.remote.token, which
-  // is what the local CLI presents. On a mismatch `openclaw agent` falls back
-  // to an embedded runner that dials vLLM from the CLI's own env.
+  // The shared token lives in .env (OPENCLAW_GATEWAY_TOKEN, passed to the
+  // gateway, the CLI and the MeshCore bridge). Onboarding writes
+  // gateway.auth.token but not gateway.remote.token, which is what the local
+  // CLI presents; on a mismatch `openclaw agent` falls back to an embedded
+  // runner that dials vLLM from the CLI's own env.
+  // Password and trusted-proxy auth refuse a token next to them.
+  if ((config.get('gateway.auth.mode') ?? 'token') === 'token') adopt(config, 'gateway.auth.token', 'OPENCLAW_GATEWAY_TOKEN');
   const token = config.get('gateway.auth.token');
-  if (typeof token === 'string' && token) config.set('gateway.remote.token', token, 'mirrors gateway.auth.token');
+  if (token) config.set('gateway.remote.token', token, 'mirrors gateway.auth.token');
 
   // `openclaw qr` advertises the container's bridge IP otherwise, and a
   // plaintext ws:// URL downgrades setup codes to "Access: limited". Point it

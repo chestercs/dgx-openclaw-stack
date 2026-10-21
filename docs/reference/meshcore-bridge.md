@@ -41,10 +41,11 @@ A mesh turn then costs ≈ LLM decode + LoRa airtime.
 
 Two auth details that bite:
 
-1. **Token**: WS clients authenticate with **`gateway.remote.token`**
-   (mirrored from `gateway.auth.token` by `config-init/steps/gateway.mjs`) — NOT the `.env`
-   `OPENCLAW_GATEWAY_TOKEN`. The bridge auto-reads the right one from the
-   ro-mounted OpenClaw config dir; no operator copying.
+1. **Token**: WS clients authenticate with the shared gateway token. The
+   bridge takes `MESHCORE_GATEWAY_TOKEN` if set, then a plain
+   `gateway.remote.token` from the ro-mounted OpenClaw config dir, then
+   `OPENCLAW_GATEWAY_TOKEN` from `.env` (the config refers to it once
+   config-init has adopted it). No operator copying.
 2. **Scopes are loopback-gated**: a shared-token client is granted its
    declared operator scopes (`operator.read`/`operator.write` — `agent` is
    a write-scoped method) **only on local-direct connections**. From a LAN

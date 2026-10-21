@@ -117,11 +117,13 @@ export function createGate({ token, guildIds = [], allow = [], block = [], fetch
   };
 }
 
-// The bot token as the runtime resolved it; null for an unresolved
-// ${VAR} / secret reference, in which case every DM is let through (logged).
+// The bot token as the runtime resolved it (a plain string); the env value
+// when the config holds a secret reference instead. With neither, every DM
+// is let through (logged).
 function botToken(cfg) {
   const t = cfg?.channels?.discord?.token;
-  return typeof t === 'string' && t && !t.startsWith('${') ? t : null;
+  if (typeof t === 'string' && t && !t.startsWith('${')) return t;
+  return process.env.DISCORD_BOT_TOKEN || null;
 }
 
 export default definePluginEntry({

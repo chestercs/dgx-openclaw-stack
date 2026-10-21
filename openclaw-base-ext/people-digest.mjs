@@ -165,18 +165,20 @@ async function resolveGuilds(spec) {
     return ids.map((id) => ({ id, name: null }));
   }
   const token = discordToken();
-  if (!token) throw new Error('--guild all needs a literal channels.discord.token in openclaw.json; pass guild ids instead');
+  if (!token) throw new Error('--guild all needs the bot token (channels.discord.token or DISCORD_BOT_TOKEN); pass guild ids instead');
   const res = await fetch('https://discord.com/api/v10/users/@me/guilds?limit=200', { headers: { Authorization: `Bot ${token}` } });
   if (!res.ok) throw new Error(`Discord guild list: HTTP ${res.status}`);
   return (await res.json()).map((g) => ({ id: g.id, name: g.name }));
 }
 
-// The bot token from openclaw.json, or null when it is a ${VAR} reference.
+// The bot token: a plain value in openclaw.json, else the gateway's
+// DISCORD_BOT_TOKEN (the config then holds an env reference).
 function discordToken() {
   try {
     const token = JSON.parse(fs.readFileSync(path.join(HOME, 'openclaw.json'), 'utf8')).channels?.discord?.token;
-    return typeof token === 'string' && token && !token.startsWith('${') ? token : null;
-  } catch { return null; }
+    if (typeof token === 'string' && token && !token.startsWith('${')) return token;
+  } catch { /* fall through to the env */ }
+  return process.env.DISCORD_BOT_TOKEN || null;
 }
 
 // One page of a channel, newest first. Discord REST takes well under a second;

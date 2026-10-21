@@ -87,7 +87,7 @@ SERIAL_BAUD = _env_i("MESHCORE_SERIAL_BAUD", 115200)
 # would fail with "missing scope: operator.write". Verified empirically
 # against the live 2026.4.15 gateway.
 GATEWAY_WS_URL = _env("MESHCORE_GATEWAY_WS_URL", "ws://127.0.0.1:18789")
-GATEWAY_TOKEN = _env("MESHCORE_GATEWAY_TOKEN")  # empty → auto-read from config
+GATEWAY_TOKEN = _env("MESHCORE_GATEWAY_TOKEN")  # empty → resolve_gateway_token()
 OPENCLAW_CONFIG_JSON = _env("MESHCORE_OPENCLAW_CONFIG_JSON",
                             "/openclaw-config/openclaw.json")
 PROTO_MIN = _env_i("MESHCORE_GW_PROTOCOL_MIN", 3)
@@ -235,29 +235,33 @@ DM_ACK_MIN_TIMEOUT_S = _env_f("MESHCORE_DM_ACK_MIN_TIMEOUT_S", 12)
 
 
 def resolve_gateway_token():
-    """MESHCORE_GATEWAY_TOKEN env wins; otherwise read the token remote WS
-    clients authenticate with (gateway.remote.token, kept in lockstep with
-    gateway.auth.token by config-init/steps/gateway.mjs) from the read-only-mounted
-    openclaw.json. NOTE: the OPENCLAW_GATEWAY_TOKEN .env value is NOT the
-    right token — the onboarding wizard writes a different one into the
-    config (see openclaw-internals.md, credential store #2)."""
+    """The shared token WS clients authenticate with. MESHCORE_GATEWAY_TOKEN
+    wins; then a plain gateway.remote.token / gateway.auth.token in the
+    read-only-mounted openclaw.json; then OPENCLAW_GATEWAY_TOKEN from .env,
+    which is the right one once the config refers to it
+    (config-init/steps/gateway.mjs). The config goes first because a plain
+    value left there by config-init differs from the .env one."""
     if GATEWAY_TOKEN:
         return GATEWAY_TOKEN
     try:
         with open(OPENCLAW_CONFIG_JSON, encoding="utf-8") as f:
             cfg = json.load(f)
         gw = cfg.get("gateway") or {}
-        token = ((gw.get("remote") or {}).get("token")
-                 or (gw.get("auth") or {}).get("token") or "")
-        if token:
-            log.info("gateway token auto-read from %s", OPENCLAW_CONFIG_JSON)
-            return token
+        for token in ((gw.get("remote") or {}).get("token"),
+                      (gw.get("auth") or {}).get("token")):
+            if isinstance(token, str) and token:
+                log.info("gateway token read from %s", OPENCLAW_CONFIG_JSON)
+                return token
     except OSError as e:
         log.warning("cannot read %s (%s)", OPENCLAW_CONFIG_JSON, e)
     except (json.JSONDecodeError, AttributeError) as e:
         log.warning("cannot parse %s (%s)", OPENCLAW_CONFIG_JSON, e)
-    log.error("no gateway token — set MESHCORE_GATEWAY_TOKEN or mount "
-              "the OpenClaw config dir at /openclaw-config (ro)")
+    token = _env("OPENCLAW_GATEWAY_TOKEN")
+    if token:
+        log.info("gateway token from OPENCLAW_GATEWAY_TOKEN")
+        return token
+    log.error("no gateway token — set OPENCLAW_GATEWAY_TOKEN in .env or "
+              "mount the OpenClaw config dir at /openclaw-config (ro)")
     return ""
 
 

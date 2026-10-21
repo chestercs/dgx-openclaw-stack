@@ -43,8 +43,9 @@ err()  { printf '%b[err ]%b %s\n'  "$RED"    "$RESET" "$*" >&2; }
 # Rotatable-key registry.
 #
 # DEFAULT_KEYS: added to --all and to the interactive menu.
-# GATEWAY_KEY:  only rotated with --include-gateway-token (inert post-onboarding
-#               — the real gateway auth is openclaw.json's gateway.auth.token).
+# GATEWAY_KEY:  only rotated with --include-gateway-token: every client that
+#               logs in with the shared token (Web UI, remote CLI) needs the
+#               new value.
 #
 # The restart matrix (key → affected compose services) is maintained by hand
 # below in services_for(). The matching compose-file line references are in
@@ -79,7 +80,7 @@ services_for() {
     PYTHON_SANDBOX_API_TOKEN)    echo "openclaw-python-sandbox openclaw-config-init openclaw-gateway openclaw-cli" ;;
     IMAGE_GEN_API_TOKEN)         echo "openclaw-image-comfyui openclaw-config-init openclaw-gateway openclaw-cli" ;;
     BROWSER_VNC_PASSWORD)        echo "openclaw-browser" ;;
-    OPENCLAW_GATEWAY_TOKEN)      echo "openclaw-gateway openclaw-cli" ;;
+    OPENCLAW_GATEWAY_TOKEN)      echo "openclaw-config-init openclaw-gateway openclaw-cli" ;;
     *) return 1 ;;
   esac
 }
@@ -103,12 +104,10 @@ Flags:
   -a, --all                    Rotate the default set (see below).
   -n, --dry-run                Show what would change; write nothing.
   -y, --yes                    Skip the confirmation prompt (CI-friendly).
-      --include-gateway-token  Also rotate OPENCLAW_GATEWAY_TOKEN. NOTE: this
-                               env var is inert post-onboarding — the real
-                               gateway auth lives in openclaw.json's
-                               gateway.auth.token (picked by the wizard at
-                               pair time). Rotating the env alone is mostly
-                               useful before onboarding has run.
+      --include-gateway-token  Also rotate OPENCLAW_GATEWAY_TOKEN, the shared
+                               gateway token (openclaw.json refers to it).
+                               Clients that log in with it (Web UI, remote
+                               CLI) need the new value afterwards.
   -h, --help                   Show this help.
 
 Default set (rotated by --all or the interactive menu):
@@ -288,13 +287,9 @@ if (( ${#ROTATE_MAP[@]} == 0 )); then
   exit 0
 fi
 
-# Soft teach: mention the gateway-token gotcha even without the flag, so the
-# operator learns where the real gateway auth actually lives.
 if (( ROTATE_ALL )) && (( ! INCLUDE_GATEWAY )); then
-  log "Note: OPENCLAW_GATEWAY_TOKEN is NOT rotated by --all. Post-onboarding,"
-  log "      the real gateway auth is openclaw.json's gateway.auth.token"
-  log "      (picked by the wizard). Use --include-gateway-token to rotate"
-  log "      the env var anyway (useful only pre-onboarding)."
+  log "Note: OPENCLAW_GATEWAY_TOKEN is not rotated by --all; it logs every"
+  log "      Web UI and remote CLI in. Use --include-gateway-token for it."
 fi
 
 # ----------------------------------------------------------------------------
@@ -517,10 +512,10 @@ fi
 
 if (( INCLUDE_GATEWAY )); then
   printf '\n'
-  warn "You rotated OPENCLAW_GATEWAY_TOKEN. Post-onboarding this env var is inert;"
-  warn "to rotate the real gateway auth token used by Chrome extension / remote CLI"
-  warn "pairings, re-onboard or use the OpenClaw CLI to rotate the pair token."
-  warn "Reference: docs/reference/openclaw-internals.md §\"3-store credential layout\""
+  warn "You rotated OPENCLAW_GATEWAY_TOKEN. Enter the new value in the Web UI and"
+  warn "in any remote CLI (openclaw-host-client) that logs in with the shared token."
+  warn "If openclaw.json still holds a plain gateway.auth.token, config-init leaves"
+  warn "it there (see docs/reference/openclaw-internals.md, \"Credentials\")."
 fi
 
 printf '\n'

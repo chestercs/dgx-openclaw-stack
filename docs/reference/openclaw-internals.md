@@ -100,13 +100,16 @@ Secrets live in `.env` only. Three places matter:
 ### 1. `.env` and the gateway environment
 
 `bootstrap.sh` fills every `CHANGE_ME` secret, `rotate-secrets.sh` rotates them.
-The gateway container gets `VLLM_API_KEY` and `OPENCLAW_TTS_FISH_API_KEY` in its
-environment (`docker-compose.yml`), because `openclaw.json` refers to them by name.
+The gateway and CLI containers get `OPENCLAW_GATEWAY_TOKEN`, `DISCORD_BOT_TOKEN`,
+`VLLM_API_KEY` and `OPENCLAW_TTS_FISH_API_KEY` in their environment
+(`x-openclaw-secrets` in `docker-compose.yml`), because `openclaw.json` refers to
+them by name.
 
 ### 2. `openclaw.json`
 
-- `models.providers.vllm.apiKey`, `memory.search.remote.apiKey` and
-  `tts.providers.openai.apiKey` are env SecretRefs,
+- `models.providers.vllm.apiKey`, `memory.search.remote.apiKey`,
+  `tts.providers.openai.apiKey`, `gateway.auth.token`, `gateway.remote.token` and
+  `channels.discord.token` are env SecretRefs,
   `{ source: "env", provider: "default", id: "VLLM_API_KEY" }`
   (`config-init/lib/secrets.mjs`). The gateway resolves them from its own
   environment at start, so the values stay out of the file and its backups, and
@@ -115,8 +118,12 @@ environment (`docker-compose.yml`), because `openclaw.json` refers to them by na
 - Bearer tokens of the STT entry and the MCP servers sit in their own `headers`
   objects as plain values. Config-init writes them as separate leaves so its log
   masks them; do not `jq` whole `tools.*` or `mcp.*` subtrees into a shared log.
-- `gateway.auth.token` is written by onboarding. It is not the `.env`
-  `OPENCLAW_GATEWAY_TOKEN`, which only matters before onboarding.
+- Onboarding writes `gateway.auth.token` (with `--gateway-token-ref-env` already as
+  a reference) and `openclaw channels add` writes `channels.discord.token`.
+  Config-init swaps a plain value for the reference when `.env` holds the same
+  value (`adopt` in `lib/secrets.mjs`). A different value stays in the file, with
+  a log line: swapping it would change the token paired clients or the bot log in
+  with. To move it, put the value from the file into `.env` and recreate.
 - `gateway.remote.token` is mirrored from `gateway.auth.token` by
   `config-init/steps/gateway.mjs`. The local CLI and the MeshCore bridge present
   it; on a mismatch `openclaw agent` falls back to an embedded runner that dials

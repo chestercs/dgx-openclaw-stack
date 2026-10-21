@@ -3,10 +3,12 @@
 // Settings of the Discord-routed agent itself live in steps/agents.mjs.
 //
 // Nothing here runs until onboarding (`openclaw channels add --channel
-// discord`) has created an enabled channels.discord block; the bot token and
-// accounts there belong to the operator and are never touched.
+// discord`) has created an enabled channels.discord block; its accounts
+// belong to the operator. The bot token moves to an env reference only when
+// .env holds the same value (lib/secrets.mjs `adopt`).
 
 import * as env from '../lib/env.mjs';
+import { adopt } from '../lib/secrets.mjs';
 
 const D = ['channels', 'discord'];
 const SNOWFLAKE = /^\d{17,20}$/;
@@ -53,6 +55,8 @@ export default function discord({ config }) {
   config.remove('commands.bash', 'no shell directive on Discord');
 
   if (config.get([...D, 'enabled']) !== true) return;
+
+  adopt(config, 'channels.discord.token', 'DISCORD_BOT_TOKEN');
 
   // Without an explicit false the plugin sends every message with the
   // suppress_embeds flag, so no image/video/link URL unfurls.

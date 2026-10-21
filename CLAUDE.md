@@ -94,8 +94,8 @@ The contract:
   so the public templates carry none.
 - Credentials go in through `secret()` (`lib/secrets.mjs`) where the field takes a
   SecretRef: `openclaw.json` then holds `{ source: "env", id: NAME }` and the gateway
-  resolves it from its own environment. A new key handled this way must also be passed
-  in the gateway's `environment:` in `docker-compose.yml`. The OpenClaw secret store is
+  resolves it from its own environment. A new key handled this way must also be listed
+  in `x-openclaw-secrets` in `docker-compose.yml` (gateway and CLI environment). The OpenClaw secret store is
   not an option: only a process in the gateway's PID namespace may write it, and
   config-init runs beside the old gateway during a recreate.
 

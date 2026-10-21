@@ -67,6 +67,15 @@ x-openclaw: &openclaw
     - ${OPENCLAW_MEDIA_INBOUND_DIR:-${OPENCLAW_CONFIG_DIR}/media/inbound}:/home/node/.openclaw/media/inbound
   logging: *logging
 
+# openclaw.json refers to these by name (env SecretRefs, config-init/lib/
+# secrets.mjs) instead of holding the values. The gateway resolves them at
+# start; the CLI reads the same config, so it gets them too.
+x-openclaw-secrets: &openclaw-secrets
+  OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+  DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+  VLLM_API_KEY: ${VLLM_API_KEY:-}
+  OPENCLAW_TTS_FISH_API_KEY: ${OPENCLAW_TTS_FISH_API_KEY:-}
+
 volumes:
   # Model weights. Bound to a host dir so they survive `down -v` and can be
   # shared with a sibling stack.
@@ -235,12 +244,8 @@ services:
     environment:
       HOME: /home/node
       TZ: ${TZ:-UTC}
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      <<: *openclaw-secrets
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
-      # openclaw.json refers to these by name (env SecretRefs, config-init/
-      # lib/secrets.mjs) instead of holding the values.
-      VLLM_API_KEY: ${VLLM_API_KEY:-}
-      OPENCLAW_TTS_FISH_API_KEY: ${OPENCLAW_TTS_FISH_API_KEY:-}
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       # The container restarts on its own (restart: unless-stopped); a second
       # in-process respawn would race it.
@@ -279,8 +284,9 @@ services:
       BROWSER: echo
       NODE_COMPILE_CACHE: /home/node/.openclaw/.node-compile-cache
       OPENCLAW_NO_RESPAWN: "1"
-      # Read by `openclaw channels add --channel discord` during setup.
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      # DISCORD_BOT_TOKEN is also what `openclaw channels add --channel
+      # discord` reads during setup.
+      <<: *openclaw-secrets
     command: ["sleep", "infinity"]
     depends_on:
       - openclaw-gateway
