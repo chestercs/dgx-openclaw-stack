@@ -33,7 +33,7 @@ const KEEP_BACKUPS = 20;
 
 const MEMORY_FILE = /(^|\/)memory\/[^/]+\.md$/;
 const GENERATED = /(^|\/)memory\/server-map\.md$/;
-const SOURCE_LINE = /(^|\s|\*|-)(Forrás|Source)\**\s*:/i;
+const SOURCE_LINE = /(^|[\s*(\-[])(Forrás|Source)\**\s*:/i;
 const DONE_WHEN = /(^|\n)\s*[-*]?\s*\**(Done when|Kész,? ha)\**\s*:/i;
 
 const lines = (s) => String(s ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
