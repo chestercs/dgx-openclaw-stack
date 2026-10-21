@@ -36,8 +36,9 @@ discord-friend agent (workspace ~/.openclaw/workspace-discord/)
 vllm-llm (Nemotron) + tool runtime
    │
    ▼ final answer
-   │  before_agent_finalize: claim-guard checks claimed actions and uncommon
-   │    facts against the run's tool calls; one more pass on a mismatch
+   │  before_agent_finalize: claim-guard checks claimed actions against the
+   │    run's tool calls and uncommon facts against its tool results; up to
+   │    two more passes on a gap
    │
 openclaw-gateway → Discord plugin → partial streaming into one message
 ```

@@ -406,14 +406,24 @@ documented `api.runtime.llm.complete` plugin API, with thinking off:
      tools.
    - **Facts.** Rate each statement: about the world, the conversation or an
      opinion; specific or not; common knowledge or not; hedged or not. The code
-     flags a specific, uncommon, unhedged world fact only when no search or
-     fetch tool ran.
+     keeps the specific, uncommon, unhedged world facts (at most six).
 
    Keep the two prompts separate. Merged into one, the fact rules leaked into
    the action verdicts (36-38 of 42 cases right instead of 42).
-3. On a mismatch the hook returns `revise` with `maxAttempts: 1`: one more
-   model pass that either does the action or the look-up, or says plainly that
-   it was not done or that the fact is from memory.
+3. **Sources.** When such facts remain and the turn has tool results, a third
+   prompt gets the results (numbered; skill files left out; long pages cut to
+   their head plus windows around the claims' numbers and names, ~24k
+   characters in all) and rates each fact `supported`, `contradicted` or
+   `not_found`, from the sources only. A tool having run is not enough: on the
+   first eval, 18 of 31 failed fact answers had searched and still stated
+   what no result said.
+4. On a gap the hook returns `revise` with the exact gap per fact ("source [2]
+   says 1961", "none of your tool results says this", "nothing was looked
+   up"). The first pass asks to look it up and fix the answer, the second
+   (`maxAttempts: 2`) to remove what is still unbacked or mark it as not
+   verified. A revision drops only the rejected final message, so the second
+   pass sees the same tool results; the runner skips it after a side effect
+   (a message sent, a job added).
 
 It covers the Discord-routed agents (its `config.agents`, written by config-init
 from the catch-all Discord binding) and skips Active Memory's recall runs, which run under the same agent
@@ -421,22 +431,25 @@ before the real turn. The judge's JSON is read with a balanced-brace parser,
 because Nemotron sometimes closes one brace too many. Measured on 42 held-in and
 14 held-out cases: all correct.
 
-What it does not catch: a successful tool result that the bot then misreads
-(it once merged a detail from a neighbouring line of a `history` result into
-its answer). The tool ran, so the claim is backed.
+What it does not catch: a wrong source (the bot's own earlier memory note
+counts as a source), and a fact the judge model files as common knowledge.
+The judge is the host model; a stronger separate judge would be a separate
+decision.
 
 Audit the log, which holds structure only (time, session, tools, verdict kind,
-outcome, latency), never message text:
+number of gaps, source check `ok` / `failed` / `skipped`, outcome, latency),
+never message text:
 
 ```bash
 docker exec ${PROJ}openclaw-gateway sh -c \
   'tail -n 20 /home/node/.openclaw/logs/claim-guard.jsonl'
 ```
 
-Outcomes: `none` (nothing to fix), `revise` (a second pass was requested),
-`resolved` (the second pass fixed it), `unresolved` (still wrong after it),
-`judge_failed` (judge timeout or unreadable JSON; the answer goes out
-unchanged). `openclaw plugins reload` cannot swap the plugin while a run holds
+Outcomes: `none` (nothing to fix), `revise` (another pass was requested),
+`resolved` (a revised pass fixed it), `unresolved` (still unbacked after two;
+daily-status lists these Discord sessions for the owner), `judge_failed`
+(judge timeout or unreadable JSON; the answer goes out unchanged). A failed
+source check lets the answer through (`check: "failed"`). `openclaw plugins reload` cannot swap the plugin while a run holds
 the old instance; after changing it, rebuild `openclaw-base-ext` and recreate
 the gateway.
 

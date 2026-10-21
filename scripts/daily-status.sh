@@ -37,13 +37,15 @@ since=$(date -d "-$HOURS hours" '+%F %T')
   echo "containers not ok: ${bad:-none}"
 
   # claim-guard: outcomes per session kind (claim-guard skips heartbeats;
-  # eval runs are counted apart), plus the receipt fields of each line:
+  # eval runs are counted apart), the source check, the Discord sessions whose
+  # answer went out unbacked after two revisions (the owner looks at those),
+  # plus the receipt fields of each line:
   # answer latency, input tokens and how many answers each prompt version
   # (AGENTS.md hash) gave.
   docker exec "$GATEWAY" cat "$STATE/logs/claim-guard.jsonl" 2>/dev/null | python3 -c '
 import sys, json, datetime as dt
 cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=float(sys.argv[1]))
-agg, kinds, ms, run_s, tok, pol = {}, {}, [], [], [], {}
+agg, kinds, ms, run_s, tok, pol, chk, unres = {}, {}, [], [], [], {}, {}, []
 for line in sys.stdin:
     try: r = json.loads(line)
     except ValueError: continue
@@ -55,6 +57,8 @@ for line in sys.stdin:
     agg.setdefault(k, {}).setdefault(o, 0); agg[k][o] += 1
     if o == "revise": kinds[r.get("kind", "?")] = kinds.get(r.get("kind", "?"), 0) + 1
     if r.get("ms"): ms.append(r["ms"])
+    if r.get("check") in ("ok", "failed"): chk[r["check"]] = chk.get(r["check"], 0) + 1
+    if k == "discord" and o == "unresolved": unres.append("%s(%s)" % (s.split(":")[-1], r.get("kind", "?")))
     if k == "discord" and o != "revise":
         if r.get("runMs"): run_s.append(r["runMs"] / 1000)
         if r.get("promptTokens"): tok.append(r["promptTokens"])
@@ -66,6 +70,8 @@ for k, v in sorted(agg.items()):
     print("claim-guard %-9s %s" % (k + ":", " ".join("%s=%d" % kv for kv in sorted(v.items()))))
 if kinds: print("claim-guard revise kinds:", " ".join("%s=%d" % kv for kv in sorted(kinds.items())))
 if ms: print("claim-guard judge ms: median %d, max %d" % (med(ms), max(ms)))
+if chk: print("claim-guard source check:", " ".join("%s=%d" % kv for kv in sorted(chk.items())))
+if unres: print("claim-guard UNRESOLVED discord:", " ".join(unres[-10:]))
 if run_s: print("discord answers: n=%d, run s median %.0f p90 %.0f" % (len(run_s), med(run_s), p90(run_s)))
 if tok: print("discord prompt tokens per call: median %d, p90 %d" % (med(tok), p90(tok)))
 if pol: print("discord prompt versions:", " ".join("%s=%d" % kv for kv in sorted(pol.items())))

@@ -239,11 +239,15 @@ Read the linked doc before changing the area.
   the index metadata (`openclaw memory index --force`).
 - **claim-guard** (`before_agent_finalize`): the host model judges which actions the
   answer claims and checks them against the run's successful tool calls; a second,
-  separate question flags uncommon facts stated without a look-up. Keep the two
+  separate question picks out uncommon specific facts, and a third checks them
+  against the turn's tool results (a tool having run is not evidence). Keep the
   questions separate (merged, the fact rules leaked into the action verdicts) and do
-  not go back to claim-word regexes (they missed "jegyeztem"). Active Memory recall
-  runs and heartbeats are skipped (a revise pass turned a silent heartbeat into a
-  DM). Audit `logs/claim-guard.jsonl` (`none` / `revise` / `resolved` /
+  not go back to claim-word regexes (they missed "jegyeztem"). A new tool that saves,
+  reads or searches belongs in its `TOOLS_FOR` table, or every claim it backs is
+  revised. Up to two revisions; the revise instruction ends with "Do not mention
+  this check.", which is how the plugin tells it from a user message. Active Memory
+  recall runs and heartbeats are skipped (a revise pass turned a silent heartbeat
+  into a DM). Audit `logs/claim-guard.jsonl` (`none` / `revise` / `resolved` /
   `unresolved` / `judge_failed`).
 - **Owner-only tools** (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`): guild channels use the
   official `channels.discord.guilds["*"].toolsBySender` (most specific key wins, so

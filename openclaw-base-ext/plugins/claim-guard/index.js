@@ -3,8 +3,8 @@
 // up, read, sent, set a reminder, ran code) that the run's tool calls do not
 // back. On a mismatch the runner gets one more model pass: do it now, or say
 // plainly that it was not done. A second, parallel question flags specific,
-// uncommon facts stated as certain when nothing was looked up ("Magyarország
-// 2023 óta Georgiának hívja"): look it up, or say it is from memory.
+// uncommon facts stated as certain ("Magyarország 2023 óta Georgiának
+// hívja"); a third checks those facts against what the turn's tools returned.
 //
 // Prompt rules alone did not hold. On 2026-10-19 Nemotron said it had saved
 // the ruinBot rules to memory in a turn with 9 web_fetch calls and no write.
@@ -14,11 +14,23 @@
 // model, no credentials in the plugin) gets the answer plus the tool list and
 // returns JSON.
 //
+// "A tool ran" is not evidence. On the 2026-10-21 eval 18 of 31 failed fact
+// answers had searched and still stated what no result said (tier VIII tanks
+// that are not tier VIII). So when the reply states specific facts and the
+// turn has tool results, the facts are checked against those results:
+// supported, contradicted, or not found, and the revise names the exact gap
+// ("source [2] says 1961"). At most two revisions: the first asks to look up
+// and fix, the second to remove or mark what is still unbacked. After that
+// the answer goes out and the log says unresolved; daily-status reports it.
+//
 // before_agent_finalize is the supported hook for this ("inspect the natural
 // final answer and request one more model pass"). It runs before delivery
 // and, unlike reply_payload_sending / message_sending, leaves Discord preview
 // streaming on; the preview may show the first draft until the revised answer
-// replaces it. If the judge fails or times out, the answer goes out as is.
+// replaces it. A revision drops only the rejected final message: the turn's
+// tool calls and results stay, so the second pass sees the same sources.
+// The runner skips a revision after a side effect (a message sent, a job
+// added). If the judge fails or times out, the answer goes out as is.
 //
 // Every checked answer gets one line in logs/claim-guard.jsonl with structure
 // only (time, session, tools, verdict, outcome, latency) — never message text.
@@ -34,11 +46,17 @@ import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 const LOG_FILE = process.env.CLAIM_GUARD_LOG
   || path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'logs', 'claim-guard.jsonl');
 const JUDGE_TIMEOUT_MS = Number(process.env.CLAIM_GUARD_TIMEOUT_MS) || 25_000;
+const SOURCE_TIMEOUT_MS = Number(process.env.CLAIM_GUARD_SOURCE_TIMEOUT_MS) || 20_000;
+const MAX_REVISES = 2;
 const MAX_RUNS = 200;
 const MAX_REPLY_CHARS = 6000;
+const MAX_CLAIMS = 6;
+// Characters of tool results the source check reads: ~7k tokens, a few
+// seconds of prefill on the GB10.
+const SOURCE_BUDGET = 24_000;
 
 const runTools = new Map(); // runId → [{ name, ok }] in call order
-const revised = new Set(); // runIds already sent back for one more pass
+const revised = new Map(); // runId → revise passes requested so far
 // runId → { t0, prompt, model }: the receipt part of each log line, so a
 // prompt or harness change shows up as context size and latency per answer.
 // llm_output reports the usage of the last model call only (a 3-call turn
@@ -52,6 +70,13 @@ const usageOf = (runId) => {
   }
   return runUsage.get(runId);
 };
+
+// A revise instruction comes back as the next prompt; it is not the user's
+// message and does not start a new turn.
+const GUARD_TAIL = 'Do not mention this check.';
+const textOf = (c) => (typeof c === 'string' ? c
+  : Array.isArray(c) ? c.filter((p) => p?.type === 'text').map((p) => p.text).join('\n') : '');
+const isUserTurn = (m) => m?.role === 'user' && !textOf(m.content).includes(GUARD_TAIL);
 
 // Short hash of the agent's AGENTS.md: which prompt version answered.
 const policyCache = new Map(); // file → { mtimeMs, hash }
@@ -74,7 +99,7 @@ function contextSources(messages) {
   if (!Array.isArray(messages)) return [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (!m || m.role === 'user') break;
+    if (!m || isUserTurn(m)) break;
     if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
     for (const c of m.content) {
       if (c?.type !== 'toolCall' && c?.type !== 'tool_use') continue;
@@ -105,7 +130,7 @@ function toolsFromMessages(messages) {
   const failed = new Set();
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (!m || m.role === 'user') break;
+    if (!m || isUserTurn(m)) break;
     if (m.role === 'toolResult' && m.isError && m.toolCallId) failed.add(m.toolCallId);
     if (m.role === 'assistant' && Array.isArray(m.content)) {
       for (const c of m.content) {
@@ -122,11 +147,47 @@ function toolsFromMessages(messages) {
 const MAX_QUESTION_CHARS = 600;
 function lastUserText(messages) {
   if (!Array.isArray(messages)) return '';
-  const m = messages.findLast((x) => x?.role === 'user');
-  const c = m?.content;
-  const text = typeof c === 'string' ? c
-    : Array.isArray(c) ? c.filter((p) => p?.type === 'text').map((p) => p.text).join('\n') : '';
-  return text.slice(-MAX_QUESTION_CHARS);
+  return textOf(messages.findLast(isUserTurn)?.content).slice(-MAX_QUESTION_CHARS);
+}
+
+// The turn's successful tool results, numbered for the source check. Skill
+// files are instructions, not evidence. A long result keeps its head plus
+// windows around the claims' numbers and names, so a date on the third
+// screen of a fetched page is still seen.
+function turnSources(messages, claims) {
+  if (!Array.isArray(messages)) return [];
+  const calls = new Map();
+  const found = [];
+  for (const m of messages.slice(messages.findLastIndex(isUserTurn) + 1)) {
+    if (m?.role === 'assistant' && Array.isArray(m.content)) {
+      for (const c of m.content) if (c?.type === 'toolCall' || c?.type === 'tool_use') calls.set(c.id, c);
+      continue;
+    }
+    if (m?.role !== 'toolResult' || m.isError) continue;
+    const call = calls.get(m.toolCallId) ?? {};
+    const a = call.arguments ?? call.input ?? {};
+    const label = String(a.query ?? a.url ?? a.path ?? a.file_path ?? a.channel ?? '').slice(0, 120);
+    if (/skills\/[^/]+\/SKILL\.md$/.test(label)) continue;
+    const text = textOf(m.content).trim();
+    if (text) found.push({ name: String(m.toolName ?? call.name ?? 'tool'), label, text });
+  }
+  if (!found.length) return found;
+  const cap = Math.max(1500, Math.floor(SOURCE_BUDGET / found.length));
+  const anchors = [...new Set(claims.flatMap((c) => c.match(/\d{2,}|\p{Lu}\p{L}{3,}/gu) ?? []))];
+  return found.map((s) => {
+    if (s.text.length <= cap) return s;
+    const head = s.text.slice(0, Math.floor(cap * 0.6));
+    const parts = [head];
+    let room = cap - head.length;
+    for (const a of anchors) {
+      const i = s.text.indexOf(a, head.length);
+      if (i < 0 || room <= 0) continue;
+      const w = s.text.slice(Math.max(head.length, i - 200), i + 200);
+      parts.push(w);
+      room -= w.length;
+    }
+    return { ...s, text: parts.join('\n…\n') };
+  });
 }
 
 const JUDGE_SYSTEM =
@@ -140,9 +201,9 @@ const JUDGE_SYSTEM =
 // yes/no question scored 16/22, actions+tool 17/22 (it tied "saved" to
 // `read`), so the type is checked in code and short examples steer the rest.
 const TOOLS_FOR = {
-  saved: /^(write|edit|apply_patch|exec)$/,
-  searched: /^(web_search|web_fetch|browser|message|memory_search|memory_get|sessions_search|sessions_history|exec|read)$|search|fetch/,
-  read: /^(read|web_fetch|browser|message|memory_get|memory_search|sessions_history|sessions_search|exec|image|pdf|ls)$|fetch|view/,
+  saved: /^(write|edit|apply_patch|exec|people_note|people_forget)$/,
+  searched: /^(web_search|web_fetch|browser|message|memory_search|memory_get|sessions_search|sessions_history|discord_history|exec|read)$|search|fetch/,
+  read: /^(read|web_fetch|browser|message|memory_get|memory_search|sessions_history|sessions_search|discord_history|exec|image|pdf|ls)$|fetch|view/,
   sent: /^(message|sessions_send)$|send/,
   reminder: /^(automations|cron)$/,
   ran_code: /^(exec|process)$|python|sandbox/,
@@ -214,8 +275,23 @@ function factPrompt(reply, question) {
 }
 const isUncheckedFact = (s) => s?.about === 'world' && s.specific === true && s.common !== true && s.hedged !== true;
 
-// A fact counts as checked when the run fetched or searched anything.
-const CHECK_TOOLS = /^(web_search|web_fetch|browser|message|memory_search|memory_get|sessions_search|sessions_history|read|exec)$|search|fetch/;
+// The judge reads the sources, not its own knowledge: the same model without
+// tools called real Szeged landmarks invented when it graded from memory.
+function sourcePrompt(claims, sources, question) {
+  return [
+    'SOURCES (what the assistant\'s tools returned in this turn, numbered):',
+    ...(question ? ['[0] the user\'s message:', question, ''] : []),
+    ...sources.flatMap((s, i) => [`[${i + 1}] ${s.name}${s.label ? ` "${s.label}"` : ''}:`, s.text, '']),
+    'CLAIMS the assistant\'s reply states as fact:',
+    ...claims.map((c, i) => `${i + 1}. ${c}`),
+    '',
+    'For each claim decide from the SOURCES only, not from your own knowledge:',
+    '- "supported": a source says it (other wording, language or units are fine)',
+    '- "contradicted": a source says something that cannot be true at the same time (another date, number, name, status)',
+    '- "not_found": no source says it either way',
+    'Answer with JSON only: {"claims":[{"i":1,"status":"supported|contradicted|not_found","source":<number, 0 if none>,"says":"<if contradicted: what the source says, max 15 words>"}]}',
+  ].join('\n');
+}
 
 // The first balanced {...} in the text. Nemotron sometimes closes with one
 // brace too many ("…}]}}"), which a greedy /\{.*\}/ hands to JSON.parse.
@@ -243,34 +319,33 @@ const parseList = (text, key) => {
   } catch { return null; }
 };
 
-// → { unbacked, kind, claim } or null when the action answer is unusable.
-// kind: 'action' (claimed a deed no tool did) or 'fact' (specific claim,
-// nothing looked up in the run). An unusable fact answer only skips the fact
-// check.
-function parseVerdict(actionText, factText, tools) {
-  const actions = parseList(actionText, 'actions');
-  if (!actions) return null;
-  const okTools = tools.filter((t) => t.ok).map((t) => t.name);
-  const bad = actions.find((a) => {
-    const re = TOOLS_FOR[a?.type] ?? TOOLS_FOR.other;
-    return !okTools.some((n) => re.test(n));
-  });
-  if (bad) return { unbacked: true, kind: 'action', claim: String(bad.claim ?? '').slice(0, 160) };
-  const facts = (parseList(factText, 'statements') ?? []).filter((s) => s?.claim && isUncheckedFact(s));
-  if (facts.length && !okTools.some((n) => CHECK_TOOLS.test(n))) {
-    return { unbacked: true, kind: 'fact', claim: String(facts[0].claim).slice(0, 160) };
-  }
-  return { unbacked: false, kind: null, claim: '' };
-}
+// The exact gap per claim, as the revise instruction states it.
+const gapLine = (g) => (g.why === 'contradicted'
+  ? `- "${g.claim}": source [${g.source}]${g.label ? ` (${g.label})` : ''} says: ${g.says || 'something else'}`
+  : g.why === 'not_found' ? `- "${g.claim}": none of your tool results says this`
+    : `- "${g.claim}": nothing was looked up`);
 
-const INSTRUCTION = {
-  action: (claim) => `Before sending, fix this: your answer says "${claim}", but no tool call in this turn did that. ` +
-    'Either do it now with the right tool and then answer, or rewrite the answer so it says plainly that it was not done. ' +
-    'Do not invent a reason. Do not mention this check.',
-  fact: (claim) => `Before sending, check this: your answer states "${claim}" as certain, but nothing was looked up in this turn. ` +
-    'Look it up now (web_search, or the source the user gave) and correct the answer if needed — or, if you answer from memory, ' +
-    'say so plainly next to it ("fejből mondom, nem néztem utána"). Do not mention this check.',
-};
+// First pass: fix it properly. Second pass: no new search, remove or mark
+// it; a model that did not find it once rarely finds it on a second try.
+function instruction(verdict, pass) {
+  if (verdict.kind === 'action') {
+    return pass === 1
+      ? `Before sending, fix this: your answer says "${verdict.claim}", but no tool call in this turn did that. ` +
+        'Either do it now with the right tool and then answer, or rewrite the answer so it says plainly that it was not done. ' +
+        `Do not invent a reason. ${GUARD_TAIL}`
+      : `Before sending: your answer still says "${verdict.claim}", but no tool call did that. ` +
+        `Rewrite it so it says plainly that it was not done. Do not invent a reason. ${GUARD_TAIL}`;
+  }
+  const lines = verdict.gaps.map(gapLine).join('\n');
+  return pass === 1
+    ? `Before sending, fix these statements in your answer:\n${lines}\n` +
+      'Look up what is missing now (web_search with 8-10 results, web_fetch the best page, or the source the user gave), ' +
+      'then make the answer match the sources; where sources disagree, say so. Give the URLs. ' +
+      `If you answer something from memory, say so next to it ("fejből mondom, nem néztem utána"). ${GUARD_TAIL}`
+    : `Before sending: these statements are still not backed by anything you looked up:\n${lines}\n` +
+      'Do not search again. Remove them, or mark each one plainly as not verified ("ezt nem tudtam ellenőrizni"). ' +
+      GUARD_TAIL;
+}
 
 function log(rec) {
   try {
@@ -279,42 +354,75 @@ function log(rec) {
   } catch { /* logging must never break a turn */ }
 }
 
+const withTimeout = (p, ms, what) => {
+  let timer;
+  const t = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${what} timeout`)), ms); });
+  return Promise.race([p, t]).finally(() => clearTimeout(timer));
+};
+
 export default definePluginEntry({
   id: 'claim-guard',
   name: 'Claim Guard',
-  description: 'The model checks each final answer against the run\'s tool calls and for unverified facts; a mismatch gets one more pass.',
+  description: 'The model checks each final answer against the run\'s tool calls and its facts against the tool results; a gap gets up to two more passes.',
   register(api) {
     // The agents it judges; config-init writes the Discord-routed ones.
     const agents = new Set(api.pluginConfig?.agents ?? []);
-    async function judge(reply, tools, question) {
+    const ask = (content, purpose, maxTokens) => api.runtime.llm.complete({
+      systemPrompt: JUDGE_SYSTEM,
+      messages: [{ role: 'user', content }],
+      purpose,
+      maxTokens,
+      temperature: 0,
+      reasoning: 'off',
+    }).then((res) => {
+      const text = res?.text ?? res?.content ?? res?.message?.content ?? res?.output ?? '';
+      return typeof text === 'string' ? text : JSON.stringify(text);
+    });
+
+    // → { verdict, check, evidence, ms, error }. verdict is null when the
+    // action answer is unusable, else { unbacked, kind, claim, gaps }; kind
+    // 'action' (a deed no tool did), 'fact' (specific facts, nothing looked
+    // up) or 'source' (facts the tool results contradict or do not contain).
+    // An unusable fact or source answer skips that check (fail open).
+    async function judge(reply, tools, question, messages) {
       const t0 = Date.now();
-      let timer;
-      const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('judge timeout')), JUDGE_TIMEOUT_MS); });
-      const ask = (content, purpose) => api.runtime.llm.complete({
-        systemPrompt: JUDGE_SYSTEM,
-        messages: [{ role: 'user', content }],
-        purpose,
-        maxTokens: 400,
-        temperature: 0,
-        reasoning: 'off',
-      }).then((res) => {
-        const text = res?.text ?? res?.content ?? res?.message?.content ?? res?.output ?? '';
-        return typeof text === 'string' ? text : JSON.stringify(text);
-      });
+      const done = (r) => ({ ms: Date.now() - t0, check: 'skipped', evidence: 0, ...r });
+      let actionText, factText;
       try {
-        const [actionText, factText] = await Promise.race([
-          Promise.all([
-            ask(actionPrompt(reply, tools), 'claim-guard.actions'),
-            ask(factPrompt(reply, question), 'claim-guard.facts').catch(() => ''),
-          ]),
-          timeout,
-        ]);
-        return { verdict: parseVerdict(actionText, factText, tools), ms: Date.now() - t0 };
+        [actionText, factText] = await withTimeout(Promise.all([
+          ask(actionPrompt(reply, tools), 'claim-guard.actions', 400),
+          ask(factPrompt(reply, question), 'claim-guard.facts', 800).catch(() => ''),
+        ]), JUDGE_TIMEOUT_MS, 'judge');
       } catch (err) {
-        return { verdict: null, ms: Date.now() - t0, error: String(err?.code ?? err?.message ?? err).slice(0, 80) };
-      } finally {
-        clearTimeout(timer);
+        return done({ verdict: null, error: String(err?.code ?? err?.message ?? err).slice(0, 80) });
       }
+      const actions = parseList(actionText, 'actions');
+      if (!actions) return done({ verdict: null });
+      const okTools = tools.filter((t) => t.ok).map((t) => t.name);
+      const bad = actions.find((a) => !okTools.some((n) => (TOOLS_FOR[a?.type] ?? TOOLS_FOR.other).test(n)));
+      if (bad) return done({ verdict: { unbacked: true, kind: 'action', claim: String(bad.claim ?? '').slice(0, 160) } });
+
+      const facts = (parseList(factText, 'statements') ?? []).filter((s) => s?.claim && isUncheckedFact(s))
+        .slice(0, MAX_CLAIMS).map((s) => String(s.claim).slice(0, 160));
+      if (!facts.length) return done({ verdict: { unbacked: false } });
+      const sources = turnSources(messages, facts);
+      if (!sources.length) {
+        return done({ verdict: { unbacked: true, kind: 'fact', gaps: facts.map((claim) => ({ claim, why: 'nothing' })) } });
+      }
+      let checked = null;
+      try {
+        checked = parseList(await withTimeout(ask(sourcePrompt(facts, sources, question), 'claim-guard.sources', 600),
+          SOURCE_TIMEOUT_MS, 'source check'), 'claims');
+      } catch { /* fail open below */ }
+      if (!checked) return done({ verdict: { unbacked: false }, check: 'failed', evidence: sources.length });
+      const gaps = checked
+        .filter((c) => (c?.status === 'contradicted' || c?.status === 'not_found') && facts[(c.i | 0) - 1])
+        .map((c) => ({
+          claim: facts[(c.i | 0) - 1], why: c.status, source: c.source | 0,
+          label: sources[(c.source | 0) - 1]?.label ?? '', says: String(c.says ?? '').slice(0, 160),
+        }));
+      return done({ verdict: gaps.length ? { unbacked: true, kind: 'source', gaps } : { unbacked: false },
+        check: 'ok', evidence: sources.length });
     }
 
     api.on('after_tool_call', (event, ctx) => {
@@ -347,37 +455,38 @@ export default definePluginEntry({
       if (ctx?.trigger === 'heartbeat') return;
       const tools = runTools.get(runId) ?? toolsFromMessages(event?.messages);
       const session = ctx?.sessionKey ?? event?.sessionKey;
-      const { verdict, ms, error } = await judge(reply, tools, lastUserText(event?.messages));
+      const { verdict, check, evidence, ms, error } = await judge(reply, tools, lastUserText(event?.messages), event?.messages);
       const u = runUsage.get(runId);
       const base = {
-        session, run: runId, tools: tools.map((t) => (t.ok ? t.name : `${t.name}!`)), ms,
+        session, run: runId, tools: tools.map((t) => (t.ok ? t.name : `${t.name}!`)), ms, check, evidence,
         policy: policyVersion(ctx?.workspaceDir), model: u?.model ?? ctx?.modelId ?? null,
         promptTokens: u?.prompt ?? null, runMs: u ? Date.now() - u.t0 : null,
         sources: contextSources(event?.messages),
       };
 
-      // The embedded runner always reports stopHookActive=false, so the
-      // second pass is recognised by our own per-run record.
-      if (revised.has(runId)) {
+      // The embedded runner always reports stopHookActive=false, so a
+      // revised pass is recognised by our own per-run count.
+      const passes = revised.get(runId) ?? 0;
+      if (!verdict?.unbacked || passes >= MAX_REVISES) {
         revised.delete(runId);
-        log({ ...base, outcome: verdict?.unbacked ? 'unresolved' : verdict ? 'resolved' : 'judge_failed', error });
+        const outcome = !verdict ? 'judge_failed' : !verdict.unbacked ? (passes ? 'resolved' : 'none') : 'unresolved';
+        log({ ...base, outcome, ...(verdict?.unbacked ? { kind: verdict.kind, gaps: verdict.gaps?.length ?? 1 } : {}), ...(error ? { error } : {}) });
         return;
       }
-      if (!verdict) { log({ ...base, outcome: 'judge_failed', error }); return; }
-      if (!verdict.unbacked) { log({ ...base, outcome: 'none' }); return; }
 
-      revised.add(runId);
-      if (revised.size > MAX_RUNS) revised.delete(revised.values().next().value);
-      log({ ...base, kind: verdict.kind, outcome: 'revise' });
+      revised.set(runId, passes + 1);
+      if (revised.size > MAX_RUNS) revised.delete(revised.keys().next().value);
+      log({ ...base, kind: verdict.kind, gaps: verdict.gaps?.length ?? 1, outcome: 'revise' });
       return {
         action: 'revise',
-        reason: verdict.kind === 'fact' ? 'specific fact stated without a look-up' : 'claim not backed by a tool call',
+        reason: verdict.kind === 'action' ? 'claim not backed by a tool call'
+          : verdict.kind === 'fact' ? 'specific fact stated without a look-up' : 'fact not backed by the tool results',
         retry: {
-          instruction: INSTRUCTION[verdict.kind](verdict.claim),
+          instruction: instruction(verdict, passes + 1),
           idempotencyKey: `claim-guard:${runId}`,
-          maxAttempts: 1,
+          maxAttempts: MAX_REVISES,
         },
       };
-    }, { timeoutMs: JUDGE_TIMEOUT_MS + 5_000 });
+    }, { timeoutMs: JUDGE_TIMEOUT_MS + SOURCE_TIMEOUT_MS + 5_000 });
   },
 });

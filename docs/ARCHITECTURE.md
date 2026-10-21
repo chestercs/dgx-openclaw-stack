@@ -29,8 +29,8 @@ Discord ──► openclaw-gateway (Discord plugin)
               │   python_sandbox__* ──► openclaw-python-sandbox [profile python]
               │   comfyui_image__* ──► openclaw-image-comfyui  [separate compose]
               ▼
-            claim-guard: does the answer claim an action no tool call backs?
-              │          → one more model pass if so
+            claim-guard: an action no tool call backs? a fact the tool
+              │          results do not back? → up to two more passes
               ▼
             Discord: a preview message edited as tokens arrive, then the final reply
 ```
@@ -190,7 +190,7 @@ kept.
 | Plugin | Hooks | What it does |
 |---|---|---|
 | `people-context` | `message_received`, `before_prompt_build`, `before_tool_call`; tools `people_note`, `people_forget`, `discord_history` | The Discord plugin turns `<@ID>` into `@Name` before any hook sees it, so the model could not tag people back. The plugin reads the message's mention list from the Discord API and adds `Tagged: @Name = <@ID>` and the sender's `<@ID>`, then prepends the sender's (and tagged people's) lines from `people/MEMORY.md`. It refuses direct edits of that file. Its tools wrap `/opt/people-digest.mjs` (the guarded writer and the channel reader), so the agent needs no shell for them; a note about someone other than the sender is refused unless the owner asks. |
-| `claim-guard` | `after_tool_call`, `before_agent_finalize` | Asks the host model which actions the answer claims and checks them against the run's successful tool calls; a second question flags uncommon facts stated without a look-up. On a mismatch the runner gets one more pass: do it, or say it was not done. If the judge fails, the answer goes out as is. Log: `logs/claim-guard.jsonl`, structure only. |
+| `claim-guard` | `after_tool_call`, `before_agent_finalize` | Asks the host model which actions the answer claims and checks them against the run's successful tool calls; a second question picks out specific, uncommon facts, and a third checks those against the turn's tool results (supported / contradicted / not found). A gap gets up to two more passes with the exact gap named: look it up and fix it, then remove or mark it. If the judge fails, the answer goes out as is. Log: `logs/claim-guard.jsonl`, structure only. |
 | `dm-guild-gate` | `before_dispatch` | Answers a DM only when the sender shares a guild with the bot (Discord REST, cached). `dmPolicy` has no such mode, and `open` is needed so members can DM without pairing. If Discord cannot be asked, the message goes through. Log: `logs/dm-guild-gate.jsonl`. |
 | `harness-guard` | `before_tool_call` | Policy outside the model. Owner-only tools (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`) in DMs, where Discord has no per-sender tool policy; guild channels get the same rule from `channels.discord.guilds["*"].toolsBySender`. Runs without a sender (scheduled jobs) pass. |
 | `mcp-image-saver` | tool-result middleware | Saves images returned by MCP tools (the Valheim builder's screenshots) into the canvas and adds a `[saved: <path>]` line, so the reply can attach them as `MEDIA:`. |
