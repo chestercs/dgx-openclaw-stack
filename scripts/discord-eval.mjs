@@ -114,13 +114,17 @@ async function judge(c, r) {
   }
 }
 
-// claim-guard's verdict for the run, if it judged one.
-function guardOutcome(key) {
+// claim-guard's verdicts for the run and the tools it saw succeed. After a
+// revision the CLI's toolSummary lists only the last pass's tools (a turn that
+// searched, was revised and answered reported tools=[]); claim-guard counts
+// the whole run.
+function guardInfo(key) {
   try {
-    const lines = fs.readFileSync(`${HOME}/.openclaw/logs/claim-guard.jsonl`, 'utf8').trim().split('\n').slice(-200);
+    const lines = fs.readFileSync(`${HOME}/.openclaw/logs/claim-guard.jsonl`, 'utf8').trim().split('\n').slice(-400);
     const hits = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((x) => x?.session === key);
-    return hits.map((h) => h.outcome).join('>') || null;
-  } catch { return null; }
+    const tools = [...new Set(hits.flatMap((h) => h.tools ?? []).filter((t) => !t.endsWith('!')))];
+    return { outcome: hits.map((h) => h.outcome).join('>') || null, tools };
+  } catch { return { outcome: null, tools: [] }; }
 }
 
 const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
@@ -138,9 +142,11 @@ async function worker() {
   for (let job = queue.shift(); job; job = queue.shift()) {
     const { c, n } = job;
     const r = job.stored ?? await turn(c, n);
+    const g = job.stored ? { outcome: r.guard, tools: [] } : guardInfo(r.key);
+    r.tools = [...new Set([...r.tools, ...g.tools])];
     const fails = machineCheck(c, r);
     const j = fails.length ? { verdict: 'fail', reason: fails.join('; ') } : await judge(c, r);
-    runsOf.get(c.id).push({ ...r, n, verdict: j.verdict, reason: j.reason, guard: job.stored ? r.guard : guardOutcome(r.key) });
+    runsOf.get(c.id).push({ ...r, n, verdict: j.verdict, reason: j.reason, guard: g.outcome });
     console.log(`${j.verdict.padEnd(7)} ${c.id} #${n} ${(r.ms / 1000).toFixed(0)}s in=${r.inputTokens} tools=[${r.tools}] ${j.verdict === 'pass' ? '' : j.reason}`);
   }
 }
