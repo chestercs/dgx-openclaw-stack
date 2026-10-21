@@ -3,15 +3,18 @@
 // Case format and why: evals/discord/schema.md.
 //
 //   node discord-eval.mjs --cases <file.yaml> [--smoke] [--id <id>] [--runs N]
-//                         [--side-effects] [--agent discord-friend] [--out report.json]
+//                         [--concurrency 2] [--side-effects] [--agent discord-friend]
+//                         [--out report.json]
 //
-// Every run is a fresh Gateway turn under its own session key, deleted after
-// the run, so cases never share history with each other or a live channel.
-// Machine checks (tools, regexes) decide first; the rubric goes to a judge
-// call on the same vLLM endpoint only when they pass, and the judge may say
-// "unknown", which is reported and never counted as a pass.
+// Every run is a fresh Gateway turn under its own session key, so cases never
+// share history with each other or a live channel; the keys are deleted in
+// one call at the end (each `openclaw` start costs ~15 s, once per run was
+// most of the runtime). Machine checks (tools, regexes) decide first; the
+// rubric goes to a judge call on the same vLLM endpoint only when they pass,
+// and the judge may say "unknown", which is reported and never counted as a
+// pass. Latency depends on --concurrency: compare runs made with the same one.
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import YAML from '/app/node_modules/yaml/dist/index.js';
 
 const args = process.argv.slice(2);
@@ -19,6 +22,7 @@ const opt = (name, def) => { const i = args.indexOf(`--${name}`); return i < 0 ?
 const flag = (name) => args.includes(`--${name}`);
 const AGENT = opt('agent', 'discord-friend');
 const RUNS = Number(opt('runs', 1));
+const CONCURRENCY = Math.max(1, Number(opt('concurrency', 2)));
 const HOME = process.env.HOME || '/home/node';
 
 let cases = YAML.parse(fs.readFileSync(opt('cases'), 'utf8'));
@@ -36,23 +40,26 @@ const JUDGE_URL = `${String(vllm?.baseUrl ?? 'http://vllm-llm:8004/v1/').replace
 const JUDGE_MODEL = vllm?.models?.[0]?.id;
 
 function openclaw(argv, timeoutMs) {
-  return execFileSync('openclaw', argv, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+  return new Promise((resolve, reject) => {
+    execFile('openclaw', argv, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 << 20 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  });
 }
 
 // Per invocation, so claim-guard lines of an earlier run never match.
 const STAMP = Date.now().toString(36);
+const usedKeys = [];
 
-function turn(c, n) {
+async function turn(c, n) {
   const key = `agent:${AGENT}:eval:${c.id}:${STAMP}-${n}`;
+  usedKeys.push(key);
   const message = c.context ? `[${c.context}] ${c.prompt}` : c.prompt;
   const t0 = Date.now();
   let res;
   try {
-    res = JSON.parse(openclaw(['agent', '--agent', AGENT, '--session-key', key, '--message', message, '--json', '--timeout', '600'], 660e3));
+    res = JSON.parse(await openclaw(['agent', '--agent', AGENT, '--session-key', key, '--message', message, '--json', '--timeout', '600'], 660e3));
   } catch (err) {
     res = { status: 'error', error: String(err.message).split('\n')[0] };
   }
-  try { openclaw(['sessions', 'delete', '--agent', AGENT, '--yes', key], 60e3); } catch { /* best effort */ }
   const meta = res.result?.meta ?? {};
   return {
     key,
@@ -114,23 +121,29 @@ function guardOutcome(key) {
 }
 
 const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
-const results = [];
-for (const c of cases) {
-  const runs = [];
-  for (let n = 1; n <= RUNS; n++) {
-    const r = turn(c, n);
+const queue = cases.flatMap((c) => Array.from({ length: RUNS }, (_, i) => ({ c, n: i + 1 })));
+const runsOf = new Map(cases.map((c) => [c.id, []]));
+async function worker() {
+  for (let job = queue.shift(); job; job = queue.shift()) {
+    const { c, n } = job;
+    const r = await turn(c, n);
     const fails = machineCheck(c, r);
     const j = fails.length ? { verdict: 'fail', reason: fails.join('; ') } : await judge(c, r);
-    runs.push({ ...r, verdict: j.verdict, reason: j.reason, guard: guardOutcome(r.key) });
+    runsOf.get(c.id).push({ n, ...r, verdict: j.verdict, reason: j.reason, guard: guardOutcome(r.key) });
     console.log(`${j.verdict.padEnd(7)} ${c.id} #${n} ${(r.ms / 1000).toFixed(0)}s in=${r.inputTokens} tools=[${r.tools}] ${j.verdict === 'pass' ? '' : j.reason}`);
   }
-  results.push({ id: c.id, kind: c.kind, smoke: Boolean(c.smoke), runs });
 }
+await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+for (let i = 0; i < usedKeys.length; i += 50) {
+  try { await openclaw(['sessions', 'delete', '--agent', AGENT, '--yes', ...usedKeys.slice(i, i + 50)], 120e3); } catch { /* best effort */ }
+}
+const results = cases.map((c) => ({ id: c.id, kind: c.kind, smoke: Boolean(c.smoke), runs: runsOf.get(c.id).sort((a, b) => a.n - b.n) }));
 
 const all = results.flatMap((x) => x.runs);
 const summary = {
   cases: results.length,
   runs: all.length,
+  concurrency: CONCURRENCY,
   pass: all.filter((r) => r.verdict === 'pass').length,
   fail: all.filter((r) => r.verdict === 'fail').length,
   unknown: all.filter((r) => r.verdict === 'unknown').length,
