@@ -44,12 +44,12 @@ CASES = [
 CASES2 = [
   ("hu", "Rubik Ernő találmánya", r"[Kk]ocka|[Cc]ube"),
   ("hu", "Balaton legmélyebb pontja", r"12|Tihany"),
-  ("hu", "hány lakosa van Szegednek", r"1[56]d ?d{3}|16d|15d"),
+  ("hu", "hány lakosa van Szegednek", r"1[56]\d ?\d{3}|16\d|15\d"),
   ("hu", "Ferencváros hány bajnoki címet nyert", r"3[0-6]"),
   ("hu", "hogyan kell bejelenteni lakcímváltozást", r"[Kk]ormányablak|lakcím|ügyfélkapu|magyarorszag.hu"),
   ("hu", "Nobel-díjas magyar Karikó Katalin díj éve", r"2023"),
   ("hu", "Mátyás király születésének éve", r"1443"),
-  ("hu", "Linux kernel aktuális stabil verzió", r"6.d+"),
+  ("hu", "Linux kernel aktuális stabil verzió", r"6\.\d+"),
   ("hu", "mennyi a magyar minimálbér 2025", r"290 ?800|290.800|290800"),
   ("hu", "Zelda Breath of the Wild megjelenés éve", r"2017"),
   ("en", "who invented the Rubik's cube", r"Rubik|Ern"),
@@ -65,7 +65,7 @@ CASES2 = [
 ]
 
 CASES3 = [
-  ("hu", "Budapest Debrecen távolság autóval km", r"2[0-4]d ?km"),
+  ("hu", "Budapest Debrecen távolság autóval km", r"2[0-4]\d ?km"),
   ("hu", "mohácsi csata éve", r"1526"),
   ("hu", "ki a Magyar Nemzeti Bank elnöke", r"Varga Mihály"),
   ("hu", "melyik évben nyílt meg a 4-es metró Budapesten", r"2014"),
@@ -74,7 +74,7 @@ CASES3 = [
   ("hu", "Kossuth-díj 2025 kitüntetettjei", r"Kossuth"),
   ("hu", "hogyan kell Valheimben portált építeni", r"[Pp]ort[aá]l|[Ss]urtling|[Ff]ine wood|finom fa|[Gg]reydwarf"),
   ("hu", "Nemotron nyelvi modell NVIDIA", r"Nemotron"),
-  ("hu", "magyar autópálya matrica ára 2025", r"d{1,2} ?d{3} ?(Ft|forint)|matrica"),
+  ("hu", "magyar autópálya matrica ára 2025", r"\d{1,2} ?\d{3} ?(Ft|forint)"),
   ("en", "GB10 Grace Blackwell CPU cores", r"20[- ]core|20 cores|20 Arm|10 Cortex-X925|X925"),
   ("en", "SearXNG duckduckgo CAPTCHA", r"CAPTCHA|captcha"),
   ("en", "Nemotron 3 Super active parameters", r"12B|12 ?billion|A12B"),

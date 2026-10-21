@@ -36,34 +36,44 @@ since=$(date -d "-$HOURS hours" '+%F %T')
     | grep -v -- '-init' | awk -v ign=" $IGNORE " 'index(ign, " " $1 " ") == 0' | paste -sd ';' -)
   echo "containers not ok: ${bad:-none}"
 
-  # claim-guard: outcomes per session kind. Heartbeat and cron turns run as
-  # the Discord agent too, so they are counted apart from real Discord turns.
+  # claim-guard: outcomes per session kind (claim-guard skips heartbeats;
+  # eval runs are counted apart), plus the receipt fields of each line:
+  # answer latency, input tokens and how many answers each prompt version
+  # (AGENTS.md hash) gave.
   docker exec "$GATEWAY" cat "$STATE/logs/claim-guard.jsonl" 2>/dev/null | python3 -c '
 import sys, json, datetime as dt
 cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=float(sys.argv[1]))
-agg, kinds, ms = {}, {}, []
+agg, kinds, ms, run_s, tok, pol = {}, {}, [], [], [], {}
 for line in sys.stdin:
     try: r = json.loads(line)
     except ValueError: continue
     t = dt.datetime.fromisoformat(r.get("ts", "").replace("Z", "+00:00"))
     if t < cut: continue
     s = r.get("session") or ""
-    k = "heartbeat" if s.endswith(":heartbeat") else "cron" if ":cron:" in s else "discord" if ":discord:" in s else "other"
+    k = "eval" if ":eval:" in s else "cron" if ":cron:" in s else "discord" if ":discord:" in s else "other"
     o = r.get("outcome", "?")
     agg.setdefault(k, {}).setdefault(o, 0); agg[k][o] += 1
     if o == "revise": kinds[r.get("kind", "?")] = kinds.get(r.get("kind", "?"), 0) + 1
     if r.get("ms"): ms.append(r["ms"])
+    if k == "discord" and o != "revise":
+        if r.get("runMs"): run_s.append(r["runMs"] / 1000)
+        if r.get("tokensIn"): tok.append(r["tokensIn"])
+        if r.get("policy"): pol[r["policy"]] = pol.get(r["policy"], 0) + 1
+med = lambda xs: sorted(xs)[len(xs) // 2]
+p90 = lambda xs: sorted(xs)[min(len(xs) - 1, int(len(xs) * 0.9))]
 if not agg: print("claim-guard: no checked turns")
 for k, v in sorted(agg.items()):
     print("claim-guard %-9s %s" % (k + ":", " ".join("%s=%d" % kv for kv in sorted(v.items()))))
 if kinds: print("claim-guard revise kinds:", " ".join("%s=%d" % kv for kv in sorted(kinds.items())))
-if ms:
-    ms.sort(); print("claim-guard judge ms: median %d, max %d" % (ms[len(ms)//2], ms[-1]))
+if ms: print("claim-guard judge ms: median %d, max %d" % (med(ms), max(ms)))
+if run_s: print("discord answers: n=%d, run s median %.0f p90 %.0f" % (len(run_s), med(run_s), p90(run_s)))
+if tok: print("discord tokens in: median %d, p90 %d" % (med(tok), p90(tok)))
+if pol: print("discord prompt versions:", " ".join("%s=%d" % kv for kv in sorted(pol.items())))
 ' "$HOURS"
 
   # Scheduled jobs: last run and status of every job, flagged when the last
   # run failed or a job that should have run did not (next run over an hour
-  # in the past). "skipped" is a heartbeat with an empty HEARTBEAT.md.
+  # in the past). "skipped" is a heartbeat whose automation scratch is empty.
   docker exec "$GATEWAY" openclaw cron list --json 2>/dev/null | python3 -c '
 import sys, json, time
 try: j = json.load(sys.stdin)

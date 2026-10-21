@@ -22,6 +22,10 @@
 //
 // Every checked answer gets one line in logs/claim-guard.jsonl with structure
 // only (time, session, tools, verdict, outcome, latency) — never message text.
+// The line doubles as the answer's receipt: AGENTS.md hash (which prompt
+// answered), model, model calls, tokens in/out, run time, and the skills and
+// memory files the run read; scripts/daily-status.sh summarises it.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,6 +39,52 @@ const MAX_REPLY_CHARS = 6000;
 
 const runTools = new Map(); // runId → [{ name, ok }] in call order
 const revised = new Set(); // runIds already sent back for one more pass
+// runId → { t0, calls, in, out, model }: the receipt part of each log line,
+// so a prompt or harness change shows up as tokens and latency per answer.
+const runUsage = new Map();
+const usageOf = (runId) => {
+  if (!runUsage.has(runId)) {
+    runUsage.set(runId, { t0: Date.now(), calls: 0, in: 0, out: 0, model: null });
+    if (runUsage.size > MAX_RUNS) runUsage.delete(runUsage.keys().next().value);
+  }
+  return runUsage.get(runId);
+};
+
+// Short hash of the agent's AGENTS.md: which prompt version answered.
+const policyCache = new Map(); // file → { mtimeMs, hash }
+function policyVersion(workspaceDir) {
+  if (!workspaceDir) return null;
+  const file = path.join(workspaceDir, 'AGENTS.md');
+  try {
+    const { mtimeMs } = fs.statSync(file);
+    const hit = policyCache.get(file);
+    if (hit?.mtimeMs === mtimeMs) return hit.hash;
+    const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 10);
+    policyCache.set(file, { mtimeMs, hash });
+    return hash;
+  } catch { return null; }
+}
+
+// Skills and memory files the run read: where its context came from.
+function contextSources(messages) {
+  const out = new Set();
+  if (!Array.isArray(messages)) return [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role === 'user') break;
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    for (const c of m.content) {
+      if (c?.type !== 'toolCall' && c?.type !== 'tool_use') continue;
+      const a = c.arguments ?? c.input ?? {};
+      const p = String(a.path ?? a.file_path ?? a.filePath ?? '');
+      const skill = p.match(/skills\/([^/]+)\/SKILL\.md$/)?.[1];
+      if (skill) out.add(`skill:${skill}`);
+      else if (/(^|\/)memory\//.test(p) || /MEMORY\.md$/.test(p)) out.add(p.replace(/^.*?(?=memory\/|people\/|MEMORY\.md)/, ''));
+      if (c.name === 'memory_search') out.add('memory_search');
+    }
+  }
+  return [...out];
+}
 const remember = (runId, name, ok) => {
   if (!runId || !name) return;
   if (!runTools.has(runId)) {
@@ -268,6 +318,21 @@ export default definePluginEntry({
       remember(event?.runId ?? ctx?.runId, event?.toolName ?? ctx?.toolName, !event?.error);
     });
 
+    api.on('llm_input', (event, ctx) => {
+      const runId = event?.runId ?? ctx?.runId;
+      if (runId && agents.has(ctx?.agentId)) usageOf(runId);
+    });
+    api.on('llm_output', (event, ctx) => {
+      const runId = event?.runId ?? ctx?.runId;
+      if (!runId || !agents.has(ctx?.agentId)) return;
+      const u = usageOf(runId);
+      const use = event?.usage ?? {};
+      u.calls += 1;
+      u.in += Number(use.input ?? use.inputTokens ?? use.prompt_tokens ?? 0) || 0;
+      u.out += Number(use.output ?? use.outputTokens ?? use.completion_tokens ?? 0) || 0;
+      u.model ??= event?.model ?? null;
+    });
+
     api.on('before_agent_finalize', async (event, ctx) => {
       if (!agents.has(ctx?.agentId)) return;
       const reply = typeof event?.lastAssistantMessage === 'string' ? event.lastAssistantMessage : '';
@@ -282,7 +347,13 @@ export default definePluginEntry({
       const tools = runTools.get(runId) ?? toolsFromMessages(event?.messages);
       const session = ctx?.sessionKey ?? event?.sessionKey;
       const { verdict, ms, error } = await judge(reply, tools, lastUserText(event?.messages));
-      const base = { session, run: runId, tools: tools.map((t) => (t.ok ? t.name : `${t.name}!`)), ms };
+      const u = runUsage.get(runId);
+      const base = {
+        session, run: runId, tools: tools.map((t) => (t.ok ? t.name : `${t.name}!`)), ms,
+        policy: policyVersion(ctx?.workspaceDir), model: u?.model ?? ctx?.modelId ?? null,
+        calls: u?.calls ?? null, tokensIn: u?.in ?? null, tokensOut: u?.out ?? null,
+        runMs: u ? Date.now() - u.t0 : null, sources: contextSources(event?.messages),
+      };
 
       // The embedded runner always reports stopHookActive=false, so the
       // second pass is recognised by our own per-run record.
