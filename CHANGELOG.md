@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 [docs/archive/CHANGELOG-2026-04-to-10.md](docs/archive/CHANGELOG-2026-04-to-10.md).
 
+## [1.1.0] - 2026-10-21
+
+### Added
+
+- `OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free`: `web_search` through the
+  official Parallel plugin and its free Search MCP (no key; the queries leave
+  the host). 56/60 against SearxNG's 52/60 on `scripts/websearch-bench.py`.
+  SearxNG stays the default and keeps running as the way back
+  ([CUSTOMIZATION.md](docs/CUSTOMIZATION.md#parallel-free-instead-of-searxng)).
+
+### Changed
+
+- The gateway token (`gateway.auth.token`, `gateway.remote.token`) and the
+  Discord bot token (`channels.discord.token`) are env SecretRefs to
+  `OPENCLAW_GATEWAY_TOKEN` / `DISCORD_BOT_TOKEN`. Config-init swaps a plain
+  value only when `.env` holds the same one (`adopt` in
+  `config-init/lib/secrets.mjs`). The gateway and the CLI get every referenced
+  variable from one `x-openclaw-secrets` block; `people-digest.mjs`,
+  dm-guild-gate and the MeshCore bridge fall back to the environment.
+  `openclaw secrets audit` is clean on the reference host.
+- people-context gives the model the sender's `<@ID>` too, not only the
+  tagged people's: asked to tag an untagged sender back, it made one up.
+- The Discord agent's `alsoAllow` default is `browser,canvas,cron` (+`tts`
+  while TTS is on); `group:messaging` and `tts` without TTS are removed, they
+  matched no tool and were logged on every turn.
+- Without the ComfyUI MCP server wired (every media group off or no
+  `IMAGE_GEN_API_TOKEN`), its tools are neither denied, routed nor given
+  skills.
+
 ## [1.0.0] - 2026-10-21
 
 Current-state baseline. The repo now describes and deploys what runs on the
