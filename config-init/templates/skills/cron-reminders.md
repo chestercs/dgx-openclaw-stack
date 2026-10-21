@@ -15,7 +15,7 @@ One-shot (the result comes back into this conversation):
  "payload":{"kind":"agentTurn","message":"Emlékeztesd a usert: vigye le a szemetet."}}}
 ```
 
-- `at`: ISO-8601 time WITH a timezone offset (no offset = UTC!). For a relative request compute it first: `exec` `TZ=Europe/Budapest date -d "+5 minutes" -Iseconds` (or `"tomorrow 08:00"`).
+- `at`: ISO-8601 time WITH a timezone offset (no offset = UTC!). For a relative request start from the current time in your context (Europe/Budapest) and add the delay; when the arithmetic is not trivial, compute it with `python_sandbox__python_exec`: `from datetime import datetime, timedelta; from zoneinfo import ZoneInfo; print((datetime.now(ZoneInfo("Europe/Budapest")) + timedelta(minutes=5)).isoformat(timespec="seconds"))` (shell and browser can be owner-only, the sandbox is not).
 - Recurring: `"schedule":{"kind":"cron","expr":"0 9 * * 1","tz":"Europe/Budapest"}` (wall-clock time, do NOT convert to UTC).
 - `sessionTarget` is a DIRECT field of `job` (NOT inside `delivery`); `"current"` = the result arrives in this channel/DM, and then give NO `delivery` at all (the example above is exactly right). Another channel: `"delivery":{"mode":"announce","channel":"discord","to":"channel:<NUMBER>"}`. Copy the number from the inbound metadata, NEVER invent it.
 - List / delete: `{"action":"list"}` → `jobId`, then `{"action":"remove","jobId":"…"}`.

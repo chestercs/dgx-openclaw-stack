@@ -1,7 +1,7 @@
 {
   "id": "harness-guard",
   "name": "Harness Guard",
-  "description": "Policy checks outside the model for the Discord agent: owner-only tools in DMs, sourced memory writes, sub-agent tasks with an end condition.",
+  "description": "Policy checks outside the model for the Discord agent: owner-only tools in DMs, sourced memory writes, sub-agent tasks with an end condition, members' messages and reminders only where they asked.",
   "categories": ["other"],
   "activation": { "onStartup": true },
   "configSchema": {
@@ -12,7 +12,8 @@
       "owners": { "type": "array", "items": { "type": "string" } },
       "ownerOnlyTools": { "type": "array", "items": { "type": "string" } },
       "memorySources": { "type": "boolean" },
-      "spawnDoneWhen": { "type": "boolean" }
+      "spawnDoneWhen": { "type": "boolean" },
+      "memberReach": { "type": "boolean" }
     }
   }
 }

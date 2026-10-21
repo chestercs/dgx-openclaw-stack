@@ -21,6 +21,15 @@
 // Sub-agent tasks with an end. A sessions_spawn task needs a "Done when:"
 // line: the task is all the child knows, and one without an end condition
 // either stops early or never reports.
+//
+// Actions that reach other people. For anyone but an owner, `message` sends
+// and `automations` deliveries go only to the conversation the request came
+// from (its channel or thread, or the sender's own DM): a member's reminder
+// once went to a channel of another server. No DM to someone else, no
+// broadcast, no @everyone/@here or mass mention. The sender comes from
+// before_prompt_build (runs of one session are serialised, so the latest
+// sender of the session is the current run's); runs without a sender
+// (scheduled jobs, the CLI) pass.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,6 +45,12 @@ const GENERATED = /(^|\/)memory\/server-map\.md$/;
 const SOURCE_LINE = /(^|[\s*(\-[])(Forrás|Source)\**\s*:/i;
 const DONE_WHEN = /(^|\n)\s*[-*]?\s*\**(Done when|Kész,? ha)\**\s*:/i;
 
+// message actions that put something in front of people.
+const DELIVERING = new Set(['send', 'broadcast', 'poll', 'reply', 'thread-create', 'thread-reply', 'sticker']);
+const MAX_MENTIONS = 5;
+const lastId = (v) => [...String(v ?? '').matchAll(/\d{15,22}/g)].at(-1)?.[0] ?? '';
+const isUserTarget = (t) => /(^|[^a-z])user:|<@!?\d/i.test(String(t));
+
 const lines = (s) => String(s ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
 // Lines in `next` that `prev` does not have: what the call adds.
 const added = (prev, next) => { const old = new Set(lines(prev)); return lines(next).filter((l) => !old.has(l)); };
@@ -44,7 +59,7 @@ const isFact = (l) => !/^(#|<!--|-->|```)/.test(l) && !SOURCE_LINE.test(l) && /\
 export default definePluginEntry({
   id: 'harness-guard',
   name: 'Harness Guard',
-  description: 'Policy checks outside the model: owner-only tools in Discord DMs, sourced memory writes, sub-agent tasks with an end condition.',
+  description: 'Policy checks outside the model: owner-only tools in Discord DMs, sourced memory writes, sub-agent tasks with an end condition, members\' messages and reminders only where they asked.',
   register(api) {
     const pc = api.pluginConfig ?? {};
     const agents = new Set(pc.agents ?? []);
@@ -52,6 +67,7 @@ export default definePluginEntry({
     const ownerOnly = new Set(pc.ownerOnlyTools ?? []);
     const memoryGate = pc.memorySources !== false;
     const spawnGate = pc.spawnDoneWhen !== false;
+    const othersGateOn = pc.memberReach !== false;
 
     const workspaceOf = (ctx) => {
       const w = ctx?.workspaceDir ?? api.config?.agents?.entries?.[ctx?.agentId]?.workspace;
@@ -113,6 +129,55 @@ export default definePluginEntry({
       return null;
     }
 
+    // sessionKey → the Discord id of the current run's sender.
+    const senders = new Map();
+    api.on('before_prompt_build', (event, ctx) => {
+      if (!agents.has(ctx?.agentId) || !ctx?.sessionKey) return;
+      const id = String(ctx.senderId ?? '').match(/\d{15,22}/)?.[0];
+      senders.delete(ctx.sessionKey);
+      if (id) senders.set(ctx.sessionKey, id);
+      if (senders.size > 500) senders.delete(senders.keys().next().value);
+    });
+
+    // → block result, or null. Targets of a non-owner's message or delivery.
+    function reach(targets, text, ctx, sender, what) {
+      const here = new Set(String(ctx?.sessionKey ?? '').match(/\d{15,22}/g) ?? []);
+      for (const t of targets.filter(Boolean).map(String)) {
+        const id = lastId(t);
+        if (!id) continue;
+        if (isUserTarget(t) ? id === sender : here.has(id)) continue;
+        return {
+          block: true,
+          blockReason: isUserTarget(t)
+            ? `Only the bot's owner can have ${what} go to someone else's DM. Do not retry: say so, and offer to post it here instead.`
+            : `${what[0].toUpperCase()}${what.slice(1)} for a member goes back to where it was asked, not to another channel. ` +
+              'Leave out the target (for automations: "sessionTarget":"current" and no delivery) and call again, or tell the user that only the owner can send elsewhere.',
+        };
+      }
+      const mentions = (String(text ?? '').match(/<@!?\d{15,22}>/g) ?? []).length;
+      if (/@(everyone|here)\b/.test(String(text ?? '')) || mentions > MAX_MENTIONS) {
+        return { block: true, blockReason: `No @everyone, @here or more than ${MAX_MENTIONS} mentions in one message for a member. Write it without them.` };
+      }
+      return null;
+    }
+
+    function othersGate(tool, p, ctx) {
+      const sender = senders.get(ctx?.sessionKey);
+      if (!sender || owners.has(sender)) return null;
+      if (tool === 'message') {
+        const action = String(p.action ?? '');
+        if (!DELIVERING.has(action)) return null;
+        if (action === 'broadcast') return { block: true, blockReason: 'Broadcasts are for the bot\'s owner only. Do not retry; answer here instead.' };
+        return reach([p.target, ...(Array.isArray(p.targets) ? p.targets : [])], p.message ?? p.text ?? p.content, ctx, sender, 'a message');
+      }
+      if (tool === 'automations' || tool === 'cron') {
+        if (!['add', 'update', 'edit'].includes(String(p.action ?? ''))) return null;
+        const job = p.job ?? p.patch ?? {};
+        return reach([job?.delivery?.to], job?.payload?.message ?? job?.payload?.text, ctx, sender, 'a scheduled message');
+      }
+      return null;
+    }
+
     api.on('before_tool_call', (event, ctx) => {
       if (!agents.has(ctx?.agentId)) return;
       const tool = event?.toolName;
@@ -127,6 +192,10 @@ export default definePluginEntry({
       }
       if (memoryGate && (tool === 'write' || tool === 'edit' || tool === 'apply_patch')) {
         const r = memoryWrite(event, ctx);
+        if (r) return r;
+      }
+      if (othersGateOn) {
+        const r = othersGate(tool, event?.params ?? {}, ctx);
         if (r) return r;
       }
       if (spawnGate && tool === 'sessions_spawn' && !DONE_WHEN.test(String(event?.params?.task ?? ''))) {
