@@ -66,13 +66,15 @@ function tts(config) {
 }
 
 // The openclaw-image-comfyui bridge (its own compose file, joined to this
-// stack's network). Wired when IMAGE_GEN_API_TOKEN is set, removed otherwise
+// stack's network). Wired when IMAGE_GEN_API_TOKEN is set and a media group is on, removed otherwise
 // so the gateway does not dial a parked bridge.
 function comfyuiMcp(config) {
-  const token = env.str('IMAGE_GEN_API_TOKEN');
+  // With every media group off the bridge is not running either, and a
+  // wired server would only log connection errors.
+  const token = GROUPS.some(mediaOn) ? env.str('IMAGE_GEN_API_TOKEN') : undefined;
   const p = ['mcp', 'servers', 'comfyui_image'];
   if (!token) {
-    config.remove(p, 'IMAGE_GEN_API_TOKEN unset');
+    config.remove(p, 'media tools off or IMAGE_GEN_API_TOKEN unset');
     if (config.get('mcp.servers') && !Object.keys(config.get('mcp.servers')).length) config.remove('mcp.servers');
     if (config.get('mcp') && !Object.keys(config.get('mcp')).length) config.remove('mcp');
     return;
