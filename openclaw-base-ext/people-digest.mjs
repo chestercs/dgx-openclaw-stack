@@ -4,7 +4,7 @@
 // The job (an `openclaw cron` agent turn, see the `people-memory` workspace
 // skill written by config-init/steps/workspaces.mjs) keeps people/MEMORY.md up to
 // date from what guild members say in ordinary channel traffic, not only
-// from what they tell the bot directly. Two subcommands:
+// from what they tell the bot directly. Subcommands:
 //
 //   collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24 | --from <date> [--to <date>] | --last-days N] [--exclude a,b] [--max-chars 60000]
 //     Reads every text channel of the guild(s) since the last committed cursor
@@ -28,6 +28,13 @@
 //     gate makes that a rejected proposal instead of lost memory. The live
 //     file is backed up first. Read cursors are committed here, so a run
 //     that never reaches `apply` re-reads the same window next night.
+//
+//   server-map [--nsfw]
+//     Writes memory/server-map.md: every text channel of every guild the bot
+//     is in, with its id, topic and the bots among its last 100 messages, so
+//     "where did it happen" comes from a list, not the model's memory (asked
+//     who won the last /ruin round, the bot searched the channel it was asked
+//     in; RuinBot posts in its own). The nightly `collect` refreshes it.
 //
 //   history --channel <id> [--author <name|id>] [--grep <text>] [--limit 20] [--days N] [--before <msg id>]
 //     The bot's channel-history search: pages back, keeps embed text, one
@@ -321,6 +328,47 @@ async function collect(opt) {
   }
   if (out.length > maxChars) out = out.slice(0, maxChars) + '\n…(levágva)\n';
   process.stdout.write(out);
+  // stdout is the digest the job's model reads; the map's status goes to stderr.
+  if (!windowed) await serverMap(opt).catch((err) => console.error(`server-map: ${err.message}`));
+}
+
+const SERVER_MAP = path.join(WS, 'memory', 'server-map.md');
+async function serverMap(opt) {
+  const token = discordToken();
+  if (!token) throw new Error('needs the bot token (DISCORD_BOT_TOKEN)');
+  const keepNsfw = opt.nsfw === true || /^(on|1|true|yes)$/i.test(process.env.PEOPLE_DIGEST_NSFW || '');
+  const self = selfId();
+  const out = ['# Server map', '',
+    '<!-- Written by people-digest.mjs server-map, refreshed every night. Do not edit: the next run replaces it. -->', ''];
+  let count = 0;
+  for (const g of await resolveGuilds('all')) {
+    const res = await fetch(`https://discord.com/api/v10/guilds/${g.id}/channels`, { headers: { Authorization: `Bot ${token}` } });
+    if (!res.ok) continue;
+    const chans = (await res.json()).filter((c) => (c.type === 0 || c.type === 5) && (keepNsfw || !c.nsfw))
+      .sort((a, b) => a.position - b.position);
+    out.push(`## ${g.name} (guild ${g.id})`, '');
+    for (const c of chans) {
+      let msgs = [];
+      try { msgs = await readPage(c.id); } catch { /* no read access */ }
+      const bots = new Map();
+      for (const m of msgs) {
+        if (!m.author?.bot || m.author.id === self) continue;
+        const name = m.author.global_name || m.author.username;
+        bots.set(name, (bots.get(name) ?? 0) + 1);
+      }
+      const parts = [`- #${c.name} (${c.id})`];
+      if (c.topic) parts.push(`topic: ${c.topic.replace(/\s+/g, ' ').slice(0, 160)}`);
+      if (bots.size) parts.push(`bots in the last ${msgs.length} messages: ${[...bots].sort((a, b) => b[1] - a[1]).map(([n, k]) => `${n} ${k}`).join(', ')}`);
+      parts.push(msgs.length ? `last message ${ymd(msgs[0].timestamp)}` : 'no readable messages');
+      out.push(parts.join(' — '));
+      count++;
+    }
+    out.push('');
+  }
+  fs.mkdirSync(path.dirname(SERVER_MAP), { recursive: true });
+  fs.writeFileSync(SERVER_MAP + '.tmp', out.join('\n'));
+  fs.renameSync(SERVER_MAP + '.tmp', SERVER_MAP);
+  console.error(`server-map: ${count} channels written to ${SERVER_MAP}`);
 }
 
 const headingKey = (line) => {
@@ -594,13 +642,15 @@ const cmd = opt._[0];
 try {
   if (cmd === 'collect') await collect(opt);
   else if (cmd === 'history') await history(opt);
+  else if (cmd === 'server-map') await serverMap(opt);
   else if (cmd === 'apply') apply(opt);
   else if (cmd === 'note') note(opt);
   else if (cmd === 'forget') forget(opt);
   else {
     console.error('usage: people-digest.mjs collect --guild <id>[,<id>…]|all [--nsfw] [--hours 24 | --from <date> [--to <date>] | --last-days N] [--exclude a,b] [--max-chars 60000] | apply [--no-change]\n' +
       '       | note --id <id> --name <name> --text <fact> [--temp|--durable] [--replace <part>] | forget --id <id> (--match <part> | --all)\n' +
-      '       | history --channel <id> [--author <name|id>] [--grep <text>] [--limit 20] [--days N] [--pages 10] [--before <msg id>]');
+      '       | history --channel <id> [--author <name|id>] [--grep <text>] [--limit 20] [--days N] [--pages 10] [--before <msg id>]\n' +
+      '       | server-map [--nsfw]');
     process.exitCode = 2;
   }
 } catch (err) {

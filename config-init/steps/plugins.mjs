@@ -88,13 +88,16 @@ export default function plugins({ config, ws }) {
   servesDiscordAgents('claim-guard');
 
   // harness-guard: policy checks outside the model. Owner-only tools in DMs,
-  // where Discord has no per-sender tool policy (guilds: steps/discord.mjs).
-  const ownerOnly = ownerOnlyTools();
+  // where Discord has no per-sender tool policy (guilds: steps/discord.mjs);
+  // a source line for every new fact in memory/*.md; a "Done when:" line in
+  // every sub-agent task. Without owners nobody is an owner, so no tool is
+  // owner-only.
   const owners = ownerIds();
-  const guardOn = ownerOnly.length && owners.length ? discordGate('OPENCLAW_HARNESS_GUARD') : false;
-  ensureLocalPlugin('harness-guard', 'harness-guard', { on: guardOn });
+  ensureLocalPlugin('harness-guard', 'harness-guard', { on: discordGate('OPENCLAW_HARNESS_GUARD') });
   if (config.get('plugins.entries.harness-guard.enabled')) {
-    config.set('plugins.entries.harness-guard.config', { agents: discordAgentIds(config), owners, ownerOnlyTools: ownerOnly });
+    config.set('plugins.entries.harness-guard.config', {
+      agents: discordAgentIds(config), owners, ownerOnlyTools: owners.length ? ownerOnlyTools() : [],
+    });
   }
 
   // dm-guild-gate: DMs are open (dmPolicy=open) so members need no pairing,

@@ -77,6 +77,13 @@ if tok: print("discord prompt tokens per call: median %d, p90 %d" % (med(tok), p
 if pol: print("discord prompt versions:", " ".join("%s=%d" % kv for kv in sorted(pol.items())))
 ' "$HOURS"
 
+  # Discord memory notes with no source line at all: harness-guard refuses new
+  # unsourced facts, so these are older notes worth a look (names only).
+  nosrc=$(docker exec "$GATEWAY" sh -c 'cd "$1/workspace-discord/memory" 2>/dev/null || exit 0
+    for f in *.md; do [ -f "$f" ] && [ "$f" != server-map.md ] || continue
+      grep -qiE "(Forrás|Source)[*]*[[:space:]]*:" "$f" || echo "$f"; done' _ "$STATE" | paste -sd ' ' -)
+  echo "memory notes without a source line: ${nosrc:-none}"
+
   # Scheduled jobs: last run and status of every job, flagged when the last
   # run failed or a job that should have run did not (next run over an hour
   # in the past). "skipped" is a heartbeat whose automation scratch is empty.

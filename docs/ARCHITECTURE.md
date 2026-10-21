@@ -182,7 +182,7 @@ again. The two phases are described in [`SETUP.md`](../SETUP.md).
 ## Plugins
 
 The `openclaw-base-ext` image is the upstream OpenClaw image plus ffmpeg, git, curl,
-`/opt/people-digest.mjs` and four local plugins in `/opt/openclaw-plugins`. Nothing
+`/opt/people-digest.mjs` and five local plugins in `/opt/openclaw-plugins`. Nothing
 patches OpenClaw itself: the plugins use the plugin SDK and are loaded through
 `plugins.load.paths`; the upstream entrypoint (state migration, then the gateway) is
 kept.
@@ -192,7 +192,7 @@ kept.
 | `people-context` | `message_received`, `before_prompt_build`, `before_tool_call`; tools `people_note`, `people_forget`, `discord_history` | The Discord plugin turns `<@ID>` into `@Name` before any hook sees it, so the model could not tag people back. The plugin reads the message's mention list from the Discord API and adds `Tagged: @Name = <@ID>` and the sender's `<@ID>`, then prepends the sender's (and tagged people's) lines from `people/MEMORY.md`. It refuses direct edits of that file. Its tools wrap `/opt/people-digest.mjs` (the guarded writer and the channel reader), so the agent needs no shell for them; a note about someone other than the sender is refused unless the owner asks. |
 | `claim-guard` | `after_tool_call`, `before_agent_finalize` | Asks the host model which actions the answer claims and checks them against the run's successful tool calls; a second question picks out specific, uncommon facts, and a third checks those against the turn's tool results (supported / contradicted / not found). A gap gets up to two more passes with the exact gap named: look it up and fix it, then remove or mark it. If the judge fails, the answer goes out as is. Log: `logs/claim-guard.jsonl`, structure only. |
 | `dm-guild-gate` | `before_dispatch` | Answers a DM only when the sender shares a guild with the bot (Discord REST, cached). `dmPolicy` has no such mode, and `open` is needed so members can DM without pairing. If Discord cannot be asked, the message goes through. Log: `logs/dm-guild-gate.jsonl`. |
-| `harness-guard` | `before_tool_call` | Policy outside the model. Owner-only tools (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`) in DMs, where Discord has no per-sender tool policy; guild channels get the same rule from `channels.discord.guilds["*"].toolsBySender`. Runs without a sender (scheduled jobs) pass. |
+| `harness-guard` | `before_tool_call` | Policy outside the model. Owner-only tools (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`) in DMs, where Discord has no per-sender tool policy; guild channels get the same rule from `channels.discord.guilds["*"].toolsBySender`. Runs without a sender (scheduled jobs) pass. A new fact in `memory/*.md` needs a `Forrás:` line among the added lines (the file is copied to `memory-backups/` first); `memory/server-map.md` is read-only. A `sessions_spawn` task needs a `Done when:` line. |
 | `mcp-image-saver` | tool-result middleware | Saves images returned by MCP tools (the Valheim builder's screenshots) into the canvas and adds a `[saved: <path>]` line, so the reply can attach them as `MEDIA:`. |
 
 The Discord plugins are wired only while the Discord channel is configured, and each
@@ -209,6 +209,7 @@ Several layers, each for a different question:
 | Root `MEMORY.md` | each workspace | Dreaming promotions, the agent | Injected into DM and main sessions only |
 | People memory | `workspace-discord/people/MEMORY.md` | the `people_note` / `people_forget` tools (bot) and `people-digest.mjs apply` (nightly job) | Every Discord session via `bootstrap-extra-files`; people-context per turn |
 | Community summaries | `workspace-discord/memory/community/<from>_<to>.md` | The community-summary job, every 3 days | `memory_search` |
+| Server map | `workspace-discord/memory/server-map.md` | `people-digest.mjs server-map`, at the end of the nightly `collect` | `memory_search`; the prompt points to it for "where did it happen" |
 | Active Memory | no storage | — | A recall run before each Discord reply |
 
 - **Memory search** embeds with the local bge-m3 server (1024 dimensions, fixed once
@@ -218,7 +219,9 @@ Several layers, each for a different question:
   (`OPENCLAW_SESSION_MEMORY`): its raw session dumps kept the bot's own wrong
   conclusions, and recall served them back as facts a day later. The prompt lets
   the agent save what the user said or a tool showed, with the source, never its
-  own guess.
+  own guess, and harness-guard refuses a new fact in `memory/*.md` without a
+  `Forrás:` line. Every change is preceded by a copy in `memory-backups/<agent>/`
+  (last 20 per file), outside the workspace so search does not index it.
 - **Dreaming** (`memory-core`) consolidates nightly at 03:00 in `OPENCLAW_HEARTBEAT_TZ`.
   Storage is `separate`: inline mode wrote session metadata into the daily notes,
   where it ranked next to real notes. Promotions into `MEMORY.md` are capped at 80

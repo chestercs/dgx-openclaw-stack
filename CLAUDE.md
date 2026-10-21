@@ -254,7 +254,9 @@ Read the linked doc before changing the area.
   the owners get `{}` and `*` the deny); DMs have no such policy, so harness-guard
   (`before_tool_call`) blocks there by the DM peer in the session key. Do not use
   the agent-level `tools.toolsBySender`: scheduled runs have no sender, match `*`
-  and would lose exec.
+  and would lose exec. harness-guard also refuses a new fact in `memory/*.md`
+  without a `Forrás:` line (subfolders such as `memory/community/` are the jobs'
+  and pass) and a `sessions_spawn` task without `Done when:`.
 - **dm-guild-gate** (`before_dispatch`): a DM is answered only when the sender shares a
   guild with the bot (Discord REST, cached); `dmPolicy` has no such mode. Audit
   `logs/dm-guild-gate.jsonl`.
