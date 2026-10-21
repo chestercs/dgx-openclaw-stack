@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 [docs/archive/CHANGELOG-2026-04-to-10.md](docs/archive/CHANGELOG-2026-04-to-10.md).
 
+## [Unreleased]
+
+### Fixed
+
+- claim-guard's fact question sees the user's message and counts who a named
+  person is (job, role, office) as a specific fact. "jó magyar előadó" about a
+  central banker had passed as an opinion; on a 12-case A/B the check went
+  from 9/12 to 11/12 with no new false flags.
+
 ## [1.1.0] - 2026-10-21
 
 ### Added
