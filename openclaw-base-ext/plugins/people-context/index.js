@@ -6,7 +6,8 @@
 //    and nothing downstream knows who was tagged. message_received carries
 //    the message ID, so for a message with an `@` the plugin reads its
 //    mention list from the Discord API (bot token, one GET) and the turn gets
-//    a line like "Tagged: @Name = <@ID>".
+//    a line like "Tagged: @Name = <@ID>". The sender's own <@ID> is added
+//    too: untagged, the model made one up when asked to tag them back.
 // 2. People memory. people/MEMORY.md is in the system prompt already, but the
 //    model rarely links "mit csinálok most?" to the sender's section there.
 //    before_prompt_build adds the sender's lines and those of tagged people.
@@ -112,6 +113,7 @@ export default definePluginEntry({
       const mentions = ((await pending.get(ctx.sessionKey)) ?? []).filter((m) => m.id !== sender);
       pending.delete(ctx.sessionKey);
       const parts = [];
+      if (sender) parts.push(`[Sender of this message — to tag them, write] <@${sender}>`);
       if (mentions.length) {
         parts.push(`[Tagged in this message — to tag someone back, write the <@ID> form] ${mentions.map((m) => `@${m.label} = <@${m.id}>`).join(', ')}`);
       }
