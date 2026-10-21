@@ -40,6 +40,11 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   only the skills in its workspace (`OPENCLAW_DISCORD_AGENT_SKILLS_EXTRA`).
 - Guild channel sessions reset after 240 idle minutes
   (`OPENCLAW_DISCORD_SESSION_IDLE_MINUTES`).
+- Measured on the reference host's 43-case eval, 3 runs each, both reports
+  graded by the same judge: 63 → 75 of 129 runs pass (cases passing all three:
+  13 → 16; Discord look-ups 5/12 → 9/12), median latency 66 → 53 s, p90
+  144 → 130 s, median input 101k → 80k tokens per turn. Regrading one report
+  twice moves the pass count by up to 2.
 
 ### Fixed
 
