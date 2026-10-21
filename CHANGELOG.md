@@ -66,7 +66,11 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   graded by the same judge: 63 → 75 of 129 runs pass (cases passing all three:
   13 → 16; Discord look-ups 5/12 → 9/12), median latency 66 → 53 s, p90
   144 → 130 s, median input 101k → 80k tokens per turn. Regrading one report
-  twice moves the pass count by up to 2.
+  twice moves the pass count by up to 2. With every change below in place
+  (source check off), regraded together with phase 1: 74 vs 77 of 129, median
+  58 vs 53 s, 84k vs 80k tokens, within the eval's noise. The gates added
+  after phase 1 act on Discord senders, which the CLI eval has none of; they
+  were tested live and with simulated hook calls.
 
 ### Fixed
 
