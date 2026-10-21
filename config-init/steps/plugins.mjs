@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import * as env from '../lib/env.mjs';
+import { discordAgentIds } from './agents.mjs';
 
 const PLUGIN_ROOT = '/opt/openclaw-plugins';
 const PEOPLE_MEMORY = 'people/MEMORY.md';
@@ -41,6 +42,11 @@ export default function plugins({ config }) {
   // Discord-only plugins: on/off from their knob, but only wired while the
   // Discord channel is configured.
   const discordGate = (knob) => (!env.bool(knob, true) ? false : discord ? true : undefined);
+  // The agents a Discord plugin serves: the ones the catch-all Discord
+  // binding routes to, so no agent id is hard-coded in a plugin.
+  const servesDiscordAgents = (id) => {
+    if (config.get(['plugins', 'entries', id, 'enabled'])) config.set(['plugins', 'entries', id, 'config', 'agents'], discordAgentIds(config));
+  };
 
   // Discord people memory (people/MEMORY.md, seeded by the workspaces step).
   // OpenClaw drops the root MEMORY.md from group/channel sessions, so in a
@@ -62,12 +68,14 @@ export default function plugins({ config }) {
   // sender's section. before_prompt_build prepends the sender's own lines (and
   // those of people tagged, read from message_received) to each turn.
   ensureLocalPlugin('people-context', 'people-context', { on: peopleOn, conversationAccess: true });
+  servesDiscordAgents('people-context');
 
   // claim-guard: prompt rules did not stop "I saved it" in turns with no write
   // call. before_agent_finalize has the host model list the actions the answer
   // claims, checks them against the run's successful tool calls and asks for
   // one more pass on a mismatch. Audit: logs/claim-guard.jsonl.
   ensureLocalPlugin('claim-guard', 'claim-guard', { on: discordGate('OPENCLAW_DISCORD_CLAIM_GUARD'), conversationAccess: true });
+  servesDiscordAgents('claim-guard');
 
   // dm-guild-gate: DMs are open (dmPolicy=open) so members need no pairing,
   // and dmPolicy has no "members of my servers" mode. before_dispatch asks

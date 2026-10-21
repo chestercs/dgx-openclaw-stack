@@ -415,8 +415,8 @@ documented `api.runtime.llm.complete` plugin API, with thinking off:
    model pass that either does the action or the look-up, or says plainly that
    it was not done or that the fact is from memory.
 
-It covers the `discord-friend` agent only (`CLAIM_GUARD_AGENTS` overrides the
-list) and skips Active Memory's recall runs, which run under the same agent
+It covers the Discord-routed agents (its `config.agents`, written by config-init
+from the catch-all Discord binding) and skips Active Memory's recall runs, which run under the same agent
 before the real turn. The judge's JSON is read with a balanced-brace parser,
 because Nemotron sometimes closes one brace too many. Measured on 42 held-in and
 14 held-out cases: all correct.

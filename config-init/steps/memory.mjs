@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as env from '../lib/env.mjs';
 import { secret } from '../lib/secrets.mjs';
+import { discordAgentIds } from './agents.mjs';
 
 // Removes `path` and then every parent object it leaves empty, so switching a
 // feature off leaves no `plugins.entries: {}` husk behind.
@@ -106,9 +107,9 @@ function activeMemory(config) {
     // patterns, so a Hungarian guild never escalated.
     mode: 'always',
     // `agents` is the narrowest documented scope: only the Discord-routed
-    // agent recalls; the operator agent and the MeshCore agents never pay
-    // the extra latency.
-    agents: ['discord-friend'],
+    // agents recall; the operator agent and the MeshCore agents never pay
+    // the extra latency. Empty (no Discord binding yet) recalls for none.
+    agents: discordAgentIds(config),
     allowedChatTypes: ['direct', 'channel', 'group'],
     queryMode: 'recent',
     promptStyle: 'recall-heavy',

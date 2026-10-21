@@ -1,8 +1,12 @@
 {
   "id": "claim-guard",
   "name": "Claim Guard",
-  "description": "The model checks each discord-friend answer against the run's tool calls and flags unverified facts; a mismatch gets one more model pass.",
+  "description": "The model checks each answer of its agents against the run's tool calls and flags unverified facts; a mismatch gets one more model pass.",
   "categories": ["other"],
   "activation": { "onStartup": true },
-  "configSchema": { "type": "object", "additionalProperties": false }
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": { "agents": { "type": "array", "items": { "type": "string" } } }
+  }
 }

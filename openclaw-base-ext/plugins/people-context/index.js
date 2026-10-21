@@ -1,5 +1,6 @@
-// people-context — tells the discord-friend agent who is talking and who is
-// tagged, next to each Discord turn.
+// people-context — tells the Discord agent who is talking and who is tagged,
+// next to each Discord turn. config.agents names the agents it serves
+// (config-init writes the Discord-routed ones).
 //
 // 1. Mentions. The Discord plugin turns `<@123…>` into `@Name` before any hook
 //    or the model sees the message, so the model cannot tag that person back
@@ -18,7 +19,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 
-const AGENT_ID = process.env.PEOPLE_CONTEXT_AGENT || 'discord-friend';
 const PEOPLE_FILE = 'people/MEMORY.md';
 const MAX_TAGGED = 4;
 const API = 'https://discord.com/api/v10';
@@ -93,13 +93,15 @@ export default definePluginEntry({
   description: 'Prepends the Discord sender\'s people/MEMORY.md section to each turn.',
   register(api) {
     const token = botToken(api.config);
+    const agents = new Set(api.pluginConfig?.agents ?? []);
     // sessionKey → promise of the latest message's mentions. A turn waits for
     // it (at most MENTION_WAIT_MS); a later message replaces it.
     const pending = new Map();
 
     api.on('message_received', (event) => {
       const key = event?.sessionKey;
-      if (!token || !key || !String(key).includes(`agent:${AGENT_ID}:discord:`)) return;
+      const agent = String(key ?? '').match(/^agent:([^:]+):discord:/)?.[1];
+      if (!token || !agents.has(agent)) return;
       if (!String(event.content ?? '').includes('@')) { pending.delete(key); return; }
       const channelId = lastId(event.metadata?.originatingTo) || lastId(key);
       const messageId = discordId(event.messageId);
@@ -108,7 +110,7 @@ export default definePluginEntry({
     });
 
     api.on('before_prompt_build', async (event, ctx) => {
-      if (ctx?.agentId !== AGENT_ID) return;
+      if (!agents.has(ctx?.agentId)) return;
       const sender = discordId(ctx.senderId);
       const mentions = ((await pending.get(ctx.sessionKey)) ?? []).filter((m) => m.id !== sender);
       pending.delete(ctx.sessionKey);
@@ -142,7 +144,7 @@ export default definePluginEntry({
     // file tools on people/MEMORY.md are refused with the right command.
     // The nightly job writes people/MEMORY.next.md, which stays allowed.
     api.on('before_tool_call', (event, ctx) => {
-      if (ctx?.agentId !== AGENT_ID) return;
+      if (!agents.has(ctx?.agentId)) return;
       const p = event?.params ?? {};
       const targets = [p.path, p.file_path, p.filePath, ...(Array.isArray(event?.derivedPaths) ? event.derivedPaths : [])];
       if (event?.toolName === 'apply_patch' && typeof p.input === 'string' && p.input.includes(PEOPLE_FILE)) targets.push(PEOPLE_FILE);

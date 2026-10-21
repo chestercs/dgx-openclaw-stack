@@ -39,6 +39,11 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   instead of `HEARTBEAT.md`. `agents.defaults.heartbeat.directPolicy: "allow"`
   is written next to the owner DM target, which silences a Doctor warning on
   every start.
+- No agent id is hard-coded any more. Active Memory's `agents`, the deep
+  agent's parent and the new `config.agents` of people-context and
+  claim-guard come from the agents the catch-all Discord binding routes to
+  (`discordAgentIds`). `PEOPLE_CONTEXT_AGENT` and `CLAIM_GUARD_AGENTS` are
+  gone.
 - SETUP.md's headless onboarding uses `--auth-choice skip` and the gateway
   token reference only; config-init wires the model. Checked end to end on an
   empty state (onboarding, config-init, a web search turn, memory status,

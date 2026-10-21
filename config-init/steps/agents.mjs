@@ -233,7 +233,7 @@ function deep(ctx) {
   const id = env.str('OPENCLAW_DISCORD_DEEP_AGENT_ID', 'deep');
   const entries = config.get('agents.entries') ?? {};
   const parent = Object.keys(entries).find((a) => entries[a]?.workspace === ctx.ws('discord'))
-    ?? (entries['discord-friend'] ? 'discord-friend' : undefined);
+    ?? discordAgentIds(config)[0];
   if (!parent || parent === id) return;
   const allow = entry(parent, 'subagents', 'allowAgents');
 

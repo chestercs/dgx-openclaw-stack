@@ -27,7 +27,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 
-const AGENTS = new Set((process.env.CLAIM_GUARD_AGENTS || 'discord-friend').split(',').map((s) => s.trim()).filter(Boolean));
 const LOG_FILE = process.env.CLAIM_GUARD_LOG
   || path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'logs', 'claim-guard.jsonl');
 const JUDGE_TIMEOUT_MS = Number(process.env.CLAIM_GUARD_TIMEOUT_MS) || 25_000;
@@ -210,6 +209,8 @@ export default definePluginEntry({
   name: 'Claim Guard',
   description: 'The model checks each final answer against the run\'s tool calls and for unverified facts; a mismatch gets one more pass.',
   register(api) {
+    // The agents it judges; config-init writes the Discord-routed ones.
+    const agents = new Set(api.pluginConfig?.agents ?? []);
     async function judge(reply, tools) {
       const t0 = Date.now();
       let timer;
@@ -246,7 +247,7 @@ export default definePluginEntry({
     });
 
     api.on('before_agent_finalize', async (event, ctx) => {
-      if (!AGENTS.has(ctx?.agentId)) return;
+      if (!agents.has(ctx?.agentId)) return;
       const reply = typeof event?.lastAssistantMessage === 'string' ? event.lastAssistantMessage : '';
       if (!reply) return;
       const runId = event?.runId ?? ctx?.runId;

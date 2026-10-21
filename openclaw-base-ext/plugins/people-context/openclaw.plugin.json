@@ -1,8 +1,12 @@
 {
   "id": "people-context",
   "name": "People Context",
-  "description": "Tells the discord-friend agent who is tagged in a message (with IDs) and adds the people/MEMORY.md lines of the sender and the tagged people.",
+  "description": "Tells the Discord agent who is tagged in a message (with IDs) and adds the people/MEMORY.md lines of the sender and the tagged people.",
   "categories": ["other"],
   "activation": { "onStartup": true },
-  "configSchema": { "type": "object", "additionalProperties": false }
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": { "agents": { "type": "array", "items": { "type": "string" } } }
+  }
 }
