@@ -23,8 +23,8 @@
 // Every checked answer gets one line in logs/claim-guard.jsonl with structure
 // only (time, session, tools, verdict, outcome, latency) — never message text.
 // The line doubles as the answer's receipt: AGENTS.md hash (which prompt
-// answered), model, model calls, tokens in/out, run time, and the skills and
-// memory files the run read; scripts/daily-status.sh summarises it.
+// answered), model, the context size of a model call, run time, and the
+// skills and memory files the run read; scripts/daily-status.sh summarises it.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,12 +39,15 @@ const MAX_REPLY_CHARS = 6000;
 
 const runTools = new Map(); // runId → [{ name, ok }] in call order
 const revised = new Set(); // runIds already sent back for one more pass
-// runId → { t0, calls, in, out, model }: the receipt part of each log line,
-// so a prompt or harness change shows up as tokens and latency per answer.
+// runId → { t0, prompt, model }: the receipt part of each log line, so a
+// prompt or harness change shows up as context size and latency per answer.
+// llm_output reports the usage of the last model call only (a 3-call turn
+// with 138k input tokens in total logged 44k), so `prompt` is the context
+// size of one call; whole-turn totals come from scripts/discord-eval.mjs.
 const runUsage = new Map();
 const usageOf = (runId) => {
   if (!runUsage.has(runId)) {
-    runUsage.set(runId, { t0: Date.now(), calls: 0, in: 0, out: 0, model: null });
+    runUsage.set(runId, { t0: Date.now(), prompt: null, model: null });
     if (runUsage.size > MAX_RUNS) runUsage.delete(runUsage.keys().next().value);
   }
   return runUsage.get(runId);
@@ -327,9 +330,7 @@ export default definePluginEntry({
       if (!runId || !agents.has(ctx?.agentId)) return;
       const u = usageOf(runId);
       const use = event?.usage ?? {};
-      u.calls += 1;
-      u.in += Number(use.input ?? use.inputTokens ?? use.prompt_tokens ?? 0) || 0;
-      u.out += Number(use.output ?? use.outputTokens ?? use.completion_tokens ?? 0) || 0;
+      u.prompt = Number(use.input ?? use.inputTokens ?? use.prompt_tokens) || u.prompt;
       u.model ??= event?.model ?? null;
     });
 
@@ -351,8 +352,8 @@ export default definePluginEntry({
       const base = {
         session, run: runId, tools: tools.map((t) => (t.ok ? t.name : `${t.name}!`)), ms,
         policy: policyVersion(ctx?.workspaceDir), model: u?.model ?? ctx?.modelId ?? null,
-        calls: u?.calls ?? null, tokensIn: u?.in ?? null, tokensOut: u?.out ?? null,
-        runMs: u ? Date.now() - u.t0 : null, sources: contextSources(event?.messages),
+        promptTokens: u?.prompt ?? null, runMs: u ? Date.now() - u.t0 : null,
+        sources: contextSources(event?.messages),
       };
 
       // The embedded runner always reports stopHookActive=false, so the

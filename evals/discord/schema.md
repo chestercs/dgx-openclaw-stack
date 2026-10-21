@@ -49,7 +49,7 @@ node scripts/discord-eval.mjs --runs 3
 node scripts/discord-eval.mjs --id person-identity-01
 ```
 
-Each run uses a fresh session key (`agent:discord-friend:eval:<id>:<n>`), so cases
+Each run uses a fresh session key (`agent:discord-friend:eval:<id>:<stamp>-<n>`), so cases
 never see each other or a live channel. Limits of the CLI path: Active Memory
 does not run in `openclaw agent` turns, and people-context needs a real Discord
 sender; cases that depend on them are tested live in the test channel.

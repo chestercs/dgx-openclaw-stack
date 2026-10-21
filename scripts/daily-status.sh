@@ -57,7 +57,7 @@ for line in sys.stdin:
     if r.get("ms"): ms.append(r["ms"])
     if k == "discord" and o != "revise":
         if r.get("runMs"): run_s.append(r["runMs"] / 1000)
-        if r.get("tokensIn"): tok.append(r["tokensIn"])
+        if r.get("promptTokens"): tok.append(r["promptTokens"])
         if r.get("policy"): pol[r["policy"]] = pol.get(r["policy"], 0) + 1
 med = lambda xs: sorted(xs)[len(xs) // 2]
 p90 = lambda xs: sorted(xs)[min(len(xs) - 1, int(len(xs) * 0.9))]
@@ -67,7 +67,7 @@ for k, v in sorted(agg.items()):
 if kinds: print("claim-guard revise kinds:", " ".join("%s=%d" % kv for kv in sorted(kinds.items())))
 if ms: print("claim-guard judge ms: median %d, max %d" % (med(ms), max(ms)))
 if run_s: print("discord answers: n=%d, run s median %.0f p90 %.0f" % (len(run_s), med(run_s), p90(run_s)))
-if tok: print("discord tokens in: median %d, p90 %d" % (med(tok), p90(tok)))
+if tok: print("discord prompt tokens per call: median %d, p90 %d" % (med(tok), p90(tok)))
 if pol: print("discord prompt versions:", " ".join("%s=%d" % kv for kv in sorted(pol.items())))
 ' "$HOURS"
 

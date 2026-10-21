@@ -39,8 +39,11 @@ function openclaw(argv, timeoutMs) {
   return execFileSync('openclaw', argv, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
+// Per invocation, so claim-guard lines of an earlier run never match.
+const STAMP = Date.now().toString(36);
+
 function turn(c, n) {
-  const key = `agent:${AGENT}:eval:${c.id}:${n}`;
+  const key = `agent:${AGENT}:eval:${c.id}:${STAMP}-${n}`;
   const message = c.context ? `[${c.context}] ${c.prompt}` : c.prompt;
   const t0 = Date.now();
   let res;
