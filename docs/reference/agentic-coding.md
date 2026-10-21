@@ -78,7 +78,7 @@ These settings decide whether an hours-long task survives. All are written by
 
 | Setting | Knob | Why |
 |---|---|---|
-| `agents.defaults.subagents.runTimeoutSeconds = 0` | `OPENCLAW_SUBAGENTS_BOUNDS` | No timeout on sub-agent runs; this is what makes day-long tasks possible. Depth 2, 5 children, 8 concurrent. |
+| `agents.defaults.subagents.runTimeoutSeconds = 1800` | `OPENCLAW_SUBAGENTS_RUN_TIMEOUT` | A child stops after 30 minutes unless its `sessions_spawn` call passes `runTimeoutSeconds: 0`, which day-long thread tasks do (the per-call value wins). Depth 2, 5 children, 8 concurrent (`OPENCLAW_SUBAGENTS_BOUNDS`). |
 | `agents.defaults.timeoutSeconds = 1800` | `OPENCLAW_AGENT_TIMEOUT_SECONDS` | The upstream 600 s aborted runs vLLM was still serving; a cold 128K prefill alone takes about 2 minutes. |
 | `models.providers.vllm.timeoutSeconds = 1800` | `LLM_REQUEST_TIMEOUT_SECONDS` | Same reason, at the provider request level. |
 | `agents.defaults.contextPruning {mode: cache-ttl}` | `OPENCLAW_AGENT_CONTEXT_PRUNING_MODE` | Trims old tool results in memory before each model call; exec and read output dominate context growth on coding runs. The transcript on disk is untouched. |

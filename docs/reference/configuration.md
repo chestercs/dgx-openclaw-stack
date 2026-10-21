@@ -156,7 +156,8 @@ Profile `python`. Details: [python-sandbox.md](python-sandbox.md).
 | `OPENCLAW_AGENT_TIMEOUT_SECONDS` | `1800` | Per-run timeout, aligned with `LLM_REQUEST_TIMEOUT_SECONDS`; the upstream 600 s aborted runs vLLM was still serving. `off` removes it. |
 | `OPENCLAW_AGENT_CONTEXT_PRUNING_MODE` | `cache-ttl` | Trims old tool results from the in-memory context before each model call, keeping prefill bounded on long coding runs. `off` removes it. |
 | `OPENCLAW_AGENT_CONTEXT_PRUNING_TTL` | `5m` | Age after which tool results are trimmed. |
-| `OPENCLAW_SUBAGENTS_BOUNDS` | `on` | Sub-agent limits: depth 2, 5 children, 8 concurrent, no run timeout (for day-long work). Out-of-range values crash-loop the gateway, so they are fixed. |
+| `OPENCLAW_SUBAGENTS_BOUNDS` | `on` | Sub-agent limits: depth 2, 5 children, 8 concurrent. Out-of-range values crash-loop the gateway, so they are fixed. |
+| `OPENCLAW_SUBAGENTS_RUN_TIMEOUT` | `1800` | Default run time limit of a sub-agent, seconds (`0` = none). A day-long thread task passes `runTimeoutSeconds: 0` in its own `sessions_spawn` call, which wins. |
 | `OPENCLAW_SESSION_THREAD_SPAWN` | `on` | `sessions_spawn {thread:true}` may create a thread-bound session that starts from a clean transcript. |
 | `OPENCLAW_SYSTEM_AGENT` | `main` | Agent that owns system consults (node approvals); the Discord persona has no gateway tools. Written only if that agent exists; `off` skips. |
 | `OPENCLAW_STATUS_REACTIONS` | `on` | Run-state emoji on the user's message; with a slow local model it is the first sign the bot is working. |

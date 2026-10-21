@@ -28,6 +28,35 @@ Open an issue using the **Bug report** template. Include:
   lines from `docker logs openclaw-config-init` help too; they mask secrets.
 - The exact command you ran.
 
+## When the bot gets something wrong
+
+A wrong answer, a made-up fact, a claimed action that did not happen, a
+message in the wrong place: each one should leave the harness a little
+stronger, not only the reply fixed. The loop:
+
+1. **Observe.** The run's receipt: its line in `logs/claim-guard.jsonl`
+   (tools, outcome, prompt version, sources), `openclaw audit --session <key>`
+   and `scripts/daily-status.sh`. Not the chat text alone.
+2. **Classify.** Which part failed: the map (the prompt did not say where to
+   look), a tool (missing, unclear or wrong result), state (memory held a
+   wrong fact), a sensor (claim-guard let it through), or a policy (an action
+   that needed a gate).
+3. **Repair** that part, as small as the failure: a contract line, a tool
+   description, a memory fix with its source, a judge rule, a gate in
+   harness-guard.
+4. **Verify.** Add the failure as a case to the Discord eval
+   ([`evals/discord/schema.md`](evals/discord/schema.md); real cases stay in
+   `private/`), run it before and after (`scripts/discord-eval.sh --id …`),
+   then the full set to see that nothing else broke. Compare reports under
+   the same grading (`--rejudge`).
+5. **Accept** with the numbers in the commit or the CHANGELOG: pass count,
+   latency and tokens before and after.
+
+A rule the model must follow belongs in two places: the prompt says it, and
+a check outside the model (claim-guard, harness-guard, a tool's own refusal)
+enforces it with a message that says how to fix the call. A rule that the
+eval shows makes no difference is removed.
+
 ## Proposing features
 
 Open an issue using the **Feature request** template *before* sending a PR.

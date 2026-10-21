@@ -115,8 +115,10 @@ function runs(config) {
   if (prune === 'off') config.remove([...d, 'contextPruning'], 'OPENCLAW_AGENT_CONTEXT_PRUNING_MODE=off');
   else config.merge([...d, 'contextPruning'], { mode: 'cache-ttl', ttl: env.str('OPENCLAW_AGENT_CONTEXT_PRUNING_TTL', '5m') });
 
-  // Sub-agent bounds. Depth 2 lets a child spawn its own workers;
-  // runTimeoutSeconds 0 = no limit, which "work on this for a day" needs.
+  // Sub-agent bounds. Depth 2 lets a child spawn its own workers. A child
+  // runs at most 30 minutes by default, so a stuck one ends instead of
+  // holding a slot; "work on this for a day" passes runTimeoutSeconds 0 in
+  // its own sessions_spawn call (the per-call value wins, 0 = no limit).
   // The values stay inside the documented ranges: an out-of-range one is
   // rejected as "agents.defaults: Invalid input" and the gateway crash-loops.
   if (env.bool('OPENCLAW_SUBAGENTS_BOUNDS', true)) {
@@ -124,7 +126,7 @@ function runs(config) {
       maxSpawnDepth: 2,
       maxChildrenPerAgent: 5,
       maxConcurrent: 8,
-      runTimeoutSeconds: 0,
+      runTimeoutSeconds: Math.max(0, env.int('OPENCLAW_SUBAGENTS_RUN_TIMEOUT', 1800)),
       announceTimeoutMs: 120000,
       archiveAfterMinutes: 60,
       delegationMode: 'suggest',

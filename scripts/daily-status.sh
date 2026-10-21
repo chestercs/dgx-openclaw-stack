@@ -14,6 +14,7 @@
 set -u
 DIR=${DIR:-$HOME/daily-status}
 GATEWAY=${GATEWAY:-openclaw-gateway}
+CLI=${CLI:-openclaw-cli}
 STATE=${STATE:-/home/node/.openclaw}
 HOURS=${HOURS:-24}
 THERM_CSV=${THERM_CSV:-$HOME/thermguard/temps.csv}
@@ -83,6 +84,34 @@ if pol: print("discord prompt versions:", " ".join("%s=%d" % kv for kv in sorted
     for f in *.md; do [ -f "$f" ] && [ "$f" != server-map.md ] || continue
       grep -qiE "(Forrás|Source)[*]*[[:space:]]*:" "$f" || echo "$f"; done' _ "$STATE" | paste -sd ' ' -)
   echo "memory notes without a source line: ${nosrc:-none}"
+
+  # Discord runs and tool calls from the audit store (eval sessions are not
+  # ":discord:" keys): runs that failed, timed out or were cancelled, and the
+  # tools that failed or were blocked (owner-only and harness-guard refusals
+  # show up as blocked).
+  after=$(date -u -d "-$HOURS hours" +%Y-%m-%dT%H:%M:%SZ)
+  for kind in agent_run tool_action; do
+    cur=
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      page=$(docker exec "$CLI" openclaw audit --kind "$kind" --after "$after" --limit 500 ${cur:+--cursor "$cur"} --json 2>/dev/null) || break
+      printf '%s' "$page" | jq -c '.events[]?'
+      cur=$(printf '%s' "$page" | jq -r '.nextCursor // empty')
+      [ -n "$cur" ] || break
+    done
+  done | python3 -c '
+import sys, json
+runs, tools = {}, {}
+for line in sys.stdin:
+    try: e = json.loads(line)
+    except ValueError: continue
+    if ":discord:" not in (e.get("sessionKey") or ""): continue
+    st = e.get("status")
+    if e.get("action") == "agent.run.finished": runs[st] = runs.get(st, 0) + 1
+    elif e.get("action") == "tool.action.finished" and st in ("failed", "blocked", "timed_out"):
+        k = "%s %s" % (e.get("toolName"), st); tools[k] = tools.get(k, 0) + 1
+print("discord runs:", " ".join("%s=%d" % kv for kv in sorted(runs.items())) or "none")
+if tools: print("discord tool failures:", ", ".join("%s=%d" % kv for kv in sorted(tools.items(), key=lambda kv: -kv[1])[:8]))
+'
 
   # Scheduled jobs: last run and status of every job, flagged when the last
   # run failed or a job that should have run did not (next run over an hour
