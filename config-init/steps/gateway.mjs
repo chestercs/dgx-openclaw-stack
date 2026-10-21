@@ -80,12 +80,15 @@ function heartbeat(config) {
     if (config.get([...hb, 'target']) === 'discord') {
       config.remove([...hb, 'target'], 'OPENCLAW_HEARTBEAT_TO=off');
       config.remove([...hb, 'to'], 'OPENCLAW_HEARTBEAT_TO=off');
+      config.remove([...hb, 'directPolicy'], 'OPENCLAW_HEARTBEAT_TO=off');
     }
     return;
   }
   const owner = to ?? env.ids('OPENCLAW_DISCORD_COMMAND_OWNERS')[0];
   if (/^\d+$/.test(owner ?? '') && config.get('channels.discord.enabled') === true) {
-    config.merge(hb, { target: 'discord', to: `user:${owner}` }, 'owner DM');
+    // directPolicy "allow" is the default; stated, because Doctor warns on
+    // every start about a DM target with the policy unset.
+    config.merge(hb, { target: 'discord', to: `user:${owner}`, directPolicy: 'allow' }, 'owner DM');
   }
 }
 
