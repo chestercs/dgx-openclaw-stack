@@ -16,6 +16,10 @@ import { template, upsertBlock, skill, removeSkill, removeFile } from '../lib/fi
 
 const GROUPS = ['image', 'video', 'music'];
 export const mediaOn = (group) => !env.mediaOff().includes(group);
+// With every media group off the bridge is not running either, and a wired
+// server would only log connection errors.
+export const comfyuiOn = () => GROUPS.some(mediaOn) && Boolean(env.str('IMAGE_GEN_API_TOKEN'));
+export const ttsOn = () => env.bool('OPENCLAW_TTS', Boolean(env.str('OPENCLAW_TTS_FISH_API_KEY')));
 
 const DESC = {
   'image-generation': 'Image generation with the comfyui_image__generate tool — workflow choice (SFW/adult), resolution recipes (2K/FullHD/portrait/square), the display_markdown delivery contract.',
@@ -36,8 +40,7 @@ function placeSkill(ws, name, on, body) {
 // removes the whole top-level `tts` key; with neither, `tts` is left alone.
 function tts(config) {
   const key = env.str('OPENCLAW_TTS_FISH_API_KEY');
-  const on = env.bool('OPENCLAW_TTS', Boolean(key));
-  if (!on) {
+  if (!ttsOn()) {
     if (env.raw('OPENCLAW_TTS') !== undefined) config.remove('tts', 'OPENCLAW_TTS=off');
     return;
   }
@@ -66,14 +69,11 @@ function tts(config) {
 }
 
 // The openclaw-image-comfyui bridge (its own compose file, joined to this
-// stack's network). Wired when IMAGE_GEN_API_TOKEN is set and a media group is on, removed otherwise
-// so the gateway does not dial a parked bridge.
+// stack's network). Wired when IMAGE_GEN_API_TOKEN is set and a media group
+// is on, removed otherwise so the gateway does not dial a parked bridge.
 function comfyuiMcp(config) {
-  // With every media group off the bridge is not running either, and a
-  // wired server would only log connection errors.
-  const token = GROUPS.some(mediaOn) ? env.str('IMAGE_GEN_API_TOKEN') : undefined;
   const p = ['mcp', 'servers', 'comfyui_image'];
-  if (!token) {
+  if (!comfyuiOn()) {
     config.remove(p, 'media tools off or IMAGE_GEN_API_TOKEN unset');
     if (config.get('mcp.servers') && !Object.keys(config.get('mcp.servers')).length) config.remove('mcp.servers');
     if (config.get('mcp') && !Object.keys(config.get('mcp')).length) config.remove('mcp');
@@ -89,14 +89,14 @@ function comfyuiMcp(config) {
     requestTimeoutMs: env.int('IMAGE_GEN_MCP_REQUEST_TIMEOUT_MS', 960000),
   });
   // Set by key, not as a headers object, so the log masks the token.
-  config.set([...p, 'headers', 'Authorization'], `Bearer ${token}`);
+  config.set([...p, 'headers', 'Authorization'], `Bearer ${env.str('IMAGE_GEN_API_TOKEN')}`);
 }
 
 export default function media({ config, state, ws }) {
   tts(config);
   comfyuiMcp(config);
 
-  const on = Object.fromEntries(GROUPS.map((g) => [g, mediaOn(g)]));
+  const on = Object.fromEntries(GROUPS.map((g) => [g, mediaOn(g) && comfyuiOn()]));
   // Image recipes point at bundle workflows, so they wait for the operator to
   // name the default one; video waits for LTX_VIDEO_ENABLED (set once the
   // ~71 GB model download has finished).

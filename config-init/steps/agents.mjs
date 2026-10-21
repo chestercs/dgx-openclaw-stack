@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as env from '../lib/env.mjs';
 import { template, writeIfChanged } from '../lib/files.mjs';
+import { comfyuiOn, ttsOn } from './media.mjs';
 
 const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'adaptive', 'max'];
 const PROFILES = ['minimal', 'coding', 'messaging', 'full'];
@@ -88,24 +89,31 @@ function discordAgent(config) {
   // alsoAllow on top of the profile: on guild channels the runtime policy
   // drops `cron` from the catalog even under `full` (it shows in DMs), and the
   // model then says it cannot set reminders. Additive: operator entries stay.
+  // `tts` only while TTS is configured; otherwise the gateway logs it as an
+  // unknown entry on every turn.
   const alsoAllow = env.raw('OPENCLAW_DISCORD_AGENT_ALSO_ALLOW')?.toLowerCase() === 'off'
-    ? [] : env.list('OPENCLAW_DISCORD_AGENT_ALSO_ALLOW', ['group:messaging', 'browser', 'tts', 'canvas', 'cron']);
+    ? [] : env.list('OPENCLAW_DISCORD_AGENT_ALSO_ALLOW', ['browser', 'canvas', 'cron', ...(ttsOn() ? ['tts'] : [])]);
+  // Names that match nothing here: `group:messaging` (`full` has `message`
+  // already) and `tts` without a TTS provider.
+  const unknown = ['group:messaging', ...(ttsOn() ? [] : ['tts'])];
   // `high`: at `minimal` the MoE still skipped tool calls on nuanced
   // Hungarian prompts and claimed it could not search. `off` leaves it unset.
   const thinking = env.oneOf('OPENCLAW_DISCORD_AGENT_THINKING', [...THINKING], 'high');
   // The list replaces the default; `off` skips it. Additive: operator
   // entries stay, and dropping a name here does not take it off the agent.
   const deny = env.raw('OPENCLAW_DISCORD_AGENT_TOOLS_DENY')?.toLowerCase() === 'off' ? [] : env.list('OPENCLAW_DISCORD_AGENT_TOOLS_DENY', DISCORD_DENY);
-  const mediaOff = new Set(env.mediaOff());
+  // Without the ComfyUI MCP server none of its tools exist, so none is denied.
+  const mediaOff = new Set(comfyuiOn() ? env.mediaOff() : []);
   const offTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => mediaOff.has(g)).flatMap(([, t]) => t);
   const onTools = Object.entries(MEDIA_TOOL_GROUPS).filter(([g]) => !mediaOff.has(g)).flatMap(([, t]) => t);
 
   for (const id of discordAgentIds(config)) {
     if (profile !== 'off') config.set(entry(id, 'tools', 'profile'), profile);
+    config.removeFrom(entry(id, 'tools', 'alsoAllow'), unknown.filter((t) => !alsoAllow.includes(t)), 'matches no tool');
     if (alsoAllow.length) config.addTo(entry(id, 'tools', 'alsoAllow'), alsoAllow);
     if (thinking !== 'off') config.set(entry(id, 'thinkingDefault'), thinking);
     if (deny.length) config.addTo(entry(id, 'tools', 'deny'), deny);
-    config.removeFrom(entry(id, 'tools', 'deny'), onTools, 'media group back on');
+    config.removeFrom(entry(id, 'tools', 'deny'), onTools, comfyuiOn() ? 'media group back on' : 'ComfyUI not wired');
     if (offTools.length) config.addTo(entry(id, 'tools', 'deny'), offTools, 'OPENCLAW_DISCORD_MEDIA_TOOLS_OFF');
   }
 }

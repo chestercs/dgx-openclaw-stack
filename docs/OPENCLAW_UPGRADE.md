@@ -95,6 +95,10 @@ docker logs --tail 40 openclaw-meshcore-bridge
 Use prefixed container names if `CONTAINER_NAME_PREFIX` is configured. The
 `plugins inspect` line checks that a local plugin still loads on the new version
 (`typedHooks` lists its hooks); repeat it for `claim-guard` and `dm-guild-gate`.
+With `OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free`, check that `openclaw plugins list`
+shows `parallel` at the new version (`openclaw plugins install
+@openclaw/parallel-plugin@<version> --force` otherwise) and run
+`scripts/websearch-bench.py parallel-free`.
 Try a normal chat turn, and the radio's `/ping` and `/status` if you run MeshCore.
 The script checks service health; a real model turn and radio delivery still need
 end-to-end verification on the actual hardware.

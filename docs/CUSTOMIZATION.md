@@ -152,9 +152,28 @@ on the host can call `http://127.0.0.1:8004/v1/` with
 the key as the only barrier. The embedding server is not published; it is reachable
 only on the compose network.
 
-## Tune web search (SearxNG)
+## Tune web search
 
-### Which engines run
+### Parallel-free instead of SearxNG
+
+`OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free` sends `web_search` to Parallel's free
+Search MCP (`https://search.parallel.ai/mcp`). It needs no key, account or payment,
+but every query goes to Parallel instead of staying on your host, and the free
+tier has lower rate limits than the paid API. On the reference host it answered
+56 of the 60 bench questions against SearxNG's 52, with fuller excerpts. Install
+the official plugin once, at the version of the pinned OpenClaw image (a newer
+plugin may require a newer OpenClaw):
+
+```bash
+docker exec openclaw-cli openclaw plugins install @openclaw/parallel-plugin@2026.10.4
+# .env: OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free
+docker compose up -d --force-recreate openclaw-config-init openclaw-gateway openclaw-cli
+```
+
+SearxNG keeps running, so switching back is the knob alone. Compare both on your
+host first: `scripts/websearch-bench.py parallel-free` and `... searxng`.
+
+### SearxNG: which engines run
 
 `searxng/settings/settings.yml` → `use_default_settings.engines.keep_only`. Whatever
 is in this list stays in the registry; every other engine in the upstream defaults
@@ -208,7 +227,7 @@ engines:
 `scripts/daily-status.sh` prints which engines answered one Hungarian and one
 English query each day.
 
-### Categories and language passed to SearxNG
+### SearxNG: categories and language
 
 Config-init (`config-init/steps/tools.mjs`) writes the SearxNG `baseUrl`, an empty
 `language` and `categories: "general,news"`. Do not add `science` to the default:
@@ -216,8 +235,8 @@ it put arXiv papers on top of every answer. The agent can still pass `language` 
 `categories` per query. When it sends no language, SearxNG's
 `search.default_lang: "auto"` detects it from the query text.
 
-The search wiring has no off switch. If you park `searxng`, `web_search` keeps
-pointing at a dead URL and every search call fails.
+The search wiring has no off switch. If you park `searxng` while it is the
+provider, `web_search` keeps pointing at a dead URL and every search call fails.
 
 ## Turn a service off
 

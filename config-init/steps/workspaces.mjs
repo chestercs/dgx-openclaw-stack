@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as env from '../lib/env.mjs';
 import { template, upsertBlock, skill, removeSkill, writeIfChanged } from '../lib/files.mjs';
-import { mediaOn } from './media.mjs';
+import { mediaOn, comfyuiOn, ttsOn } from './media.mjs';
 
 const DESC = {
   'browser-automation': 'Open a web page, take a screenshot, read an article, click/fill forms with the browser tool — open/snapshot/screenshot/act actions and the mandatory parameter shapes (fill = fields array!).',
@@ -47,12 +47,12 @@ function peopleVars() {
   };
 }
 
-// The router lists only the media tools that run; an "off" line tells the
-// bot to say so instead of reaching for another tool.
+// The router lists only the tools that run; an "off" line tells the bot to
+// say so instead of reaching for another tool.
 function routerVars() {
-  const vars = {};
+  const vars = { TTS_TOOL: ttsOn() ? '`tts` · ' : '' };
   for (const g of ['image', 'video', 'music']) {
-    const on = mediaOn(g);
+    const on = mediaOn(g) && comfyuiOn();
     vars[`${g.toUpperCase()}_TOOLS`] = on ? template(`discord/router/${g}-tools.md`) : '';
     vars[`${g.toUpperCase()}_ROUTE`] = template(`discord/router/${g}-${on ? 'on' : 'off'}.md`);
   }

@@ -13,8 +13,16 @@ import * as env from '../lib/env.mjs';
 // searxng/settings/settings.yml. "general,news" scored 35/40 on the fact bench
 // against 34/40 for "general"; a stored "science" category put arXiv papers on
 // top of plain fact questions. The agent can still ask for science per call.
+//
+// OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free sends web_search to Parallel's
+// free Search MCP instead (search.parallel.ai: no key, but the queries leave
+// the host). On the three sets of scripts/websearch-bench.py it found 56/60
+// against SearxNG's 52/60 (2026-10-20), with fuller excerpts. It needs the official plugin installed once
+// (docs/CUSTOMIZATION.md); SearxNG stays wired as the way back.
 function webSearch(config) {
-  config.set('tools.web.search.provider', 'searxng');
+  const provider = env.oneOf('OPENCLAW_WEB_SEARCH_PROVIDER', ['searxng', 'parallel-free'], 'searxng');
+  config.set('tools.web.search.provider', provider);
+  if (provider === 'parallel-free') config.set('plugins.entries.parallel.enabled', true);
   config.set('plugins.entries.searxng.enabled', true, 'bundled plugin is off by default');
   config.merge('plugins.entries.searxng.config.webSearch', {
     baseUrl: 'http://searxng:8080',

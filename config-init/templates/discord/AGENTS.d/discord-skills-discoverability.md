@@ -1,6 +1,6 @@
 ## Tools & skills — router
 
-Tools on this deploy: `web_search` (SearxNG) · {{IMAGE_TOOLS}}{{VIDEO_TOOLS}}{{MUSIC_TOOLS}}`tts` · `python_sandbox__python_exec` (Python + dev toolchain) · `python_sandbox__transcribe_audio` · `python_sandbox__git_push` · `browser` (action-based) · `canvas` · `exec` (shell, approval-gated) · `memory_search`+`memory_get` (read; WRITING = `write` into a `memory/*.md` file, there is NO memory_write tool) · `automations` (old name `cron`) · `sessions_spawn`+`sessions_yield` · `image` (vision: "ki van a képen?").
+Tools on this deploy: `web_search` · {{IMAGE_TOOLS}}{{VIDEO_TOOLS}}{{MUSIC_TOOLS}}{{TTS_TOOL}}`python_sandbox__python_exec` (Python + dev toolchain) · `python_sandbox__transcribe_audio` · `python_sandbox__git_push` · `browser` (action-based) · `canvas` · `exec` (shell, approval-gated) · `memory_search`+`memory_get` (read; WRITING = `write` into a `memory/*.md` file, there is NO memory_write tool) · `automations` (old name `cron`) · `sessions_spawn`+`sessions_yield` · `image` (vision: "ki van a képen?").
 
 **🚨 SKILL ≠ TOOL — NEVER call a skill as a tool** (a `weather_forecast(...)` tool call DOES NOT EXIST → "isn't available" error). A skill is a RECIPE FILE. Use it EXACTLY like this:
 1. Load it with the `read` tool: `skills/<skill-name>/SKILL.md` (workspace-relative path, e.g. `skills/weather-forecast/SKILL.md`).

@@ -22,7 +22,7 @@ Discord ──► openclaw-gateway (Discord plugin)
               │                people/MEMORY.md, skill list
               ▼
             vllm-llm:8004 (provider "vllm") ◄──► tool calls
-              │   web_search ──► searxng:8080
+              │   web_search ──► searxng:8080 (or Parallel's free Search MCP)
               │   memory_search ──► vllm-embedding:8005 (bge-m3)
               │   exec / apply_patch (gateway container, approvals as Discord DMs)
               │   browser ──► openclaw-browser (CDP)          [profile browser]
@@ -249,6 +249,11 @@ privacywall, marginalia, yep and wikipedia for general queries, plus bing, duckd
 and yahoo news. The set was chosen on a 40-question Hungarian/English fact bench
 (`scripts/websearch-bench.py`); the per-engine numbers and the privacy settings are in
 [`searxng/settings/settings.yml`](../searxng/settings/settings.yml).
+
+`OPENCLAW_WEB_SEARCH_PROVIDER=parallel-free` switches `web_search` to the official
+Parallel plugin and its free Search MCP (no key; the queries leave the host). It
+scored 56/60 against SearxNG's 52/60 on the same bench. SearxNG keeps running as
+the way back ([CUSTOMIZATION.md](CUSTOMIZATION.md#parallel-free-instead-of-searxng)).
 
 Scraped engines rot without an error: a blocked engine just returns nothing, and the
 agent gets fewer, worse results. Check `unresponsive_engines` in a JSON response and

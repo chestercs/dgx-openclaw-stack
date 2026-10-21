@@ -365,7 +365,7 @@ prints a `search` line with the engines that answered and the ones that failed. 
 SearxNG image is re-pulled weekly (`SEARXNG_PULL_POLICY`) because scraped engines
 break as sites change. To compare engines on your own IP, use
 `scripts/websearch-bench.py`; how to change the engine list is in
-[`CUSTOMIZATION.md`](CUSTOMIZATION.md#tune-web-search-searxng).
+[`CUSTOMIZATION.md`](CUSTOMIZATION.md#searxng-which-engines-run).
 
 ### The agent has no `web_search` tool
 
