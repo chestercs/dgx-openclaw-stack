@@ -41,19 +41,23 @@ a pass.
 ## Running
 
 ```bash
-# on the Docker host; quick set, one run per case
-node scripts/discord-eval.mjs --smoke
-# full set, three runs per case (pass^3 for smoke cases)
-node scripts/discord-eval.mjs --runs 3
-# one case
-node scripts/discord-eval.mjs --id person-identity-01
+# on the Docker host, from the stack checkout
+scripts/discord-eval.sh --smoke             # quick set, one run per case
+scripts/discord-eval.sh --runs 3            # full set, three runs per case
+scripts/discord-eval.sh --id person-identity-01
+scripts/discord-eval.sh --cases evals/discord/examples.yaml   # public sample
 ```
 
-Each run uses a fresh session key (`agent:discord-friend:eval:<id>:<stamp>-<n>`), so cases
-never see each other or a live channel. Limits of the CLI path: Active Memory
-does not run in `openclaw agent` turns, and people-context needs a real Discord
-sender; cases that depend on them are tested live in the test channel.
+`memory` and `schedule` cases write the live people file or create real
+automations, so they run only with `--side-effects`.
 
-The report prints per case pass/fail, the tools that ran, latency and input
-tokens, and a summary (pass rate, pass^k on smoke cases, median/p90 latency,
-median input tokens). `--json` writes the same to a file for comparing runs.
+Each run uses a fresh session key (`agent:discord-friend:eval:<id>:<stamp>-<n>`),
+deleted afterwards, so cases never see each other or a live channel. Limits of
+the CLI path: Active Memory does not run in `openclaw agent` turns, and
+people-context needs a real Discord sender; cases that depend on them are tested
+live in the test channel.
+
+Each run prints pass/fail, the tools that ran, latency and input tokens for the
+whole turn; the summary gives the pass rate, cases that passed every run
+(pass^k), median/p90 latency and median input tokens. The full report goes to
+`private/evals/discord/runs/<timestamp>.json` for comparing runs.
