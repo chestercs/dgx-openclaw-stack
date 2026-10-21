@@ -450,8 +450,9 @@ is for clean Hungarian text, not for honesty.
 ## Heartbeat
 
 The heartbeat runs every 30 minutes in an isolated session inside the
-`OPENCLAW_HEARTBEAT_ACTIVE_START`/`_END` window and fires from
-`HEARTBEAT.md` (an empty file skips it). Its default `owner` target finds no
+`OPENCLAW_HEARTBEAT_ACTIVE_START`/`_END` window and follows the scratch of its
+`heartbeat:<agent>` automation (an empty scratch skips it); it ends with
+`heartbeat_respond`, silent unless `notify=true`. claim-guard skips heartbeat runs. Its default `owner` target finds no
 DM on Discord: the plugin reads the bare owner snowflake as a channel, and
 every poll skips with `reason=no-route`. `gateway.mjs` therefore sets
 `target: "discord"` and `to: "user:<id>"` on `agents.defaults.heartbeat`, with

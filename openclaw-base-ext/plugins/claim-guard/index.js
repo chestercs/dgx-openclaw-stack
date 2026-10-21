@@ -253,6 +253,9 @@ export default definePluginEntry({
       // Active Memory's recall runs under the same agent before the real turn;
       // its output is a memory summary for the prompt, not a reply to anyone.
       if (String(runId ?? '').startsWith('active-memory-') || String(ctx?.sessionKey ?? '').includes(':active-memory')) return;
+      // A heartbeat answers no one: it ends with heartbeat_respond, and a
+      // revise pass turned a quiet "nothing to do" into a DM to the owner.
+      if (ctx?.trigger === 'heartbeat') return;
       const tools = runTools.get(runId) ?? toolsFromMessages(event?.messages);
       const session = ctx?.sessionKey ?? event?.sessionKey;
       const { verdict, ms, error } = await judge(reply, tools);

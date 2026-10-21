@@ -33,6 +33,10 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 - The Discord agent's `alsoAllow` default is `browser,canvas,cron` (+`tts`
   while TTS is on); `group:messaging` and `tts` without TTS are removed, they
   matched no tool and were logged on every turn.
+- claim-guard skips heartbeat runs: a revise pass turned a quiet "nothing to
+  do" heartbeat into a DM to the owner. The heartbeat docs describe the 2026.10
+  model (the `heartbeat:<agent>` automation's scratch and `heartbeat_respond`)
+  instead of `HEARTBEAT.md`.
 - Without the ComfyUI MCP server wired (every media group off or no
   `IMAGE_GEN_API_TOKEN`), its tools are neither denied, routed nor given
   skills.

@@ -241,7 +241,8 @@ Read the linked doc before changing the area.
   separate question flags uncommon facts stated without a look-up. Keep the two
   questions separate (merged, the fact rules leaked into the action verdicts) and do
   not go back to claim-word regexes (they missed "jegyeztem"). Active Memory recall
-  runs are skipped. Audit `logs/claim-guard.jsonl` (`none` / `revise` / `resolved` /
+  runs and heartbeats are skipped (a revise pass turned a silent heartbeat into a
+  DM). Audit `logs/claim-guard.jsonl` (`none` / `revise` / `resolved` /
   `unresolved` / `judge_failed`).
 - **dm-guild-gate** (`before_dispatch`): a DM is answered only when the sender shares a
   guild with the bot (Discord REST, cached); `dmPolicy` has no such mode. Audit

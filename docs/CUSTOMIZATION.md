@@ -275,9 +275,21 @@ OPENCLAW_HEARTBEAT_ACTIVE_END=02:00     # end before start wraps past midnight
 OPENCLAW_HEARTBEAT_TZ=Europe/Budapest
 ```
 
-The heartbeat reads the agent's `HEARTBEAT.md`; an empty file means the poll is
-skipped, so write a task list there to make it do something. Its messages go to the
-owner as a Discord DM: `OPENCLAW_HEARTBEAT_TO`, or the first ID in
+Since 2026.10 each agent's heartbeat is an automation (`heartbeat:<agent>`) whose
+instructions are its private scratch, not `HEARTBEAT.md` (Doctor imports the file
+once, and only when the scratch is still empty). Read and replace it with the CLI;
+an empty scratch skips the poll:
+
+```bash
+docker exec openclaw-cli openclaw automations list            # the heartbeat:<agent> ids
+docker exec openclaw-cli openclaw automations scratch <id>
+docker exec -i openclaw-cli openclaw automations scratch <id> --file - < my-heartbeat.md
+```
+
+A heartbeat ends with the `heartbeat_respond` tool: `notify=false` stays silent,
+`notify=true` sends its `notificationText`. Say in the scratch when to notify,
+or the model reports "nothing to do" in prose and that prose is sent. Messages go to
+the owner as a Discord DM: `OPENCLAW_HEARTBEAT_TO`, or the first ID in
 `OPENCLAW_DISCORD_COMMAND_OWNERS`. An explicit target is needed because the upstream
 `owner` target finds no DM on Discord (`reason=no-route`). `OPENCLAW_HEARTBEAT_TO=off`
 leaves delivery to OpenClaw.

@@ -329,9 +329,13 @@ search finds. Check, in order:
 The bot writes the people file only through `/opt/people-digest.mjs note|forget`,
 which heals the file from its last good copy if a section went missing.
 
-### The heartbeat never sends a DM
+### The heartbeat never sends a DM, or sends too many
 
-- An empty `HEARTBEAT.md` means the poll is skipped.
+- The instructions are the `heartbeat:<agent>` automation's scratch
+  (`openclaw automations scratch <id>`), not `HEARTBEAT.md`; an empty scratch
+  skips the poll. A scratch older than 2026.10 may still say "reply HEARTBEAT_OK":
+  rewrite it around `heartbeat_respond` with `notify=false` for "nothing to do"
+  ([CUSTOMIZATION.md](CUSTOMIZATION.md#heartbeat-and-dreaming)).
 - The DM goes to `OPENCLAW_HEARTBEAT_TO`, or the first ID in
   `OPENCLAW_DISCORD_COMMAND_OWNERS`. Without either, the upstream `owner` target
   finds no DM and every poll logs `reason=no-route`.
