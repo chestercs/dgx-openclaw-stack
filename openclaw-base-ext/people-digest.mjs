@@ -572,7 +572,9 @@ async function history(opt) {
       const who = m.author?.global_name || m.author?.username || '?';
       if (author && !(m.author?.id === author || who.toLowerCase().includes(author) || String(m.author?.username).toLowerCase().includes(author))) continue;
       const text = messageText(m).replace(/\s+/g, ' ').trim();
-      if (grep && !text.toLowerCase().includes(grep)) continue;
+      // The author's name counts too: a game bot's win post is an embed with
+      // no mention of the bot, and "--grep ruinbot" found none of them.
+      if (grep && !`${who} ${m.author?.username ?? ''} ${text}`.toLowerCase().includes(grep)) continue;
       if (!text && !(m.attachments || []).length) continue;
       const tag = m.author?.id === self ? ' (te)' : m.author?.bot ? ' (bot)' : '';
       const att = (m.attachments || []).length ? ` [+${m.attachments.length} csatolmány]` : '';

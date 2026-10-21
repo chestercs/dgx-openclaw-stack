@@ -12,6 +12,11 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Fixed
 
+- Discord channel history: `people-digest.mjs history --grep` also matches
+  the author's name, and the tool policy says to search the channel where a
+  thing happened. Asked who won the last /ruin round, the bot searched the
+  channel it was asked in for the word "ruinbot", which the embed-only win
+  post in the game's own channel never contains.
 - claim-guard's fact question sees the user's message and counts who a named
   person is (job, role, office) as a specific fact. "jó magyar előadó" about a
   central banker had passed as an opinion; on a 12-case A/B the check went
