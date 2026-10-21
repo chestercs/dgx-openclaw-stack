@@ -22,9 +22,30 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 - people-context tools `people_note`, `people_forget` and `discord_history`
   (wrapping `/opt/people-digest.mjs`), so the agent needs no shell for them; a
   note about someone other than the sender is refused unless the owner asks.
-- `harness-guard` plugin: owner-only tools in DMs.
+- `harness-guard` plugin, policy outside the model: owner-only tools in DMs;
+  a `Forrás:` line for every new fact in `memory/*.md` (the file is copied to
+  `memory-backups/` first); a `Done when:` line in every `sessions_spawn`
+  task; a member's `message` sends and `automations` deliveries only to the
+  conversation they asked in (no other channel or DM, no broadcast, no mass
+  mention). Owners and scheduled runs pass.
+- claim-guard checks facts against the turn's tool results: a third question
+  rates each specific, uncommon fact `supported`, `contradicted` or
+  `not_found`, and the revise names the exact gap. Up to two revisions (look
+  it up and fix, then remove or mark as not verified); daily-status lists the
+  Discord sessions left unresolved.
+- `people-digest.mjs server-map` writes `memory/server-map.md` (every text
+  channel with id, topic and the bots posting there); the nightly `collect`
+  refreshes it.
+- daily-status: Discord run outcomes and failed or blocked tools from the
+  audit store, and the memory notes with no source line.
+- CONTRIBUTING: the incident loop (receipt, classify, repair, eval case,
+  numbers).
 
 ### Changed
+
+- Sub-agents stop after 30 minutes by default
+  (`OPENCLAW_SUBAGENTS_RUN_TIMEOUT`); a day-long thread task passes
+  `runTimeoutSeconds: 0` in its own call.
 
 - Owner-only shell and browser (`OPENCLAW_DISCORD_OWNER_ONLY_TOOLS`, default
   `exec,process,browser`): guild channels through the official
@@ -48,6 +69,13 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Fixed
 
+- claim-guard counts `people_note`, `people_forget` and `discord_history` as
+  saving, reading and searching: every "elmentettem" after `people_note` had
+  been sent back for a revision.
+- The reminder skill computes times without `exec`, which is owner-only now.
+- The eval counts the tools of every pass of a revised turn; the CLI's
+  summary lists only the last pass, so a revised turn that had searched
+  failed as if it had not.
 - Memory keeps no raw session dumps. Config-init turns the `session-memory`
   hook off (`OPENCLAW_SESSION_MEMORY`, default `off`): it saved each
   session's last messages on reset, the bot's wrong conclusions included, and
