@@ -180,29 +180,29 @@ Run the OpenClaw onboarding in the CLI container. The interactive wizard:
 docker exec -it openclaw-cli openclaw onboard
 ```
 
-Or headless, with the values from `.env`:
+Or headless. The CLI container already has `OPENCLAW_GATEWAY_TOKEN` from `.env`
+in its environment, and onboarding stores only a reference to it:
 
 ```bash
-val() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
-docker exec -e OPENCLAW_GATEWAY_TOKEN="$(val OPENCLAW_GATEWAY_TOKEN)" openclaw-cli \
-  openclaw onboard \
+docker exec openclaw-cli openclaw onboard \
   --non-interactive --accept-risk \
   --mode local --flow manual \
-  --auth-choice vllm \
-  --custom-base-url http://vllm-llm:8004/v1 \
-  --custom-api-key "$(val VLLM_API_KEY)" \
-  --custom-model-id "$(val LLM_MODEL_ID)" \
-  --custom-compatibility openai \
+  --auth-choice skip \
   --gateway-bind lan --gateway-port 18789 \
   --gateway-auth token \
   --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN \
   --skip-daemon --skip-search --skip-skills --skip-channels --skip-ui --skip-health
 ```
 
-What you choose for the model and search does not need to be exact.
-Config-init writes the provider, the model entry, memory search and web search
-in the next step. What matters is the gateway token: use
-`OPENCLAW_GATEWAY_TOKEN` from `.env`.
+`--auth-choice skip` leaves the model to config-init, which writes the vLLM
+provider with an env reference to `VLLM_API_KEY`, the model entry, memory search
+and web search in the next step. Choosing the vLLM provider here instead also
+works, but it adds an auth profile that `openclaw secrets audit` then reports as
+shadowing the config's reference. In the interactive wizard, what matters is the
+gateway token: use `OPENCLAW_GATEWAY_TOKEN` from `.env`.
+
+This exact sequence (phases 2 and 3 on an empty state, then a web search turn,
+memory status and `openclaw secrets audit`) was checked on OpenClaw 2026.10.4.
 
 ### Phase 3: let config-init wire it
 

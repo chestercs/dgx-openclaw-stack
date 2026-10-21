@@ -39,6 +39,11 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   instead of `HEARTBEAT.md`. `agents.defaults.heartbeat.directPolicy: "allow"`
   is written next to the owner DM target, which silences a Doctor warning on
   every start.
+- SETUP.md's headless onboarding uses `--auth-choice skip` and the gateway
+  token reference only; config-init wires the model. Checked end to end on an
+  empty state (onboarding, config-init, a web search turn, memory status,
+  `openclaw secrets audit` clean). The old command stored the vLLM key in an
+  auth profile that shadowed the config's reference.
 - Without the ComfyUI MCP server wired (every media group off or no
   `IMAGE_GEN_API_TOKEN`), its tools are neither denied, routed nor given
   skills.
