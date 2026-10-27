@@ -12,6 +12,11 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Added
 
+- `compose/strata-router.yml`: a proxy for Claude Code in front of a Strata
+  DeepSeek-V4.1-Flash server. Claude Code's auto-mode classifier has a fixed
+  60 s limit that a cold ~35K-token rule set does not fit on a single-stream
+  engine; the router lets those requests finish after the client gives up and
+  replays the rule set at start, so it stays cached (1-2 s per check).
 - Discord eval: `scripts/discord-eval.sh` runs regression cases as Gateway
   turns (machine checks, then a rubric-only judge that may say unknown;
   latency and tokens per run; `--rejudge` regrades an earlier report). Real

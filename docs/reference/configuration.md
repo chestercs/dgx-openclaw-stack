@@ -19,7 +19,7 @@ means there is no default and the feature or key is left alone.
 
 | Knob | Default | What it does |
 |---|---|---|
-| `COMPOSE_FILE` | `docker-compose.yml` | Colon-separated compose files; add `compose/gemma4.yml`, `compose/mistral.yml`, `compose/tts-fish.yml` or `compose/claw-img.yml` here. |
+| `COMPOSE_FILE` | `docker-compose.yml` | Colon-separated compose files; add `compose/gemma4.yml`, `compose/mistral.yml`, `compose/tts-fish.yml`, `compose/claw-img.yml` or `compose/strata-router.yml` here. |
 | `COMPOSE_PROFILES` | (unset) | Optional services: `browser`, `python`, `meshcore`. |
 | `CONTAINER_NAME_PREFIX` | (empty) | Prefix for every `container_name`. Service-to-service DNS uses the service name, so it does not affect wiring. |
 | `TZ` | `UTC` | Time zone of the gateway, CLI, MeshCore bridge and image bot containers. |
@@ -336,6 +336,22 @@ Details: `openclaw-claw-img-bot/README.md`.
 | `CLAW_VIDEO_MAX_SECONDS` | `10` | Longest video a command accepts. |
 | `CLAW_MUSIC_TIMEOUT_S` | `600` | Music render timeout. |
 | `CLAW_MUSIC_MAX_SECONDS` | `120` | Longest track a command accepts. |
+
+## Strata router (compose/strata-router.yml)
+
+The endpoint Claude Code uses for a Strata DeepSeek-V4.1-Flash server that runs outside this stack; it keeps
+Claude Code's auto-mode classifier working on a single-stream engine. Details: `openclaw-strata-router/README.md`.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `STRATA_API_KEY` | (empty) | The Strata server's API key; the router uses it for the warm-up. Claude Code sends its own copy. |
+| `STRATA_HOST` | `host.docker.internal` | Where the Strata API is reached from the container (the host by default). |
+| `STRATA_PORT` | `8095` | The Strata API port. |
+| `STRATA_ROUTER_BIND` | `127.0.0.1` | Bind address on the host; `0.0.0.0` for Claude Code on another machine. |
+| `STRATA_ROUTER_PORT` | `8096` | Host port. |
+| `STRATA_ROUTER_DATA_DIR` | `./openclaw-strata-router/data` | The saved classifier rule set and `router.log`; writable by UID 1000. |
+| `STRATA_CLASSIFIER_ALIAS` | `deepseek-v4.1-flash-classifier` | The model name Claude Code's `CLAUDE_CODE_AUTO_MODE_MODEL` uses; only these requests outlive a disconnect. |
+| `STRATA_MODEL_ID` | `deepseek-v4.1-flash` | The id the Strata server answers to; the alias is rewritten to it. |
 
 ## Optional model files
 

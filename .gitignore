@@ -7,6 +7,7 @@
 hf-cache/
 openclaw-config/
 workspace/
+openclaw-strata-router/data/
 
 # Editor / OS artifacts
 .vscode/
