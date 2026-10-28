@@ -380,6 +380,16 @@ single-stream engine. Client launchers and details: `openclaw-strata-router/READ
 | `STRATA_CLASSIFIER_ALIAS` | `deepseek-v4.1-flash-classifier` | The model name Claude Code's `CLAUDE_CODE_AUTO_MODE_MODEL` uses; only these requests outlive a disconnect. |
 | `STRATA_MODEL_ID` | `deepseek-v4.1-flash` | The real model id the classifier alias is rewritten to (shared with the server). |
 
+## Host jobs (scripts/gb10-host-setup.sh)
+
+Read by `scripts/gb10-host-setup.sh cron` when it writes the crontab block. Details:
+`docs/reference/host-setup.md`.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `GB10_GUARD_EXTRA` | (empty) | More containers for thermguard `WATCH` and memguard `TARGETS`, besides `vllm-llm`, `comfyui` (thermguard) and `strata` (with `compose/strata.yml`). |
+| `DAILY_STATUS_IGNORE` | (empty) | Containers stopped on purpose, which daily-status should not report. |
+
 ## Optional model files
 
 `compose/gemma4.yml` and `compose/mistral.yml` replace the `vllm-llm` command and need

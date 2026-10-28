@@ -40,27 +40,27 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-### Install the GPU clock cap (GB10)
+### Host setup outside Docker (GB10)
 
 Under sustained LLM load, an uncapped GB10 can power itself off at about
 94 °C, with nothing in the journal. Locking the GPU clock at 2200 MHz stops
-this, and decode speed stays the same. The clock lock is lost on reboot, so
-install it as a systemd unit:
+this, and decode speed stays the same. That lock, the memory and thermal
+guards, the job that brings the chat model back after a reboot, and a few
+kernel settings that keep the box reachable when the unified memory fills up
+are all installed from the repo by one script:
 
 ```bash
-sudo cp scripts/gb10-clock-cap.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now gb10-clock-cap
+sudo bash scripts/gb10-host-setup.sh system       # GPU clock cap (enabled), page-cache unit + polkit rule
+sudo bash scripts/gb10-host-setup.sh resilience   # SysRq, 1 GiB kernel reserve, swappiness 10, watchdog, sshd OOM shield
+bash scripts/gb10-host-setup.sh cron              # the stack's cron jobs, as the operator (after .env exists)
+bash scripts/gb10-host-setup.sh check             # what is installed, what differs from the repo
 ```
 
-To undo it: `sudo systemctl disable --now gb10-clock-cap`. If the box still
-shuts down, lower the cap in the unit to 2100, then 2000. Background:
+What each piece does, the state it keeps and how to undo it:
+[`docs/reference/host-setup.md`](docs/reference/host-setup.md). If the box
+still shuts down, lower the cap in `scripts/gb10-clock-cap.service` to 2100,
+then 2000, and run `system` again. Background:
 [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md).
-
-Recommended as well: run `sudo bash scripts/gb10-resilience-setup.sh` once.
-It turns on the SysRq keys, a hardware watchdog and an OOM shield for sshd,
-and keeps 1 GiB free for the kernel. These keep the box reachable if the
-unified memory pool ever fills up. The undo steps are at the end of the
-script.
 
 ## 2. HuggingFace access
 
@@ -314,40 +314,12 @@ docker compose logs -f openclaw-gateway
 
 ### Host cron jobs
 
-Add these to the host user's crontab (`crontab -e`), with the real path to the
-repository:
-
-```cron
-# Re-attach openclaw-cli and the meshcore bridge to the gateway's network
-# namespace after a reboot or a gateway restart.
-@reboot     /path/to/repo/scripts/netns-dependents-up.sh --watch
-*/5 * * * * /path/to/repo/scripts/netns-dependents-up.sh --watch
-
-# GB10 thermal backstop: kills the LLM containers at 93 °C and restarts them
-# once the box has cooled down. Install the clock cap first; this is the
-# backstop, not the fix.
-@reboot     /path/to/repo/scripts/gb10-thermguard.sh >/dev/null 2>&1
-*/5 * * * * /path/to/repo/scripts/gb10-thermguard.sh >/dev/null 2>&1
-
-# Brings the chat model back after a guard killed it or a reboot (a killed
-# container counts as stopped by hand; Strata has no restart policy). With
-# compose/strata.yml, put strata in both guards' lists:
-#   WATCH="vllm-llm strata" .../gb10-thermguard.sh
-#   TARGETS="vllm-llm strata" .../gb10-memguard.sh
-@reboot     /path/to/repo/scripts/llm-ensure.sh boot
-*/5 * * * * /path/to/repo/scripts/llm-ensure.sh
-
-# One short health block per day in ~/daily-status/ (counts and statuses
-# only, never message text).
-15 9 * * *  /path/to/repo/scripts/daily-status.sh >/dev/null 2>&1
-```
-
-The watchers hold a lock, so the `*/5` lines only bring one back if it has
-died. When you try a large new model, also run `scripts/gb10-memguard.sh`
-the same way (`@reboot` plus `*/5`). It kills the model container before the
-memory pool runs dry, because the GB10 stalls instead of OOM-killing. If you
-set `CONTAINER_NAME_PREFIX`, pass the prefixed names through the scripts'
-variables (`WATCH`, `TARGETS`, `GATEWAY`); each script's header lists them.
+`bash scripts/gb10-host-setup.sh cron` writes them as one marked block in the
+operator's crontab, from `.env`: the thermal and memory guards (with `strata`
+in their lists when `compose/strata.yml` is enabled), `llm-ensure.sh`, the
+netns watcher and the daily status. Re-run it after changing `COMPOSE_FILE`;
+`check` shows the difference. The jobs and their logs:
+[`docs/reference/host-setup.md`](docs/reference/host-setup.md).
 
 ### Backups
 

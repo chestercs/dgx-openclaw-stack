@@ -56,7 +56,8 @@ openclaw-strata/            # Strata DeepSeek server: runtime image, launcher, t
 openclaw-strata-router/     # Claude Code proxy + sclaude launchers (compose/strata-router.yml)
 openclaw-host-client/       # CLI container on the operator's PC for a remote gateway
 searxng/settings/           # SearxNG engine set and privacy settings
-scripts/                    # host-side ops: GB10 clock cap, thermguard, memguard,
+scripts/                    # host-side ops, installed and checked by gb10-host-setup.sh:
+                            #   GB10 clock cap, page-cache unit + polkit rule, thermguard, memguard,
                             #   llm-ensure, netns watcher, daily status, upgrade,
                             #   web search bench, resharding, LTX install, benches
 bootstrap.sh                # first-time setup: secrets, .env, host dirs
@@ -281,7 +282,9 @@ Read the linked doc before changing the area.
   has a profile, no restart policy, and `llm-ensure.sh` starts it after the gateway is
   healthy. The CPU lane heats the box past the GPU cap: keep it on the A725 cores.
   `LLM_VISION=off` and Active Memory off with it (the 30 s recall times out in the queue).
-- **GB10 power, thermals, memory** → [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md).
+- **GB10 power, thermals, memory** → [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md),
+  [`docs/reference/host-setup.md`](docs/reference/host-setup.md) (`scripts/gb10-host-setup.sh check` compares the
+  host with the repo: units, polkit, sysctl, the generated crontab block).
   Under sustained load the box powers off with no journal entry at acpitz ~94 °C;
   the fix is the clock cap (`scripts/gb10-clock-cap.service`, `-pl` is N/A on GB10)
   with `scripts/gb10-thermguard.sh` as backstop. A 611 MHz / ~10 W stuck GPU after a

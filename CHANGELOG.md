@@ -12,6 +12,16 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Added
 
+- `scripts/gb10-host-setup.sh`: everything outside Docker from one place.
+  `check` compares the host with the repo (systemd units, polkit rule,
+  sysctl/watchdog, the crontab block, the guards' running lists) and changes
+  nothing; `cron` writes the stack's cron jobs as one marked block generated
+  from `.env` (`strata` joins the guards with `compose/strata.yml`;
+  `GB10_GUARD_EXTRA`, `DAILY_STATUS_IGNORE`); `system` and `resilience`
+  install the root parts. `docs/reference/host-setup.md` lists each piece,
+  its state and how to undo it; SETUP.md points there instead of hand-copied
+  cron lines.
+
 - `scripts/gb10-drop-caches.service` and its polkit rule: `llm-ensure.sh`
   drops the clean page cache before it starts Strata, so the GPU tier is
   sized for the memory really available. A restart after hours of uptime got

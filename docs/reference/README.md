@@ -20,6 +20,7 @@ writes and why, and the measurements behind the model choices.
 | [`llm-stack.md`](./llm-stack.md) | LLM backends: Nemotron (default), Gemma 4 and Mistral Small 4 swaps, thinking and sampling settings, bge-m3 embeddings |
 | [`stt-stack.md`](./stt-stack.md) | Whisper turbo on a self-built CUDA 13 image |
 | [`gb10-power-thermal.md`](./gb10-power-thermal.md) | GB10 power-offs under load (clock cap, thermal guard), the 611 MHz PD wedge, firmware, unified-memory livelock |
+| [`host-setup.md`](./host-setup.md) | Everything outside Docker on the host: systemd units, polkit rule, sysctl, cron jobs, their state; `scripts/gb10-host-setup.sh` installs and checks them |
 
 ## Discord integration
 

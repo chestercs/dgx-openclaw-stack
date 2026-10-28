@@ -310,7 +310,8 @@ behaviour in detail: [`reference/discord-config.md`](reference/discord-config.md
 
 ## Host scripts
 
-`scripts/` holds what runs on the host rather than in a container: the GB10 clock cap
+`scripts/` holds what runs on the host rather than in a container, installed and checked by
+`gb10-host-setup.sh` ([`reference/host-setup.md`](reference/host-setup.md)): the GB10 clock cap
 unit, `gb10-thermguard.sh` and `gb10-memguard.sh` (stop load before a power-off or a
 livelock), `llm-ensure.sh` (brings the chat model, `vllm-llm` or `strata`, back after a guard
 killed it or a reboot),
