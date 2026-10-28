@@ -29,10 +29,23 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   small and the gain too (9,949 -> 10,112). The docker group may start that
   one unit without a password.
 
+- The Python sandbox has `sympy`: the agent reached for it to derive equations
+  of motion before simulating them.
+
 ### Changed
 
 - `compose/strata-llm.yml` recommends `MESHCORE_AGENT_TIMEOUT_S=3600`: the
-  bridge's 180 s does not cover a turn queued behind a Discord turn.
+  bridge's 180 s does not cover a turn queued behind a Discord turn. It also
+  recommends `OPENCLAW_AGENT_TIMEOUT_SECONDS=7200`, `LLM_REQUEST_TIMEOUT_SECONDS=3600`
+  and `OPENCLAW_SUBAGENTS_RUN_TIMEOUT=3600`: the 30-min limits were sized for
+  Nemotron, and a three-call DeepSeek turn hit the agent limit in its third call.
+
+### Fixed
+
+- `netns-dependents-up.sh` runs one pass at a time. The watcher's pass after a
+  gateway start and a one-shot run recreated the MeshCore bridge at the same
+  moment; both failed and left a `<id>_openclaw-meshcore-bridge` container in
+  Created. A failed recreate now clears that container and retries once.
 
 ## [1.2.0] - 2026-10-28
 

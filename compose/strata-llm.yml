@@ -13,6 +13,11 @@
 # server wait for each other. Active Memory's 30 s recall timed out behind that on every turn, so it is off.
 # MESHCORE_AGENT_TIMEOUT_S=3600 for the MeshCore bridge: its 180 s default does not cover a turn that waits
 # behind a Discord turn and then thinks.
+# The 30-min limits were sized for Nemotron. DeepSeek thinks at ~17 tok/s and up to 24K tokens per call, so a
+# three-call agent turn (a triple-pendulum animation checked by simulation) hit OPENCLAW_AGENT_TIMEOUT_SECONDS
+# in its third call:
+#   OPENCLAW_AGENT_TIMEOUT_SECONDS=7200  LLM_REQUEST_TIMEOUT_SECONDS=3600  OPENCLAW_SUBAGENTS_RUN_TIMEOUT=3600
+# A turn that long also holds the single engine for everyone else on it.
 # scripts/llm-ensure.sh starts the server after the gateway is healthy (compose/strata.yml).
 services:
   vllm-llm:

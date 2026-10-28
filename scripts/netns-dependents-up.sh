@@ -31,14 +31,28 @@ PROFILES=${NETNS_PROFILES:-"--profile meshcore"}
 log() { echo "$(date '+%F %T') netns-dependents: $*"; }
 started_ns() { date -d "$(docker inspect -f '{{.State.StartedAt}}' "$1")" +%s%N; }
 
+# Recreate a sharer; on failure clear compose's half-made "<id>_<service>" container and try once more.
+recreate() {
+  # shellcheck disable=SC2086
+  docker compose $PROFILES up -d --no-deps --force-recreate "$1" >/dev/null 2>&1 && return 0
+  docker ps -aq --filter "name=_$1\$" --filter status=created | xargs -r docker rm >/dev/null 2>&1
+  # shellcheck disable=SC2086
+  docker compose $PROFILES up -d --no-deps --force-recreate "$1" >/dev/null 2>&1
+}
+
 reconcile() {
   local gw gw_id gw_start svc cid ns
+  # One pass at a time: the watcher's pass after a gateway start and a one-shot run (mode switches, a hand
+  # run after a recreate) used to recreate the bridge at the same moment; both failed and left a
+  # "<id>_openclaw-meshcore-bridge" container in Created (2026-10-28, three times).
+  exec 8>"${NETNS_LOCK:-/tmp/netns-dependents.lock}.pass"
+  flock -w 900 8 || { log "another pass held the lock for 15 min, skipped"; return 1; }
   gw=$(docker compose ps -q openclaw-gateway 2>/dev/null)
   for _ in $(seq 1 120); do
     [ -n "$gw" ] && [ "$(docker inspect -f '{{.State.Health.Status}}' "$gw" 2>/dev/null)" = healthy ] && break
     sleep 5; gw=$(docker compose ps -q openclaw-gateway 2>/dev/null)
   done
-  [ -z "$gw" ] && { log "gateway not found, giving up"; return 1; }
+  [ -z "$gw" ] && { log "gateway not found, giving up"; flock -u 8; return 1; }
   gw_id=$(docker inspect -f '{{.Id}}' "$gw")
   gw_start=$(started_ns "$gw")
 
@@ -49,9 +63,7 @@ reconcile() {
     ns=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid")
     if [ "$ns" != "container:$gw_id" ]; then
       # Points at an old gateway container: a plain start can never succeed.
-      # shellcheck disable=SC2086
-      docker compose $PROFILES up -d --no-deps --force-recreate "$svc" >/dev/null 2>&1 \
-        && log "$svc: recreated (stale namespace)" || log "$svc: recreate failed"
+      recreate "$svc" && log "$svc: recreated (stale namespace)" || log "$svc: recreate failed"
     elif [ "$(docker inspect -f '{{.State.Running}}' "$cid")" != true ]; then
       docker start "$cid" >/dev/null && log "$svc: started"
     elif [ "$(started_ns "$cid")" -lt "$gw_start" ]; then
@@ -61,6 +73,7 @@ reconcile() {
       log "$svc: running"
     fi
   done
+  flock -u 8
 }
 
 if [ "${1:-}" != --watch ]; then
