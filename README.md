@@ -8,6 +8,11 @@ Discord bot. The value is the wiring: `config-init` writes `openclaw.json` and
 the agent workspaces from `.env` on every `docker compose up`, so the setup
 stays the same across onboarding re-runs, restarts and OpenClaw upgrades.
 
+The chat model is Nemotron 3.5 Super on vLLM by default. Optional compose files
+swap in Gemma 4, Mistral Small 4, or DeepSeek-V4.1-Flash (284B MoE) on
+Strata's engine, and the same DeepSeek can serve Claude Code on your LAN with
+nothing leaving the network.
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ## What runs
@@ -73,15 +78,22 @@ The defaults are sized for a GB10: one 128 GB memory pool shared by the CPU
 and the GPU, so each vLLM server gets its share through
 `--gpu-memory-utilization`. Two things matter on this box:
 
-- **Install the GPU clock cap** (`scripts/gb10-clock-cap.service`). Under
-  sustained load an uncapped GB10 can power itself off with nothing in the
-  journal, at about 94 °C, well below the ACPI trip point. With the clock
-  locked at 2200 MHz, a 25-minute prefill stress test stayed at 87 °C or
-  below, and decode speed did not drop. Details:
+- **Install the GPU clock cap.** Under sustained load an uncapped GB10 can
+  power itself off with nothing in the journal, at about 94 °C, well below the
+  ACPI trip point. With the clock locked at 2200 MHz, a 25-minute prefill
+  stress test stayed at 87 °C or below, and decode speed did not drop. Details:
   [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md).
 - **Do not overfill the pool.** When it runs dry, the host stalls instead of
   killing a process. Nemotron takes about 70 GiB at the default share, so the
   Fish TTS and a ComfyUI install do not fit next to it.
+
+Both, and everything else the stack needs outside Docker (the thermal and
+memory guards, the job that brings the chat model back after a reboot, kernel
+settings that keep the box reachable), come from one script:
+`sudo bash scripts/gb10-host-setup.sh system`, `... resilience`, then
+`bash scripts/gb10-host-setup.sh cron`. `check` compares the host with the
+repo and changes nothing
+([`docs/reference/host-setup.md`](docs/reference/host-setup.md)).
 
 Measured on the reference GX10. The setup for each number is in
 [`docs/reference/llm-stack.md`](docs/reference/llm-stack.md) and the compose
@@ -163,6 +175,8 @@ They are downloaded on first start and are not part of the repo:
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): known failure modes.
 - [docs/discord-bot-setup.md](docs/discord-bot-setup.md): creating the Discord bot.
 - [docs/OPENCLAW_UPGRADE.md](docs/OPENCLAW_UPGRADE.md): upgrading the OpenClaw image.
+- [docs/reference/host-setup.md](docs/reference/host-setup.md): what runs on the host outside Docker, and the script that installs and checks it.
+- [openclaw-strata/README.md](openclaw-strata/README.md) and [openclaw-strata-router/README.md](openclaw-strata-router/README.md): DeepSeek-V4.1-Flash on Strata, and Claude Code against it, offline.
 - [docs/reference/README.md](docs/reference/README.md): deeper reference (LLM stack, GB10 thermals, Discord agent, browser, sandbox, MeshCore).
 - [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
 
