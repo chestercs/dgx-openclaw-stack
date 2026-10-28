@@ -10,6 +10,13 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ## [Unreleased]
 
+### Added
+
+- `OPENCLAW_HEARTBEAT_EVERY` (default `30m`, `off` = `0m`): the heartbeat
+  cadence. On Strata an idle heartbeat read a ~30k-token prompt every 30 min
+  for a "nothing to do" answer and queued between a long run's calls;
+  `compose/strata-llm.yml` recommends `off`. Exec-completion wakes still run.
+
 ### Fixed
 
 - Code files on Discord arrive as a zip. OpenClaw sends local `.html`, `.py`,

@@ -148,7 +148,8 @@ Profile `python`. Details: [python-sandbox.md](python-sandbox.md).
 | `OPENCLAW_LAN_CIDR` | (unset) | Extra range for `gateway.trustedProxies` (loopback and `172.16.0.0/12` are always there). Add your LAN when clients hit the gateway directly, or they show up as the proxy's address. |
 | `OPENCLAW_DEVICE_PAIR_PUBLIC_URL` | (unset) | `wss://` URL `openclaw qr` advertises; otherwise it shows the bridge IP and a plaintext URL downgrades setup codes to "Access: limited". `off` removes it. |
 | `OPENCLAW_GATEWAY_NODE_COMMANDS_ALLOW` | (unset) | Exact node command names to admit beyond the per-platform default (Windows leaves out `canvas.*`, `tts.*`, `stt.*`). `off` removes the list. |
-| `OPENCLAW_HEARTBEAT_ACTIVE_START` | `09:00` | Start of the heartbeat window (every 30 min, isolated session). |
+| `OPENCLAW_HEARTBEAT_EVERY` | `30m` | Heartbeat cadence (`2h`, `1d`, ...). `off` writes `0m`: no scheduled heartbeats, while exec-completion wakes still run. Recommended on a one-request backend (`compose/strata-llm.yml`). |
+| `OPENCLAW_HEARTBEAT_ACTIVE_START` | `09:00` | Start of the heartbeat window (isolated session). |
 | `OPENCLAW_HEARTBEAT_ACTIVE_END` | `02:00` | End of the heartbeat window. |
 | `OPENCLAW_HEARTBEAT_TZ` | `UTC` | Time zone of the heartbeat window and of nightly dreaming (03:00). |
 | `OPENCLAW_HEARTBEAT_TO` | first `OPENCLAW_DISCORD_COMMAND_OWNERS` ID | Discord user who gets heartbeat DMs. The upstream `owner` target finds no DM (`reason=no-route`); `off` leaves delivery to OpenClaw. |

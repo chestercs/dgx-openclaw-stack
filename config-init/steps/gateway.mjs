@@ -61,7 +61,13 @@ function network(config) {
 
 function heartbeat(config) {
   const hb = ['agents', 'defaults', 'heartbeat'];
-  config.merge(hb, { every: '30m', isolatedSession: true });
+  // OPENCLAW_HEARTBEAT_EVERY: a duration (30m, 2h); off = "0m". On a
+  // one-request backend (Strata) an idle heartbeat of discord-friend reads a
+  // ~30k-token prompt for a "nothing to do" answer and queues ahead of real
+  // turns. "0m" stops only the cadence: exec-completion wakes still run.
+  const every = offOr('OPENCLAW_HEARTBEAT_EVERY', '30m');
+  if (every !== 'off' && !/^\d+[mhd]$/.test(every)) throw new Error(`OPENCLAW_HEARTBEAT_EVERY="${every}" must be a duration like 30m or 2h, or off`);
+  config.merge(hb, { every: every === 'off' ? '0m' : every, isolatedSession: true });
   config.merge([...hb, 'activeHours'], {
     start: env.str('OPENCLAW_HEARTBEAT_ACTIVE_START', '09:00'),
     end: env.str('OPENCLAW_HEARTBEAT_ACTIVE_END', '02:00'),

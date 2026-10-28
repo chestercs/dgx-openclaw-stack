@@ -22,6 +22,8 @@
 #   OPENCLAW_SUBAGENTS_RUN_TIMEOUT=0        a sub-agent, no limit
 #   OPENCLAW_EXEC_TIMEOUT_SEC=86400         one shell command (builds, training)
 # The engine still serves one call at a time; other clients' calls queue between a long run's calls.
+# OPENCLAW_HEARTBEAT_EVERY=off: an idle discord-friend heartbeat read a ~30k-token prompt (~50 s) every
+# 30 min to answer "nothing to do", between a long run's calls. Exec-completion wakes still run.
 # scripts/llm-ensure.sh starts the server after the gateway is healthy (compose/strata.yml).
 services:
   vllm-llm:
