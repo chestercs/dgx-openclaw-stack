@@ -15,9 +15,13 @@
 # behind a Discord turn and then thinks.
 # The 30-min limits were sized for Nemotron. DeepSeek thinks at ~17 tok/s and up to 24K tokens per call, so a
 # three-call agent turn (a triple-pendulum animation checked by simulation) hit OPENCLAW_AGENT_TIMEOUT_SECONDS
-# in its third call:
-#   OPENCLAW_AGENT_TIMEOUT_SECONDS=7200  LLM_REQUEST_TIMEOUT_SECONDS=3600  OPENCLAW_SUBAGENTS_RUN_TIMEOUT=3600
-# A turn that long also holds the single engine for everyone else on it.
+# in its third call. For autonomous work that may run for days:
+#   OPENCLAW_AGENT_TIMEOUT_SECONDS=604800   a run, 7 days (the schema takes a positive integer)
+#   LLM_REQUEST_TIMEOUT_SECONDS=86400       the stream-idle watchdog of one model call: a call queued behind
+#                                           another client's long call gets no event until its turn comes
+#   OPENCLAW_SUBAGENTS_RUN_TIMEOUT=0        a sub-agent, no limit
+#   OPENCLAW_EXEC_TIMEOUT_SEC=86400         one shell command (builds, training)
+# The engine still serves one call at a time; other clients' calls queue between a long run's calls.
 # scripts/llm-ensure.sh starts the server after the gateway is healthy (compose/strata.yml).
 services:
   vllm-llm:

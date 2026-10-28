@@ -102,8 +102,9 @@ function runs(config) {
   config.set([...d, 'bootstrapTotalMaxChars'], env.int('OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS', 80000));
 
   // Per-run timeout, aligned with the provider's LLM_REQUEST_TIMEOUT_SECONDS:
-  // a cold 128K prefill alone is ~2 minutes, and the upstream 600 s aborted
-  // runs vLLM was still serving.
+  // a cold 128K prefill alone is ~2 minutes. OpenClaw 2026.10's own default is
+  // 48 h; the schema takes a positive integer (days-long autonomous work on
+  // Strata: compose/strata-llm.yml).
   const timeout = offOr('OPENCLAW_AGENT_TIMEOUT_SECONDS', '1800');
   if (timeout === 'off') config.remove([...d, 'timeoutSeconds'], 'OPENCLAW_AGENT_TIMEOUT_SECONDS=off');
   else config.set([...d, 'timeoutSeconds'], env.int('OPENCLAW_AGENT_TIMEOUT_SECONDS', 1800));

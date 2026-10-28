@@ -36,8 +36,10 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 - `compose/strata-llm.yml` recommends `MESHCORE_AGENT_TIMEOUT_S=3600`: the
   bridge's 180 s does not cover a turn queued behind a Discord turn. It also
-  recommends `OPENCLAW_AGENT_TIMEOUT_SECONDS=7200`, `LLM_REQUEST_TIMEOUT_SECONDS=3600`
-  and `OPENCLAW_SUBAGENTS_RUN_TIMEOUT=3600`: the 30-min limits were sized for
+  recommends limits for days-long autonomous work: agent run 7 days
+  (`OPENCLAW_AGENT_TIMEOUT_SECONDS=604800`), model call 24 h (it is also the
+  stream-idle watchdog, and a call can queue behind another client's), no
+  sub-agent limit, shell command 24 h. The 30-min limits were sized for
   Nemotron, and a three-call DeepSeek turn hit the agent limit in its third call.
 
 ### Fixed

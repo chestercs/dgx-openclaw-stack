@@ -52,7 +52,7 @@ means there is no default and the feature or key is left alone.
 | `LLM_SPEC_TOKENS` | `7` | Speculative tokens per step. |
 | `LLM_LIMIT_MM_IMAGES` | `4` | Images per prompt; past it vLLM answers 400 and the turn dies, which is why the Discord prompt carries an image-history rule. |
 | `LLM_BASE_URL` | `http://vllm-llm:8004/v1/` | OpenAI-compatible base URL OpenClaw calls; point it at a remote vLLM or a cloud endpoint. Keep the trailing slash. |
-| `LLM_REQUEST_TIMEOUT_SECONDS` | `1800` | Provider request timeout. A long prefill on the GB10 outruns the ~120 s upstream watchdog and the turn dies as "timed out". |
+| `LLM_REQUEST_TIMEOUT_SECONDS` | `1800` | Provider request timeout. A long prefill on the GB10 outruns the ~120 s upstream watchdog and the turn dies as "timed out". It is also the stream-idle watchdog of one call: on a single-stream server a queued call gets no event until its turn (Strata: 86400). |
 | `LLM_CONTEXT_WINDOW` | `131072` | Context OpenClaw budgets per prompt (`contextWindow` and `contextTokens`). A full 128K prefill already takes ~2 minutes on the GB10. |
 | `LLM_MAX_TOKENS` | `32768` | Output budget shared by thinking and answer; at 8192 a long think plus a large tool-call JSON ended turns empty. |
 | `LLM_THINKING_COMPAT` | `auto` | `auto` picks the thinking control from the model id (Gemma 4, Nemotron and DeepSeek: `qwen-chat-template`; Mistral: `reasoning_effort` none/high); `qwen-chat-template` forces it; `off` writes none. Without it OpenClaw sends no thinking control and the model never thinks. |
@@ -154,7 +154,7 @@ Profile `python`. Details: [python-sandbox.md](python-sandbox.md).
 | `OPENCLAW_HEARTBEAT_TO` | first `OPENCLAW_DISCORD_COMMAND_OWNERS` ID | Discord user who gets heartbeat DMs. The upstream `owner` target finds no DM (`reason=no-route`); `off` leaves delivery to OpenClaw. |
 | `OPENCLAW_BOOTSTRAP_MAX_CHARS` | `60000` | Per-file cap on injected workspace files. Past it the file is cut silently; the Discord AGENTS.md is ~29 KB and config-init warns when it outgrows the cap. |
 | `OPENCLAW_BOOTSTRAP_TOTAL_MAX_CHARS` | `80000` | Total cap on injected workspace files. |
-| `OPENCLAW_AGENT_TIMEOUT_SECONDS` | `1800` | Per-run timeout, aligned with `LLM_REQUEST_TIMEOUT_SECONDS`; the upstream 600 s aborted runs vLLM was still serving. `off` removes it. |
+| `OPENCLAW_AGENT_TIMEOUT_SECONDS` | `1800` | Per-run timeout, aligned with `LLM_REQUEST_TIMEOUT_SECONDS`; a positive integer (OpenClaw's own default is 48 h). `off` removes it. Strata: see `compose/strata-llm.yml` (7 days). |
 | `OPENCLAW_AGENT_CONTEXT_PRUNING_MODE` | `cache-ttl` | Trims old tool results from the in-memory context before each model call, keeping prefill bounded on long coding runs. `off` removes it. |
 | `OPENCLAW_AGENT_CONTEXT_PRUNING_TTL` | `5m` | Age after which tool results are trimmed. |
 | `OPENCLAW_SUBAGENTS_BOUNDS` | `on` | Sub-agent limits: depth 2, 5 children, 8 concurrent. Out-of-range values crash-loop the gateway, so they are fixed. |
