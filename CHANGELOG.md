@@ -10,6 +10,8 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-28
+
 ### Added
 
 - `scripts/gb10-host-setup.sh`: everything outside Docker from one place.
