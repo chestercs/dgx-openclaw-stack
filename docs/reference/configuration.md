@@ -19,7 +19,7 @@ means there is no default and the feature or key is left alone.
 
 | Knob | Default | What it does |
 |---|---|---|
-| `COMPOSE_FILE` | `docker-compose.yml` | Colon-separated compose files; add `compose/gemma4.yml`, `compose/mistral.yml`, `compose/tts-fish.yml`, `compose/claw-img.yml` or `compose/strata-router.yml` here. |
+| `COMPOSE_FILE` | `docker-compose.yml` | Colon-separated compose files; add `compose/gemma4.yml`, `compose/mistral.yml`, `compose/tts-fish.yml`, `compose/claw-img.yml`, `compose/strata-llm.yml` or `compose/strata-router.yml` here. |
 | `COMPOSE_PROFILES` | (unset) | Optional services: `browser`, `python`, `meshcore`. |
 | `CONTAINER_NAME_PREFIX` | (empty) | Prefix for every `container_name`. Service-to-service DNS uses the service name, so it does not affect wiring. |
 | `TZ` | `UTC` | Time zone of the gateway, CLI, MeshCore bridge and image bot containers. |
@@ -55,7 +55,8 @@ means there is no default and the feature or key is left alone.
 | `LLM_REQUEST_TIMEOUT_SECONDS` | `1800` | Provider request timeout. A long prefill on the GB10 outruns the ~120 s upstream watchdog and the turn dies as "timed out". |
 | `LLM_CONTEXT_WINDOW` | `131072` | Context OpenClaw budgets per prompt (`contextWindow` and `contextTokens`). A full 128K prefill already takes ~2 minutes on the GB10. |
 | `LLM_MAX_TOKENS` | `32768` | Output budget shared by thinking and answer; at 8192 a long think plus a large tool-call JSON ended turns empty. |
-| `LLM_THINKING_COMPAT` | `auto` | `auto` picks the thinking control from the model id (Gemma 4 and Nemotron: `qwen-chat-template`; Mistral: `reasoning_effort` none/high); `qwen-chat-template` forces it; `off` writes none. Without it OpenClaw sends no thinking control and the model never thinks. |
+| `LLM_THINKING_COMPAT` | `auto` | `auto` picks the thinking control from the model id (Gemma 4, Nemotron and DeepSeek: `qwen-chat-template`; Mistral: `reasoning_effort` none/high); `qwen-chat-template` forces it; `off` writes none. Without it OpenClaw sends no thinking control and the model never thinks. |
+| `LLM_VISION` | `on` | `off` registers the model as text-only, so OpenClaw sends it no pictures (Strata's DeepSeek pack has no vision tower and answers a picture with a 400). |
 | `LLM_TEMPERATURE` | `auto` | `auto` = 0.6 for Nemotron, upstream default otherwise; a number sets it; `off` removes it. At Nemotron's 1.0, Hungarian replies filled with other scripts mid-word (38 stray characters in six answers, 2 at 0.6). |
 | `EMBED_IMAGE` | `vllm/vllm-openai:gemma4-cu130` | vLLM image of the bge-m3 embedding server. |
 | `EMBED_GPU_MEM_UTIL` | `0.03` | Pool share of the embedding server. |

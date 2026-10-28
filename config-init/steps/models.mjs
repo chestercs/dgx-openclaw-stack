@@ -13,12 +13,12 @@ export const DEFAULT_MODEL_ID = 'nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-N
 // A custom provider sends no thinking control at all unless the catalog
 // entry's `compat` says how this model family takes it. Without it every
 // Gemma turn ran without thinking (0 of 225 turns, 2026-10-18).
-//   Gemma 4, Nemotron 3.x: chat_template_kwargs.enable_thinking
+//   Gemma 4, Nemotron 3.x, DeepSeek-V4.1 on Strata: chat_template_kwargs.enable_thinking
 //   Mistral Small 4: reasoning_effort, and vLLM accepts only none | high
 export function thinkingCompat(id) {
   const mode = env.oneOf('LLM_THINKING_COMPAT', ['auto', 'off', 'qwen-chat-template'], 'auto');
   if (mode === 'off') return undefined;
-  if (mode === 'qwen-chat-template' || /gemma-?4|nemotron/i.test(id)) return { thinkingFormat: 'qwen-chat-template' };
+  if (mode === 'qwen-chat-template' || /gemma-?4|nemotron|deepseek/i.test(id)) return { thinkingFormat: 'qwen-chat-template' };
   if (/mistral|magistral/i.test(id)) {
     const high = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
     return {
@@ -61,7 +61,9 @@ export default function models({ config }) {
     name: id,
     api: 'openai-completions',
     reasoning: true,
-    input: ['text', 'image'],
+    // LLM_VISION=off for a text-only model: Strata's DeepSeek pack has no vision tower and answers a
+    // request with a picture with a 400, so OpenClaw must not send it any.
+    input: env.bool('LLM_VISION', true) ? ['text', 'image'] : ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     // What OpenClaw budgets per prompt. The models take more, but a full
     // 128K prefill already takes ~2 minutes on the GB10.
@@ -89,8 +91,12 @@ export default function models({ config }) {
     config.set('agents.defaults.modelPolicy.allow', [...allow.filter((k) => !k.startsWith('vllm')), ref]);
   }
   const imageModel = config.get('agents.defaults.imageModel');
-  if (typeof imageModel === 'object' && imageModel?.primary?.startsWith('vllm')) config.set('agents.defaults.imageModel.primary', ref);
-  else if (typeof imageModel === 'string' && imageModel.startsWith('vllm')) config.set('agents.defaults.imageModel', ref);
+  const localImage = (typeof imageModel === 'object' ? imageModel?.primary : imageModel)?.startsWith?.('vllm');
+  if (localImage && !env.bool('LLM_VISION', true)) {
+    // a text-only local model cannot read pictures: no image model rather than one that answers 400
+    config.remove('agents.defaults.imageModel', 'the local model reads no pictures (LLM_VISION=off)');
+  } else if (typeof imageModel === 'object' && localImage) config.set('agents.defaults.imageModel.primary', ref);
+  else if (typeof imageModel === 'string' && localImage) config.set('agents.defaults.imageModel', ref);
   if (config.get('agents.defaults.utilityModel')?.startsWith?.('vllm')) config.set('agents.defaults.utilityModel', ref);
   for (const [agent, e] of Object.entries(config.get('agents.entries') ?? {})) {
     const m = typeof e.model === 'string' ? e.model : e.model?.primary;

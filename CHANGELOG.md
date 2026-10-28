@@ -12,6 +12,10 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Added
 
+- `compose/strata-llm.yml`: the chat model on a Strata server
+  (DeepSeek-V4.1-Flash, strata-dsv41) instead of the Nemotron vLLM; the
+  embeddings stay local. `LLM_VISION=off` registers a text-only model, and
+  `LLM_THINKING_COMPAT=auto` now picks `qwen-chat-template` for DeepSeek ids.
 - `compose/strata-router.yml`: a proxy for Claude Code in front of a Strata
   DeepSeek-V4.1-Flash server. Claude Code's auto-mode classifier has a fixed
   60 s limit that a cold ~35K-token rule set does not fit on a single-stream

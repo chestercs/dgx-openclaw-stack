@@ -1,0 +1,24 @@
+# The chat model on a Strata server (DeepSeek-V4.1-Flash on Strata's strata-dsv41 engine,
+# run outside this stack) instead of the Nemotron vLLM. The embeddings stay local.
+# Enable in .env:
+#   COMPOSE_FILE=docker-compose.yml:compose/strata-llm.yml
+#   LLM_BASE_URL=http://<host>:<strata port>/v1/
+#   LLM_MODEL_ID=deepseek-v4.1-flash
+#   LLM_VISION=off            # the DeepSeek pack reads no pictures
+# and give the Strata server VLLM_API_KEY as one of its keys (STRATA_API_KEY takes a
+# comma-separated list): config-init sends that key to the chat and the embedding endpoint.
+#
+# Strata sizes its GPU expert tier from the memory free when it starts, so start the rest of
+# the stack first. It serves one request at a time: Discord turns, claim-guard checks,
+# Active Memory recalls and a Claude Code session on the same server wait for each other.
+services:
+  vllm-llm:
+    profiles: ["strata-off"]
+  # The gateway waits for both vLLM services by default; !override replaces the whole map
+  # (a profile alone makes compose refuse the project: "depends on undefined service").
+  openclaw-gateway:
+    depends_on: !override
+      openclaw-config-init:
+        condition: service_completed_successfully
+      vllm-embedding:
+        condition: service_healthy
