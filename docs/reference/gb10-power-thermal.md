@@ -40,6 +40,24 @@ sample before the second one was hottest-acpitz 94 °C, nvidia-smi 86 °C, ~80 W
 - **Community stable values** (unofficial): 2100–2300 MHz; 2200 is the common
   pick. If the box still shuts down, step to 2100, then 2000.
 
+**The CPU has no cap.** It shares the package and the cooler with the GPU, so a
+chat model that runs part of its weights on the CPU (Strata's DeepSeek in
+`compose/strata-llm.yml`) heats the box with the GPU capped. 18 engine threads
+for a 20-min agent turn held acpitz at 87–92 °C until thermguard killed the
+engine. Pinning the engine to the Cortex-A725 cores (0-4, 10-14; the X925 cores
+are 5-9, 15-19) works without root. 15-min code generation beside the stack, 10
+threads:
+
+| Cores | tok/s | acpitz max |
+|---|---|---|
+| unpinned (threads land on 0-9, mixed) | 33.2 | 84 °C |
+| X925 only | 30.7 | 85 °C |
+| A725 only | 29.6 | 72 °C |
+
+A CPU clock cap is not used: the firmware runs CPPC autonomous selection
+(`cpufreq/policy*/auto_select` = 1) and whether `scaling_max_freq` binds there
+is unverified (users report both outcomes).
+
 **Backstop: [`scripts/gb10-thermguard.sh`](../../scripts/gb10-thermguard.sh).**
 - It polls the GPU sensor and the hottest acpitz zone every 2 s.
 - At 93 °C it SIGKILLs the LLM containers.
