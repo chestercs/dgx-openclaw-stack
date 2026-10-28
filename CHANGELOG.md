@@ -10,6 +10,17 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ## [Unreleased]
 
+### Fixed
+
+- Code files on Discord arrive as a zip. OpenClaw sends local `.html`, `.py`,
+  `.js` and other source files nowhere ("Rejected by the local attachment
+  allowlist"; only media, PDF, Office, archives and `.md`/`.txt`/`.json`/
+  `.yaml`/`.csv` pass, and there is no knob), and the Discord reply rule told
+  the bot to attach `code/<name>.<ext>` directly: a 30-minute single-file
+  HTML project finished and was never delivered. The rule now has the bot
+  write `code/<project>/`, pack it with `python3 -m zipfile` and attach the
+  zip, or build it in the sandbox under `canvas/code/` without `exec`.
+
 ## [1.3.0] - 2026-10-28
 
 ### Added
