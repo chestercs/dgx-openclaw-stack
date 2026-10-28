@@ -285,6 +285,9 @@ Read the linked doc before changing the area.
   has a profile, no restart policy, and `llm-ensure.sh` starts it after the gateway is
   healthy. The CPU lane heats the box past the GPU cap: keep it on the A725 cores.
   `LLM_VISION=off` and Active Memory off with it (the 30 s recall times out in the queue).
+  Effort reaches DeepSeek two ways: OpenClaw's `deepseek` thinking format sends `reasoning_effort`
+  (the qwen switch sent none), and strata-router turns Claude Code's `output_config.effort` into a
+  thinking budget (Claude Code sends no budget for an unknown model).
 - **GB10 power, thermals, memory** → [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md),
   [`docs/reference/host-setup.md`](docs/reference/host-setup.md) (`scripts/gb10-host-setup.sh check` compares the
   host with the repo: units, polkit, sysctl, the generated crontab block).

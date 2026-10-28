@@ -38,7 +38,10 @@ asks for more); everyone on the server queues, but a resumed conversation reads 
 There is no ready-made ARM package. Build from source on the host (~15 min, with DGX OS's CUDA 13.0). The patch
 (against Strata 5e8a4cc, release 0.2.7) fixes three x86-only spots: a constant defined only in an x86 block, a
 CPUID branch, and missing ARM stubs for the DeepSeek CPU lane's AVX kernels (ggml-cpu's NEON code runs there
-instead).
+instead). One more hunk, in Python and not ARM-specific: the OpenAI chat path reads DeepSeek's own
+`thinking: {"type": "disabled"}`, which is how OpenClaw's `deepseek` thinking format says `/think off` (the chat
+path read only `reasoning_effort` and `chat_template_kwargs`). The `serve/` code is mounted, not built in: after
+re-applying the patch, restart the container.
 
 ```bash
 git clone https://github.com/Niko1221/Strata.git ~/strata

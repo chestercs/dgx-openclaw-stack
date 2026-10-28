@@ -116,6 +116,12 @@ Without it the model never thinks, whatever `thinkingDefault` says.
 
 - Gemma 4 and Nemotron: `thinkingFormat: "qwen-chat-template"`. OpenClaw then sends
   `chat_template_kwargs.enable_thinking`. The Gemma 4 template defaults to `false`.
+- DeepSeek-V4.1 on Strata: `thinkingFormat: "deepseek"` with efforts `low`, `medium`, `high`,
+  `xhigh` and `max` (`minimal` → low, `xhigh` → max). OpenClaw sends DeepSeek's
+  `thinking: {type}` and `reasoning_effort`, so `/think low|medium|high|max` on Discord and the
+  thinking picker in the Web UI change how long DeepSeek thinks. With the qwen switch every level
+  thought at the template's default (high): OpenClaw sends no effort in that format. `/think off`
+  arrives as `thinking.type: "disabled"` alone, which Strata reads with the repo's patch.
 - Mistral / Magistral: `supportsReasoningEffort: true`, efforts `none` / `high`, with
   every OpenClaw level mapped onto those two (vLLM rejects other values).
 

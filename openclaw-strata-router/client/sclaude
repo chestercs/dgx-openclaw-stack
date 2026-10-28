@@ -26,7 +26,11 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=${STRATA_MAX_CONTEXT:-131072} CLAUDE_CODE_
 export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=90
 # a long think plus a long answer at ~15-30 tok/s takes minutes
 export API_TIMEOUT_MS=3600000
+# Effort: Claude Code sends none for a model it does not know unless told to; the router turns it into a
+# thinking budget (low 2K, medium 8K, high 16K, xhigh/max 24K). Change it in a session with /effort.
+export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+EFFORT=${SCLAUDE_EFFORT:-medium}
 if [ -n "${SCLAUDE_LANGUAGE:-}" ]; then
-  exec claude --append-system-prompt "Always answer the user in $SCLAUDE_LANGUAGE, whatever language the code, files or tool output are in." "$@"
+  exec claude --effort "$EFFORT" --append-system-prompt "Always answer the user in $SCLAUDE_LANGUAGE, whatever language the code, files or tool output are in." "$@"
 fi
-exec claude "$@"
+exec claude --effort "$EFFORT" "$@"

@@ -21,11 +21,19 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Added
 
-- `STRATA_THINKING_BUDGET`: strata-router caps the thinking of Claude Code's
-  requests. Claude Code turns thinking on with no budget, so Strata's default
-  of 24K applied; on a hard task DeepSeek filled it each time (~20 min per call
-  before a small Bash step), and the context grew until Claude Code
-  compacted. Empty passes the request through.
+- Reasoning effort for DeepSeek on every surface.
+  - Claude Code: the launchers set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` and
+    `--effort` (`SCLAUDE_EFFORT`, default `medium`); `/effort` changes it in a
+    session. strata-router turns the effort into a thinking budget (low 2K,
+    medium 8K, high 16K, xhigh/max 24K). Claude Code had sent adaptive
+    thinking with no budget and no effort, so Strata's default of 24K applied;
+    on a hard task DeepSeek filled it each time (~20 min per call before a
+    small Bash step) and the context grew until Claude Code compacted.
+    `STRATA_THINKING_BUDGET` is the budget of a request without an effort.
+  - OpenClaw (Discord `/think`, the Web UI picker): DeepSeek's own thinking
+    format with `reasoning_effort` low to max. The qwen switch sent no effort,
+    so every level thought at the template's default. The Strata patch makes
+    the chat path read `thinking: {type: "disabled"}`, DeepSeek's `/think off`.
 
 - Headless Chromium (Playwright) in the Python sandbox, with its system
   libraries and fonts: the agent can load the HTML it built, screenshot it,

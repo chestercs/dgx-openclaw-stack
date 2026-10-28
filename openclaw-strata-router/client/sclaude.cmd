@@ -34,9 +34,13 @@ set CLAUDE_CODE_AUTO_COMPACT_WINDOW=%STRATA_MAX_CONTEXT%
 set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=90
 rem a long think plus a long answer at ~15-30 tok/s takes minutes
 set API_TIMEOUT_MS=3600000
+rem Effort: Claude Code sends none for a model it does not know unless told to; the router turns it into a
+rem thinking budget (low 2K, medium 8K, high 16K, xhigh/max 24K). Change it in a session with /effort.
+set CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+if not defined SCLAUDE_EFFORT set SCLAUDE_EFFORT=medium
 rem goto, not an if (...) block: an unquoted ")" in the arguments would end the block
 if not defined SCLAUDE_LANGUAGE goto plain
-claude --append-system-prompt "Always answer the user in %SCLAUDE_LANGUAGE%, whatever language the code, files or tool output are in." %*
+claude --effort %SCLAUDE_EFFORT% --append-system-prompt "Always answer the user in %SCLAUDE_LANGUAGE%, whatever language the code, files or tool output are in." %*
 exit /b %errorlevel%
 :plain
-claude %*
+claude --effort %SCLAUDE_EFFORT% %*

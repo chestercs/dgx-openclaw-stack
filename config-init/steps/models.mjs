@@ -13,11 +13,23 @@ export const DEFAULT_MODEL_ID = 'nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-N
 // A custom provider sends no thinking control at all unless the catalog
 // entry's `compat` says how this model family takes it. Without it every
 // Gemma turn ran without thinking (0 of 225 turns, 2026-10-18).
-//   Gemma 4, Nemotron 3.x, DeepSeek-V4.1 on Strata: chat_template_kwargs.enable_thinking
+//   Gemma 4, Nemotron 3.x: chat_template_kwargs.enable_thinking
+//   DeepSeek-V4.1 on Strata: DeepSeek's API, thinking {type} plus reasoning_effort low | medium | high | max.
+//     With the qwen switch every /think level thought at the template's default (high), and OpenClaw sends no
+//     reasoning_effort in that format. Off arrives as thinking.type "disabled" only, which Strata's chat path
+//     reads with openclaw-strata/strata-aarch64.patch.
 //   Mistral Small 4: reasoning_effort, and vLLM accepts only none | high
 export function thinkingCompat(id) {
   const mode = env.oneOf('LLM_THINKING_COMPAT', ['auto', 'off', 'qwen-chat-template'], 'auto');
   if (mode === 'off') return undefined;
+  if (mode === 'auto' && /deepseek/i.test(id)) {
+    return {
+      thinkingFormat: 'deepseek',
+      supportsReasoningEffort: true,
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      reasoningEffortMap: { minimal: 'low', xhigh: 'max' },
+    };
+  }
   if (mode === 'qwen-chat-template' || /gemma-?4|nemotron|deepseek/i.test(id)) return { thinkingFormat: 'qwen-chat-template' };
   if (/mistral|magistral/i.test(id)) {
     const high = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];

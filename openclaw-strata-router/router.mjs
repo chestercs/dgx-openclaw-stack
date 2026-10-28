@@ -13,12 +13,14 @@
 //     5 s, Strata finished reading at 54 s, the next call took 1 s);
 //   - the router keeps the rule set (system prompt, transcript removed) and replays it once at start, so even the
 //     first Bash call after a restart finds it cached.
-// Every other request is passed through, and a disconnect (Esc) cancels it upstream as before. One change:
-// THINKING_BUDGET caps the thinking of Claude Code's requests. Claude Code turns thinking on with no budget
-// (MAX_THINKING_TOKENS on the client changed nothing), so Strata applies its own default, 24K with max_tokens
-// 32000. On a hard task DeepSeek filled those 24K on every call, ~20 min at
-// ~20 tok/s before each small step, and the context grew 24K a call until Claude Code compacted. Strata reads a
-// budget under 8192 as effort "medium" as well as a hard stop.
+// Every other request is passed through, and a disconnect (Esc) cancels it upstream as before. One change: the
+// thinking budget follows Claude Code's effort (/effort, --effort). Claude Code turns thinking on with no budget
+// (adaptive; MAX_THINKING_TOKENS changed nothing), so Strata applied its own default, 24K with max_tokens 32000.
+// On a hard task DeepSeek filled those 24K on every call, ~20 min at ~20 tok/s before each small step, and the
+// context grew 24K a call until Claude Code compacted. sclaude sets CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1, so the
+// request carries output_config.effort; Strata reads that as DeepSeek's level (xhigh and max both: max) and the
+// router turns it into a budget. A request without an effort gets THINKING_BUDGET (8000: Strata reads a budget
+// under 8192 as "medium").
 import http from "node:http";
 import fs from "node:fs";
 
@@ -27,7 +29,9 @@ const UPSTREAM = { host: process.env.STRATA_HOST || "strata", port: Number(proce
 const CLASSIFIER_ALIAS = process.env.CLASSIFIER_ALIAS || "deepseek-v4.1-flash-classifier";
 const REAL_MODEL = process.env.REAL_MODEL || "deepseek-v4.1-flash";
 const KEY = process.env.STRATA_API_KEY || "";
-const THINKING_BUDGET = Number(process.env.THINKING_BUDGET) || 0;     // 0 = pass through
+const THINKING_BUDGET = Number(process.env.THINKING_BUDGET) || 0;     // no effort given; 0 = pass through
+// Calls that hit the cap: ~2, 7, 14 and 20 min at ~20 tok/s. 24K is the most Strata lets a 32000-token call think.
+const EFFORT_BUDGET = { low: 2000, medium: 8000, high: 16000, xhigh: 24000, max: 24000 };
 const WARM_FILE = "/data/classifier-warm.json";
 const STAGE2_FILE = "/data/classifier-stage2.json";
 const LOG_FILE = "/data/router.log";
@@ -91,12 +95,15 @@ http.createServer((req, res) => {
       const tpl = warmTemplate(json);
       // stage 1 (it has the stop sequence) is replayed at start; stage 2 is kept for cls-bench.mjs
       if (tpl) fs.writeFile(json.stop_sequences ? WARM_FILE : STAGE2_FILE, JSON.stringify(tpl), () => {});
-    } else if (THINKING_BUDGET && json?.thinking && json.thinking.type !== "disabled"
-               && !(json.thinking.budget_tokens <= THINKING_BUDGET)) {
-      // Claude Code may send no budget at all (adaptive thinking): Strata then uses its own default.
-      log(`thinking ${json.thinking.type} budget ${json.thinking.budget_tokens ?? "none"} -> ${THINKING_BUDGET}`);
-      json.thinking = { type: "enabled", budget_tokens: THINKING_BUDGET };
-      body = Buffer.from(JSON.stringify(json));
+    } else if (json?.thinking && json.thinking.type !== "disabled") {
+      const effort = json.output_config?.effort;
+      let budget = EFFORT_BUDGET[effort] ?? THINKING_BUDGET;
+      if (budget && json.max_tokens) budget = Math.min(budget, json.max_tokens - 1);
+      if (budget && json.thinking.budget_tokens !== budget) {
+        log(`thinking ${json.thinking.type} effort ${effort ?? "none"} budget ${json.thinking.budget_tokens ?? "none"} -> ${budget}`);
+        json.thinking = { type: "enabled", budget_tokens: budget };
+        body = Buffer.from(JSON.stringify(json));
+      }
     }
     const t0 = Date.now();
     let gone = false, upRes = null;

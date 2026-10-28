@@ -55,7 +55,7 @@ means there is no default and the feature or key is left alone.
 | `LLM_REQUEST_TIMEOUT_SECONDS` | `1800` | Provider request timeout. A long prefill on the GB10 outruns the ~120 s upstream watchdog and the turn dies as "timed out". It is also the stream-idle watchdog of one call: on a single-stream server a queued call gets no event until its turn (Strata: 86400). |
 | `LLM_CONTEXT_WINDOW` | `131072` | Context OpenClaw budgets per prompt (`contextWindow` and `contextTokens`). A full 128K prefill already takes ~2 minutes on the GB10. |
 | `LLM_MAX_TOKENS` | `32768` | Output budget shared by thinking and answer; at 8192 a long think plus a large tool-call JSON ended turns empty. |
-| `LLM_THINKING_COMPAT` | `auto` | `auto` picks the thinking control from the model id (Gemma 4, Nemotron and DeepSeek: `qwen-chat-template`; Mistral: `reasoning_effort` none/high); `qwen-chat-template` forces it; `off` writes none. Without it OpenClaw sends no thinking control and the model never thinks. |
+| `LLM_THINKING_COMPAT` | `auto` | `auto` picks the thinking control from the model id (Gemma 4 and Nemotron: `qwen-chat-template`; DeepSeek: its own format with `reasoning_effort` low to max; Mistral: `reasoning_effort` none/high); `qwen-chat-template` forces it; `off` writes none. Without it OpenClaw sends no thinking control and the model never thinks. |
 | `LLM_VISION` | `on` | `off` registers the model as text-only, so OpenClaw sends it no pictures (Strata's DeepSeek pack has no vision tower and answers a picture with a 400). |
 | `LLM_TEMPERATURE` | `auto` | `auto` = 0.6 for Nemotron, upstream default otherwise; a number sets it; `off` removes it. At Nemotron's 1.0, Hungarian replies filled with other scripts mid-word (38 stray characters in six answers, 2 at 0.6). |
 | `EMBED_IMAGE` | `vllm/vllm-openai:gemma4-cu130` | vLLM image of the bge-m3 embedding server. |
@@ -376,7 +376,7 @@ single-stream engine. Client launchers and details: `openclaw-strata-router/READ
 | `STRATA_UPSTREAM_HOST` | `strata` | Where the Strata API is reached from the container: the compose service, or `host.docker.internal` / an address for a server outside the stack. |
 | `STRATA_UPSTREAM_PORT` | `8095` | The Strata API port as seen from the router. |
 | `STRATA_ROUTER_BIND` | `127.0.0.1` | Bind address on the host; `0.0.0.0` for Claude Code on another machine. |
-| `STRATA_THINKING_BUDGET` | (empty) | Cap on the thinking of Claude Code's requests through the router (Claude Code sends no budget, so Strata's default of 24K applies). Empty passes them through; under 8192 Strata also thinks at effort `medium`. |
+| `STRATA_THINKING_BUDGET` | (empty) | Thinking budget of a Claude Code request that carries no effort. With an effort (`/effort`, `sclaude` sends one by default) the router uses its own table: low 2K, medium 8K, high 16K, xhigh/max 24K. Empty passes such a request through, and Strata's default of 24K applies; under 8192 Strata also thinks at effort `medium`. |
 | `STRATA_ROUTER_PORT` | `8096` | Host port. |
 | `STRATA_ROUTER_DATA_DIR` | `./openclaw-strata-router/data` | The saved classifier requests (stage 1 is replayed at start, both feed `cls-bench.mjs`) and `router.log`; writable by UID 1000. |
 | `STRATA_CLASSIFIER_ALIAS` | `deepseek-v4.1-flash-classifier` | The model name Claude Code's `CLAUDE_CODE_AUTO_MODE_MODEL` uses; only these requests outlive a disconnect. |

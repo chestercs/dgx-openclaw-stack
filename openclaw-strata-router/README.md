@@ -34,6 +34,7 @@ at a time: subagents, the classifier and an OpenClaw bot on the same server wait
      $env:USERPROFILE\.strata\key '<key>'`.
    - `SCLAUDE_LANGUAGE=Hungarian` (optional) adds a language line the model follows better than the one deep
      inside Claude Code's system prompt.
+   - `SCLAUDE_EFFORT` (optional, default `medium`): the starting effort, see [Effort](#effort).
 4. `sclaude`, or `sclaude --permission-mode auto` for long unattended runs.
 
 What the launchers set, and why:
@@ -48,12 +49,27 @@ What the launchers set, and why:
 | `API_TIMEOUT_MS` | 3600000 | a long think plus a long answer takes minutes |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | 1 | nothing else leaves the machine; no beta fields the server does not know |
 
+### Effort
+
 Thinking stays on: Claude Code asks for it per request and the server follows (`anthropic_thinking:
-on_request`). Claude Code turns thinking on with no budget, and `MAX_THINKING_TOKENS` on the client did not change
-that, so Strata applies its default (24K at max_tokens 32000). On a hard task (a triple-pendulum animation)
-DeepSeek filled those 24K on every call: ~20 minutes of thinking before each small Bash step, three calls without a file written, then a compaction.
-`STRATA_THINKING_BUDGET` (empty: as asked) makes the router cap it; under 8192 Strata also lowers the effort to
-`medium`.
+on_request`). For a model id it does not know, Claude Code turns thinking on with no budget (adaptive) and sends
+no effort; `MAX_THINKING_TOKENS` changes nothing there. Strata then applied its default, 24K at max_tokens
+32000, and on a hard task (a triple-pendulum animation) DeepSeek filled it on every call: ~20 minutes of
+thinking before each small Bash step, three calls without a file written, then a compaction.
+
+So the launchers set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` (the request carries `output_config.effort`) and
+start Claude Code with `--effort ${SCLAUDE_EFFORT:-medium}`. Change it in a session with `/effort`. Strata maps the
+effort to DeepSeek's level and the router turns it into a thinking budget:
+
+| `/effort` | DeepSeek level | Budget | A call that uses it all |
+|---|---|---|---|
+| `low` | low | 2,000 | ~2 min |
+| `medium` (default) | medium | 8,000 | ~7 min |
+| `high` | high | 16,000 | ~14 min |
+| `xhigh`, `max` | max | 24,000, the most a 32,000-token call may think | ~20 min |
+
+Most calls stop thinking well before the budget: with `medium` the triple-pendulum run thought 1.5–7K per call.
+A request without an effort gets `STRATA_THINKING_BUDGET` (8000 on the reference host; empty passes it through).
 
 ## The auto-mode problem
 

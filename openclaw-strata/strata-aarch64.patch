@@ -1,5 +1,20 @@
+diff --git a/serve/frontend.py b/serve/frontend.py
+index 63e319b8..89984814 100644
+--- a/serve/frontend.py
++++ b/serve/frontend.py
+@@ -615,6 +615,10 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
+             kwargs = {"enable_thinking": False}
+         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
+             kwargs.update(effort_kwargs(v))
++    # DeepSeek's own API: "thinking": {"type": "disabled" | "enabled"} next to reasoning_effort (OpenClaw's
++    # "deepseek" thinking format sends it, and only it, for /think off)
++    if isinstance(req.get("thinking"), dict) and req["thinking"].get("type") == "disabled":
++        kwargs = {"enable_thinking": False}
+     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
+ 
+ 
 diff --git a/src/dsv41/ds4_gg_cpu.cpp b/src/dsv41/ds4_gg_cpu.cpp
-index cede307..73281d0 100644
+index cede307a..73281d00 100644
 --- a/src/dsv41/ds4_gg_cpu.cpp
 +++ b/src/dsv41/ds4_gg_cpu.cpp
 @@ -169,7 +169,8 @@ static int amd_family() {
@@ -13,7 +28,7 @@ index cede307..73281d0 100644
          const unsigned base = (eax >> 8) & 0xF;
          return (int) (base == 0xF ? base + ((eax >> 20) & 0xFF) : base);
 diff --git a/src/dsv41/vendor/exl3_cpu.cpp b/src/dsv41/vendor/exl3_cpu.cpp
-index e87efee..4e165d0 100644
+index e87efee8..4e165d06 100644
 --- a/src/dsv41/vendor/exl3_cpu.cpp
 +++ b/src/dsv41/vendor/exl3_cpu.cpp
 @@ -1214,7 +1214,11 @@ void exl3_cpu_rows_acc_n(const Exl3Part& m, const float* const* xh, int n, int k
@@ -29,7 +44,7 @@ index e87efee..4e165d0 100644
  void exl3_cpu_band_gemm(const Exl3Part& m, const float* const* xh, int n, int c0, int nb, float* const* acc,
                          float* wc) {
 diff --git a/src/kernels/cpu/portable.cpp b/src/kernels/cpu/portable.cpp
-index a8ff501..71053e8 100644
+index a8ff501c..71053e86 100644
 --- a/src/kernels/cpu/portable.cpp
 +++ b/src/kernels/cpu/portable.cpp
 @@ -211,4 +211,16 @@ void tq_rows(TqIsa isa, int ggml_type, const uint8_t* w, size_t row_bytes, int n
