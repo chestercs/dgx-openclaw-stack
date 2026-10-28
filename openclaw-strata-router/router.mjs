@@ -2,15 +2,15 @@
 //
 // Claude Code gives its auto-mode classifier a fixed ~60 s limit that cannot be configured. The classifier prompt
 // is a ~35K-token rule set (constant) plus a short transcript, with another prefix than the conversation. Read cold
-// on a GB10 (~590 tok/s) it takes ~60 s, Claude Code gives up, the engine stops reading, nothing is cached, and
+// on a GB10 it takes ~54 s, Claude Code gives up at 60 s or earlier, the engine stops reading, nothing is cached, and
 // every Bash call in auto mode was refused after a minute. Warm, the same model judged a 20-case bench 20/20 in
-// ~2 s (stage 1) and ~14 s (stage 2).
+// ~2 s (stage 1) and ~15 s (stage 2).
 //
 // So, for classifier requests only (Claude Code's CLAUDE_CODE_AUTO_MODE_MODEL = CLASSIFIER_ALIAS):
 //   - the model name is rewritten to the real one;
 //   - when Claude Code disconnects, the upstream request is NOT cancelled: it runs to the end, so the rule set
-//     lands in Strata's conversation cache and the next classifier call is fast (cold: given up at 60 s, finished
-//     at ~54 s of reading, next call 1 s);
+//     lands in Strata's conversation cache and the next classifier call is fast (cold: a client that gave up at
+//     5 s, Strata finished reading at 54 s, the next call took 1 s);
 //   - the router keeps the rule set (system prompt, transcript removed) and replays it once at start, so even the
 //     first Bash call after a restart finds it cached.
 // Every other request is passed through unchanged, and a disconnect (Esc) cancels it upstream as before.
@@ -18,11 +18,12 @@ import http from "node:http";
 import fs from "node:fs";
 
 const PORT = 8096;
-const UPSTREAM = { host: process.env.STRATA_HOST || "host.docker.internal", port: Number(process.env.STRATA_PORT || 8095) };
+const UPSTREAM = { host: process.env.STRATA_HOST || "strata", port: Number(process.env.STRATA_PORT || 8095) };
 const CLASSIFIER_ALIAS = process.env.CLASSIFIER_ALIAS || "deepseek-v4.1-flash-classifier";
 const REAL_MODEL = process.env.REAL_MODEL || "deepseek-v4.1-flash";
 const KEY = process.env.STRATA_API_KEY || "";
 const WARM_FILE = "/data/classifier-warm.json";
+const STAGE2_FILE = "/data/classifier-stage2.json";
 const LOG_FILE = "/data/router.log";
 
 const log = (...a) => {
@@ -57,7 +58,7 @@ async function strataReady() {
   });
 }
 
-// Strata may still be loading (or not running: the router lives in the OpenClaw stack, Strata beside it): wait for
+// Strata may still be loading or not started yet (it starts after the rest of the stack): wait for
 // it, then replay. A Strata restart keeps its conversation cache on disk, so one replay per router start is enough.
 async function warmUp() {
   let body;
@@ -82,7 +83,8 @@ http.createServer((req, res) => {
       json.model = REAL_MODEL;
       body = Buffer.from(JSON.stringify(json));
       const tpl = warmTemplate(json);
-      if (tpl && json.stop_sequences) fs.writeFile(WARM_FILE, JSON.stringify(tpl), () => {});   // stage 1's shape
+      // stage 1 (it has the stop sequence) is replayed at start; stage 2 is kept for cls-bench.mjs
+      if (tpl) fs.writeFile(json.stop_sequences ? WARM_FILE : STAGE2_FILE, JSON.stringify(tpl), () => {});
     }
     const t0 = Date.now();
     let gone = false, upRes = null;

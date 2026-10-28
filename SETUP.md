@@ -329,8 +329,11 @@ repository:
 @reboot     /path/to/repo/scripts/gb10-thermguard.sh >/dev/null 2>&1
 */5 * * * * /path/to/repo/scripts/gb10-thermguard.sh >/dev/null 2>&1
 
-# Brings vllm-llm back after a guard killed it (a killed container counts as
-# stopped by hand, so its restart policy does not apply).
+# Brings the chat model back after a guard killed it or a reboot (a killed
+# container counts as stopped by hand; Strata has no restart policy). With
+# compose/strata.yml, put strata in both guards' lists:
+#   WATCH="vllm-llm strata" .../gb10-thermguard.sh
+#   TARGETS="vllm-llm strata" .../gb10-memguard.sh
 @reboot     /path/to/repo/scripts/llm-ensure.sh boot
 */5 * * * * /path/to/repo/scripts/llm-ensure.sh
 

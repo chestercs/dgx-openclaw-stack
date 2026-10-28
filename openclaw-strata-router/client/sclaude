@@ -1,0 +1,32 @@
+#!/bin/sh
+# Claude Code against the Strata DeepSeek on a GB10, through strata-router (openclaw-strata-router/README.md).
+# Install: copy to a folder on PATH, chmod +x, put the server's STRATA_API_KEY in ~/.strata/key (chmod 600).
+#   STRATA_ROUTER_URL   the router, e.g. http://192.168.1.50:8096 (default http://127.0.0.1:8096)
+#   SCLAUDE_LANGUAGE    optional, e.g. Hungarian: the model follows a language line here better than the one
+#                       deep inside Claude Code's system prompt
+# Every model slot is the one local model; the auto-mode classifier gets the alias the router recognises.
+set -eu
+KEY_FILE=${STRATA_KEY_FILE:-$HOME/.strata/key}
+[ -r "$KEY_FILE" ] || { echo "sclaude: put the Strata API key in $KEY_FILE" >&2; exit 1; }
+MODEL=${STRATA_MODEL_ID:-deepseek-v4.1-flash}
+ANTHROPIC_AUTH_TOKEN=$(tr -d '\r\n' < "$KEY_FILE")   # a key file saved with CRLF must not send a \r
+[ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "sclaude: $KEY_FILE is empty" >&2; exit 1; }
+export ANTHROPIC_AUTH_TOKEN
+unset ANTHROPIC_API_KEY
+export ANTHROPIC_BASE_URL=${STRATA_ROUTER_URL:-http://127.0.0.1:8096}
+export ANTHROPIC_MODEL=$MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL=$MODEL ANTHROPIC_DEFAULT_SONNET_MODEL=$MODEL
+export ANTHROPIC_DEFAULT_OPUS_MODEL=$MODEL CLAUDE_CODE_SUBAGENT_MODEL=$MODEL
+export CLAUDE_CODE_AUTO_MODE_MODEL=${STRATA_CLASSIFIER_ALIAS:-$MODEL-classifier}
+# a per-request attribution header would change the prompt prefix and defeat Strata's conversation cache
+export CLAUDE_CODE_ATTRIBUTION_HEADER=0
+export CLAUDE_CODE_TOTAL_TOKENS_REMINDER=off
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
+# the server's context (STRATA_MAX_CONTEXT); compact at 90% of it
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=${STRATA_MAX_CONTEXT:-131072} CLAUDE_CODE_AUTO_COMPACT_WINDOW=${STRATA_MAX_CONTEXT:-131072}
+export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=90
+# a long think plus a long answer at ~15-30 tok/s takes minutes
+export API_TIMEOUT_MS=3600000
+if [ -n "${SCLAUDE_LANGUAGE:-}" ]; then
+  exec claude --append-system-prompt "Always answer the user in $SCLAUDE_LANGUAGE, whatever language the code, files or tool output are in." "$@"
+fi
+exec claude "$@"

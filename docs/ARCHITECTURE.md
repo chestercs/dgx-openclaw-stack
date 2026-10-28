@@ -312,7 +312,8 @@ behaviour in detail: [`reference/discord-config.md`](reference/discord-config.md
 
 `scripts/` holds what runs on the host rather than in a container: the GB10 clock cap
 unit, `gb10-thermguard.sh` and `gb10-memguard.sh` (stop load before a power-off or a
-livelock), `llm-ensure.sh` (brings `vllm-llm` back after a guard killed it),
+livelock), `llm-ensure.sh` (brings the chat model, `vllm-llm` or `strata`, back after a guard
+killed it or a reboot),
 `gb10-resilience-setup.sh`, `netns-dependents-up.sh`, `daily-status.sh`,
 `upgrade-openclaw.sh` ([`OPENCLAW_UPGRADE.md`](OPENCLAW_UPGRADE.md)),
 `websearch-bench.py`, `reshard-safetensors.py`, and the LTX-Video installer and

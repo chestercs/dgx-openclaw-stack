@@ -41,8 +41,8 @@ sample before the second one was hottest-acpitz 94 °C, nvidia-smi 86 °C, ~80 W
   pick. If the box still shuts down, step to 2100, then 2000.
 
 **The CPU has no cap.** It shares the package and the cooler with the GPU, so a
-chat model that runs part of its weights on the CPU (Strata's DeepSeek in
-`compose/strata-llm.yml`) heats the box with the GPU capped. 18 engine threads
+chat model that runs part of its weights on the CPU (Strata's DeepSeek,
+`compose/strata.yml`) heats the box with the GPU capped. 18 engine threads
 for a 20-min agent turn held acpitz at 87–92 °C until thermguard killed the
 engine. Pinning the engine to the Cortex-A725 cores (0-4, 10-14; the X925 cores
 are 5-9, 15-19) works without root. 15-min code generation beside the stack, 10
@@ -65,9 +65,11 @@ is unverified (users report both outcomes).
 - 97 °C with 5 s polling and `docker stop -t 10` was too late: the box
   powered off first.
 - A killed container counts as manually stopped, so `restart:
-  unless-stopped` does not bring it back;
-  [`scripts/llm-ensure.sh`](../../scripts/llm-ensure.sh) (from cron) starts
-  `vllm-llm` again once thermguard releases it.
+  unless-stopped` does not bring it back. Thermguard restarts what it
+  killed itself;
+  [`scripts/llm-ensure.sh`](../../scripts/llm-ensure.sh) (from cron) is the
+  fallback for memguard kills and reboots (`vllm-llm`, or `strata` with
+  `compose/strata.yml`, which it starts only after the stack has loaded).
 
 **Other community mitigations** (unverified here):
 - airflow and orientation (stand it up, do not stack units);

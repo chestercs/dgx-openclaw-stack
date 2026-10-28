@@ -1,0 +1,81 @@
+# DeepSeek-V4.1-Flash (ISTA-DASLab GSQ-RCO IQ1_M, ~1.75 bit) on Strata's own engine (strata-dsv41):
+# a 284B MoE model on one GB10, with OpenAI- and Anthropic-compatible APIs. The hot experts sit on the GPU,
+# the rest is computed on the CPU straight from the files. One request at a time.
+# Build, model download and numbers: openclaw-strata/README.md
+#
+# Enable in .env (the engine built on the host first, see the README):
+#   COMPOSE_FILE=docker-compose.yml:compose/strata.yml
+#   STRATA_SRC=/home/<you>/strata                       # the Strata checkout with build-dsv41/strata-dsv41
+#   STRATA_MODEL_DIR=/home/<you>/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO
+#   STRATA_API_KEY=<openssl rand -hex 24>
+# Add compose/strata-llm.yml to make it OpenClaw's chat model, compose/strata-router.yml for Claude Code.
+#
+# It is not started by `docker compose up` (profile) and has no restart policy: it sizes its GPU expert tier
+# from the memory free when it starts, so it must start after the rest of the stack, and two big GPU users
+# sizing memory at once can livelock the box. scripts/llm-ensure.sh (cron, also @reboot) starts it once the
+# stack has loaded, and again after gb10-memguard killed it (gb10-thermguard restarts what it killed itself).
+# Put strata in both guards' lists. By hand: docker compose up -d strata
+# The required variables below (:?) make every compose command refuse to run while this file is in
+# COMPOSE_FILE and they are unset.
+services:
+  strata:
+    profiles: ["strata"]
+    build:
+      context: ./openclaw-strata
+      additional_contexts:
+        strata-src: ${STRATA_SRC:?set STRATA_SRC to the Strata checkout (openclaw-strata/README.md)}
+    image: openclaw-strata:0.2.7
+    # The guards (gb10-memguard TARGETS, gb10-thermguard WATCH) find it by this name.
+    container_name: ${CONTAINER_NAME_PREFIX:-}strata
+    hostname: strata
+    restart: "no"
+    gpus: all
+    ipc: host
+    ulimits:
+      memlock: -1
+    # The Cortex-A725 cores only. GB10: 0-4 and 10-14 are A725 (2.8 GHz), 5-9 and 15-19 Cortex-X925
+    # (3.9 GHz); the CPU has no clock cap and shares the cooler with the GPU. 15-min code generation beside
+    # the stack, 10 threads: unpinned (threads land on 0-9) 33.2 tok/s at acpitz max 84 C, X925 only 30.7 at
+    # 85 C, A725 only 29.6 at 72 C. The box powers off at ~94 C.
+    cpuset: ${STRATA_CPUSET:-0-4,10-14}
+    ports:
+      # Benchmarks and other LAN clients; OpenClaw and strata-router use strata:8095 on the compose network.
+      - "${STRATA_BIND:-127.0.0.1}:${STRATA_PORT:-8097}:8095"
+    environment:
+      # Its own key, plus VLLM_API_KEY: config-init sends that one to the chat endpoint (compose/strata-llm.yml).
+      STRATA_API_KEY: ${STRATA_API_KEY:?set STRATA_API_KEY}${VLLM_API_KEY:+,${VLLM_API_KEY}}
+      STRATA_MODEL_DIR: ${STRATA_MODEL_DIR:?set STRATA_MODEL_DIR}
+      STRATA_PACK: ${STRATA_PACK:-}
+      STRATA_MODEL_ID: ${STRATA_MODEL_ID:-deepseek-v4.1-flash}
+      STRATA_MAX_CONTEXT: ${STRATA_MAX_CONTEXT:-131072}
+      # 18 threads held acpitz at 87-92 C for a 20-min agent turn beside the stack; 10 stays well below.
+      STRATA_CPU_THREADS: ${STRATA_CPU_THREADS:-10}
+      STRATA_DSPARK: ${STRATA_DSPARK:-auto}
+      STRATA_DSPARK_CONF: ${STRATA_DSPARK_CONF:-0.65}
+      STRATA_PREFILL_CHUNK: ${STRATA_PREFILL_CHUNK:-16384}
+      STRATA_EXTRA_ARGS: ${STRATA_EXTRA_ARGS:-}
+      STRATA_CUDA_DIR: ${STRATA_CUDA_DIR:-/usr/local/cuda-13.0}
+      # GPU expert budget = MemAvailable minus this (ds4-uma.sh). 16 GB beside the stack keeps whisper, the
+      # browser and other services' growth above gb10-memguard's 6 GB floor; 14 is enough with Strata alone.
+      UMA_MARGIN_GB: ${STRATA_UMA_MARGIN_GB:-16}
+    working_dir: /strata
+    command: ["sh", "/opt/openclaw-strata/start.sh"]
+    stop_grace_period: 2m
+    volumes:
+      - ${STRATA_SRC}:/strata:ro
+      - ${STRATA_CUDA_DIR:-/usr/local/cuda-13.0}:${STRATA_CUDA_DIR:-/usr/local/cuda-13.0}:ro
+      - ${STRATA_MODEL_DIR}:${STRATA_MODEL_DIR}:ro
+      # conversation slots parked to disk (a restart keeps the cache) and the engine log
+      - ${STRATA_DATA_DIR:-./openclaw-strata/data}:/data
+      - ./openclaw-strata:/opt/openclaw-strata:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import json,urllib.request as u; exit(0 if json.load(u.urlopen('http://127.0.0.1:8095/health', timeout=5)).get('loaded') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

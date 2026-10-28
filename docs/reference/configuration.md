@@ -19,7 +19,7 @@ means there is no default and the feature or key is left alone.
 
 | Knob | Default | What it does |
 |---|---|---|
-| `COMPOSE_FILE` | `docker-compose.yml` | Colon-separated compose files; add `compose/gemma4.yml`, `compose/mistral.yml`, `compose/tts-fish.yml`, `compose/claw-img.yml`, `compose/strata-llm.yml` or `compose/strata-router.yml` here. |
+| `COMPOSE_FILE` | `docker-compose.yml` | Colon-separated compose files; add `compose/gemma4.yml`, `compose/mistral.yml`, `compose/tts-fish.yml`, `compose/claw-img.yml`, `compose/strata.yml`, `compose/strata-llm.yml` or `compose/strata-router.yml` here. |
 | `COMPOSE_PROFILES` | (unset) | Optional services: `browser`, `python`, `meshcore`. |
 | `CONTAINER_NAME_PREFIX` | (empty) | Prefix for every `container_name`. Service-to-service DNS uses the service name, so it does not affect wiring. |
 | `TZ` | `UTC` | Time zone of the gateway, CLI, MeshCore bridge and image bot containers. |
@@ -338,21 +338,47 @@ Details: `openclaw-claw-img-bot/README.md`.
 | `CLAW_MUSIC_TIMEOUT_S` | `600` | Music render timeout. |
 | `CLAW_MUSIC_MAX_SECONDS` | `120` | Longest track a command accepts. |
 
+## Strata server (compose/strata.yml)
+
+DeepSeek-V4.1-Flash on Strata's `strata-dsv41` engine, built on the host. Started with
+`docker compose up -d strata` (naming it turns its profile on) or by `scripts/llm-ensure.sh` (after the stack has loaded);
+no restart policy. Details: `openclaw-strata/README.md`.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `STRATA_SRC` | (required) | The Strata checkout with the built `build-dsv41/strata-dsv41`; mounted read-only, and its `requirements.txt` pins the image's Python. |
+| `STRATA_MODEL_DIR` | (required) | The folder with the GGUF files and the pack; mounted at its host path (the pack stores absolute paths). |
+| `STRATA_PACK` | `$STRATA_MODEL_DIR/strata-pack-dspark` | The pack folder. |
+| `STRATA_API_KEY` | (required) | The server's key (Claude Code and benchmarks use it); `VLLM_API_KEY` is added as a second key for OpenClaw. |
+| `STRATA_MODEL_ID` | `deepseek-v4.1-flash` | The model id the server answers to (and the router rewrites the classifier alias to). |
+| `STRATA_MAX_CONTEXT` | `131072` | Context per request. |
+| `STRATA_CPU_THREADS` | `10` | CPU-lane threads; 18 heated a GB10 to 92 °C beside the stack. |
+| `STRATA_CPUSET` | `0-4,10-14` | Cores the container may use; the GB10's Cortex-A725 cores run 12 °C cooler than unpinned for ~10% speed. |
+| `STRATA_UMA_MARGIN_GB` | `16` | GPU expert budget = MemAvailable minus this, measured at start; 14 with Strata alone. |
+| `STRATA_DSPARK` | `auto` | Speculative decoding with the pack's drafter (`auto`, `on`, `off`). |
+| `STRATA_DSPARK_CONF` | `0.65` | Draft acceptance threshold. |
+| `STRATA_PREFILL_CHUNK` | `16384` | Prompt tokens per prefill step. |
+| `STRATA_EXTRA_ARGS` | (empty) | More engine flags, e.g. `--experts 6` for full quality. |
+| `STRATA_CUDA_DIR` | `/usr/local/cuda-13.0` | The host CUDA toolkit the engine was built with. |
+| `STRATA_DATA_DIR` | `./openclaw-strata/data` | Parked conversation slots (~2 GB) and the engine log; the container runs as root, so the files are root-owned. |
+| `STRATA_BIND` | `127.0.0.1` | Bind address of the published API port (`0.0.0.0` for LAN clients; the bench scripts use `127.0.0.1`). OpenClaw and the router use `strata:8095` on the compose network. |
+| `STRATA_PORT` | `8097` | Host port (benchmarks, other LAN clients). |
+
 ## Strata router (compose/strata-router.yml)
 
-The endpoint Claude Code uses for a Strata DeepSeek-V4.1-Flash server that runs outside this stack; it keeps
-Claude Code's auto-mode classifier working on a single-stream engine. Details: `openclaw-strata-router/README.md`.
+The endpoint Claude Code uses for a Strata server; it keeps Claude Code's auto-mode classifier working on a
+single-stream engine. Client launchers and details: `openclaw-strata-router/README.md`.
 
 | Knob | Default | What it does |
 |---|---|---|
 | `STRATA_API_KEY` | (empty) | The Strata server's API key; the router uses it for the warm-up. Claude Code sends its own copy. |
-| `STRATA_HOST` | `host.docker.internal` | Where the Strata API is reached from the container (the host by default). |
-| `STRATA_PORT` | `8095` | The Strata API port. |
+| `STRATA_UPSTREAM_HOST` | `strata` | Where the Strata API is reached from the container: the compose service, or `host.docker.internal` / an address for a server outside the stack. |
+| `STRATA_UPSTREAM_PORT` | `8095` | The Strata API port as seen from the router. |
 | `STRATA_ROUTER_BIND` | `127.0.0.1` | Bind address on the host; `0.0.0.0` for Claude Code on another machine. |
 | `STRATA_ROUTER_PORT` | `8096` | Host port. |
-| `STRATA_ROUTER_DATA_DIR` | `./openclaw-strata-router/data` | The saved classifier rule set and `router.log`; writable by UID 1000. |
+| `STRATA_ROUTER_DATA_DIR` | `./openclaw-strata-router/data` | The saved classifier requests (stage 1 is replayed at start, both feed `cls-bench.mjs`) and `router.log`; writable by UID 1000. |
 | `STRATA_CLASSIFIER_ALIAS` | `deepseek-v4.1-flash-classifier` | The model name Claude Code's `CLAUDE_CODE_AUTO_MODE_MODEL` uses; only these requests outlive a disconnect. |
-| `STRATA_MODEL_ID` | `deepseek-v4.1-flash` | The id the Strata server answers to; the alias is rewritten to it. |
+| `STRATA_MODEL_ID` | `deepseek-v4.1-flash` | The real model id the classifier alias is rewritten to (shared with the server). |
 
 ## Optional model files
 

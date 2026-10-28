@@ -1,11 +1,11 @@
-# strata-router: the endpoint Claude Code uses for a Strata DeepSeek-V4.1-Flash server
-# (Strata's strata-dsv41 engine, run outside this stack). It passes everything
-# through, but lets Claude Code's auto-mode classifier requests finish after the
-# client's fixed 60 s limit and keeps their rule set warm, so auto mode works on a
-# single-stream local model. Details: openclaw-strata-router/README.md
+# strata-router: the endpoint Claude Code uses for a Strata DeepSeek-V4.1-Flash server (compose/strata.yml,
+# or one elsewhere). It passes everything through, but lets Claude Code's auto-mode classifier requests
+# finish after the client's fixed 60 s limit and keeps their rule set warm, so auto mode works on a
+# single-stream local model. Details and the client setup: openclaw-strata-router/README.md
 # Enable in .env, together with STRATA_API_KEY (the Strata server's key):
-#   COMPOSE_FILE=docker-compose.yml:compose/strata-router.yml
+#   COMPOSE_FILE=docker-compose.yml:compose/strata.yml:compose/strata-router.yml
 # For Claude Code on another machine, publish it on the LAN: STRATA_ROUTER_BIND=0.0.0.0
+# A Strata server outside this stack: STRATA_UPSTREAM_HOST / STRATA_UPSTREAM_PORT.
 services:
   strata-router:
     image: node:22-alpine
@@ -14,14 +14,14 @@ services:
     restart: unless-stopped
     command: ["node", "/app/router.mjs"]
     user: "1000:1000"
-    # Strata runs outside this compose project and publishes its API on the host.
+    # for a Strata server on this host but outside the stack (STRATA_UPSTREAM_HOST=host.docker.internal)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "${STRATA_ROUTER_BIND:-127.0.0.1}:${STRATA_ROUTER_PORT:-8096}:8096"
     environment:
-      STRATA_HOST: ${STRATA_HOST:-host.docker.internal}
-      STRATA_PORT: ${STRATA_PORT:-8095}
+      STRATA_HOST: ${STRATA_UPSTREAM_HOST:-strata}
+      STRATA_PORT: ${STRATA_UPSTREAM_PORT:-8095}
       STRATA_API_KEY: ${STRATA_API_KEY:-}
       CLASSIFIER_ALIAS: ${STRATA_CLASSIFIER_ALIAS:-deepseek-v4.1-flash-classifier}
       REAL_MODEL: ${STRATA_MODEL_ID:-deepseek-v4.1-flash}

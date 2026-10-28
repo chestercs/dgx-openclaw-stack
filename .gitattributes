@@ -1,0 +1,3 @@
+# Windows launchers need CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf

@@ -37,6 +37,13 @@ temps() {
 }
 
 log "start (stop at ${STOP_AT}C, resume below ${RESUME_BELOW}C for ${RESUME_HOLD}s)"
+# A list from before a reboot (the kill came just before a thermal power-off) must not start the models two
+# minutes into boot, while the stack is still loading: llm-ensure.sh starts them in order instead.
+boot=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))
+if [ -s "$STATE" ] && [ "$(stat -c %Y "$STATE")" -lt "$boot" ]; then
+  log "dropping the pre-reboot list ($(tr '\n' ' ' < "$STATE")): llm-ensure.sh starts the chat model after the stack"
+  : > "$STATE"
+fi
 cool_since=0; last_sample=0
 while true; do
   read -r g a <<<"$(temps)"; hot=$(( g > a ? g : a )); now=$(date +%s)

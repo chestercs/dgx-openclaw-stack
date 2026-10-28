@@ -12,15 +12,29 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Added
 
-- `compose/strata-llm.yml`: the chat model on a Strata server
-  (DeepSeek-V4.1-Flash, strata-dsv41) instead of the Nemotron vLLM; the
-  embeddings stay local. `LLM_VISION=off` registers a text-only model, and
-  `LLM_THINKING_COMPAT=auto` now picks `qwen-chat-template` for DeepSeek ids.
-- `compose/strata-router.yml`: a proxy for Claude Code in front of a Strata
-  DeepSeek-V4.1-Flash server. Claude Code's auto-mode classifier has a fixed
-  60 s limit that a cold ~35K-token rule set does not fit on a single-stream
-  engine; the router lets those requests finish after the client gives up and
-  replays the rule set at start, so it stays cached (1-2 s per check).
+- `compose/strata.yml` (`openclaw-strata/`): DeepSeek-V4.1-Flash (284B MoE,
+  ISTA GSQ-RCO IQ1_M) on Strata's `strata-dsv41` engine, built on the host
+  with an aarch64 patch. Hot experts on the GPU, the rest on the CPU; one
+  request at a time. On a GB10 beside the stack: code 20-33 tok/s (DSpark),
+  prose 15-17, a 25K-token prompt at ~450 tok/s. It sizes its GPU tier from
+  MemAvailable at start (`ds4-uma.sh`), so it has a profile and no restart
+  policy; it is pinned to the Cortex-A725 cores (acpitz max 72 °C instead of
+  84 °C for ~10% speed). `bench.sh`, `soak.sh`, `watch.sh` measure it.
+- `compose/strata-llm.yml`: that server as OpenClaw's chat model instead of
+  the Nemotron vLLM; the embeddings stay local. `LLM_VISION=off` registers a
+  text-only model, and `LLM_THINKING_COMPAT=auto` now picks
+  `qwen-chat-template` for DeepSeek ids.
+- Claude Code on the Spark, offline: `compose/strata-router.yml` and the
+  `sclaude` launchers (`openclaw-strata-router/client/`). Claude Code's
+  auto-mode classifier has a fixed 60 s limit that a cold ~35K-token rule set
+  does not fit on a single-stream engine; the router lets those requests
+  finish after the client gives up and replays the rule set at start, so it
+  stays cached (1-2 s per check, 20/20 on a 20-case bench).
+- `scripts/llm-ensure.sh` also keeps a Strata server up (with
+  `compose/strata.yml` in `COMPOSE_FILE`): at boot and after a memguard kill it
+  starts it once the stack has loaded, at most three times per hour; a failed
+  start is logged. thermguard drops a kill list from before a reboot, so a
+  power-off does not restart the model in the middle of the stack's boot.
 - Discord eval: `scripts/discord-eval.sh` runs regression cases as Gateway
   turns (machine checks, then a rubric-only judge that may say unknown;
   latency and tokens per run; `--rejudge` regrades an earlier report). Real

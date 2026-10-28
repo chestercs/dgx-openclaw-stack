@@ -1,16 +1,17 @@
-# The chat model on a Strata server (DeepSeek-V4.1-Flash on Strata's strata-dsv41 engine,
-# run outside this stack) instead of the Nemotron vLLM. The embeddings stay local.
-# Enable in .env:
-#   COMPOSE_FILE=docker-compose.yml:compose/strata-llm.yml
-#   LLM_BASE_URL=http://<host>:<strata port>/v1/
+# The chat model on a Strata server (DeepSeek-V4.1-Flash on Strata's strata-dsv41 engine) instead of the
+# Nemotron vLLM. The embeddings stay local. Enable in .env, with the server from compose/strata.yml:
+#   COMPOSE_FILE=docker-compose.yml:compose/strata.yml:compose/strata-llm.yml
+#   LLM_BASE_URL=http://strata:8095/v1/
 #   LLM_MODEL_ID=deepseek-v4.1-flash
 #   LLM_VISION=off            # the DeepSeek pack reads no pictures
-# and give the Strata server VLLM_API_KEY as one of its keys (STRATA_API_KEY takes a
-# comma-separated list): config-init sends that key to the chat and the embedding endpoint.
+#   OPENCLAW_ACTIVE_MEMORY=off
+# compose/strata.yml gives the server VLLM_API_KEY as a second key: config-init sends that key to the chat
+# and the embedding endpoint. A Strata server elsewhere: point LLM_BASE_URL at it and add VLLM_API_KEY to
+# its STRATA_API_KEY list (comma-separated).
 #
-# Strata sizes its GPU expert tier from the memory free when it starts, so start the rest of
-# the stack first. It serves one request at a time: Discord turns, claim-guard checks,
-# Active Memory recalls and a Claude Code session on the same server wait for each other.
+# It serves one request at a time: Discord turns, claim-guard checks and a Claude Code session on the same
+# server wait for each other. Active Memory's 30 s recall timed out behind that on every turn, so it is off.
+# scripts/llm-ensure.sh starts the server after the gateway is healthy (compose/strata.yml).
 services:
   vllm-llm:
     profiles: ["strata-off"]

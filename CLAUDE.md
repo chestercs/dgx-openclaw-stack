@@ -29,7 +29,8 @@ How the parts fit together: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Ever
 docker-compose.yml          # the stack; profiles: browser, python, meshcore
 compose/                    # optional files added via COMPOSE_FILE:
                             #   gemma4.yml (+ gemma4/ chat template), mistral.yml,
-                            #   tts-fish.yml, claw-img.yml
+                            #   tts-fish.yml, claw-img.yml, strata.yml (DeepSeek on
+                            #   Strata), strata-llm.yml, strata-router.yml
 config-init/                # writes openclaw.json + workspaces (openclaw-config-init)
   patch-config.mjs          #   entry: runs the steps in order
   steps/                    #   models, memory, gateway, tools, discord, agents,
@@ -51,6 +52,8 @@ openclaw-meshcore-bridge/   # LoRa mesh bridge                   profile=meshcor
 openclaw-tts-fish/          # Fish Audio S2 Pro TTS (compose/tts-fish.yml)
 openclaw-image-comfyui/     # ComfyUI image/video/music MCP bridge (own compose)
 openclaw-claw-img-bot/      # /claw-img Discord bot (compose/claw-img.yml)
+openclaw-strata/            # Strata DeepSeek server: runtime image, launcher, tools
+openclaw-strata-router/     # Claude Code proxy + sclaude launchers (compose/strata-router.yml)
 openclaw-host-client/       # CLI container on the operator's PC for a remote gateway
 searxng/settings/           # SearxNG engine set and privacy settings
 scripts/                    # host-side ops: GB10 clock cap, thermguard, memguard,
@@ -272,14 +275,21 @@ Read the linked doc before changing the area.
   thinking ran 57k-token turns, off looped on tool JSON) and temperature 0.6 for
   Hungarian. Mistral Small 4 needs `TRITON_MLA` on GB10 and its EAGLE draft does not
   load on vLLM 0.31/0.32.
+- **Strata DeepSeek and Claude Code** → [`openclaw-strata/README.md`](openclaw-strata/README.md),
+  [`openclaw-strata-router/README.md`](openclaw-strata-router/README.md). One request at a
+  time; it sizes its GPU expert tier once, at start, from MemAvailable (`ds4-uma.sh`), so it
+  has a profile, no restart policy, and `llm-ensure.sh` starts it after the gateway is
+  healthy. The CPU lane heats the box past the GPU cap: keep it on the A725 cores.
+  `LLM_VISION=off` and Active Memory off with it (the 30 s recall times out in the queue).
 - **GB10 power, thermals, memory** → [`docs/reference/gb10-power-thermal.md`](docs/reference/gb10-power-thermal.md).
   Under sustained load the box powers off with no journal entry at acpitz ~94 °C;
   the fix is the clock cap (`scripts/gb10-clock-cap.service`, `-pl` is N/A on GB10)
   with `scripts/gb10-thermguard.sh` as backstop. A 611 MHz / ~10 W stuck GPU after a
   crash needs a cold drain. A model load can livelock the unified pool (no OOM kill,
   no SSH): `scripts/gb10-memguard.sh`, `scripts/gb10-resilience-setup.sh`,
-  `scripts/reshard-safetensors.py`; `scripts/llm-ensure.sh` restarts `vllm-llm` after
-  a guard killed it. Do not start two big GPU services sizing memory at the same time.
+  `scripts/reshard-safetensors.py`; `scripts/llm-ensure.sh` restarts the chat model
+  (`vllm-llm`, or `strata` with `compose/strata.yml`) after a guard killed it or a
+  reboot. Do not start two big GPU services sizing memory at the same time.
 - **Discord** → [`docs/reference/discord-config.md`](docs/reference/discord-config.md),
   [`discord-text-agent.md`](docs/reference/discord-text-agent.md).
   `guilds["*"].requireMention` is the gate; `/activation` is only a prompt hint inside

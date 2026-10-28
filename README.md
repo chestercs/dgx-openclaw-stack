@@ -45,9 +45,21 @@ what else it needs.
 | `compose/mistral.yml` | Mistral Small 4 119B-A6B NVFP4 instead of Nemotron |
 | `compose/tts-fish.yml` | Text-to-speech with Fish Audio S2 Pro (80+ languages, voice cloning). Off by default |
 | `compose/claw-img.yml` | A separate Discord bot with `/claw-img`, `/claw-video` and `/claw-music` slash commands that call the ComfyUI bridge directly. Off by default |
+| `compose/strata.yml` | DeepSeek-V4.1-Flash (284B MoE, ~1.75 bit) on [Strata](https://github.com/Niko1221/Strata)'s engine: hot experts on the GPU, the rest on the CPU. One request at a time |
+| `compose/strata-llm.yml` | That DeepSeek as OpenClaw's chat model instead of Nemotron |
+| `compose/strata-router.yml` | Claude Code against that DeepSeek, auto mode included (below) |
 
 A model file needs `LLM_MODEL_ID` set to the id it serves, because config-init
 registers that id in OpenClaw.
+
+**Claude Code on the Spark, offline.** With `compose/strata.yml` and
+`compose/strata-router.yml`, Claude Code on any machine in the LAN runs
+against the DeepSeek on the GB10: no request leaves the network. Code comes at
+20–33 tok/s, prose at 15–17, and a resumed turn reads only its new tokens. The
+router keeps Claude Code's auto-mode safety classifier inside its fixed 60 s
+limit, so long unattended runs work. Setup and the `sclaude` launchers:
+[`openclaw-strata-router/README.md`](openclaw-strata-router/README.md); the
+server: [`openclaw-strata/README.md`](openclaw-strata/README.md).
 
 The ComfyUI image, video and music bridge has its own compose file in
 [`openclaw-image-comfyui/`](openclaw-image-comfyui/README.md). It talks to a
@@ -133,6 +145,9 @@ They are downloaded on first start and are not part of the repo:
 - bge-m3: MIT. Whisper turbo (`deepdml/faster-whisper-large-v3-turbo-ct2`): MIT.
 - Gemma 4 (`compose/gemma4.yml`): Apache 2.0. Mistral Small 4
   (`compose/mistral.yml`): Apache 2.0.
+- DeepSeek-V4.1-Flash and its quantisations (`compose/strata.yml`): the
+  licences on the model cards; you download them yourself. Strata, which the
+  container mounts from your own build: MIT.
 - Fish Audio S2 Pro, used only by the optional `compose/tts-fish.yml`: the
   **Fish Audio Research License, non-commercial use only**. Building that
   image downloads the weights and counts as accepting the licence. The default
