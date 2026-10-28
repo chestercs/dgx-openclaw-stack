@@ -40,7 +40,9 @@ There is no ready-made ARM package. Build from source on the host (~15 min, with
 CPUID branch, and missing ARM stubs for the DeepSeek CPU lane's AVX kernels (ggml-cpu's NEON code runs there
 instead). One more hunk, in Python and not ARM-specific: the OpenAI chat path reads DeepSeek's own
 `thinking: {"type": "disabled"}`, which is how OpenClaw's `deepseek` thinking format says `/think off` (the chat
-path read only `reasoning_effort` and `chat_template_kwargs`). The `serve/` code is mounted, not built in: after
+path read only `reasoning_effort` and `chat_template_kwargs`). And `medium` is sent as 62: the 1017 pack's chat template
+knows only `low` (50), `high` (75), `max` (100) or a number, and answered `medium`, OpenClaw's `/think medium` and
+every Claude Code budget under 8192, with a 400. The `serve/` code is mounted, not built in: after
 re-applying the patch, restart the container.
 
 ```bash

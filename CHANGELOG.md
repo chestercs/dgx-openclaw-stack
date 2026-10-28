@@ -33,7 +33,9 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   - OpenClaw (Discord `/think`, the Web UI picker): DeepSeek's own thinking
     format with `reasoning_effort` low to max. The qwen switch sent no effort,
     so every level thought at the template's default. The Strata patch makes
-    the chat path read `thinking: {type: "disabled"}`, DeepSeek's `/think off`.
+    the chat path read `thinking: {type: "disabled"}`, DeepSeek's `/think off`,
+    and sends `medium` as 62: the pack's template knows only low, high, max or
+    a number, and refused `medium` with a 400.
 
 - Headless Chromium (Playwright) in the Python sandbox, with its system
   libraries and fonts: the agent can load the HTML it built, screenshot it,
