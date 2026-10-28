@@ -78,6 +78,10 @@ for key in OPENCLAW_CONFIG_DIR OPENCLAW_WORKSPACE_DIR OPENCLAW_CANVAS_DIR \
   fi
   [[ -w "$dir" ]] || warn "$dir is not writable by $(id -un); the containers need UID 1000 to write there"
 done
+# The Python sandbox mounts the Discord agent's code/ folder; created here, or
+# Docker would create it owned by root and the agent could not write into it.
+cfg=$(get OPENCLAW_CONFIG_DIR | tr -d '"')
+[[ -n "$cfg" && -d "$cfg" ]] && mkdir -p "$cfg/workspace-discord/code"
 
 cat <<'EOF'
 

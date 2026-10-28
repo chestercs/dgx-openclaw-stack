@@ -10,7 +10,24 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ## [Unreleased]
 
+### Security
+
+- The browser's CDP ports require `BROWSER_API_TOKEN`. Chromium's CDP has no
+  auth, and every container on the compose bridge reached the ports,
+  including the Python sandbox, where any Discord member's code runs: that
+  code could drive a logged-in browser profile. `cdp_proxy.py` now answers
+  401 without the token (`?token=` or Bearer); OpenClaw already sends it on
+  every CDP request.
+
 ### Added
+
+- Headless Chromium (Playwright) in the Python sandbox, with its system
+  libraries and fonts: the agent can load the HTML it built, screenshot it,
+  record a canvas demo into a GIF with ffmpeg, or click through a web app,
+  in an empty browser apart from the logged-in profiles. `shm_size` 1 GB
+  for Chromium. The Discord agent's `code/` folder is mounted into the
+  sandbox at the same path, so code it writes can be run, tested and packed
+  there without `exec`; `bootstrap.sh` creates the folder.
 
 - `OPENCLAW_HEARTBEAT_EVERY` (default `30m`, `off` = `0m`): the heartbeat
   cadence. On Strata an idle heartbeat read a ~30k-token prompt every 30 min

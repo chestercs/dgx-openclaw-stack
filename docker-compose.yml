@@ -358,6 +358,12 @@ services:
     volumes:
       - ${OPENCLAW_SANDBOX_DIR:-${OPENCLAW_WORKSPACE_DIR}/sandbox}:/workspace:rw
       - ${OPENCLAW_CANVAS_DIR:-${OPENCLAW_CONFIG_DIR}/canvas}:/home/node/.openclaw/canvas:rw
+      # The Discord agent writes code here; the same path in both containers, so
+      # it can run, test, record and pack that code in the sandbox. Only code/:
+      # the rest of its workspace (people memory, AGENTS.md) stays out.
+      - ${OPENCLAW_CONFIG_DIR}/workspace-discord/code:/home/node/.openclaw/workspace-discord/code:rw
+    # Chromium renders through /dev/shm; Docker's 64 MB default crashes tabs.
+    shm_size: "1gb"
     mem_limit: ${PYTHON_SANDBOX_MEMORY_MB:-8192}m
     cpus: ${PYTHON_SANDBOX_CPUS:-4}
     cap_drop: [ALL]

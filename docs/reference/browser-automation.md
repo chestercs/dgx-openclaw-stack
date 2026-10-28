@@ -99,8 +99,13 @@ referrer-style headers. The mitigations we ship:
 
 - `BROWSER_BIND` defaults to 127.0.0.1, so only loopback on the host
   reaches the CDP ports.
-- Sibling containers reach Chromium via Docker bridge DNS, an isolated
-  network the LAN cannot pivot into.
+- Every CDP port checks the token. Chromium's CDP has no auth of its own,
+  and sibling containers reach the ports over the bridge, the Python
+  sandbox (code any Discord member can run) among them; without the check
+  that code could drive a logged-in profile. `cdp_proxy.py` answers 401 to
+  any HTTP or WebSocket request without the token, as `?token=` or a
+  Bearer header. OpenClaw sends it on every `/json` call and appends it to
+  every WebSocket URL it opens.
 - `rotate-secrets.sh` rotates `BROWSER_API_TOKEN` on the same cadence
   as every other secret; `--all` includes it by default.
 - The FastAPI app configures uvicorn to keep `Authorization` headers

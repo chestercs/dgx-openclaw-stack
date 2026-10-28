@@ -17,14 +17,12 @@ Routes:
   POST /v1/sessions/{name}/login-helper/cancel — Bearer, abort no-flush
   POST /v1/extract                      — Bearer, HTML→markdown trafilatura
 
-CDP traffic (`/json/version`, `/json/list`, `WS /devtools/...`) is served
-by Chromium directly on its own ports; we do NOT proxy. Loopback host bind
-+ docker bridge isolation are the only auth layers on CDP — the
-?token=<...> query string OpenClaw appends to its cdpUrl is sent but not
-validated server-side. Acceptable for a single-operator host (where the
-plan ships); if you expose any CDP port on the LAN, document the risk and
-front it with a reverse proxy that does header-based bearer auth before
-forwarding.
+CDP traffic (`/json/version`, `/json/list`, `WS /devtools/...`) does not
+pass through this app: cdp_proxy.py forwards each profile's port to
+Chromium and refuses any request without BROWSER_API_TOKEN (the `?token=`
+OpenClaw appends to its cdpUrl, or a Bearer header). Other containers on
+the compose bridge, the Python sandbox among them, reach the ports but not
+the logged-in profiles.
 """
 from __future__ import annotations
 

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import secrets
 import signal
 import sys
 
@@ -30,6 +32,22 @@ from aiohttp import web
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s cdp_proxy[%(process)d]: %(message)s")
 log = logging.getLogger("cdp_proxy")
+
+# CDP itself has no auth, and whoever drives it drives the profile's logged-in
+# sessions. Every container on the compose bridge reaches these ports, the
+# Python sandbox (any Discord member's code) among them, so each request must
+# carry BROWSER_API_TOKEN. OpenClaw already sends it: the cdpUrl's `?token=`
+# rides on every /json call and is appended to every WebSocket URL it opens.
+API_TOKEN = os.environ.get("BROWSER_API_TOKEN", "").strip()
+
+
+def authorized(request: web.Request) -> bool:
+    supplied = request.query.get("token", "")
+    auth = request.headers.get("Authorization", "")
+    if not supplied and auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip()
+    return bool(API_TOKEN) and secrets.compare_digest(supplied.encode(), API_TOKEN.encode())
+
 
 # CDP HTTP responses are tiny (a few KB at most for /json/list with many
 # tabs). 1 MB is generous; bigger would only matter for trace exports
@@ -183,6 +201,9 @@ async def proxy_http(request: web.Request, internal_port: int, external_port: in
 
 def make_handler(internal_port: int, external_port: int):
     async def handler(request: web.Request) -> web.StreamResponse:
+        if not authorized(request):
+            log.warning("refused %s %s from %s: missing or wrong token", request.method, request.path, request.remote)
+            return web.Response(status=401, text="CDP requires the browser token")
         upgrade = request.headers.get("Upgrade", "").lower()
         if upgrade == "websocket":
             return await proxy_ws(request, internal_port)

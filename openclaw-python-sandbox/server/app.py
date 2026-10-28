@@ -104,7 +104,14 @@ TOOLS = [
             "expression's repr, inline matplotlib plots as base64 PNGs, "
             "and any uncaught exception details. The /workspace directory "
             "(bound from the host) is the canonical place to read/write "
-            "files. It has internet access, so pip install and downloads work."
+            "files. It has internet access, so pip install and downloads work. "
+            "The Discord agent's code/ folder is mounted at the same path "
+            "(/home/node/.openclaw/workspace-discord/code), so files it wrote "
+            "can be run, tested and packed here. Headless Chromium is installed "
+            "for Playwright: in python_exec use the async API with top-level "
+            "await (the sync API fails inside the kernel's event loop), e.g. "
+            "to load a page, screenshot it or record frames of a canvas demo; "
+            "ffmpeg makes the GIF or video."
         ),
         "inputSchema": {
             "type": "object",

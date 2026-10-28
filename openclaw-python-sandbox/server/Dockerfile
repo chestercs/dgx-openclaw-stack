@@ -56,6 +56,15 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
 
+# Headless Chromium (Playwright) for what the agent builds: load its own HTML,
+# screenshot it, record a canvas demo as a GIF, click through a web app. An
+# empty browser of its own: the logged-in openclaw-browser profiles are not
+# reachable from here (their CDP ports want the browser token). The browsers
+# go to a shared path the non-root user can read; --with-deps pulls the
+# system libraries and fonts Chromium needs, which a non-root agent could not.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN playwright install --with-deps chromium     && chmod -R a+rX /opt/ms-playwright     && rm -rf /var/lib/apt/lists/*
+
 # Install the kernel spec system-wide so child kernels can find it. Done
 # under root before we drop privileges; the kernel spec is stored under
 # /usr/local/share/jupyter/kernels/ which is world-readable.

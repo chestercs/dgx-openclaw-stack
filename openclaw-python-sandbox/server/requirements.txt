@@ -28,3 +28,5 @@ sympy>=1.13,<2
 # and an over-tight pin would rot fast. Rebuild the image to pull a newer one.
 yt-dlp>=2025.1,<2027
 requests>=2.31,<3
+# Headless Chromium for the code the agent builds (see the Dockerfile).
+playwright>=1.50,<2
