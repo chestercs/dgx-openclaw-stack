@@ -1,9 +1,10 @@
 # GB10: drop the clean page cache, on request. llm-ensure.sh starts this before Strata (compose/strata.yml).
 #
 # Why: on the GB10's unified memory cudaMalloc does not reclaim the page cache, and Strata sizes its GPU expert
-# tier once, at start, from what is free then. Right after boot the cache holds what the stack just loaded:
-# measured 9,949 experts on the GPU without a drop, 11,220 with one. Only clean pages are dropped (echo 1);
-# nothing is lost, files are read back from disk when used.
+# tier once, at start, from what is free then. Measured beside the stack after hours of uptime (16-26 GB of
+# cache): 9,972 experts on the GPU without a drop, 11,109 with one. Right after boot the cache is small and the
+# drop adds little (9,949 -> 10,112); there the stack's services are not swapped out yet, which a drop cannot
+# change. Only clean pages are dropped (echo 1); nothing is lost, files are read back from disk when used.
 #
 # gb10-drop-caches.rules lets the docker group start this one unit without a password (that group can already
 # do anything as root through docker; this is the narrow, logged way).

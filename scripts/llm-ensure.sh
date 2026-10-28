@@ -58,8 +58,8 @@ if [ "$svc" = strata ]; then
 fi
 echo "$now" >> "$STARTS"; tail -n 20 "$STARTS" > "$STARTS.tmp" && mv "$STARTS.tmp" "$STARTS"
 if [ "$svc" = strata ]; then
-  # cudaMalloc on the GB10 does not reclaim the page cache, which after boot is full of what the stack just
-  # loaded (9,949 experts on the GPU without a drop, 11,220 with one): see scripts/gb10-drop-caches.service.
+  # cudaMalloc on the GB10 does not reclaim the page cache, which grows with uptime (after hours: 9,972
+  # experts on the GPU without a drop, 11,109 with one): see scripts/gb10-drop-caches.service.
   timeout 60 systemctl start --no-ask-password gb10-drop-caches.service 2>/dev/null \
     || log "page cache not dropped: install scripts/gb10-drop-caches.service and its polkit rule"
 fi

@@ -106,8 +106,10 @@ container lists (memguard `TARGETS`, thermguard `WATCH`); see
 
 Before each start `llm-ensure.sh` drops the clean page cache through
 [`scripts/gb10-drop-caches.service`](../scripts/gb10-drop-caches.service), so the GPU tier is sized for the
-memory really available (after boot: 11,220 experts on the GPU instead of 9,949). Install that unit and its
-polkit rule once, with sudo, as its header says; without them Strata still starts, with fewer GPU experts.
+memory really available. It matters most for a restart after hours of uptime (11,109 experts on the GPU
+instead of 9,972). Right after boot the cache is small (9,949 -> 10,112); the rest of the gap there is that
+nothing is swapped out yet, and Strata sizes itself only once, at start. Install that unit and its polkit
+rule once, with sudo, as its header says; without them Strata still starts, with fewer GPU experts.
 
 ## Memory and heat
 

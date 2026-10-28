@@ -14,9 +14,10 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 - `scripts/gb10-drop-caches.service` and its polkit rule: `llm-ensure.sh`
   drops the clean page cache before it starts Strata, so the GPU tier is
-  sized for the memory really available (after a reboot 11,220 experts on the
-  GPU instead of 9,949). The docker group may start that one unit without a
-  password.
+  sized for the memory really available. A restart after hours of uptime got
+  11,109 experts on the GPU instead of 9,972; right after boot the cache is
+  small and the gain too (9,949 -> 10,112). The docker group may start that
+  one unit without a password.
 
 ### Changed
 
