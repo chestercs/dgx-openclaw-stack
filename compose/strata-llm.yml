@@ -11,6 +11,8 @@
 #
 # It serves one request at a time: Discord turns, claim-guard checks and a Claude Code session on the same
 # server wait for each other. Active Memory's 30 s recall timed out behind that on every turn, so it is off.
+# MESHCORE_AGENT_TIMEOUT_S=3600 for the MeshCore bridge: its 180 s default does not cover a turn that waits
+# behind a Discord turn and then thinks.
 # scripts/llm-ensure.sh starts the server after the gateway is healthy (compose/strata.yml).
 services:
   vllm-llm:

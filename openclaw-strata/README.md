@@ -104,6 +104,11 @@ container lists (memguard `TARGETS`, thermguard `WATCH`); see
 [docs/reference/gb10-power-thermal.md](../docs/reference/gb10-power-thermal.md). The container runs as root, so
 `STRATA_DATA_DIR` fills with root-owned files.
 
+Before each start `llm-ensure.sh` drops the clean page cache through
+[`scripts/gb10-drop-caches.service`](../scripts/gb10-drop-caches.service), so the GPU tier is sized for the
+memory really available (after boot: 11,220 experts on the GPU instead of 9,949). Install that unit and its
+polkit rule once, with sudo, as its header says; without them Strata still starts, with fewer GPU experts.
+
 ## Memory and heat
 
 **Memory.** The engine sizes its GPU tier from CUDA's free memory, which on the GB10's unified pool is

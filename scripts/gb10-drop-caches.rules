@@ -1,0 +1,10 @@
+// Lets members of the docker group start gb10-drop-caches.service without a password (scripts/llm-ensure.sh
+// does, before Strata). Only that unit, only "start". Install: see scripts/gb10-drop-caches.service.
+polkit.addRule(function (action, subject) {
+  if (action.id == "org.freedesktop.systemd1.manage-units" &&
+      action.lookup("unit") == "gb10-drop-caches.service" &&
+      action.lookup("verb") == "start" &&
+      subject.isInGroup("docker")) {
+    return polkit.Result.YES;
+  }
+});

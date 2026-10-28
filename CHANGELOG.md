@@ -10,6 +10,19 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/gb10-drop-caches.service` and its polkit rule: `llm-ensure.sh`
+  drops the clean page cache before it starts Strata, so the GPU tier is
+  sized for the memory really available (after a reboot 11,220 experts on the
+  GPU instead of 9,949). The docker group may start that one unit without a
+  password.
+
+### Changed
+
+- `compose/strata-llm.yml` recommends `MESHCORE_AGENT_TIMEOUT_S=3600`: the
+  bridge's 180 s does not cover a turn queued behind a Discord turn.
+
 ## [1.2.0] - 2026-10-28
 
 ### Added

@@ -57,6 +57,12 @@ if [ "$svc" = strata ]; then
   done
 fi
 echo "$now" >> "$STARTS"; tail -n 20 "$STARTS" > "$STARTS.tmp" && mv "$STARTS.tmp" "$STARTS"
+if [ "$svc" = strata ]; then
+  # cudaMalloc on the GB10 does not reclaim the page cache, which after boot is full of what the stack just
+  # loaded (9,949 experts on the GPU without a drop, 11,220 with one): see scripts/gb10-drop-caches.service.
+  timeout 60 systemctl start --no-ask-password gb10-drop-caches.service 2>/dev/null \
+    || log "page cache not dropped: install scripts/gb10-drop-caches.service and its polkit rule"
+fi
 if out=$(docker compose up -d --no-deps "$svc" 2>&1); then
   log "$svc was down -> started"
 else
