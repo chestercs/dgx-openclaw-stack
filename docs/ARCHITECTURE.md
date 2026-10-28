@@ -47,7 +47,8 @@ by service name (`http://vllm-llm:8004/v1/`). Container names carry an optional
 
 | Service | Role | Host port |
 |---|---|---|
-| `vllm-llm` | The chat model, Nemotron 3.5 Super 120B-A12B NVFP4 (vision, tools, reasoning), `vllm/vllm-openai:v0.32.0` | `127.0.0.1:8004` (`LLM_BIND`) |
+| `strata` | The reference host's chat model, DeepSeek-V4.1-Flash on Strata's engine (`compose/strata.yml` + `compose/strata-llm.yml`, which parks `vllm-llm`); started by `llm-ensure.sh` after the stack; `strata-router` in front of it for Claude Code | `127.0.0.1:8097`, router `8096` |
+| `vllm-llm` | The quick-start chat model, Nemotron 3.5 Super 120B-A12B NVFP4 (vision, tools, reasoning), `vllm/vllm-openai:v0.32.0` | `127.0.0.1:8004` (`LLM_BIND`) |
 | `vllm-embedding` | `BAAI/bge-m3` embeddings for memory search, 3 % of the pool | none |
 | `searxng` | Web search backend (JSON API) | none |
 | `openclaw-stt-whisper` | faster-whisper large-v3-turbo; Hungarian and English detected per request | `127.0.0.1:8093` |

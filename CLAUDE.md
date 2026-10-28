@@ -5,9 +5,12 @@ Guidance for Claude Code (and other coding agents) working on this repository.
 ## What this repo is
 
 A Docker Compose stack that runs a self-hosted OpenClaw agent on one NVIDIA GB10
-(DGX Spark / ASUS Ascent GX10): a local LLM (Nemotron 3.5 Super 120B-A12B NVFP4 on
-`vllm-llm:8004`), bge-m3 embeddings for memory search, SearxNG web search, Whisper
-speech-to-text, and the OpenClaw gateway with a Discord bot. Other models, TTS and the
+(DGX Spark / ASUS Ascent GX10): a local LLM, bge-m3 embeddings for memory search,
+SearxNG web search, Whisper speech-to-text, and the OpenClaw gateway with a Discord bot.
+The reference host's LLM is DeepSeek-V4.1-Flash (284B MoE) on Strata's engine
+(`compose/strata.yml`, `strata:8095`, one request at a time), which also serves Claude
+Code through `compose/strata-router.yml`. The compose default and quick start is
+Nemotron 3.5 Super 120B-A12B NVFP4 on `vllm-llm:8004`. Other models, TTS and the
 media tools are optional compose files. The defaults are calibrated for the GB10 and
 can be moved to other hardware through `.env`.
 

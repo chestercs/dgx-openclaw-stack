@@ -116,8 +116,33 @@ covers).
 
 ## 4. Choose the backend
 
-Nemotron 3.5 Super is the default, and it needs no `.env` change. To use
-another model, set both lines in `.env`:
+**DeepSeek-V4.1-Flash on Strata** is the reference host's model: 284B
+parameters on this one box, code at 20–33 tok/s, one request at a time. It
+needs Strata's engine built on the host and the model downloaded first
+([`openclaw-strata/README.md`](openclaw-strata/README.md)), then in `.env`:
+
+```bash
+COMPOSE_FILE=docker-compose.yml:compose/strata.yml:compose/strata-llm.yml   # + compose/strata-router.yml for Claude Code
+STRATA_SRC=/home/<you>/strata
+STRATA_MODEL_DIR=/home/<you>/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO
+STRATA_API_KEY=<openssl rand -hex 24>
+LLM_BASE_URL=http://strata:8095/v1/
+LLM_MODEL_ID=deepseek-v4.1-flash
+LLM_VISION=off
+OPENCLAW_ACTIVE_MEMORY=off
+# limits for long autonomous runs (compose/strata-llm.yml explains each)
+OPENCLAW_AGENT_TIMEOUT_SECONDS=604800
+LLM_REQUEST_TIMEOUT_SECONDS=86400
+OPENCLAW_SUBAGENTS_RUN_TIMEOUT=0
+OPENCLAW_EXEC_TIMEOUT_SEC=86400
+```
+
+Strata starts after the rest of the stack: `scripts/llm-ensure.sh` does that
+from cron, after a reboot too, once `scripts/gb10-host-setup.sh cron` has
+installed the jobs.
+
+**Nemotron 3.5 Super** is the quick start and the compose default: it needs no
+`.env` change and no build. To use another vLLM model, set both lines in `.env`:
 
 ```bash
 # Gemma 4 MoE (or nvidia/Gemma-4-31B-IT-NVFP4 for the dense model)

@@ -1,17 +1,25 @@
 # DGX OpenClaw Stack
 
 A self-hosted [OpenClaw](https://openclaw.ai) agent on one NVIDIA GB10 box (DGX
-Spark / ASUS Ascent GX10), brought up with `docker compose`. vLLM serves the
-chat model and the bge-m3 embeddings, SearxNG does web search, faster-whisper
-transcribes voice notes, and OpenClaw runs the Web UI, the agents and the
-Discord bot. The value is the wiring: `config-init` writes `openclaw.json` and
-the agent workspaces from `.env` on every `docker compose up`, so the setup
-stays the same across onboarding re-runs, restarts and OpenClaw upgrades.
+Spark / ASUS Ascent GX10), brought up with `docker compose`.
 
-The chat model is Nemotron 3.5 Super on vLLM by default. Optional compose files
-swap in Gemma 4, Mistral Small 4, or DeepSeek-V4.1-Flash (284B MoE) on
-Strata's engine, and the same DeepSeek can serve Claude Code on your LAN with
-nothing leaving the network.
+**The model: DeepSeek-V4.1-Flash, 284B parameters, on one desktop box.** It
+runs on [Strata](https://github.com/Niko1221/Strata)'s engine in a ~1.75-bit
+quantisation: the experts the model routes to most sit on the GPU, the rest is
+computed on the CPU straight from the files. On the reference GX10 it serves
+the Discord bot, the MeshCore mesh, and Claude Code on the LAN, offline. It
+comes back by itself after a reboot, stays below 80 °C under sustained load,
+and its limits allow agent runs of up to a week. It is not fast (code 20–33 tok/s, prose 15–17, one request at a time),
+but it is the largest model this box runs, and it runs reliably
+([`openclaw-strata/README.md`](openclaw-strata/README.md)).
+
+Around it: bge-m3 embeddings for memory, SearxNG web search, faster-whisper for
+voice notes, and OpenClaw's Web UI, agents and Discord bot. The quick start
+needs no engine build: Nemotron 3.5 Super on vLLM, one `docker compose up`;
+Gemma 4 and Mistral Small 4 are other vLLM options. The value is the wiring:
+`config-init` writes `openclaw.json` and the agent workspaces from `.env` on
+every `docker compose up`, so the setup stays the same across onboarding
+re-runs, restarts and OpenClaw upgrades.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
@@ -19,7 +27,9 @@ nothing leaving the network.
 
 | Service | What it does | Host port | Starts with |
 |---|---|---|---|
-| `vllm-llm` | Chat model: Nemotron 3.5 Super 120B-A12B VL NVFP4 on `vllm/vllm-openai:v0.32.0`, with the LiLiCorr `dflash` drafter (vision, tools, medium-effort thinking) | `127.0.0.1:8004` | default |
+| `strata` | **Chat model: DeepSeek-V4.1-Flash** (ISTA GSQ-RCO IQ1_M) on Strata's `strata-dsv41` engine, built on the host; tools, thinking, DSpark drafting, text only | `127.0.0.1:8097` | `compose/strata.yml`, started by `llm-ensure.sh` after the stack |
+| `strata-router` | Claude Code's endpoint for it: keeps the auto-mode classifier inside its 60 s limit | `127.0.0.1:8096` | `compose/strata-router.yml` |
+| `vllm-llm` | Quick-start chat model: Nemotron 3.5 Super 120B-A12B VL NVFP4 on `vllm/vllm-openai:v0.32.0`, with the LiLiCorr `dflash` drafter (vision, tools, medium-effort thinking); parked by `compose/strata-llm.yml` | `127.0.0.1:8004` | default |
 | `vllm-embedding` | `BAAI/bge-m3` embeddings for memory search | none (8005 inside) | default |
 | `searxng` | Web search backend for the `web_search` tool | none (8080 inside) | default |
 | `openclaw-stt-whisper` | Speech-to-text, `faster-whisper-large-v3-turbo`, Hungarian and English detected per request | `127.0.0.1:8093` | default |
@@ -99,19 +109,24 @@ Measured on the reference GX10. The setup for each number is in
 [`docs/reference/llm-stack.md`](docs/reference/llm-stack.md) and the compose
 file headers.
 
-| | Nemotron 3.5 Super (default) | Mistral Small 4 | Gemma 4 26B-A4B MoE | Gemma 4 31B dense |
-|---|---|---|---|---|
-| Weights | ~80 GB download | ~66 GiB | ~16.5 GB | ~17 GB |
-| Memory share | 0.70 (~70 GiB) | 0.65 (~78 GiB process) | 0.50 | 0.50 |
-| Decode, 1 stream | 26.2 tok/s English, 16.6 tok/s Hungarian (the drafter predicts Hungarian poorly); 19.8 tok/s with the clock cap | ~30 tok/s | ~25–52 tok/s (depends on the vLLM build) | ~6.9 tok/s |
-| Decode, 4 streams | 8.8 tok/s each | 19 tok/s each | n/a | n/a |
-| Prefill | ~2560 tok/s | ~1900 tok/s | n/a | n/a |
-| vLLM image | v0.32.0 | v0.31.0 | v0.32.0 | v0.32.0 |
+| | **DeepSeek-V4.1-Flash on Strata** | Nemotron 3.5 Super (quick start) | Mistral Small 4 | Gemma 4 26B-A4B MoE | Gemma 4 31B dense |
+|---|---|---|---|---|---|
+| Parameters | 284B MoE | 120B-A12B | 119B-A6B | 26B-A4B | 31B |
+| Weights | 121 GB IQ1_M + 111 GB Engram table, on disk | ~80 GB download | ~66 GiB | ~16.5 GB | ~17 GB |
+| Memory | ~80–88 GB of experts on the GPU (~11k of 15.7k), the rest read from the files by the CPU | 0.70 share (~70 GiB) | 0.65 (~78 GiB process) | 0.50 | 0.50 |
+| Decode, 1 stream | code 20–33 tok/s (DSpark), prose 15–17 tok/s | 26.2 tok/s English, 16.6 tok/s Hungarian (the drafter predicts Hungarian poorly); 19.8 tok/s with the clock cap | ~30 tok/s | ~25–52 tok/s (depends on the vLLM build) | ~6.9 tok/s |
+| Decode, 4 streams | one request at a time; the rest queue | 8.8 tok/s each | 19 tok/s each | n/a | n/a |
+| Prefill | ~450 tok/s; a resumed conversation reads only its new tokens | ~2560 tok/s | ~1900 tok/s | n/a | n/a |
+| Engine | Strata 0.2.7 (`strata-dsv41`), built on the host | vLLM v0.32.0 | vLLM v0.31.0 | vLLM v0.32.0 | vLLM v0.32.0 |
 
-The Gemma numbers were measured on older vLLM releases with a patched image.
-They have not been measured again on stock v0.32. Nemotron is the default
-because it gave the most reliable facts and tool use in the repo's Discord
-agent evals. Its Hungarian is weaker than Mistral's or Gemma's; config-init
+DeepSeek is the reference host's model since 2026-10-28: the bot, the mesh and
+Claude Code all run on it. Its numbers are measured beside the rest of the
+stack, with the engine pinned to the A725 cores (acpitz below 80 °C). Strata
+measures this quantisation at +9–10% perplexity on code and agent work against
+the full model. The Gemma numbers were measured on older vLLM releases with a
+patched image and have not been measured again on stock v0.32. Of the vLLM
+models, Nemotron gave the most reliable facts and tool use in the repo's
+Discord agent evals, which is why it is the quick-start default. Its Hungarian is weaker than Mistral's or Gemma's; config-init
 sets temperature 0.6 for it, which keeps other scripts out of Hungarian
 replies.
 
@@ -147,6 +162,12 @@ it.
 
 The full walkthrough, with sanity checks and day-to-day operation, is in
 [SETUP.md](SETUP.md).
+
+**Then move to DeepSeek.** The quick start runs on Nemotron. For DeepSeek,
+build Strata's engine on the host, download the model (~232 GB) and build its
+pack, then add `compose/strata.yml` and `compose/strata-llm.yml` to
+`COMPOSE_FILE`: [`openclaw-strata/README.md`](openclaw-strata/README.md) and
+[SETUP.md](SETUP.md#4-choose-the-backend).
 
 ## Licences
 

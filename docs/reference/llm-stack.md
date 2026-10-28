@@ -14,7 +14,8 @@ service name, hostname and port:
 
 | Backend | How to enable | Notes |
 |---|---|---|
-| Nemotron 3.5 Super 120B-A12B NVFP4 | default (`docker-compose.yml`) | Reference host's Discord model |
+| **DeepSeek-V4.1-Flash (284B MoE) on Strata** | `compose/strata.yml` + `compose/strata-llm.yml`, `LLM_BASE_URL=http://strata:8095/v1/` | Reference host's model since 2026-10-28; its own engine, not vLLM: [`openclaw-strata/README.md`](../../openclaw-strata/README.md) |
+| Nemotron 3.5 Super 120B-A12B NVFP4 | default (`docker-compose.yml`) | Quick start: no build, vision; the reference host's model before DeepSeek |
 | Gemma 4 26B-A4B NVFP4 (MoE) or 31B-IT NVFP4 (dense) | `COMPOSE_FILE=docker-compose.yml:compose/gemma4.yml` + `LLM_MODEL_ID` | Smallest footprint, best Hungarian |
 | Mistral Small 4 119B-A6B NVFP4 | `COMPOSE_FILE=docker-compose.yml:compose/mistral.yml` + `LLM_MODEL_ID` | Fastest decode of the large models |
 
