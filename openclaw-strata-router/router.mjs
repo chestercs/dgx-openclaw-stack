@@ -14,8 +14,9 @@
 //   - the router keeps the rule set (system prompt, transcript removed) and replays it once at start, so even the
 //     first Bash call after a restart finds it cached.
 // Every other request is passed through, and a disconnect (Esc) cancels it upstream as before. One change:
-// THINKING_BUDGET caps the thinking budget Claude Code asks for (~32K on every call, MAX_THINKING_TOKENS on the
-// client did not change it). On a hard task DeepSeek filled the 24K the server allows on every call, ~20 min at
+// THINKING_BUDGET caps the thinking of Claude Code's requests. Claude Code turns thinking on with no budget
+// (MAX_THINKING_TOKENS on the client changed nothing), so Strata applies its own default, 24K with max_tokens
+// 32000. On a hard task DeepSeek filled those 24K on every call, ~20 min at
 // ~20 tok/s before each small step, and the context grew 24K a call until Claude Code compacted. Strata reads a
 // budget under 8192 as effort "medium" as well as a hard stop.
 import http from "node:http";
@@ -90,9 +91,11 @@ http.createServer((req, res) => {
       const tpl = warmTemplate(json);
       // stage 1 (it has the stop sequence) is replayed at start; stage 2 is kept for cls-bench.mjs
       if (tpl) fs.writeFile(json.stop_sequences ? WARM_FILE : STAGE2_FILE, JSON.stringify(tpl), () => {});
-    } else if (THINKING_BUDGET && json?.thinking?.type === "enabled" && json.thinking.budget_tokens > THINKING_BUDGET) {
-      log(`thinking budget ${json.thinking.budget_tokens} -> ${THINKING_BUDGET}`);
-      json.thinking.budget_tokens = THINKING_BUDGET;
+    } else if (THINKING_BUDGET && json?.thinking && json.thinking.type !== "disabled"
+               && !(json.thinking.budget_tokens <= THINKING_BUDGET)) {
+      // Claude Code may send no budget at all (adaptive thinking): Strata then uses its own default.
+      log(`thinking ${json.thinking.type} budget ${json.thinking.budget_tokens ?? "none"} -> ${THINKING_BUDGET}`);
+      json.thinking = { type: "enabled", budget_tokens: THINKING_BUDGET };
       body = Buffer.from(JSON.stringify(json));
     }
     const t0 = Date.now();

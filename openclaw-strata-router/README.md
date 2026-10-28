@@ -49,9 +49,9 @@ What the launchers set, and why:
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | 1 | nothing else leaves the machine; no beta fields the server does not know |
 
 Thinking stays on: Claude Code asks for it per request and the server follows (`anthropic_thinking:
-on_request`). Claude Code asks for a ~32K budget on every call, and `MAX_THINKING_TOKENS` on the client did
-not change that. On a hard task (a triple-pendulum animation) DeepSeek filled the 24K the server allows on every
-call: ~20 minutes of thinking before each small Bash step, three calls without a file written, then a compaction.
+on_request`). Claude Code turns thinking on with no budget, and `MAX_THINKING_TOKENS` on the client did not change
+that, so Strata applies its default (24K at max_tokens 32000). On a hard task (a triple-pendulum animation)
+DeepSeek filled those 24K on every call: ~20 minutes of thinking before each small Bash step, three calls without a file written, then a compaction.
 `STRATA_THINKING_BUDGET` (empty: as asked) makes the router cap it; under 8192 Strata also lowers the effort to
 `medium`.
 
