@@ -376,6 +376,7 @@ single-stream engine. Client launchers and details: `openclaw-strata-router/READ
 | `STRATA_UPSTREAM_HOST` | `strata` | Where the Strata API is reached from the container: the compose service, or `host.docker.internal` / an address for a server outside the stack. |
 | `STRATA_UPSTREAM_PORT` | `8095` | The Strata API port as seen from the router. |
 | `STRATA_ROUTER_BIND` | `127.0.0.1` | Bind address on the host; `0.0.0.0` for Claude Code on another machine. |
+| `STRATA_THINKING_BUDGET` | (empty) | Cap on the thinking budget Claude Code asks for through the router (~32K on every call). Empty passes it through; under 8192 Strata also thinks at effort `medium`. |
 | `STRATA_ROUTER_PORT` | `8096` | Host port. |
 | `STRATA_ROUTER_DATA_DIR` | `./openclaw-strata-router/data` | The saved classifier requests (stage 1 is replayed at start, both feed `cls-bench.mjs`) and `router.log`; writable by UID 1000. |
 | `STRATA_CLASSIFIER_ALIAS` | `deepseek-v4.1-flash-classifier` | The model name Claude Code's `CLAUDE_CODE_AUTO_MODE_MODEL` uses; only these requests outlive a disconnect. |

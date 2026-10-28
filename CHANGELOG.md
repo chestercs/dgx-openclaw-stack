@@ -21,6 +21,12 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ### Added
 
+- `STRATA_THINKING_BUDGET`: strata-router caps the thinking budget of Claude
+  Code's requests. Claude Code asks for ~32K on every call; on a hard task
+  DeepSeek filled the 24K the server allows each time (~20 min per call
+  before a small Bash step), and the context grew until Claude Code
+  compacted. Empty passes the request through.
+
 - Headless Chromium (Playwright) in the Python sandbox, with its system
   libraries and fonts: the agent can load the HTML it built, screenshot it,
   record a canvas demo into a GIF with ffmpeg, or click through a web app,

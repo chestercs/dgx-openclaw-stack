@@ -13,7 +13,11 @@
 //     5 s, Strata finished reading at 54 s, the next call took 1 s);
 //   - the router keeps the rule set (system prompt, transcript removed) and replays it once at start, so even the
 //     first Bash call after a restart finds it cached.
-// Every other request is passed through unchanged, and a disconnect (Esc) cancels it upstream as before.
+// Every other request is passed through, and a disconnect (Esc) cancels it upstream as before. One change:
+// THINKING_BUDGET caps the thinking budget Claude Code asks for (~32K on every call, MAX_THINKING_TOKENS on the
+// client did not change it). On a hard task DeepSeek filled the 24K the server allows on every call, ~20 min at
+// ~20 tok/s before each small step, and the context grew 24K a call until Claude Code compacted. Strata reads a
+// budget under 8192 as effort "medium" as well as a hard stop.
 import http from "node:http";
 import fs from "node:fs";
 
@@ -22,6 +26,7 @@ const UPSTREAM = { host: process.env.STRATA_HOST || "strata", port: Number(proce
 const CLASSIFIER_ALIAS = process.env.CLASSIFIER_ALIAS || "deepseek-v4.1-flash-classifier";
 const REAL_MODEL = process.env.REAL_MODEL || "deepseek-v4.1-flash";
 const KEY = process.env.STRATA_API_KEY || "";
+const THINKING_BUDGET = Number(process.env.THINKING_BUDGET) || 0;     // 0 = pass through
 const WARM_FILE = "/data/classifier-warm.json";
 const STAGE2_FILE = "/data/classifier-stage2.json";
 const LOG_FILE = "/data/router.log";
@@ -85,6 +90,10 @@ http.createServer((req, res) => {
       const tpl = warmTemplate(json);
       // stage 1 (it has the stop sequence) is replayed at start; stage 2 is kept for cls-bench.mjs
       if (tpl) fs.writeFile(json.stop_sequences ? WARM_FILE : STAGE2_FILE, JSON.stringify(tpl), () => {});
+    } else if (THINKING_BUDGET && json?.thinking?.type === "enabled" && json.thinking.budget_tokens > THINKING_BUDGET) {
+      log(`thinking budget ${json.thinking.budget_tokens} -> ${THINKING_BUDGET}`);
+      json.thinking.budget_tokens = THINKING_BUDGET;
+      body = Buffer.from(JSON.stringify(json));
     }
     const t0 = Date.now();
     let gone = false, upRes = null;

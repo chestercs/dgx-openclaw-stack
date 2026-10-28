@@ -25,6 +25,8 @@ services:
       STRATA_API_KEY: ${STRATA_API_KEY:-}
       CLASSIFIER_ALIAS: ${STRATA_CLASSIFIER_ALIAS:-deepseek-v4.1-flash-classifier}
       REAL_MODEL: ${STRATA_MODEL_ID:-deepseek-v4.1-flash}
+      # Cap on Claude Code's thinking budget per call (empty = as asked, ~32K). See router.mjs.
+      THINKING_BUDGET: ${STRATA_THINKING_BUDGET:-}
     volumes:
       - ./openclaw-strata-router/router.mjs:/app/router.mjs:ro
       # the saved classifier rule set (replayed at start) and router.log; writable by UID 1000
