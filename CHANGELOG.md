@@ -10,6 +10,8 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-28
+
 ### Added
 
 - `compose/strata.yml` (`openclaw-strata/`): DeepSeek-V4.1-Flash (284B MoE,
