@@ -3,9 +3,9 @@
 # the rest is computed on the CPU straight from the files. One request at a time.
 # Build, model download and numbers: openclaw-strata/README.md
 #
-# Enable in .env (the engine built on the host first, see the README):
+# Enable in .env (the checkout and the engine package on the host first, see the README):
 #   COMPOSE_FILE=docker-compose.yml:compose/strata.yml
-#   STRATA_SRC=/home/<you>/strata                       # the Strata checkout with build-dsv41/strata-dsv41
+#   STRATA_SRC=/home/<you>/strata                       # the Strata checkout with engine-dsv41/strata-dsv41
 #   STRATA_MODEL_DIR=/home/<you>/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO
 #   STRATA_API_KEY=<openssl rand -hex 24>
 # Add compose/strata-llm.yml to make it OpenClaw's chat model, compose/strata-router.yml for Claude Code.
@@ -24,7 +24,7 @@ services:
       context: ./openclaw-strata
       additional_contexts:
         strata-src: ${STRATA_SRC:?set STRATA_SRC to the Strata checkout (openclaw-strata/README.md)}
-    image: openclaw-strata:0.2.7
+    image: openclaw-strata:0.2.7.1
     # The guards (gb10-memguard TARGETS, gb10-thermguard WATCH) find it by this name.
     container_name: ${CONTAINER_NAME_PREFIX:-}strata
     hostname: strata
@@ -54,6 +54,8 @@ services:
       STRATA_DSPARK_CONF: ${STRATA_DSPARK_CONF:-0.65}
       STRATA_PREFILL_CHUNK: ${STRATA_PREFILL_CHUNK:-16384}
       STRATA_EXTRA_ARGS: ${STRATA_EXTRA_ARGS:-}
+      # the engine, relative to STRATA_SRC: the release's package, or build-dsv41/strata-dsv41 built there
+      STRATA_ENGINE: ${STRATA_ENGINE:-engine-dsv41/strata-dsv41}
       STRATA_CUDA_DIR: ${STRATA_CUDA_DIR:-/usr/local/cuda-13.0}
       # GPU expert budget = MemAvailable minus this (ds4-uma.sh). 16 GB beside the stack keeps whisper, the
       # browser and other services' growth above gb10-memguard's 6 GB floor; 14 is enough with Strata alone.

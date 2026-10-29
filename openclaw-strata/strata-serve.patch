@@ -1,0 +1,36 @@
+diff --git a/serve/frontend.py b/serve/frontend.py
+index 63e319b8..ba896b2d 100644
+--- a/serve/frontend.py
++++ b/serve/frontend.py
+@@ -137,8 +137,10 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
+ 
+ # DeepSeek-V4.1's template takes low, medium, high (its default) and max, or a whole number 1..100 (the "Reasoning
+ # Effort: N" line of its prompt).  use_family("deepseek41") switches the table; the other families keep the one above.
++# The 1017 pack's template has no "medium" (low 50, high 75, max 100, or 1..100): medium is the 62 of
++# fixtures/deepseek41, sent as the number.
+ EFFORT_DEEPSEEK = {"none": None, "off": None, "minimal": None, "disabled": None, "false": None,
+-                   "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "max": "max", "maximum": "max"}
++                   "low": "low", "medium": 62, "high": "high", "xhigh": "max", "max": "max", "maximum": "max"}
+ _EFFORT_QWEN = dict(EFFORT)
+ _NUMERIC_EFFORT = False
+ 
+@@ -175,7 +177,7 @@ def budget_effort(tokens) -> dict:
+         n = int(tokens)
+     except (TypeError, ValueError):
+         return {}
+-    return {"reasoning_effort": "low" if n < 2048 else "medium" if n < 8192 else EFFORT["high"]}
++    return {"reasoning_effort": EFFORT["low"] if n < 2048 else EFFORT["medium"] if n < 8192 else EFFORT["high"]}
+ 
+ 
+ def _has_image(content) -> bool:
+@@ -615,6 +617,10 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
+             kwargs = {"enable_thinking": False}
+         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
+             kwargs.update(effort_kwargs(v))
++    # DeepSeek's own API: "thinking": {"type": "disabled" | "enabled"} next to reasoning_effort (OpenClaw's
++    # "deepseek" thinking format sends it, and only it, for /think off)
++    if isinstance(req.get("thinking"), dict) and req["thinking"].get("type") == "disabled":
++        kwargs = {"enable_thinking": False}
+     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
+ 
+ 

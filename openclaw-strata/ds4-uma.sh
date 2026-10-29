@@ -11,10 +11,15 @@
 #      leaves room for the dense weights, the KV cache, the prompt buffers and memguard's 6 GB
 #      floor. The engine reads free memory later than this, so the budget only comes out lower.
 # The CPU lane reads its experts back into the page cache afterwards.
+# Engine 0.1.53 (Strata 0.2.7.1) takes max(MemFree, MemAvailable - DS4_UMA_HEADROOM_GIB) itself: a
+# floor, not a cap. After the drop MemFree is nearly all of MemAvailable, so without the factor it
+# placed ~100 GB of experts beside the stack and memguard killed it at 0.3 GB available, with the
+# headroom at 16 or 30 GB alike.
 set -eu
 MARGIN_GB=${UMA_MARGIN_GB:-14}
 RESERVE_MIB=${UMA_RESERVE_MIB:-1000}
 DROP_DIR=${UMA_DROP_DIR:-}
+ENGINE=${STRATA_ENGINE:-/strata/engine-dsv41/strata-dsv41}
 
 drop() {   # drop(seconds): 0 = one pass
   python3 - "$DROP_DIR" "$1" <<'EOF'
@@ -47,4 +52,4 @@ echo "ds4-uma: expert budget MemAvailable - ${MARGIN_GB} GB: --vram-experts $fac
 if [ -n "$DROP_DIR" ]; then
   (drop "${UMA_DROP_SECONDS:-180}"; echo "ds4-uma: page-cache drop finished" >&2) &
 fi
-exec /strata/build-dsv41/strata-dsv41 "$@" --reserve-mib "$RESERVE_MIB" --vram-experts "$factor"
+exec "$ENGINE" "$@" --reserve-mib "$RESERVE_MIB" --vram-experts "$factor"

@@ -24,6 +24,21 @@ asks for more); everyone on the server queues, but a resumed conversation reads 
 | MemAvailable while loaded | ~11 GB | ~12.5 GB |
 | Load time | ~1–2 min | ~1–2 min |
 
+Engine 0.1.53 (Strata 0.2.7.1, 2026-10-29) against 0.1.52 (0.2.7, own build), beside the stack, the same
+settings, two rounds each, fresh prompts at temperature 0 without thinking, 256-token answers:
+
+| | 0.1.52 | 0.1.53 |
+|---|---|---|
+| Experts on the GPU | 10,989 | 11,104 |
+| 4K / 16K / 32K prompt read, tok/s | 375–376 / 515–545 / 609–622 | 383–386 / 527–535 / 563–574 |
+| 25K-token prompt read (`bench.sh`) | 451 tok/s | 504 tok/s |
+| Code (`bench.sh`, DSpark) | 26.0–28.0 tok/s | 22.4–26.1 tok/s |
+| Prose (`bench.sh`) | 13.0–14.5 tok/s | 14.0–15.3 tok/s |
+| acpitz max | 76 °C | 76 °C |
+
+No speed change beyond the run-to-run spread; the package is kept because it is upstream's own build for
+the Spark. The engine's conversation slots from 0.1.52 are not read by 0.1.53 (dropped at the first start).
+
 - DSpark (speculative decoding with the pack's drafter): ~87% of drafts accepted on code and tool JSON, so code
   decodes at nearly twice the speed; no gain on prose. Its 7.2 GB of drafter experts push ~650 main-model
   experts to the CPU, and prompt reading is ~7% slower.
@@ -33,28 +48,29 @@ asks for more); everyone on the server queues, but a resumed conversation reads 
 - On a GB10 the engine uses 5 of the 6 routed experts by default ("Faster" mode); `--experts 6` (via
   `STRATA_EXTRA_ARGS`) is full quality, not measured here.
 
-## Build the engine (aarch64, sm_121)
+## The engine (aarch64, sm_121)
 
-There is no ready-made ARM package. Build from source on the host (~15 min, with DGX OS's CUDA 13.0). The patch
-(against Strata 5e8a4cc, release 0.2.7) fixes three x86-only spots: a constant defined only in an x86 block, a
-CPUID branch, and missing ARM stubs for the DeepSeek CPU lane's AVX kernels (ggml-cpu's NEON code runs there
-instead). One more hunk, in Python and not ARM-specific: the OpenAI chat path reads DeepSeek's own
-`thinking: {"type": "disabled"}`, which is how OpenClaw's `deepseek` thinking format says `/think off` (the chat
-path read only `reasoning_effort` and `chat_template_kwargs`). And `medium` is sent as 62: the 1017 pack's chat template
-knows only `low` (50), `high` (75), `max` (100) or a number, and answered `medium`, OpenClaw's `/think medium` and
-every Claude Code budget under 8192, with a 400. The `serve/` code is mounted, not built in: after
-re-applying the patch, restart the container.
+Strata 0.2.7.1 publishes a DeepSeek engine package for the DGX Spark (`linux-aarch64-cuda-cuda13`, engine
+0.1.53, with its own cuBLAS and CUDA runtime). The server is the checkout's Python; the patch
+(`strata-serve.patch`, against v0.2.7.1) changes two things in it:
+
+- the OpenAI chat path reads DeepSeek's own `thinking: {"type": "disabled"}`, which is how OpenClaw's `deepseek`
+  thinking format says `/think off` (the chat path reads only `reasoning_effort` and `chat_template_kwargs`);
+- `medium` is sent as 62: the 1017 pack's chat template knows only `low` (50), `high` (75), `max` (100) or a
+  number, and answered `medium`, OpenClaw's `/think medium` and every Claude Code budget under 8192, with a 400.
 
 ```bash
 git clone https://github.com/Niko1221/Strata.git ~/strata
-cd ~/strata && git checkout 5e8a4cc && git apply ~/dgx-openclaw-stack/openclaw-strata/strata-aarch64.patch
-export PATH=/usr/local/cuda-13.0/bin:$PATH
-cmake -S . -B build-dsv41 -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON \
-  -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON \
-  -DCMAKE_CUDA_ARCHITECTURES=121-real -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc \
-  -DCUDAToolkit_ROOT=/usr/local/cuda-13.0
-cmake --build build-dsv41 --target strata-dsv41 -j 12
+cd ~/strata && git checkout v0.2.7.1 && git apply ~/dgx-openclaw-stack/openclaw-strata/strata-serve.patch
+B=https://github.com/Niko1221/Strata/releases/download/v0.2.7
+P=strata-dsv41-0.1.53-linux-aarch64-cuda-cuda13.tar.gz
+curl -fsSLO $B/SHA256SUMS.txt && curl -fsSLO $B/$P && grep $P SHA256SUMS.txt | sha256sum -c -
+mkdir -p engine-dsv41 && tar -xzf $P -C engine-dsv41 && rm $P SHA256SUMS.txt
 ```
+
+The `serve/` code is mounted, not built in: after re-applying the patch, restart the container. To run an
+engine built from the checkout instead (`spark/build_engine.sh`, docs/DGX_SPARK_LINUX.md upstream), point
+`STRATA_ENGINE` at it, relative to the checkout.
 
 The container mounts this checkout read-only (`STRATA_SRC`) and the host CUDA toolkit (`STRATA_CUDA_DIR`); the
 image only adds the server's Python, pinned by the checkout's `requirements.txt`.
@@ -126,6 +142,12 @@ MemFree: page cache counts as used and `cudaMalloc` does not reclaim it. Measure
   second while the engine loads;
 - it sets `--vram-experts` to MemAvailable minus `STRATA_UMA_MARGIN_GB` (default 16, room for the stack's
   growth above memguard's 6 GB floor; 14 with Strata alone).
+
+Engine 0.1.53 sizes from MemAvailable less `DS4_UMA_HEADROOM_GIB` on its own, but only where that is more than
+MemFree; after the drop it is not, so the factor is still what caps the tier. Without it the engine placed
+~100 GB of experts beside the stack and memguard killed it at 0.3 GB available, with the headroom at 16 or 30
+GB. `--ssd-cache 0` keeps the CPU lane reading in place, as with 0.1.52: the engine's automatic RAM store takes
+the RAM free at load less 12 GB.
 
 Only the hot experts matter: beside the stack ~0.5% of expert hits land on the CPU, so a smaller margin buys
 almost no speed and risks a memguard kill.

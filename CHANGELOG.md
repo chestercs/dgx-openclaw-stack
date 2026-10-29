@@ -50,6 +50,18 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   for a "nothing to do" answer and queued between a long run's calls;
   `compose/strata-llm.yml` recommends `off`. Exec-completion wakes still run.
 
+### Changed
+
+- Strata 0.2.7.1: the DeepSeek engine is the release's DGX Spark package
+  (0.1.53, `engine-dsv41/` in the checkout, `STRATA_ENGINE`) instead of an
+  own build, and the aarch64 patch is reduced to the server's two changes
+  (`strata-serve.patch`: `thinking.disabled`, medium as 62). Speed beside the
+  stack is unchanged within the run-to-run spread (numbers in
+  `openclaw-strata/README.md`). `ds4-uma.sh` keeps its `--vram-experts`
+  factor: the engine's own MemAvailable sizing is a floor over MemFree, not a
+  cap, and without the factor it placed ~100 GB of experts and memguard killed
+  it. `--ssd-cache 0` keeps the CPU lane reading in place.
+
 ### Fixed
 
 - Code files on Discord arrive as a zip. OpenClaw sends local `.html`, `.py`,

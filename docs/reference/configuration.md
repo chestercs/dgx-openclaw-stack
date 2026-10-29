@@ -344,13 +344,14 @@ Details: `openclaw-claw-img-bot/README.md`.
 
 ## Strata server (compose/strata.yml)
 
-DeepSeek-V4.1-Flash on Strata's `strata-dsv41` engine, built on the host. Started with
+DeepSeek-V4.1-Flash on Strata's `strata-dsv41` engine (the release's DGX Spark package). Started with
 `docker compose up -d strata` (naming it turns its profile on) or by `scripts/llm-ensure.sh` (after the stack has loaded);
 no restart policy. Details: `openclaw-strata/README.md`.
 
 | Knob | Default | What it does |
 |---|---|---|
-| `STRATA_SRC` | (required) | The Strata checkout with the built `build-dsv41/strata-dsv41`; mounted read-only, and its `requirements.txt` pins the image's Python. |
+| `STRATA_SRC` | (required) | The Strata checkout (v0.2.7.1 plus `strata-serve.patch`), with the engine package in `engine-dsv41/`; mounted read-only, and its `requirements.txt` pins the image's Python. |
+| `STRATA_ENGINE` | `engine-dsv41/strata-dsv41` | The engine binary, relative to `STRATA_SRC`; its folder goes first on the library path. |
 | `STRATA_MODEL_DIR` | (required) | The folder with the GGUF files and the pack; mounted at its host path (the pack stores absolute paths). |
 | `STRATA_PACK` | `$STRATA_MODEL_DIR/strata-pack-dspark` | The pack folder. |
 | `STRATA_API_KEY` | (required) | The server's key (Claude Code and benchmarks use it); `VLLM_API_KEY` is added as a second key for OpenClaw. |
@@ -358,7 +359,7 @@ no restart policy. Details: `openclaw-strata/README.md`.
 | `STRATA_MAX_CONTEXT` | `131072` | Context per request. |
 | `STRATA_CPU_THREADS` | `10` | CPU-lane threads; 18 heated a GB10 to 92 °C beside the stack. |
 | `STRATA_CPUSET` | `0-4,10-14` | Cores the container may use; the GB10's Cortex-A725 cores run 12 °C cooler than unpinned for ~10% speed. |
-| `STRATA_UMA_MARGIN_GB` | `16` | GPU expert budget = MemAvailable minus this, measured at start; 14 with Strata alone. |
+| `STRATA_UMA_MARGIN_GB` | `16` | GPU expert budget = MemAvailable minus this, measured by the engine at start (`DS4_UMA_HEADROOM_GIB`); 14 with Strata alone. |
 | `STRATA_DSPARK` | `auto` | Speculative decoding with the pack's drafter (`auto`, `on`, `off`). |
 | `STRATA_DSPARK_CONF` | `0.65` | Draft acceptance threshold. |
 | `STRATA_PREFILL_CHUNK` | `16384` | Prompt tokens per prefill step. |

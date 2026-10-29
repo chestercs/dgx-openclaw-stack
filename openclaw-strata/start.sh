@@ -7,6 +7,8 @@ set -eu
 : "${STRATA_MODEL_DIR:?set STRATA_MODEL_DIR}"
 PACK=${STRATA_PACK:-$STRATA_MODEL_DIR/strata-pack-dspark}
 CFG=/tmp/strata-dsv41.json
+# the release's engine package (engine-dsv41/ in the checkout) or a build of its own
+export STRATA_ENGINE=/strata/${STRATA_ENGINE:-engine-dsv41/strata-dsv41}
 
 python3 - "$CFG" "$PACK" <<'EOF'
 import json, os, shlex, sys
@@ -18,6 +20,9 @@ args = ["--pack", pack,
         # DSpark drafts with the pack's drafter: ~2x on code and tool JSON, no gain on prose
         "--dspark", e("STRATA_DSPARK", "auto"), "--dspark-conf", e("STRATA_DSPARK_CONF", "0.65"),
         "--prefill-chunk", e("STRATA_PREFILL_CHUNK", "16384"),
+        # no RAM expert store: the CPU lane reads its experts in place, through the page cache, as with engine
+        # 0.1.52. The engine's auto store takes the RAM free at load less 12 GB, sized for Strata alone.
+        "--ssd-cache", "0",
         "--cpu-threads", e("STRATA_CPU_THREADS", "10")]
 args += shlex.split(e("STRATA_EXTRA_ARGS", ""))
 json.dump({
@@ -28,8 +33,9 @@ json.dump({
     "model_name": e("STRATA_MODEL_ID", "deepseek-v4.1-flash"),
     "arch": "deepseek41",
     "log": "/data/strata-dsv41.log",
-    # the host toolkit the engine was built with, mounted at its host path
-    "lib_dirs": [os.path.join(e("STRATA_CUDA_DIR", "/usr/local/cuda-13.0"), "lib64")],
+    # the engine package's own CUDA libraries first, then the host toolkit mounted at its host path
+    "lib_dirs": [os.path.dirname(e("STRATA_ENGINE")),
+                 os.path.join(e("STRATA_CUDA_DIR", "/usr/local/cuda-13.0"), "lib64")],
     "port": 8095,
     "engine_ready_s": 3600,
     # Claude Code asks for thinking per request; OpenClaw sends enable_thinking through the chat template

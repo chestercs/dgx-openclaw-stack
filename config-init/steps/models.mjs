@@ -17,7 +17,7 @@ export const DEFAULT_MODEL_ID = 'nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-N
 //   DeepSeek-V4.1 on Strata: DeepSeek's API, thinking {type} plus reasoning_effort low | medium | high | max.
 //     With the qwen switch every /think level thought at the template's default (high), and OpenClaw sends no
 //     reasoning_effort in that format. Off arrives as thinking.type "disabled" only, which Strata's chat path
-//     reads with openclaw-strata/strata-aarch64.patch.
+//     reads with openclaw-strata/strata-serve.patch.
 //   Mistral Small 4: reasoning_effort, and vLLM accepts only none | high
 export function thinkingCompat(id) {
   const mode = env.oneOf('LLM_THINKING_COMPAT', ['auto', 'off', 'qwen-chat-template'], 'auto');
