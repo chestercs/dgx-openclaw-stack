@@ -61,6 +61,16 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   write `code/<project>/`, pack it with `python3 -m zipfile` and attach the
   zip, or build it in the sandbox under `canvas/code/` without `exec`.
 
+- The sandbox preview port (8095) serves `canvas/_site/<name>/` from start-up
+  (`preview_server.py`). It ran only while the agent kept an `http.server`
+  alive, so `OPENCLAW_SANDBOX_PUBLIC_URL` answered 502 after every restart.
+  The operator can share a folder by copying it into `_site`. No directory
+  listings, no dotfiles, `no-cache`.
+
+- The Discord reply rule states the attachment sizes: images (GIF included)
+  up to 6 MB, OpenClaw's cap for an image; other files up to 10 MB. A 7.6 MB
+  demo GIF failed as "Delivery failed" with nothing in the log.
+
 ## [1.3.0] - 2026-10-28
 
 ### Added

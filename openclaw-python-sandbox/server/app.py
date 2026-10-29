@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+import preview_server
 from kernel_pool import KernelPool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -676,6 +677,7 @@ async def _on_start() -> None:
         IDLE_TTL_S,
     )
     asyncio.create_task(_reap_loop())
+    preview_server.start()
 
 
 async def _reap_loop() -> None:

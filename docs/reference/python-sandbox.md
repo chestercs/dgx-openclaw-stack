@@ -52,9 +52,13 @@ connect:
   again kept out of the kernel. A classic token with `repo` scope also lets
   it create a missing repo.
 
-Port 8095 is a static preview port for web apps the agent builds; the
-`coding-projects` skill tells users the app is at
-`OPENCLAW_SANDBOX_PUBLIC_URL`.
+Port 8095 is a static web server that runs from the sandbox's start
+(`preview_server.py`): a folder `canvas/_site/<name>/` is
+`OPENCLAW_SANDBOX_PUBLIC_URL/<name>/`. The agent publishes web apps it builds
+there (the `coding-projects` skill), and the operator can drop any folder
+with an `index.html` into `${OPENCLAW_CANVAS_DIR}/_site/` on the host to
+share it. There are no directory listings and no dotfiles, and responses
+carry `Cache-Control: no-cache`, so a replaced page shows on reload.
 
 This is opt-in (Compose profile `python` + a non-empty
 `PYTHON_SANDBOX_API_TOKEN`), Python-specific, and orthogonal to every
