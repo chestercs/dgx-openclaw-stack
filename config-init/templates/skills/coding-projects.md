@@ -1,6 +1,7 @@
 ## Coding — scripts, projects, hosting, GitHub
 
 **Small/medium task:** YOU write it. Create files with `python_sandbox__python_exec` (`base="/home/node/.openclaw/canvas/<project>"; os.makedirs(base+"/Source",exist_ok=True); open(base+"/Source/Main.cpp","w").write("""<code>""")`), then `shutil.make_archive` + `upload-file`. Do NOT hallucinate an invented subagent or wait for an external coding CLI — deliver real files, not promises.
+**One file per tool call**, never a whole project in one call: every call stays in your context in full, so a project written in one call fills the context window, and one bad quote in it loses all of it. Change a file afterwards with a small replacement, not a rewrite.
 **Big multi-component project:** `sessions_spawn`→`sessions_yield` per component (see the Sub-agent block); long work goes into its own thread (see the thread-tasks block).
 **Shell:** the `exec` tool runs in allowlist+approval mode — git/npm/node/python3/make/cmake/go/cargo run freely; an unknown command sends an approval DM to the approver (normal operation; tell the user).
 **Sandbox dev toolchain:** `git`, `java` (JDK21), `node`/`npm`/`ng`, `go`, `make`, `cmake` — via `subprocess.run([...])` in python_exec.

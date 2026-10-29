@@ -67,6 +67,16 @@ Releases up to 0.12.x and the unreleased work before 1.0.0 are in
   The operator can share a folder by copying it into `_site`. No directory
   listings, no dotfiles, `no-cache`.
 
+- Long tool loops no longer overflow the context window. A Discord coding turn
+  on Strata grew from 46K to 133K tokens inside one turn (it wrote the whole
+  project in single 21K and 28K-token sandbox calls) and died with "Context
+  window exceeded"; the overflow compaction then hit OpenClaw's 180 s request
+  window. config-init now turns on `compaction.midTurnPrecheck` (compact
+  before the next model call, not only when a turn starts), sets
+  `compaction.timeoutSeconds` to 1200 and `notifyUser`
+  (`OPENCLAW_COMPACTION_*`), and the coding skill asks for one file per tool
+  call.
+
 - The Discord reply rule states the attachment sizes: images (GIF included)
   up to 6 MB, OpenClaw's cap for an image; other files up to 10 MB. A 7.6 MB
   demo GIF failed as "Delivery failed" with nothing in the log.

@@ -122,6 +122,20 @@ function runs(config) {
   if (prune === 'off') config.remove([...d, 'contextPruning'], 'OPENCLAW_AGENT_CONTEXT_PRUNING_MODE=off');
   else config.merge([...d, 'contextPruning'], { mode: 'cache-ttl', ttl: env.str('OPENCLAW_AGENT_CONTEXT_PRUNING_TTL', '5m') });
 
+  // Compaction, sized for a local model. OpenClaw checks the context window
+  // only when a turn starts unless midTurnPrecheck is on: one Discord coding
+  // turn on Strata grew from 46K to 133K tokens inside its tool loop and died
+  // with "Context window exceeded". The overflow compaction it tried then hit
+  // the 180 s request window (~15 tok/s: 2.4K summary tokens by then).
+  // notifyUser posts a short "compacting" notice, so minutes of silence do not
+  // read as a hang.
+  const c = [...d, 'compaction'];
+  const compactTimeout = offOr('OPENCLAW_COMPACTION_TIMEOUT_SECONDS', '1200');
+  config.set([...c, 'timeoutSeconds'], compactTimeout === 'off' ? undefined : env.int('OPENCLAW_COMPACTION_TIMEOUT_SECONDS', 1200));
+  config.set([...c, 'midTurnPrecheck'], env.bool('OPENCLAW_COMPACTION_MIDTURN_PRECHECK', true) ? { enabled: true } : undefined);
+  config.set([...c, 'notifyUser'], env.bool('OPENCLAW_COMPACTION_NOTIFY_USER', true) ? true : undefined);
+  if (!Object.keys(config.get(c) ?? {}).length) config.remove(c);
+
   // Sub-agent bounds. Depth 2 lets a child spawn its own workers. A child
   // runs at most 30 minutes by default, so a stuck one ends instead of
   // holding a slot; "work on this for a day" passes runTimeoutSeconds 0 in
